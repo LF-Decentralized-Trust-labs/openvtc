@@ -1,0 +1,30 @@
+
+[package]
+name = "openvtc-service"
+description = "OpenVTC Service"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+openvtc.workspace = true
+affinidi-tdk.workspace = true
+
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "openvtc-service"
+path = "src/main.rs"

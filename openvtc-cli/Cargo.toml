@@ -1,0 +1,68 @@
+[package]
+name = "openvtc-cli"
+description = "OpenVTC CLI Tool"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["openpgp-card"]
+openpgp-card = [
+  "dep:openpgp-card",
+  "dep:card-backend-pcsc",
+  "dep:openpgp-card-rpgp",
+  "openvtc/openpgp-card",
+]
+
+[dependencies]
+openvtc = { workspace = true, default-features = false }
+
+aes-gcm.workspace = true
+affinidi-tdk.workspace = true
+affinidi-data-integrity.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+bip39.workspace = true
+byteorder.workspace = true
+chrono.workspace = true
+clap.workspace = true
+console.workspace = true
+crossterm.workspace = true
+dirs.workspace = true
+dialoguer.workspace = true
+didwebvh-rs.workspace = true
+dtg-credentials.workspace = true
+ed25519-dalek-bip32.workspace = true
+hex.workspace = true
+keyring.workspace = true
+multibase.workspace = true
+pgp.workspace = true
+rand.workspace = true
+regex.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+sysinfo.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+uuid.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+# Openpgp-Card Support
+openpgp-card = { workspace = true, optional = true }
+card-backend-pcsc = { workspace = true, optional = true }
+openpgp-card-rpgp = { workspace = true, optional = true }
+
+[[bin]]
+name = "openvtc"
+path = "src/main.rs"

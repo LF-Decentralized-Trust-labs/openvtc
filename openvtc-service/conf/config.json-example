@@ -1,0 +1,44 @@
+{
+  "maintainers": [
+    {
+      "alias": "Ada Lovelace",
+      "did": "did:webvh:QmXcNuLRdnpGZKAbKsmr6f78e5BThNgE29ZYYQcNoSxi4r:openvtc.storm.ws:maintainers:ada-lovelace"
+    },
+    {
+      "alias": "Grace Hopper",
+      "did": "did:webvh:QmUqBTWMAZG3ySvj16es9bPBqqotXYLKFhvQAGru7MeB7D:openvtc.storm.ws:maintainers:grace-hopper"
+    },
+    {
+      "alias": "Charles Babbage",
+      "did": "did:webvh:QmNbhtpbPzMQDLEwMqb2MdiPRXStveM1u6Du8BiYFVKYCA:openvtc.storm.ws:maintainers:charles-babbage"
+    },
+    {
+      "alias": "Alan Turing",
+      "did": "did:webvh:QmSxqGsUJg4Q3mbb8bzSxq1NMXuiqM3A6h8g4U3g88AGHG:openvtc.storm.ws:maintainers:alan-turing"
+    }
+  ],
+  "mediator": "did:webvh:QmetnhxzJXTJ9pyXR1BbZ2h6DomY6SB1ZbzFPrjYyaEq9V:openvtc.storm.ws:public-mediator",
+  "our_did": "did:webvh:QmXkYcFCbvFFcYZf2q5gNk8Vp4b4vMbVKWbbc7oivcdZHK:openvtc.storm.ws",
+  "secrets": [
+    {
+      "id": "did:webvh:QmXkYcFCbvFFcYZf2q5gNk8Vp4b4vMbVKWbbc7oivcdZHK:openvtc.storm.ws#key-0",
+      "type": "JsonWebKey2020",
+      "privateKeyJwk": {
+        "crv": "Ed25519",
+        "d": "..",
+        "kty": "OKP",
+        "x": ".."
+      }
+    },
+    {
+      "id": "did:webvh:QmXkYcFCbvFFcYZf2q5gNk8Vp4b4vMbVKWbbc7oivcdZHK:openvtc.storm.ws#key-1",
+      "type": "JsonWebKey2020",
+      "privateKeyJwk": {
+        "crv": "X25519",
+        "d": "..",
+        "kty": "OKP",
+        "x": ".."
+      }
+    }
+  ]
+}
