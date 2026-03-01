@@ -1,6 +1,6 @@
 use std::fmt::Display;
 
-use strum::EnumIter;
+use strum_macros::EnumIter;
 
 /// Holds all state related info for the main page
 #[derive(Clone, Debug)]

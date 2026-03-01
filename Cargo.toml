@@ -17,7 +17,7 @@ authors = ["Glenn Gore <glenn@affinidi.com>"]
 rust-version = "1.90.0"
 readme = "README.md"
 license = "Apache-2.0"
-repository = "https://github.com/FirstPersonNetwork/ostc-fpp-rs"
+repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
 
 [workspace.dependencies]
 openvtc = { version = "0.1.0", path = "openvtc-lib", default-features = false }
@@ -27,7 +27,7 @@ openvtc = { version = "0.1.0", path = "openvtc-lib", default-features = false }
 dtg-credentials = { version = "0.1", git = "https://github.com/FirstPersonNetwork/dtg-credentials-rs" }
 
 aes-gcm = "0.10"
-affinidi-tdk = "0.4"
+affinidi-tdk = "0.5"
 affinidi-data-integrity = "0.3"
 anyhow = "1.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
@@ -56,8 +56,8 @@ serde = "1.0"
 serde_json = "1.0"
 serde_json_canonicalizer = "0.3"
 sha2 = "0.10"
-strum = "0.27"
-strum_macros = "0.27"
+strum = "0.28"
+strum_macros = "0.28"
 sysinfo = "0.38"
 thiserror = "2.0"
 tokio = "1.49"
@@ -67,8 +67,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.20", features = ["v4", "fast-rng"] }
-vta-sdk = { path = "../vtc-vta-rs/vta-sdk", features = ["session", "client", "didcomm", "keyring"] }
-reqwest = { version = "0.12", features = ["json"] }
+vta-sdk = { path = "../vtc-vta-rs/vta-sdk", features = [
+  "session",
+  "client",
+  "didcomm",
+  "keyring",
+] }
+reqwest = { version = "0.13", features = ["json"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zeroize = "1.8"
 
