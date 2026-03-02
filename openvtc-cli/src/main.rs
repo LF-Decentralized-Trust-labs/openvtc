@@ -126,6 +126,7 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
         &user_pin,
         #[cfg(feature = "openpgp-card")]
         &a,
+        None,
     )
     .await
     {

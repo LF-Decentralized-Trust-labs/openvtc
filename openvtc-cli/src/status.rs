@@ -200,6 +200,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
         &user_pin,
         #[cfg(feature = "openpgp-card")]
         &a,
+        None,
     )
     .await
     {
