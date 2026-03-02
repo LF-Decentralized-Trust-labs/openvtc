@@ -1,9 +1,8 @@
 use crate::{
     cli::{cli, get_user_pin},
-    state_handler::{StartingMode, StateHandler},
+    state_handler::{DeferredLoad, StartingMode, StateHandler},
     ui::UiManager,
 };
-use affinidi_tdk::{TDK, common::config::TDKConfigBuilder};
 use anyhow::{Context, Result, bail};
 use console::style;
 use dialoguer::{Password, theme::ColorfulTheme};
@@ -186,11 +185,11 @@ async fn main() -> Result<()> {
     }
 
     if let StartingMode::NotSet = starting_mode {
-        match load(&profile).await {
-            Ok((tdk, config)) => {
-                starting_mode = StartingMode::MainPage(Box::new(config), tdk);
+        match load_fast(&profile) {
+            Ok(deferred) => {
+                starting_mode = StartingMode::MainPageDeferred(deferred);
             }
-            Err(openvtc::errors::OpenVTCError::ConfigNotFound(_, _)) => {
+            Err(OpenVTCError::ConfigNotFound(_, _)) => {
                 // Configuration not found, start in setup mode
                 starting_mode = StartingMode::SetupWizard;
             }
@@ -310,34 +309,9 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 }
 
-/// Loads openvtc with Trust Development Kit (TDK) and Config
-/// This does not need to be called for setup!
-async fn load(profile: &str) -> Result<(TDK, Config), OpenVTCError> {
-    // Instantiate the TDK
-    let mut tdk = TDK::new(
-        TDKConfigBuilder::new()
-            .with_load_environment(false)
-            .build()?,
-        None,
-    )
-    .await?;
-
-    #[cfg(feature = "openpgp-card")]
-    let a = {
-        use openvtc::config::TokenInteractions;
-
-        struct A;
-        impl TokenInteractions for A {
-            fn touch_notify(&self) {
-                eprintln!("Touch confirmation needed to unlock decryption key");
-            }
-            fn touch_completed(&self) {
-                eprintln!("Decryption key unlocked");
-            }
-        }
-        A
-    };
-
+/// Fast, synchronous load — only does local config read + terminal prompts.
+/// Network-heavy work (TDK init, DID resolution, VTA auth) is deferred to the state handler.
+fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
     let public_config = Config::load_step1(profile)?;
 
     let unlock_passphrase = match &public_config.protection {
@@ -358,57 +332,18 @@ async fn load(profile: &str) -> Result<(TDK, Config), OpenVTCError> {
         ConfigProtectionType::Plaintext => None,
     };
 
-    let mut user_pin = SecretString::from_str("123456").unwrap();
-    let mut loop_count = 0;
-    let config = loop {
-        match Config::load_step2(
-            &mut tdk,
-            profile,
-            public_config.clone(),
-            unlock_passphrase.as_ref(),
-            #[cfg(feature = "openpgp-card")]
-            &user_pin,
-            #[cfg(feature = "openpgp-card")]
-            &a,
-        )
-        .await
-        {
-            Ok(cfg) => break cfg,
-            #[cfg(feature = "openpgp-card")]
-            Err(OpenVTCError::TokenBadPin) => {
-                if loop_count == 0 {
-                    println!(
-                        "{}",
-                        style("Non default token User PIN detected.").color256(CLI_ORANGE)
-                    );
-                } else if loop_count >= 3 {
-                    println!(
-                        "{}",
-                        style("Incorrect token User PIN attempts. Exiting...").color256(CLI_RED)
-                    );
-                    return Err(OpenVTCError::TokenBadPin);
-                } else {
-                    println!(
-                        "{}",
-                        style("Incorrect Token User PIN. Please re-enter!").color256(CLI_RED)
-                    );
-                }
-                user_pin = get_user_pin();
-                loop_count += 1;
-            }
-            Err(e) => {
-                println!(
-                    "{}{}",
-                    style("ERROR: ").color256(CLI_RED),
-                    style(e).color256(CLI_ORANGE)
-                );
-                panic!("Exiting...");
-            }
-        }
+    #[cfg(feature = "openpgp-card")]
+    let user_pin = if matches!(&public_config.protection, ConfigProtectionType::Token(_)) {
+        get_user_pin()
+    } else {
+        SecretString::from_str("123456").unwrap()
     };
 
-    let mut config = config;
-    apply_env_overrides(&mut config);
-
-    Ok((tdk, config))
+    Ok(DeferredLoad {
+        profile: profile.to_string(),
+        public_config,
+        unlock_passphrase,
+        #[cfg(feature = "openpgp-card")]
+        user_pin,
+    })
 }

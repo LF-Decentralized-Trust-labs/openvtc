@@ -1,16 +1,17 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use affinidi_tdk::TDK;
+use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::messaging::ATM;
 use affinidi_tdk::messaging::config::ATMConfig;
 use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::messaging::protocols::trust_ping::TrustPing;
 use affinidi_tdk::messaging::transports::websockets::WebSocketResponses;
-use openvtc::config::Config;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, info, warn};
+
+use super::state::MediatorStatus;
 
 /// Events sent from the messaging loop to the state handler.
 #[derive(Debug, Clone)]
@@ -28,63 +29,6 @@ pub enum ConnectionStatus {
     Error(String),
 }
 
-/// Initialize the DIDComm connection to the mediator.
-///
-/// Creates a new ATM with an inbound message channel using the TDK's shared state
-/// (which already has persona secrets loaded), creates an ATMProfile for the
-/// persona DID with the mediator, and enables WebSocket live streaming.
-pub async fn init_didcomm_connection(
-    tdk: &TDK,
-    config: &Config,
-) -> Option<(Arc<ATM>, Arc<ATMProfile>)> {
-    let persona_did = config.public.persona_did.to_string();
-    let mediator_did = &config.public.mediator_did;
-
-    let atm_config = match ATMConfig::builder()
-        .with_inbound_message_channel(100)
-        .build()
-    {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("failed to build ATM config: {e} — messaging disabled");
-            return None;
-        }
-    };
-
-    let atm = match ATM::new(atm_config, tdk.get_shared_state()).await {
-        Ok(a) => a,
-        Err(e) => {
-            warn!("failed to create ATM: {e} — messaging disabled");
-            return None;
-        }
-    };
-
-    let profile = match ATMProfile::new(
-        &atm,
-        None,
-        persona_did.clone(),
-        Some(mediator_did.to_string()),
-    )
-    .await
-    {
-        Ok(p) => Arc::new(p),
-        Err(e) => {
-            warn!("failed to create ATM profile: {e} — messaging disabled");
-            return None;
-        }
-    };
-
-    if let Err(e) = atm.profile_enable_websocket(&profile).await {
-        warn!("failed to enable websocket: {e} — messaging disabled");
-        return None;
-    }
-
-    let atm = Arc::new(atm);
-
-    info!("messaging initialized — connected to mediator");
-    Some((atm, profile))
-}
-
 /// Validate the mediator connection by sending a trust-ping and measuring latency.
 pub async fn validate_mediator_connection(
     atm: &ATM,
@@ -100,6 +44,114 @@ pub async fn validate_mediator_connection(
 
     info!(latency_ms = elapsed, "mediator trust-ping succeeded");
     Ok(elapsed)
+}
+
+/// Result of the combined DIDComm init + validation, suitable for sending across tasks.
+pub struct ConnInitResult {
+    pub atm: Option<Arc<ATM>>,
+    pub profile: Option<Arc<ATMProfile>>,
+    pub persona_did: String,
+    pub status: MediatorStatus,
+    pub latency_ms: Option<u128>,
+}
+
+/// Combined init + validate that takes owned data so it can run in `tokio::spawn`.
+pub async fn init_and_validate(
+    shared_state: Arc<TDKSharedState>,
+    persona_did: String,
+    mediator_did: String,
+) -> ConnInitResult {
+    let atm_config = match ATMConfig::builder()
+        .with_inbound_message_channel(100)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            warn!("failed to build ATM config: {e} — messaging disabled");
+            return ConnInitResult {
+                atm: None,
+                profile: None,
+                persona_did,
+                status: MediatorStatus::Failed(format!("ATM config: {e}")),
+                latency_ms: None,
+            };
+        }
+    };
+
+    let atm = match ATM::new(atm_config, shared_state).await {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("failed to create ATM: {e} — messaging disabled");
+            return ConnInitResult {
+                atm: None,
+                profile: None,
+                persona_did,
+                status: MediatorStatus::Failed(format!("ATM init: {e}")),
+                latency_ms: None,
+            };
+        }
+    };
+
+    let profile = match ATMProfile::new(
+        &atm,
+        None,
+        persona_did.clone(),
+        Some(mediator_did.to_string()),
+    )
+    .await
+    {
+        Ok(p) => Arc::new(p),
+        Err(e) => {
+            warn!("failed to create ATM profile: {e} — messaging disabled");
+            return ConnInitResult {
+                atm: None,
+                profile: None,
+                persona_did,
+                status: MediatorStatus::Failed(format!("ATM profile: {e}")),
+                latency_ms: None,
+            };
+        }
+    };
+
+    if let Err(e) = atm.profile_enable_websocket(&profile).await {
+        warn!("failed to enable websocket: {e} — messaging disabled");
+        return ConnInitResult {
+            atm: None,
+            profile: None,
+            persona_did,
+            status: MediatorStatus::Failed(format!("websocket: {e}")),
+            latency_ms: None,
+        };
+    }
+
+    let atm = Arc::new(atm);
+    info!("messaging initialized — connected to mediator");
+
+    // Validate with trust-ping (10s timeout)
+    let (status, latency_ms) = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        validate_mediator_connection(&atm, &profile, &mediator_did, &persona_did),
+    )
+    .await
+    {
+        Ok(Ok(latency_ms)) => (
+            MediatorStatus::Connected { latency_ms },
+            Some(latency_ms),
+        ),
+        Ok(Err(e)) => (MediatorStatus::Failed(format!("{e}")), None),
+        Err(_) => (
+            MediatorStatus::Failed("trust-ping timed out".to_string()),
+            None,
+        ),
+    };
+
+    ConnInitResult {
+        atm: Some(atm),
+        profile: Some(profile),
+        persona_did,
+        status,
+        latency_ms,
+    }
 }
 
 /// Run the DIDComm inbound message loop until the interrupt signal fires.

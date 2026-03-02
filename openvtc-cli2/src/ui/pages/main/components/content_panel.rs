@@ -67,6 +67,11 @@ impl ContentPanelState {
                                 .fg(COLOR_WARNING_ACCESSIBLE_RED),
                         );
                     }
+                    MediatorStatus::Initializing(step) => {
+                        lines.push(
+                            Line::from(format!("Initializing: {}", step)).fg(COLOR_ORANGE),
+                        );
+                    }
                     MediatorStatus::Unknown => {
                         lines.push(
                             Line::from("Mediator: Not connected").fg(COLOR_ORANGE),

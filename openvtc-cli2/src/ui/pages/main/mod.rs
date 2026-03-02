@@ -172,6 +172,12 @@ impl ComponentRender<()> for MainPage {
                     ratatui::style::Style::default().fg(COLOR_WARNING_ACCESSIBLE_RED),
                 ))
             }
+            MediatorStatus::Initializing(step) => {
+                Line::from(vec![
+                    Span::styled("Initializing: ", ratatui::style::Style::default().fg(COLOR_ORANGE)),
+                    Span::styled(step.to_string(), ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT)),
+                ])
+            }
             MediatorStatus::Unknown => {
                 Line::from(Span::styled(
                     "Mediator: --",

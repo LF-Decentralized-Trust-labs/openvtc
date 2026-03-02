@@ -35,6 +35,7 @@ pub struct ConnectionState {
 pub enum MediatorStatus {
     #[default]
     Unknown,
+    Initializing(String),
     Connecting,
     Connected { latency_ms: u128 },
     Failed(String),
