@@ -250,8 +250,17 @@ impl Config {
         unlock_passphrase: Option<&UnlockCode>,
         #[cfg(feature = "openpgp-card")] token_user_pin: &SecretString,
         #[cfg(feature = "openpgp-card")] touch_prompt: &impl TokenInteractions,
+        on_progress: Option<&(dyn Fn(&str) + Send + Sync)>,
     ) -> Result<Self, OpenVTCError> {
         use tracing::debug;
+
+        fn report_progress(on_progress: &Option<&(dyn Fn(&str) + Send + Sync)>, msg: &str) {
+            if let Some(f) = on_progress {
+                f(msg);
+            }
+        }
+
+        report_progress(&on_progress, "Decrypting secrets...");
 
         let sc = SecuredConfig::load(
             profile,
@@ -322,7 +331,34 @@ impl Config {
 
         debug!("Private Config\n{:#?}", private_cfg);
 
+        // Authenticate with VTA once upfront (if VTA backend)
+        let vta_client = if let KeyBackend::Vta {
+            vta_url,
+            credential_did,
+            credential_private_key,
+            vta_did,
+            ..
+        } = &key_backend
+        {
+            report_progress(&on_progress, "Authenticating...");
+            let token_result = vta_sdk::session::challenge_response(
+                vta_url,
+                credential_did,
+                credential_private_key.expose_secret(),
+                vta_did,
+            )
+            .await
+            .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
+
+            let mut client = vta_sdk::client::VtaClient::new(vta_url);
+            client.set_token(token_result.access_token);
+            Some(client)
+        } else {
+            None
+        };
+
         // All config info has been loaded, load DID Document and regenerate keys
+        report_progress(&on_progress, "Resolving DID...");
         let rr = tdk
             .did_resolver()
             .resolve(&public_config.persona_did)
@@ -335,9 +371,12 @@ impl Config {
             })?;
 
         // Create keys from DID Document
-        Config::regenerate_persona_keys(tdk, &sc, &key_backend, &rr.doc).await?;
+        report_progress(&on_progress, "Loading keys...");
+        Config::regenerate_persona_keys(tdk, &sc, &key_backend, &rr.doc, vta_client.as_ref())
+            .await?;
 
         // Create persona profile
+        report_progress(&on_progress, "Creating messaging profiles...");
         let persona_profile = ATMProfile::new(
             tdk.atm.as_ref().unwrap(),
             Some("Persona DID".to_string()),
@@ -351,6 +390,7 @@ impl Config {
         let atm = tdk.atm.clone().unwrap();
         let persona_profile = atm.profile_add(&persona_profile, true).await?;
 
+        report_progress(&on_progress, "Loading relationships...");
         let atm_profiles = private_cfg
             .relationships
             .generate_profiles(
@@ -359,6 +399,7 @@ impl Config {
                 &public_config.mediator_did,
                 &key_backend,
                 &sc.key_info,
+                vta_client.as_ref(),
             )
             .await?;
 
@@ -505,6 +546,7 @@ impl Config {
         sc: &SecuredConfig,
         key_backend: &KeyBackend,
         doc: &Document,
+        vta_client: Option<&vta_sdk::client::VtaClient>,
     ) -> Result<(), OpenVTCError> {
         // Rehydrate DID keys referenced by Verification Methods in the DID Document
         for vm in &doc.verification_method {
@@ -547,34 +589,12 @@ impl Config {
                         ))
                     })?,
                 KeySourceMaterial::VtaManaged { key_id } => {
-                    // For VTA-managed keys, we need to fetch the private key from VTA
-                    let KeyBackend::Vta {
-                        credential_private_key,
-                        vta_did,
-                        vta_url,
-                        credential_did,
-                        ..
-                    } = key_backend
-                    else {
-                        return Err(OpenVTCError::Config(
-                            "KeySourceMaterial::VtaManaged requires KeyBackend::Vta".to_string(),
-                        ));
-                    };
-
-                    // Authenticate with VTA and fetch key secret
-                    let token_result = vta_sdk::session::challenge_response(
-                        vta_url,
-                        credential_did,
-                        credential_private_key.expose_secret(),
-                        vta_did,
-                    )
-                    .await
-                    .map_err(|e| {
-                        OpenVTCError::Config(format!("VTA authentication failed: {e}"))
+                    // Use pre-authenticated VTA client
+                    let client = vta_client.ok_or_else(|| {
+                        OpenVTCError::Config(
+                            "VtaManaged key requires VTA client".to_string(),
+                        )
                     })?;
-
-                    let mut client = vta_sdk::client::VtaClient::new(vta_url);
-                    client.set_token(token_result.access_token);
 
                     let key_secret = client.get_key_secret(key_id).await.map_err(|e| {
                         OpenVTCError::Config(format!(

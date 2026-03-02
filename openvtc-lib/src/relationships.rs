@@ -155,34 +155,46 @@ impl Relationships {
         mediator: &str,
         key_backend: &KeyBackend,
         key_info: &HashMap<String, KeyInfoConfig>,
+        vta_client: Option<&vta_sdk::client::VtaClient>,
     ) -> Result<HashMap<Arc<String>, Arc<ATMProfile>>, OpenVTCError> {
         let atm = tdk.atm.clone().unwrap();
 
         let mut profiles: HashMap<Arc<String>, Arc<ATMProfile>> = HashMap::new();
 
-        // For VTA-managed keys, authenticate once upfront if needed
-        let vta_client = if let KeyBackend::Vta {
-            credential_private_key,
-            credential_did,
-            vta_did,
-            vta_url,
-            ..
-        } = key_backend
-        {
-            let token_result = vta_sdk::session::challenge_response(
-                vta_url,
-                credential_did,
-                credential_private_key.expose_secret(),
-                vta_did,
-            )
-            .await
-            .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
+        // Use provided VTA client, or create one as fallback for backward compat
+        let owned_vta_client;
+        let vta_client: Option<&vta_sdk::client::VtaClient> = match vta_client {
+            Some(client) => Some(client),
+            None => {
+                if let KeyBackend::Vta {
+                    credential_private_key,
+                    credential_did,
+                    vta_did,
+                    vta_url,
+                    ..
+                } = key_backend
+                {
+                    let token_result = vta_sdk::session::challenge_response(
+                        vta_url,
+                        credential_did,
+                        credential_private_key.expose_secret(),
+                        vta_did,
+                    )
+                    .await
+                    .map_err(|e| {
+                        OpenVTCError::Config(format!("VTA authentication failed: {e}"))
+                    })?;
 
-            let mut client = vta_sdk::client::VtaClient::new(vta_url);
-            client.set_token(token_result.access_token);
-            Some(client)
-        } else {
-            None
+                    owned_vta_client = {
+                        let mut c = vta_sdk::client::VtaClient::new(vta_url);
+                        c.set_token(token_result.access_token);
+                        c
+                    };
+                    Some(&owned_vta_client)
+                } else {
+                    None
+                }
+            }
         };
 
         for relationship in self.relationships.values() {
@@ -225,7 +237,7 @@ impl Relationships {
                             })
                         }
                         KeySourceMaterial::VtaManaged { key_id } => {
-                            if let Some(client) = &vta_client {
+                            if let Some(client) = vta_client {
                                 match client.get_key_secret(key_id).await {
                                     Ok(resp) => {
                                         crate::config::secret_from_vta_response(&resp, kp)
