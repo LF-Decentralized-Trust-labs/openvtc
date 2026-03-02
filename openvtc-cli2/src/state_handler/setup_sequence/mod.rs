@@ -8,6 +8,7 @@ use affinidi_tdk::did_common::Document;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use openvtc::config::PersonaDIDKeys;
 use secrecy::SecretVec;
+use vta_sdk::webvh::WebvhServerRecord;
 use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
@@ -50,6 +51,8 @@ pub enum SetupPage {
     UnlockCodeWarn,
     MediatorAsk,
     MediatorCustom,
+    WebvhServerSelect,
+    WebvhServerProgress,
     UserName,
     WebVHAddress,
     FinalPage,
@@ -95,6 +98,9 @@ pub struct SetupState {
     #[cfg(feature = "openpgp-card")]
     pub token_cardholder_name: TokenSetCardholderName,
 
+    /// WebVH server DID creation state
+    pub webvh_server: WebvhServerState,
+
     /// Has the user selected to use a custom Mediator?
     pub custom_mediator: Option<String>,
 
@@ -121,6 +127,10 @@ pub struct VtaSetupState {
     pub context_id: Option<String>,
     pub update_secret: Option<Secret>,
     pub next_update_secret: Option<Secret>,
+    /// WebVH servers available from this VTA
+    pub webvh_servers: Vec<WebvhServerRecord>,
+    /// Whether user chose to use a webvh-server for DID hosting
+    pub use_webvh_server: bool,
 }
 
 /// How is the configuration protected?
@@ -219,6 +229,18 @@ pub struct TokenSetTouchPolicy {
 pub struct TokenSetCardholderName {
     pub completed: bool,
     pub messages: Vec<MessageType>,
+}
+
+/// State for creating a DID via a WebVH server
+#[derive(Clone, Default, Debug)]
+pub struct WebvhServerState {
+    pub completed: Completion,
+    pub messages: Vec<MessageType>,
+    pub selected_server_id: String,
+    pub custom_path: Option<String>,
+    pub did: String,
+    pub document: Document,
+    pub mnemonic: String,
 }
 
 /// WebVH DID State

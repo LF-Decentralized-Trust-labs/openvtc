@@ -14,9 +14,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -48,11 +51,11 @@ impl UnlockCodeAsk {
                 state.unlock_code_ask = state.unlock_code_ask.switch();
             }
             KeyCode::Enter => {
-                // User has chosen whether to create or import their BIP32 phrase
-                state.props.state.active_page = match state.unlock_code_ask {
-                    UnlockCodeAsk::UseCode => SetupPage::UnlockCodeSet,
-                    UnlockCodeAsk::NoCode => SetupPage::UnlockCodeWarn,
-                }
+                let event = match state.unlock_code_ask {
+                    UnlockCodeAsk::UseCode => SetupEvent::WantUnlockCode,
+                    UnlockCodeAsk::NoCode => SetupEvent::SkipUnlockCode,
+                };
+                handle_nav_result(navigate(event, &state.props.state), state);
             }
             _ => {}
         }

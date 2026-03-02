@@ -14,9 +14,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -48,19 +51,11 @@ impl DIDKeysExportAsk {
                 state.did_keys_export_ask = state.did_keys_export_ask.switch();
             }
             KeyCode::Enter => {
-                state.props.state.active_page = match state.did_keys_export_ask {
-                    DIDKeysExportAsk::Skip => {
-                        #[cfg(feature = "openpgp-card")]
-                        {
-                            SetupPage::TokenStart
-                        }
-                        #[cfg(not(feature = "openpgp-card"))]
-                        {
-                            SetupPage::UnlockCodeAsk
-                        }
-                    }
-                    DIDKeysExportAsk::Export => SetupPage::DidKeysExportInputs,
-                }
+                let event = match state.did_keys_export_ask {
+                    DIDKeysExportAsk::Skip => SetupEvent::SkipExport,
+                    DIDKeysExportAsk::Export => SetupEvent::StartExport,
+                };
+                handle_nav_result(navigate(event, &state.props.state), state);
             }
             _ => {}
         }

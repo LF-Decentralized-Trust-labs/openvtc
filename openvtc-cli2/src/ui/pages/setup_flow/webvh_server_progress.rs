@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use openvtc::colors::{
-    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
     COLOR_WARNING_ACCESSIBLE_RED,
 };
 use ratatui::{
@@ -26,21 +26,21 @@ use crate::{
 };
 
 // ****************************************************************************
-// VtaKeysFetch
+// WebvhServerProgress - Shows DID creation progress via WebVH server
 // ****************************************************************************
 
 #[derive(Clone, Debug, Default)]
-pub struct VtaKeysFetch;
+pub struct WebvhServerProgress;
 
-impl VtaKeysFetch {
+impl WebvhServerProgress {
     pub fn handle_key_event(state: &mut SetupFlow, key: KeyEvent) {
         match key.code {
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                if let Completion::CompletedOK = state.props.state.vta.completed {
-                    let result = navigate(SetupEvent::VtaKeysReady, &state.props.state);
+                if let Completion::CompletedOK = state.props.state.webvh_server.completed {
+                    let result = navigate(SetupEvent::WebvhDIDCreated, &state.props.state);
                     handle_nav_result(result, state);
                 }
             }
@@ -60,20 +60,20 @@ impl VtaKeysFetch {
             Block::bordered()
                 .fg(COLOR_BORDER)
                 .padding(Padding::proportional(1))
-                .title(" Step 3/4: Creating Keys "),
+                .title(" Step 3/4: Creating DID via WebVH Server "),
             middle,
         );
 
         let mut lines = vec![
             Line::styled(
-                "Creating keys via VTA service...",
+                "Creating and publishing your DID via WebVH server...",
                 Style::new().fg(COLOR_DARK_GRAY),
             ),
             Line::default(),
         ];
 
         // Show messages
-        for msg in &state.vta.messages {
+        for msg in &state.webvh_server.messages {
             match msg {
                 MessageType::Info(info) => {
                     lines.push(Line::styled(
@@ -90,8 +90,27 @@ impl VtaKeysFetch {
             }
         }
 
-        match state.vta.completed {
+        match state.webvh_server.completed {
             Completion::CompletedOK => {
+                lines.push(Line::default());
+                lines.push(Line::from(vec![
+                    Span::styled("Your Persona DID: ", Style::new().fg(COLOR_SUCCESS).bold()),
+                    Span::styled(
+                        &state.webvh_server.did,
+                        Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+                    ),
+                ]));
+
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    "Your DID has been created and published to the WebVH server.",
+                    Style::new().fg(COLOR_TEXT_DEFAULT),
+                ));
+                lines.push(Line::styled(
+                    "No manual hosting setup is needed.",
+                    Style::new().fg(COLOR_TEXT_DEFAULT),
+                ));
+
                 lines.push(Line::default());
                 lines.push(Line::from(vec![
                     Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
@@ -101,7 +120,7 @@ impl VtaKeysFetch {
             Completion::CompletedFail => {
                 lines.push(Line::default());
                 lines.push(Line::styled(
-                    "Key creation failed. Please restart setup.",
+                    "DID creation failed. Please restart setup.",
                     Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED),
                 ));
             }

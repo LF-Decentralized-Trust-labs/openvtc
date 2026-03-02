@@ -382,6 +382,21 @@ impl StateHandler {
                                                     ));
                                                 }
                                             }
+
+                                            // Check for available WebVH servers
+                                            match vta::list_webvh_servers(&acl_client).await {
+                                                Ok(servers) => {
+                                                    if !servers.is_empty() {
+                                                        state.setup.vta.messages.push(MessageType::Info(
+                                                            format!("Found {} WebVH server(s) available for DID hosting.", servers.len()),
+                                                        ));
+                                                    }
+                                                    state.setup.vta.webvh_servers = servers;
+                                                }
+                                                Err(_) => {
+                                                    state.setup.vta.webvh_servers = vec![];
+                                                }
+                                            }
                                         }
                                     }
                                     Err(e) => {
@@ -444,6 +459,21 @@ impl StateHandler {
                                             state.setup.vta.messages.push(MessageType::Info(
                                                 format!("Could not discover context: {e}"),
                                             ));
+                                        }
+                                    }
+
+                                    // Check for available WebVH servers
+                                    match vta::list_webvh_servers(&acl_client).await {
+                                        Ok(servers) => {
+                                            if !servers.is_empty() {
+                                                state.setup.vta.messages.push(MessageType::Info(
+                                                    format!("Found {} WebVH server(s) available for DID hosting.", servers.len()),
+                                                ));
+                                            }
+                                            state.setup.vta.webvh_servers = servers;
+                                        }
+                                        Err(_) => {
+                                            state.setup.vta.webvh_servers = vec![];
                                         }
                                     }
                                 }
@@ -626,15 +656,117 @@ impl StateHandler {
                         }
                             state.setup.token_cardholder_name.completed = true;
                     }
+                    Action::WebvhServerCreateDid(server_id, custom_path) => {
+                        // Create DID via WebVH server
+                        use crate::state_handler::setup_sequence::vta;
+                        use vta_sdk::client::VtaClient;
+
+                        state.setup.vta.use_webvh_server = true;
+                        state.setup.active_page = SetupPage::WebvhServerProgress;
+                        state.setup.webvh_server.messages.clear();
+                        state.setup.webvh_server.completed = Completion::NotFinished;
+                        state.setup.webvh_server.messages.push(MessageType::Info("Creating DID via WebVH server...".to_string()));
+                        self.state_tx.send(state.clone())?;
+
+                        let access_token = state.setup.vta.access_token.clone().unwrap();
+                        let vta_url = state.setup.vta.vta_url.clone();
+                        let mut client = VtaClient::new(&vta_url);
+                        client.set_token(access_token);
+
+                        let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
+
+                        state.setup.webvh_server.messages.push(MessageType::Info(format!("Server: {}", server_id)));
+                        self.state_tx.send(state.clone())?;
+
+                        match vta::create_did_via_server(
+                            &client,
+                            tdk,
+                            &context_id,
+                            &server_id,
+                            custom_path,
+                        ).await {
+                            Ok((persona_keys, did, document, mnemonic)) => {
+                                state.setup.webvh_server.messages.push(MessageType::Info(format!("DID created: {}", did)));
+                                state.setup.webvh_server.did = did.clone();
+                                state.setup.webvh_server.document = document.clone();
+                                state.setup.webvh_server.mnemonic = mnemonic;
+                                state.setup.webvh_server.completed = Completion::CompletedOK;
+
+                                // Populate did_keys and webvh_address for Config::create compatibility
+                                state.setup.did_keys = Some(persona_keys);
+                                state.setup.webvh_address.did = did;
+                                state.setup.webvh_address.document = document;
+                                state.setup.webvh_address.completed = Completion::CompletedOK;
+                            }
+                            Err(e) => {
+                                state.setup.webvh_server.messages.push(MessageType::Error(format!("Failed: {e}")));
+                                state.setup.webvh_server.completed = Completion::CompletedFail;
+                            }
+                        }
+                    },
                     Action::SetCustomMediator(mediator_did) => {
                         // Set the Custom Mediator in setup state
-                        state.setup.custom_mediator = Some(mediator_did);
-                        state.setup.active_page = SetupPage::UserName;
+                        state.setup.custom_mediator = Some(mediator_did.clone());
+                        if state.setup.vta.use_webvh_server {
+                            // In webvh-server flow, trigger DID creation with the custom mediator
+                            use crate::state_handler::setup_sequence::vta;
+                            use vta_sdk::client::VtaClient;
+
+                            state.setup.active_page = SetupPage::WebvhServerProgress;
+                            state.setup.webvh_server.messages.clear();
+                            state.setup.webvh_server.completed = Completion::NotFinished;
+                            state.setup.webvh_server.messages.push(MessageType::Info("Creating DID via WebVH server...".to_string()));
+                            self.state_tx.send(state.clone())?;
+
+                            let access_token = state.setup.vta.access_token.clone().unwrap();
+                            let vta_url = state.setup.vta.vta_url.clone();
+                            let mut client = VtaClient::new(&vta_url);
+                            client.set_token(access_token);
+
+                            let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
+                            let server_id = state.setup.webvh_server.selected_server_id.clone();
+                            let custom_path = state.setup.webvh_server.custom_path.clone();
+
+                            state.setup.webvh_server.messages.push(MessageType::Info(format!("Server: {}", server_id)));
+                            self.state_tx.send(state.clone())?;
+
+                            match vta::create_did_via_server(
+                                &client,
+                                tdk,
+                                &context_id,
+                                &server_id,
+                                custom_path,
+                            ).await {
+                                Ok((persona_keys, did, document, mnemonic)) => {
+                                    state.setup.webvh_server.messages.push(MessageType::Info(format!("DID created: {}", did)));
+                                    state.setup.webvh_server.did = did.clone();
+                                    state.setup.webvh_server.document = document.clone();
+                                    state.setup.webvh_server.mnemonic = mnemonic;
+                                    state.setup.webvh_server.completed = Completion::CompletedOK;
+
+                                    state.setup.did_keys = Some(persona_keys);
+                                    state.setup.webvh_address.did = did;
+                                    state.setup.webvh_address.document = document;
+                                    state.setup.webvh_address.completed = Completion::CompletedOK;
+                                }
+                                Err(e) => {
+                                    state.setup.webvh_server.messages.push(MessageType::Error(format!("Failed: {e}")));
+                                    state.setup.webvh_server.completed = Completion::CompletedFail;
+                                }
+                            }
+                        } else {
+                            state.setup.active_page = SetupPage::UserName;
+                        }
                     }
                 Action::SetUsername(username) => {
                         // Set the username in setup state
                         state.setup.username = username;
-                        state.setup.active_page = SetupPage::WebVHAddress;
+                        if state.setup.vta.use_webvh_server {
+                            // DID already created and hosted, skip WebVHAddress
+                            state.setup.active_page = SetupPage::FinalPage;
+                        } else {
+                            state.setup.active_page = SetupPage::WebVHAddress;
+                        }
                     },
                     Action::CreateWebVHDID(webvh_address) => {
                         // Set the WebVH DID in setup state

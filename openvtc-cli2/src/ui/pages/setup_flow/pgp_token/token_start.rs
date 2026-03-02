@@ -14,9 +14,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -29,7 +32,8 @@ impl TokenStart {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Char('s') | KeyCode::Char('S') => {
-                state.props.state.active_page = SetupPage::UnlockCodeAsk;
+                let result = navigate(SetupEvent::TokenSkipped, &state.props.state);
+                handle_nav_result(result, state);
             }
             KeyCode::Enter => {
                 let _ = state.action_tx.send(Action::GetTokens);

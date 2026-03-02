@@ -16,9 +16,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{MessageType, SetupPage, SetupState},
+        setup_sequence::{MessageType, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -84,7 +87,8 @@ impl TokenFactoryReset {
                         }
                         ResetState::Writing => {
                             if state.props.state.token_reset.completed_writing {
-                                state.props.state.active_page = SetupPage::TokenSetTouch;
+                                let result = navigate(SetupEvent::TokenWritingComplete, &state.props.state);
+                                handle_nav_result(result, state);
                             }
                         }
                     }
@@ -100,7 +104,8 @@ impl TokenFactoryReset {
                         ResetState::Resetting => {}
                         ResetState::Writing => {
                             if state.props.state.token_reset.completed_writing {
-                                state.props.state.active_page = SetupPage::TokenSetTouch;
+                                let result = navigate(SetupEvent::TokenWritingComplete, &state.props.state);
+                                handle_nav_result(result, state);
                             }
                         }
                     }

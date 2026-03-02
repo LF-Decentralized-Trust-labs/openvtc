@@ -14,9 +14,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -48,11 +51,11 @@ impl MediatorAsk {
                 state.mediator_ask = state.mediator_ask.switch();
             }
             KeyCode::Enter => {
-                // User has chosen whether to create or import their BIP32 phrase
-                state.props.state.active_page = match state.mediator_ask {
-                    MediatorAsk::Default => SetupPage::UserName,
-                    MediatorAsk::Custom => SetupPage::MediatorCustom,
-                }
+                let event = match state.mediator_ask {
+                    MediatorAsk::Default => SetupEvent::UseDefaultMediator,
+                    MediatorAsk::Custom => SetupEvent::UseCustomMediator,
+                };
+                handle_nav_result(navigate(event, &state.props.state), state);
             }
             _ => {}
         }
@@ -77,25 +80,25 @@ impl MediatorAsk {
 
         let mut lines = vec![
             Line::styled(
-                "All communication uses secure messaging based on the DIDComm protocol and requires a mediator (relay service) for reliable message delivery.",
+                "Your persona DID requires a mediator (relay service) for reliable DIDComm message delivery.",
                 Style::new().fg(COLOR_DARK_GRAY),
             ),
             Line::default(),
             Line::styled(
-                "Choose the default mediator, or select a custom mediator if your community requires one.",
+                "Use the default VTA mediator, or specify a custom mediator if you prefer a different one.",
                 Style::new().fg(COLOR_BORDER).bold(),
             ),
             Line::default(),
         ];
 
-        // Render the active chocie
+        // Render the active choice
         if let MediatorAsk::Default = self {
             lines.push(Line::styled(
-                "[✓] Use the Default OpenVTC Mediator (recommended)",
+                "[✓] Use Default VTA Mediator (recommended)",
                 Style::new().fg(COLOR_SUCCESS).bold(),
             ));
             lines.push(Line::styled(
-                "    Uses the managed OpenVTC community mediator for reliable, out-of-the-box messaging.",
+                "    Uses the mediator configured by your VTA service.",
                 Style::new().fg(COLOR_DARK_GRAY),
             ));
             lines.push(Line::styled(
@@ -104,7 +107,7 @@ impl MediatorAsk {
             ));
         } else {
             lines.push(Line::styled(
-                "[ ] Use the Default OpenVTC Mediator (recommended)",
+                "[ ] Use Default VTA Mediator (recommended)",
                 Style::new().fg(COLOR_TEXT_DEFAULT),
             ));
             lines.push(Line::styled(
@@ -112,7 +115,7 @@ impl MediatorAsk {
                 Style::new().fg(COLOR_SUCCESS).bold(),
             ));
             lines.push(Line::styled(
-                "    Specify a custom mediator DID for messaging, if your community requires it.",
+                "    Specify a different mediator DID to use instead of the VTA default.",
                 Style::new().fg(COLOR_DARK_GRAY),
             ));
         }

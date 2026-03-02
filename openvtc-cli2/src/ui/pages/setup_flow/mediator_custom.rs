@@ -14,7 +14,10 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
     state_handler::{actions::Action, setup_sequence::SetupState},
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -33,9 +36,12 @@ impl MediatorCustom {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let _ = state.action_tx.send(Action::SetCustomMediator(
-                    state.mediator_custom.mediator_did.value().to_string(),
-                ));
+                let mediator_did = state.mediator_custom.mediator_did.value().to_string();
+                let result = navigate(
+                    SetupEvent::CustomMediatorSet { mediator_did },
+                    &state.props.state,
+                );
+                handle_nav_result(result, state);
             }
             KeyCode::Esc => {
                 state.mediator_custom.mediator_did.reset();

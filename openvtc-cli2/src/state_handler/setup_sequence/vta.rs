@@ -1,5 +1,8 @@
 /*! VTA client wrapper functions for the setup flow */
 
+use affinidi_tdk::TDK;
+use affinidi_tdk::did_common::Document;
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use anyhow::Result;
 use chrono::Utc;
 use openvtc::config::{
@@ -7,12 +10,12 @@ use openvtc::config::{
     secured_config::KeySourceMaterial,
 };
 use vta_sdk::{
-    client::{CreateKeyRequest, VtaClient},
+    client::{CreateDidWebvhRequest, CreateKeyRequest, VtaClient},
     credentials::CredentialBundle,
     keys::KeyType,
     session::{TokenResult, challenge_response},
+    webvh::WebvhServerRecord,
 };
-use affinidi_tdk::secrets_resolver::secrets::Secret;
 
 /// Decode a base64url credential bundle string
 pub fn decode_credential(input: &str) -> Result<CredentialBundle> {
@@ -184,4 +187,111 @@ pub async fn create_update_keys(client: &VtaClient, context_id: Option<&str>) ->
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
     Ok((update_secret, next_update_secret))
+}
+
+/// List WebVH servers available from the VTA
+pub async fn list_webvh_servers(client: &VtaClient) -> Result<Vec<WebvhServerRecord>> {
+    let result = client
+        .list_webvh_servers()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to list WebVH servers: {e}"))?;
+    Ok(result.servers)
+}
+
+/// Create a DID via a WebVH server
+/// Returns (PersonaDIDKeys, did, Document, mnemonic)
+pub async fn create_did_via_server(
+    client: &VtaClient,
+    tdk: &TDK,
+    context_id: &str,
+    server_id: &str,
+    path: Option<String>,
+) -> Result<(PersonaDIDKeys, String, Document, String)> {
+    let created = Utc::now();
+
+    // Use the VTA's built-in mediator service rather than additional_services,
+    // because the VTA formats the service ID as a full DID URL (e.g. "did:...#vta-didcomm")
+    // which the TDK resolver requires. A relative fragment like "#public-didcomm" is rejected.
+    let req = CreateDidWebvhRequest {
+        context_id: context_id.to_string(),
+        server_id: server_id.to_string(),
+        path,
+        label: None,
+        portable: true,
+        add_mediator_service: true,
+        additional_services: None,
+        pre_rotation_count: 1,
+    };
+
+    let result = client
+        .create_did_webvh(req)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create DID via WebVH server: {e}"))?;
+
+    let did = result.did.clone();
+    let mnemonic = result.mnemonic.clone();
+
+    // Fetch signing key secret (#key-0 = Ed25519)
+    let sign_secret_resp = client
+        .get_key_secret(&result.signing_key_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get signing key secret: {e}"))?;
+
+    let mut sign_secret = vta_sdk::did_key::secret_from_key_response(&sign_secret_resp)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    // Set the secret ID to the DID verification method ID
+    sign_secret.id = format!("{}#key-0", &did);
+
+    let signing = KeyInfo {
+        secret: sign_secret.clone(),
+        source: KeySourceMaterial::VtaManaged {
+            key_id: result.signing_key_id.clone(),
+        },
+        expiry: None,
+        created,
+    };
+
+    // Authentication uses the same Ed25519 key (#key-0)
+    let authentication = KeyInfo {
+        secret: sign_secret,
+        source: KeySourceMaterial::VtaManaged {
+            key_id: result.signing_key_id,
+        },
+        expiry: None,
+        created,
+    };
+
+    // Fetch KA key secret (#key-1 = X25519)
+    let ka_secret_resp = client
+        .get_key_secret(&result.ka_key_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get KA key secret: {e}"))?;
+
+    let mut ka_secret = vta_sdk::did_key::secret_from_key_response(&ka_secret_resp)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    ka_secret.id = format!("{}#key-1", &did);
+
+    let decryption = KeyInfo {
+        secret: ka_secret,
+        source: KeySourceMaterial::VtaManaged {
+            key_id: result.ka_key_id,
+        },
+        expiry: None,
+        created,
+    };
+
+    let persona_keys = PersonaDIDKeys {
+        signing,
+        authentication,
+        decryption,
+    };
+
+    // Resolve the DID to get the document
+    let resolved = tdk
+        .did_resolver()
+        .resolve(&did)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to resolve created DID: {e}"))?;
+
+    Ok((persona_keys, did, resolved.doc, mnemonic))
 }

@@ -90,6 +90,9 @@ pub enum Action {
     TokenWriteKeys(Option<Arc<Mutex<Card<Open>>>>),
 
     // ************************************************************************
+    /// Create a DID via a WebVH server (server_id, optional custom path)
+    WebvhServerCreateDid(String, Option<String>),
+
     /// Using a custom mediator DID
     SetCustomMediator(String),
 

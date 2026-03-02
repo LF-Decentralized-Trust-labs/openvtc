@@ -19,7 +19,10 @@ use crate::{
         actions::Action,
         setup_sequence::{Completion, MessageType, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -38,8 +41,8 @@ impl VtaAuthenticate {
             KeyCode::Enter => {
                 match state.props.state.vta.completed {
                     Completion::CompletedOK => {
-                        // Authentication succeeded, move to key creation
-                        let _ = state.action_tx.send(Action::VtaCreateKeys);
+                        let result = navigate(SetupEvent::VtaAuthCompleted, &state.props.state);
+                        handle_nav_result(result, state);
                     }
                     Completion::CompletedFail => {
                         // Retry authentication
@@ -123,10 +126,15 @@ impl VtaAuthenticate {
         match state.vta.completed {
             Completion::CompletedOK => {
                 lines.push(Line::default());
+                let action_text = if !state.vta.webvh_servers.is_empty() {
+                    " to continue"
+                } else {
+                    " to create keys"
+                };
                 lines.push(Line::from(vec![
                     Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
                     Span::styled(
-                        " to create keys",
+                        action_text,
                         Style::new().fg(COLOR_TEXT_DEFAULT),
                     ),
                 ]));

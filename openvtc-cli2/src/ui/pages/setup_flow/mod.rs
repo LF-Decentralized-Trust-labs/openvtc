@@ -22,6 +22,8 @@ use crate::{
             vta_authenticate::VtaAuthenticate, vta_credential::VtaCredentialPaste,
             vta_keys_fetch::VtaKeysFetch,
             webvh_address::WebvhAddress,
+            webvh_server_progress::WebvhServerProgress,
+            webvh_server_select::WebvhServerSelect,
         },
     },
 };
@@ -38,6 +40,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub mod config_import;
 pub mod did_keys_export_ask;
+pub mod navigation;
 pub mod did_keys_export_inputs;
 pub mod did_keys_export_show;
 pub mod did_keys_show;
@@ -53,6 +56,8 @@ pub mod vta_authenticate;
 pub mod vta_credential;
 pub mod vta_keys_fetch;
 pub mod webvh_address;
+pub mod webvh_server_progress;
+pub mod webvh_server_select;
 
 #[cfg(feature = "openpgp-card")]
 pub mod pgp_token;
@@ -96,6 +101,9 @@ pub struct SetupFlow {
     pub mediator_custom: MediatorCustom,
 
     pub username: UserName,
+
+    pub webvh_server_select: WebvhServerSelect,
+    pub webvh_server_progress: WebvhServerProgress,
 
     pub webvh_address: WebvhAddress,
 
@@ -153,6 +161,8 @@ impl Component for SetupFlow {
             mediator_ask: MediatorAsk::default(),
             mediator_custom: MediatorCustom::default(),
             username: UserName::default(),
+            webvh_server_select: WebvhServerSelect::default(),
+            webvh_server_progress: WebvhServerProgress::default(),
             webvh_address: WebvhAddress::default(),
             final_page: FinalPage::default(),
 
@@ -207,6 +217,8 @@ impl Component for SetupFlow {
             SetupPage::UnlockCodeSet => UnlockCodeSet::handle_key_event(self, key),
             SetupPage::MediatorAsk => MediatorAsk::handle_key_event(self, key),
             SetupPage::MediatorCustom => MediatorCustom::handle_key_event(self, key),
+            SetupPage::WebvhServerSelect => WebvhServerSelect::handle_key_event(self, key),
+            SetupPage::WebvhServerProgress => WebvhServerProgress::handle_key_event(self, key),
             SetupPage::UserName => UserName::handle_key_event(self, key),
             SetupPage::WebVHAddress => WebvhAddress::handle_key_event(self, key),
             SetupPage::FinalPage => FinalPage::handle_key_event(self, key),
@@ -260,6 +272,12 @@ impl ComponentRender<()> for SetupFlow {
             SetupPage::UnlockCodeSet => self.unlock_code_set.render(&self.props.state, frame),
             SetupPage::MediatorAsk => self.mediator_ask.render(&self.props.state, frame),
             SetupPage::MediatorCustom => self.mediator_custom.render(&self.props.state, frame),
+            SetupPage::WebvhServerSelect => {
+                self.webvh_server_select.render(&self.props.state, frame)
+            }
+            SetupPage::WebvhServerProgress => {
+                self.webvh_server_progress.render(&self.props.state, frame)
+            }
             SetupPage::UserName => self.username.render(&self.props.state, frame),
             SetupPage::WebVHAddress => self.webvh_address.render(&self.props.state, frame),
             SetupPage::FinalPage => self.final_page.render(&self.props.state, frame),
@@ -270,175 +288,117 @@ impl ComponentRender<()> for SetupFlow {
 /// Renders the top headline for the setup pages
 pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
     let mut line1 = Line::default();
-    let mut step = 0;
-    let mut total_step = 6;
 
-    if let SetupPage::StartAsk = state.active_page {
-        step = 1;
-        line1.push_span(Span::styled(
-            "● Get Started",
-            Style::new().fg(COLOR_ORANGE).bold(),
-        ));
+    // WebVH-server flow: Get Started → DID & Keys → Profile Security → Display Name → Setup Complete
+    // Normal flow:       Get Started → Key Management → Profile Security → Digital Identity → Setup Complete
+    let use_server = state.vta.use_webvh_server;
+    let total_step: usize = 5;
+
+    // Determine which step we're on
+    let active = state.active_page;
+
+    let is_step1 = matches!(active, SetupPage::StartAsk);
+
+    let is_step2_key_mgmt = matches!(
+        active,
+        SetupPage::VtaCredentialPaste
+            | SetupPage::VtaAuthenticate
+            | SetupPage::VtaKeysFetch
+            | SetupPage::WebvhServerSelect
+            | SetupPage::WebvhServerProgress
+            | SetupPage::DIDKeysShow
+            | SetupPage::DidKeysExportAsk
+            | SetupPage::DidKeysExportInputs
+            | SetupPage::DidKeysExportShow
+    );
+
+    let is_config_import = matches!(active, SetupPage::ConfigImport);
+
+    let is_profile_security = matches!(
+        active,
+        SetupPage::UnlockCodeAsk | SetupPage::UnlockCodeSet | SetupPage::UnlockCodeWarn
+    );
+    #[cfg(feature = "openpgp-card")]
+    let is_profile_security = is_profile_security
+        || matches!(
+            active,
+            SetupPage::TokenStart
+                | SetupPage::TokenSelect
+                | SetupPage::TokenFactoryReset
+                | SetupPage::TokenSetTouch
+                | SetupPage::TokenSetCardholderName
+        );
+
+    let is_identity = matches!(
+        active,
+        SetupPage::MediatorAsk
+            | SetupPage::MediatorCustom
+            | SetupPage::UserName
+            | SetupPage::WebVHAddress
+    );
+
+    let is_final = matches!(active, SetupPage::FinalPage);
+
+    // Step labels for each flow
+    let steps: Vec<&str> = if use_server {
+        vec!["Get Started", "DID & Keys", "Profile Security", "Display Name", "Setup Complete"]
     } else {
+        vec!["Get Started", "Key Management", "Profile Security", "Digital Identity", "Setup Complete"]
+    };
+
+    // Determine current step index (0-based)
+    let current = if is_step1 {
+        0
+    } else if is_step2_key_mgmt || is_config_import {
+        1
+    } else if is_profile_security {
+        2
+    } else if is_identity {
+        3
+    } else if is_final {
+        4
+    } else {
+        0
+    };
+    let step = current + 1;
+
+    // Special case: config import has only 2 steps
+    let total_step = if is_config_import { 2 } else { total_step };
+
+    // Build the breadcrumb line
+    if is_config_import {
+        // Config import: just "Get Started → Restore Backup"
         line1.push_span(Span::styled(
             "✓ Get Started",
             Style::new().fg(COLOR_SUCCESS),
         ));
-    }
-
-    if let SetupPage::VtaCredentialPaste
-    | SetupPage::VtaAuthenticate
-    | SetupPage::VtaKeysFetch
-    | SetupPage::DIDKeysShow
-    | SetupPage::DidKeysExportAsk
-    | SetupPage::DidKeysExportInputs
-    | SetupPage::DidKeysExportShow = state.active_page
-    {
-        step = 2;
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "● Key Management",
-            Style::new().fg(COLOR_ORANGE).bold(),
-        ));
-        line1.push_span(Span::styled(
-            " → ○ Profile Security → ○ Secure Messaging → ○ Digital Identity → ○ Setup Complete",
-            Style::new().fg(COLOR_DARK_GRAY),
-        ));
-    } else if let SetupPage::ConfigImport = state.active_page {
-        step = 2;
-        total_step = 2;
         line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
         line1.push_span(Span::styled(
             "● Restore Backup",
             Style::new().fg(COLOR_ORANGE).bold(),
         ));
-    } else if let SetupPage::UnlockCodeAsk | SetupPage::UnlockCodeSet | SetupPage::UnlockCodeWarn =
-        state.active_page
-    {
-        step = 3;
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Key Management",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "● Profile Security",
-            Style::new().fg(COLOR_ORANGE).bold(),
-        ));
-        line1.push_span(Span::styled(
-            " → ○ Secure Messaging → ○ Digital Identity → ○ Setup Complete",
-            Style::new().fg(COLOR_DARK_GRAY),
-        ));
-    } else if let SetupPage::MediatorAsk | SetupPage::MediatorCustom = state.active_page {
-        step = 4;
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Key Management",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Profile Security",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "● Secure Messaging",
-            Style::new().fg(COLOR_ORANGE).bold(),
-        ));
-        line1.push_span(Span::styled(
-            " → ○ Digital Identity → ○ Setup Complete",
-            Style::new().fg(COLOR_DARK_GRAY),
-        ));
-    } else if let SetupPage::UserName | SetupPage::WebVHAddress = state.active_page {
-        step = 5;
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Key Management",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Profile Security",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Secure Messaging",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "● Digital Identity",
-            Style::new().fg(COLOR_ORANGE).bold(),
-        ));
-        line1.push_span(Span::styled(
-            " → ○ Setup Complete",
-            Style::new().fg(COLOR_DARK_GRAY),
-        ));
-    } else if let SetupPage::FinalPage = state.active_page {
-        step = 6;
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Key Management",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Profile Security",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Secure Messaging",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "✓ Digital Identity",
-            Style::new().fg(COLOR_SUCCESS),
-        ));
-        line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-        line1.push_span(Span::styled(
-            "● Setup Complete",
-            Style::new().fg(COLOR_ORANGE).bold(),
-        ));
     } else {
-        #[cfg(feature = "openpgp-card")]
-        if let SetupPage::TokenStart
-        | SetupPage::TokenSelect
-        | SetupPage::TokenFactoryReset
-        | SetupPage::TokenSetTouch
-        | SetupPage::TokenSetCardholderName = state.active_page
-        {
-            step = 3;
-            line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-            line1.push_span(Span::styled(
-                "✓ Key Management",
-                Style::new().fg(COLOR_SUCCESS),
-            ));
-            line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
-            line1.push_span(Span::styled(
-                "● Profile Security",
-                Style::new().fg(COLOR_ORANGE).bold(),
-            ));
-            line1.push_span(Span::styled(
-                " → ○ Secure Messaging → ○ Digital Identity → ○ Setup Complete",
-                Style::new().fg(COLOR_DARK_GRAY),
-            ));
-        } else {
-            line1.push_span(Span::styled(
-                " → ○ Key Management → ○ Profile Security → ○ Secure Messaging → ○ Digital Identity → ○ Setup Complete",
-                Style::new().fg(COLOR_DARK_GRAY),
-            ));
+        for (i, label) in steps.iter().enumerate() {
+            if i > 0 {
+                line1.push_span(Span::styled(" → ", Style::new().fg(COLOR_TEXT_DEFAULT)));
+            }
+            if i < current {
+                line1.push_span(Span::styled(
+                    format!("✓ {label}"),
+                    Style::new().fg(COLOR_SUCCESS),
+                ));
+            } else if i == current {
+                line1.push_span(Span::styled(
+                    format!("● {label}"),
+                    Style::new().fg(COLOR_ORANGE).bold(),
+                ));
+            } else {
+                line1.push_span(Span::styled(
+                    format!("○ {label}"),
+                    Style::new().fg(COLOR_DARK_GRAY),
+                ));
+            }
         }
-
-        #[cfg(not(feature = "openpgp-card"))]
-        line1.push_span(Span::styled(
-            " → ○ Key Management → ○ Profile Security → ○ Secure Messaging → ○ Digital Identity → ○ Setup Complete",
-            Style::new().fg(COLOR_DARK_GRAY),
-        ));
     }
 
     let line2 = Line::from(Span::styled(

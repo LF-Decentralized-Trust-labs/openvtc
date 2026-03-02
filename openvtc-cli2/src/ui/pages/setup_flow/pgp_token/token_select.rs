@@ -23,9 +23,12 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 #[derive(Clone, Default)]
@@ -94,7 +97,8 @@ impl TokenSelect {
                     if state.token_select.selected == state.props.state.tokens.tokens.len() {
                         // No token selected
                         state.token_select.selected_token = None;
-                        state.props.state.active_page = SetupPage::UnlockCodeAsk;
+                        let result = navigate(SetupEvent::TokenNoSelection, &state.props.state);
+                        handle_nav_result(result, state);
                     } else {
                         state.token_select.selected_token = Some(
                             state.props.state.tokens.tokens[state.token_select.selected].clone(),

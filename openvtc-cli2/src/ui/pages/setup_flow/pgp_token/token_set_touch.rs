@@ -16,9 +16,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{MessageType, SetupPage, SetupState},
+        setup_sequence::{MessageType, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -60,7 +63,8 @@ impl TokenSetTouch {
                         state.token_select.selected_token.clone(),
                     ));
                 } else if state.props.state.token_set_touch.completed {
-                    state.props.state.active_page = SetupPage::TokenSetCardholderName;
+                    let result = navigate(SetupEvent::TokenTouchComplete, &state.props.state);
+                    handle_nav_result(result, state);
                 }
             }
             _ => {}

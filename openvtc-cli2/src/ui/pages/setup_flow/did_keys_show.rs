@@ -18,9 +18,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -63,7 +66,8 @@ impl DIDKeysShow {
                 }
             }
             KeyCode::Enter => {
-                state.props.state.active_page = SetupPage::DidKeysExportAsk;
+                let result = navigate(SetupEvent::DIDKeysViewed, &state.props.state);
+                handle_nav_result(result, state);
             }
             _ => {}
         }

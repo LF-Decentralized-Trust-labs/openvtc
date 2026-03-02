@@ -17,9 +17,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -45,14 +48,8 @@ impl DIDKeysExportShow {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                #[cfg(feature = "openpgp-card")]
-                {
-                    state.props.state.active_page = SetupPage::TokenStart;
-                }
-                #[cfg(not(feature = "openpgp-card"))]
-                {
-                    state.props.state.active_page = SetupPage::UnlockCodeAsk;
-                }
+                let result = navigate(SetupEvent::ExportComplete, &state.props.state);
+                handle_nav_result(result, state);
             }
             _ => {}
         }

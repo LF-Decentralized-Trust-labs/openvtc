@@ -16,9 +16,12 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -51,14 +54,13 @@ impl StartAskPanel {
                 // Switch active panel
                 state.start_ask = state.start_ask.switch();
             }
-            KeyCode::Enter => match state.start_ask {
-                StartAskPanel::Create => {
-                    state.props.state.active_page = SetupPage::VtaCredentialPaste;
-                }
-                StartAskPanel::Import => {
-                    state.props.state.active_page = SetupPage::ConfigImport;
-                }
-            },
+            KeyCode::Enter => {
+                let event = match state.start_ask {
+                    StartAskPanel::Create => SetupEvent::CreateNew,
+                    StartAskPanel::Import => SetupEvent::ImportConfig,
+                };
+                handle_nav_result(navigate(event, &state.props.state), state);
+            }
             _ => {}
         }
     }

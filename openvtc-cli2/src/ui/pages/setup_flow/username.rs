@@ -14,7 +14,10 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
     state_handler::{actions::Action, setup_sequence::SetupState},
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -33,9 +36,12 @@ impl UserName {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let _ = state.action_tx.send(Action::SetUsername(
-                    state.username.username.value().to_string(),
-                ));
+                let username = state.username.username.value().to_string();
+                let result = navigate(
+                    SetupEvent::UsernameSet { username },
+                    &state.props.state,
+                );
+                handle_nav_result(result, state);
             }
             KeyCode::Esc => {
                 state.username.username.reset();

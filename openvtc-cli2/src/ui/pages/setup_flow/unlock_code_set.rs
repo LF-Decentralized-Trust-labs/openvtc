@@ -19,9 +19,12 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{ConfigProtection, SetupPage, SetupState},
+        setup_sequence::SetupState,
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -40,12 +43,14 @@ impl UnlockCodeSet {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let _ = state.action_tx.send(Action::SetProtection(
-                    ConfigProtection::Passcode(Arc::new(SecretVec::new(
-                        Sha256::digest(state.unlock_code_set.passphrase.value()).to_vec(),
-                    ))),
-                    SetupPage::MediatorAsk,
+                let passphrase_hash = Arc::new(SecretVec::new(
+                    Sha256::digest(state.unlock_code_set.passphrase.value()).to_vec(),
                 ));
+                let result = navigate(
+                    SetupEvent::UnlockCodeSet { passphrase_hash },
+                    &state.props.state,
+                );
+                handle_nav_result(result, state);
             }
             KeyCode::Esc => {
                 state.unlock_code_set.passphrase.reset();

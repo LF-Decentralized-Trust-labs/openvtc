@@ -22,7 +22,10 @@ use crate::{
         actions::Action,
         setup_sequence::{Completion, MessageType, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 #[derive(Copy, Clone, Debug, Default)]
@@ -35,7 +38,8 @@ impl FinalPage {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let _ = state.action_tx.send(Action::ActivateMainMenu);
+                let result = navigate(SetupEvent::SetupDone, &state.props.state);
+                handle_nav_result(result, state);
             }
             _ => {}
         }

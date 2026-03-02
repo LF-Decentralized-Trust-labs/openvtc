@@ -18,9 +18,12 @@ use tui_input::{Input, backend::crossterm::EventHandler};
 use crate::{
     state_handler::{
         actions::Action,
-        setup_sequence::{MessageType, SetupPage, SetupState},
+        setup_sequence::{MessageType, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 #[derive(Clone, Debug, Default)]
@@ -38,7 +41,8 @@ impl TokenSetCardholderName {
             KeyCode::Enter => {
                 if !state.token_set_cardholder_name.started {
                     if state.token_set_cardholder_name.name.value().is_empty() {
-                        state.props.state.active_page = SetupPage::MediatorAsk;
+                        let result = navigate(SetupEvent::TokenNameSkipped, &state.props.state);
+                        handle_nav_result(result, state);
                     } else {
                         state.token_set_cardholder_name.started = true;
                         let _ = state.action_tx.send(Action::SetTokenName(
@@ -47,7 +51,8 @@ impl TokenSetCardholderName {
                         ));
                     }
                 } else if state.props.state.token_cardholder_name.completed {
-                    state.props.state.active_page = SetupPage::MediatorAsk;
+                    let result = navigate(SetupEvent::TokenNameDone, &state.props.state);
+                    handle_nav_result(result, state);
                 }
             }
             KeyCode::Esc => {

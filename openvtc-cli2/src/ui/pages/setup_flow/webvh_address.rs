@@ -22,7 +22,10 @@ use crate::{
         actions::Action,
         setup_sequence::{Completion, MessageType, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow, render_setup_header,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+    },
 };
 
 // ****************************************************************************
@@ -89,10 +92,8 @@ impl WebvhAddress {
             (KeyCode::Enter, WebVHState::NewDID) => {
                 match state.props.state.webvh_address.completed {
                     Completion::CompletedOK => {
-                        // Already completed
-                        let _ = state
-                            .action_tx
-                            .send(Action::SetupCompleted(Box::new(state.clone())));
+                        let result = navigate(SetupEvent::WebVHComplete, &state.props.state);
+                        handle_nav_result(result, state);
                     }
                     Completion::CompletedFail => {
                         // Reset to try again
@@ -111,10 +112,8 @@ impl WebvhAddress {
             (KeyCode::Enter, WebVHState::ExistingDID) => {
                 match state.props.state.webvh_address.completed {
                     Completion::CompletedOK => {
-                        // Already completed
-                        let _ = state
-                            .action_tx
-                            .send(Action::SetupCompleted(Box::new(state.clone())));
+                        let result = navigate(SetupEvent::WebVHComplete, &state.props.state);
+                        handle_nav_result(result, state);
                     }
                     Completion::CompletedFail => {
                         // Reset to try again
