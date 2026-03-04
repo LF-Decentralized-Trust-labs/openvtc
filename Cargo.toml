@@ -10,11 +10,11 @@ resolver = "3"
 
 [workspace.package]
 description = "Open Verifiable Trust Community (OpenVTC) - First Person Protocol"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 publish = false
 authors = ["Glenn Gore <glenn@affinidi.com>"]
-rust-version = "1.90.0"
+rust-version = "1.91.0"
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
@@ -24,11 +24,11 @@ openvtc = { version = "0.1.0", path = "openvtc-lib", default-features = false }
 
 # Decentralized Trust Graph Credentials
 # NOTE: When this is published, switch from git to crates.io
-dtg-credentials = { version = "0.1", git = "https://github.com/FirstPersonNetwork/dtg-credentials-rs" }
+dtg-credentials = { version = "0.1", git = "https://github.com/LF-Decentralized-Trust-labs/dtg-credentials" }
 
 aes-gcm = "0.10"
 affinidi-tdk = "0.5"
-affinidi-data-integrity = "0.3"
+affinidi-data-integrity = "0.4"
 anyhow = "1.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22"
@@ -67,7 +67,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.20", features = ["v4", "fast-rng"] }
-vta-sdk = { path = "../vtc-vta-rs/vta-sdk", features = [
+vta-sdk = { git = "https://github.com/LF-Decentralized-Trust-labs/verifiable-trust-infrastructure", features = [
   "session",
   "client",
   "didcomm",
