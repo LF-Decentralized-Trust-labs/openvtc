@@ -855,7 +855,7 @@ pub async fn handle_accept_vrcs_request(
 
     let secret = config.get_persona_keys(tdk).await?.signing.secret;
 
-    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None)?;
+    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None).await?;
     vrc.credential_mut().proof = Some(proof);
 
     // Send VRC to the requestor

@@ -246,3 +246,100 @@ impl ProtectedConfig {
         Ok(SecretVec::new(hash.to_vec()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_seed() -> SecretVec<u8> {
+        SecretVec::new(vec![42u8; 32])
+    }
+
+    #[test]
+    fn test_protected_config_save_load_roundtrip() {
+        let config = ProtectedConfig::default();
+        let seed = test_seed();
+
+        let saved = config.save(&seed).unwrap();
+        assert!(!saved.is_empty());
+
+        let loaded = ProtectedConfig::load(&seed, &saved).unwrap();
+        assert!(loaded.contacts.is_empty());
+    }
+
+    #[test]
+    fn test_protected_config_wrong_seed_fails() {
+        let config = ProtectedConfig::default();
+        let seed = test_seed();
+        let wrong_seed = SecretVec::new(vec![99u8; 32]);
+
+        let saved = config.save(&seed).unwrap();
+        let result = ProtectedConfig::load(&wrong_seed, &saved);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protected_config_serialization_preserves_data() {
+        let config = ProtectedConfig::default();
+        let json = serde_json::to_string(&config).unwrap();
+        let deserialized: ProtectedConfig = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.contacts.is_empty());
+    }
+
+    #[test]
+    fn test_contacts_find_by_did() {
+        let mut contacts = Contacts::default();
+        let did = Arc::new("did:example:123".to_string());
+        let contact = Arc::new(Contact {
+            did: did.clone(),
+            alias: Some("alice".to_string()),
+        });
+        contacts.contacts.insert(did.clone(), contact.clone());
+        contacts
+            .aliases
+            .insert("alice".to_string(), contact.clone());
+
+        assert!(contacts.find_contact("did:example:123").is_some());
+        assert!(contacts.find_contact("alice").is_some());
+        assert!(contacts.find_contact("unknown").is_none());
+    }
+
+    #[test]
+    fn test_contacts_remove() {
+        let mut contacts = Contacts::default();
+        let did = Arc::new("did:example:123".to_string());
+        let contact = Arc::new(Contact {
+            did: did.clone(),
+            alias: Some("bob".to_string()),
+        });
+        contacts.contacts.insert(did.clone(), contact.clone());
+        contacts.aliases.insert("bob".to_string(), contact.clone());
+
+        let mut logs = Logs::default();
+        let removed = contacts.remove_contact(&mut logs, "bob");
+        assert!(removed.is_some());
+        assert!(contacts.find_contact("bob").is_none());
+        assert!(contacts.find_contact("did:example:123").is_none());
+    }
+
+    #[test]
+    fn test_get_seed_from_credential_deterministic() {
+        let key = "z6MkTestKey123";
+        let seed1 = ProtectedConfig::get_seed_from_credential(key).unwrap();
+        let seed2 = ProtectedConfig::get_seed_from_credential(key).unwrap();
+        assert_eq!(
+            seed1.expose_secret(),
+            seed2.expose_secret(),
+        );
+    }
+
+    #[test]
+    fn test_get_seed_from_credential_different_keys_differ() {
+        let seed1 = ProtectedConfig::get_seed_from_credential("key1").unwrap();
+        let seed2 = ProtectedConfig::get_seed_from_credential("key2").unwrap();
+        assert_ne!(
+            seed1.expose_secret(),
+            seed2.expose_secret(),
+        );
+    }
+}

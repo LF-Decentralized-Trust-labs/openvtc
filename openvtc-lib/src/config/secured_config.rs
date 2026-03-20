@@ -437,11 +437,10 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let unlock = [42u8; 32];
-        let plaintext = b"sensitive data here";
-
+        let plaintext = b"hello world - this is sensitive config data";
         let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        assert_ne!(encrypted, plaintext);
         let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
-
         assert_eq!(decrypted, plaintext);
     }
 
@@ -460,8 +459,7 @@ mod tests {
     fn test_decrypt_wrong_key_fails() {
         let unlock = [42u8; 32];
         let wrong_unlock = [99u8; 32];
-        let plaintext = b"secret";
-
+        let plaintext = b"secret data";
         let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
         assert!(unlock_code_decrypt(&wrong_unlock, &encrypted).is_err());
     }
@@ -478,10 +476,8 @@ mod tests {
     fn test_encrypt_large_data() {
         let unlock = [42u8; 32];
         let plaintext = vec![0xABu8; 10_000];
-
         let encrypted = unlock_code_encrypt(&unlock, &plaintext).unwrap();
         let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
-
         assert_eq!(decrypted, plaintext);
     }
 
@@ -503,6 +499,14 @@ mod tests {
     }
 
     #[test]
+    fn test_different_unlocks_produce_different_ciphertext() {
+        let plaintext = b"same data";
+        let encrypted1 = unlock_code_encrypt(&[1u8; 32], plaintext).unwrap();
+        let encrypted2 = unlock_code_encrypt(&[2u8; 32], plaintext).unwrap();
+        assert_ne!(encrypted1, encrypted2);
+    }
+
+    #[test]
     fn test_output_contains_nonce_prefix() {
         let unlock = [42u8; 32];
         let plaintext = b"test";
@@ -515,13 +519,23 @@ mod tests {
     #[test]
     fn test_decrypt_corrupted_data_fails() {
         let unlock = [42u8; 32];
-        let plaintext = b"test data";
-
+        let plaintext = b"important data";
         let mut encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
-        // Corrupt a byte in the ciphertext (after the nonce)
-        let last = encrypted.len() - 1;
-        encrypted[last] ^= 0xFF;
-
+        if let Some(byte) = encrypted.last_mut() {
+            *byte ^= 0xFF;
+        }
         assert!(unlock_code_decrypt(&unlock, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_key_source_material_zeroize() {
+        let mut source = KeySourceMaterial::Imported {
+            seed: "z6MkTestSeed123456789".to_string(),
+        };
+        source.zeroize();
+        match &source {
+            KeySourceMaterial::Imported { seed } => assert!(seed.is_empty()),
+            _ => panic!("expected Imported variant"),
+        }
     }
 }

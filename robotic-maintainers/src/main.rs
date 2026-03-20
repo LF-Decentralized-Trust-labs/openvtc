@@ -457,7 +457,7 @@ async fn create_vrc(
         bail!("Couldn't find sceret");
     };
 
-    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None)?;
+    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None).await?;
     vrc.credential_mut().proof = Some(proof);
 
     Ok(vrc)

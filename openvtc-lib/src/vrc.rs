@@ -130,7 +130,7 @@ impl VrcRequest {
             .as_secs();
         Ok(Message::build(
             Uuid::new_v4().to_string(),
-            "https://firstperson.network/vrc/1.0/request".to_string(),
+            crate::protocol_urls::VRC_REQUEST.to_string(),
             serde_json::to_value(self)?,
         )
         .from(from.to_string())
@@ -168,7 +168,7 @@ impl VRCRequestReject {
             .as_secs();
         Ok(Message::build(
             Uuid::new_v4().to_string(),
-            "https://firstperson.network/vrc/1.0/rejected".to_string(),
+            crate::protocol_urls::VRC_REJECTED.to_string(),
             serde_json::to_value(VRCRequestReject { reason })?,
         )
         .from(from.to_string())

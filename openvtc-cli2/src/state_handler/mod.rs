@@ -943,7 +943,7 @@ impl StateHandler {
                             state.setup.custom_mediator.as_ref().unwrap_or(&LF_PUBLIC_MEDIATOR_DID.to_string()),
                             update_secret,
                             next_update_secret,
-                        ) {
+                        ).await {
                             Ok((did, document)) => {
                                 state.setup.webvh_address.did = did;
                                 state.setup.webvh_address.document = document;

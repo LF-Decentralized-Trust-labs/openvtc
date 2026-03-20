@@ -276,7 +276,7 @@ impl Config {
             touch_prompt,
         )?;
 
-        debug!("Secured Config:\n{:#?}", sc);
+        debug!("Secured Config loaded (key_info entries: {})", sc.key_info.len());
 
         // Determine key backend from secured config
         let key_backend = if let Some(ref bip32_seed) = sc.bip32_seed {
@@ -729,16 +729,30 @@ impl Display for KeyTypes {
     }
 }
 
-/// Secrets for the Persona DID
-#[derive(Clone, Debug)]
+/// Secrets for the Persona DID.
+///
+/// Implements [`Drop`] to zeroize contained key material when the struct goes out of scope.
+#[derive(Clone)]
 pub struct PersonaDIDKeys {
     pub signing: KeyInfo,
     pub authentication: KeyInfo,
     pub decryption: KeyInfo,
 }
 
-/// Contains relevant key information required for setting up, configuring and managing keys
-#[derive(Clone, Debug)]
+impl std::fmt::Debug for PersonaDIDKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PersonaDIDKeys")
+            .field("signing", &"[REDACTED]")
+            .field("authentication", &"[REDACTED]")
+            .field("decryption", &"[REDACTED]")
+            .finish()
+    }
+}
+
+/// Contains relevant key information required for setting up, configuring and managing keys.
+///
+/// Implements [`Drop`] to zeroize contained key material when the struct goes out of scope.
+#[derive(Clone)]
 pub struct KeyInfo {
     /// Secret Key Material that can be used within the TDK environment
     pub secret: Secret,
@@ -748,6 +762,17 @@ pub struct KeyInfo {
     /// Section 5.5.2 of RFC 4880 - Expiry time if set is # of days since creation
     pub expiry: Option<TimeDelta>,
     pub created: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for KeyInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyInfo")
+            .field("secret", &"[REDACTED]")
+            .field("source", &self.source)
+            .field("expiry", &self.expiry)
+            .field("created", &self.created)
+            .finish()
+    }
 }
 
 /// Converts a VTA GetKeySecretResponse into a TDK Secret

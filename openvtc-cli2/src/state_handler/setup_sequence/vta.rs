@@ -214,7 +214,8 @@ pub async fn create_did_via_server(
     // which the TDK resolver requires. A relative fragment like "#public-didcomm" is rejected.
     let req = CreateDidWebvhRequest {
         context_id: context_id.to_string(),
-        server_id: server_id.to_string(),
+        server_id: Some(server_id.to_string()),
+        url: None,
         path,
         label: None,
         portable: true,
@@ -229,7 +230,7 @@ pub async fn create_did_via_server(
         .map_err(|e| anyhow::anyhow!("Failed to create DID via WebVH server: {e}"))?;
 
     let did = result.did.clone();
-    let mnemonic = result.mnemonic.clone();
+    let mnemonic = result.mnemonic.clone().unwrap_or_default();
 
     // Fetch signing key secret (#key-0 = Ed25519)
     let sign_secret_resp = client

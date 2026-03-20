@@ -21,13 +21,44 @@ pub mod relationships;
 pub mod tasks;
 pub mod vrc;
 
-/// Primary Linux Foundation Mediator DID
+/// Primary Linux Foundation Mediator DID.
+/// Can be overridden via the `OPENVTC_MEDIATOR_DID` environment variable.
 pub const LF_PUBLIC_MEDIATOR_DID: &str =
     "did:webvh:QmetnhxzJXTJ9pyXR1BbZ2h6DomY6SB1ZbzFPrjYyaEq9V:fpp.storm.ws:public-mediator";
 
-/// Primary Linux Foundation Organisation DID
+/// Primary Linux Foundation Organisation DID.
+/// Can be overridden via the `OPENVTC_ORG_DID` environment variable.
 pub const LF_ORG_DID: &str =
     "did:webvh:QmXkYcFCbvFFcYZf2q5gNk8Vp4b4vMbVKWbbc7oivcdZHK:fpp.storm.ws";
+
+/// Returns the mediator DID, checking the environment variable first.
+pub fn mediator_did() -> String {
+    std::env::var("OPENVTC_MEDIATOR_DID").unwrap_or_else(|_| LF_PUBLIC_MEDIATOR_DID.to_string())
+}
+
+/// Returns the organisation DID, checking the environment variable first.
+pub fn org_did() -> String {
+    std::env::var("OPENVTC_ORG_DID").unwrap_or_else(|_| LF_ORG_DID.to_string())
+}
+
+/// Protocol URL constants for DIDComm message types.
+pub mod protocol_urls {
+    pub const RELATIONSHIP_REQUEST: &str =
+        "https://linuxfoundation.org/openvtc/1.0/relationship-request";
+    pub const RELATIONSHIP_REQUEST_REJECT: &str =
+        "https://linuxfoundation.org/openvtc/1.0/relationship-request-reject";
+    pub const RELATIONSHIP_REQUEST_ACCEPT: &str =
+        "https://linuxfoundation.org/openvtc/1.0/relationship-request-accept";
+    pub const RELATIONSHIP_REQUEST_FINALIZE: &str =
+        "https://linuxfoundation.org/openvtc/1.0/relationship-request-finalize";
+    pub const TRUST_PING: &str = "https://didcomm.org/trust-ping/2.0/ping";
+    pub const TRUST_PONG: &str = "https://didcomm.org/trust-ping/2.0/ping-response";
+    pub const VRC_REQUEST: &str = "https://firstperson.network/vrc/1.0/request";
+    pub const VRC_REJECTED: &str = "https://firstperson.network/vrc/1.0/rejected";
+    pub const VRC_ISSUED: &str = "https://firstperson.network/vrc/1.0/issued";
+    pub const MAINTAINERS_LIST_REQUEST: &str = "https://kernel.org/maintainers/1.0/list";
+    pub const MAINTAINERS_LIST_RESPONSE: &str = "https://kernel.org/maintainers/1.0/list/response";
+}
 
 /// Defined Message Types for OpenVTC
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,68 +96,45 @@ impl MessageType {
     }
 }
 
-/// Convert TaskTypes to type string
+/// Convert MessageType to its protocol URL string.
 impl From<MessageType> for String {
     fn from(value: MessageType) -> Self {
+        use protocol_urls::*;
         match value {
-            MessageType::RelationshipRequest => {
-                "https://linuxfoundation.org/openvtc/1.0/relationship-request".to_string()
-            }
-            MessageType::RelationshipRequestRejected => {
-                "https://linuxfoundation.org/openvtc/1.0/relationship-request-reject".to_string()
-            }
-            MessageType::RelationshipRequestAccepted => {
-                "https://linuxfoundation.org/openvtc/1.0/relationship-request-accept".to_string()
-            }
-            MessageType::RelationshipRequestFinalize => {
-                "https://linuxfoundation.org/openvtc/1.0/relationship-request-finalize".to_string()
-            }
-            MessageType::TrustPing => "https://didcomm.org/trust-ping/2.0/ping".to_string(),
-            MessageType::TrustPong => {
-                "https://didcomm.org/trust-ping/2.0/ping-response".to_string()
-            }
-            MessageType::VRCRequest => "https://firstperson.network/vrc/1.0/request".to_string(),
-            MessageType::VRCRequestRejected => {
-                "https://firstperson.network/vrc/1.0/rejected".to_string()
-            }
-            MessageType::VRCIssued => "https://firstperson.network/vrc/1.0/issued".to_string(),
-            MessageType::MaintainersListRequest => {
-                "https://kernel.org/maintainers/1.0/list".to_string()
-            }
-            MessageType::MaintainersListResponse => {
-                "https://kernel.org/maintainers/1.0/list/response".to_string()
-            }
+            MessageType::RelationshipRequest => RELATIONSHIP_REQUEST,
+            MessageType::RelationshipRequestRejected => RELATIONSHIP_REQUEST_REJECT,
+            MessageType::RelationshipRequestAccepted => RELATIONSHIP_REQUEST_ACCEPT,
+            MessageType::RelationshipRequestFinalize => RELATIONSHIP_REQUEST_FINALIZE,
+            MessageType::TrustPing => TRUST_PING,
+            MessageType::TrustPong => TRUST_PONG,
+            MessageType::VRCRequest => VRC_REQUEST,
+            MessageType::VRCRequestRejected => VRC_REJECTED,
+            MessageType::VRCIssued => VRC_ISSUED,
+            MessageType::MaintainersListRequest => MAINTAINERS_LIST_REQUEST,
+            MessageType::MaintainersListResponse => MAINTAINERS_LIST_RESPONSE,
         }
+        .to_string()
     }
 }
 
-/// Convert &str to a MessageType based on type URL
+/// Convert a protocol URL string to a MessageType.
 impl TryFrom<&str> for MessageType {
     type Error = OpenVTCError;
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
+        use protocol_urls::*;
         match value {
-            "https://linuxfoundation.org/openvtc/1.0/relationship-request" => {
-                Ok(MessageType::RelationshipRequest)
-            }
-            "https://linuxfoundation.org/openvtc/1.0/relationship-request-reject" => {
-                Ok(MessageType::RelationshipRequestRejected)
-            }
-            "https://linuxfoundation.org/openvtc/1.0/relationship-request-accept" => {
-                Ok(MessageType::RelationshipRequestAccepted)
-            }
-            "https://linuxfoundation.org/openvtc/1.0/relationship-request-finalize" => {
-                Ok(MessageType::RelationshipRequestFinalize)
-            }
-            "https://didcomm.org/trust-ping/2.0/ping" => Ok(MessageType::TrustPing),
-            "https://didcomm.org/trust-ping/2.0/ping-response" => Ok(MessageType::TrustPong),
-            "https://firstperson.network/vrc/1.0/request" => Ok(MessageType::VRCRequest),
-            "https://firstperson.network/vrc/1.0/rejected" => Ok(MessageType::VRCRequestRejected),
-            "https://firstperson.network/vrc/1.0/issued" => Ok(MessageType::VRCIssued),
-            "https://kernel.org/maintainers/1.0/list" => Ok(MessageType::MaintainersListRequest),
-            "https://kernel.org/maintainers/1.0/list/response" => {
-                Ok(MessageType::MaintainersListResponse)
-            }
+            RELATIONSHIP_REQUEST => Ok(MessageType::RelationshipRequest),
+            RELATIONSHIP_REQUEST_REJECT => Ok(MessageType::RelationshipRequestRejected),
+            RELATIONSHIP_REQUEST_ACCEPT => Ok(MessageType::RelationshipRequestAccepted),
+            RELATIONSHIP_REQUEST_FINALIZE => Ok(MessageType::RelationshipRequestFinalize),
+            TRUST_PING => Ok(MessageType::TrustPing),
+            TRUST_PONG => Ok(MessageType::TrustPong),
+            VRC_REQUEST => Ok(MessageType::VRCRequest),
+            VRC_REJECTED => Ok(MessageType::VRCRequestRejected),
+            VRC_ISSUED => Ok(MessageType::VRCIssued),
+            MAINTAINERS_LIST_REQUEST => Ok(MessageType::MaintainersListRequest),
+            MAINTAINERS_LIST_RESPONSE => Ok(MessageType::MaintainersListResponse),
             _ => Err(OpenVTCError::InvalidMessage(value.to_string())),
         }
     }
