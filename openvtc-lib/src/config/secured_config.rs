@@ -17,9 +17,12 @@ use crate::{
 use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, aead::Aead};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
+use hkdf::Hkdf;
 use keyring::Entry;
+use rand::rngs::OsRng;
 use rand::{SeedableRng, rngs::StdRng};
 use secrecy::ExposeSecret;
+use sha2::Sha256;
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
@@ -347,15 +350,36 @@ pub enum KeySourceMaterial {
     VtaManaged { key_id: String },
 }
 
-/// Creates an AES-256 key from the hash of the unlock code and attempts to encrypt using it
+/// AES-256-GCM nonce size in bytes
+const NONCE_SIZE: usize = 12;
+/// HKDF info label for key derivation (v2 format)
+const HKDF_INFO: &[u8] = b"openvtc-key-v2";
+
+/// Derives an AES-256-GCM key from the unlock code and nonce using HKDF-SHA256.
+fn derive_key(unlock: &[u8; 32], nonce: &[u8]) -> Result<Aes256Gcm, OpenVTCError> {
+    let hk = Hkdf::<Sha256>::new(Some(nonce), unlock);
+    let mut key_bytes = [0u8; 32];
+    hk.expand(HKDF_INFO, &mut key_bytes)
+        .map_err(|e| OpenVTCError::Encrypt(format!("HKDF key derivation failed: {e}")))?;
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes)
+        .map_err(|e| OpenVTCError::Encrypt(format!("Invalid AES key: {e}")))?;
+    key_bytes.zeroize();
+    Ok(cipher)
+}
+
+/// Encrypts data using AES-256-GCM with HKDF-derived key and random nonce.
+///
+/// Output format: `[12-byte nonce | ciphertext + auth tag]`
 pub fn unlock_code_encrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
-    let mut rng = StdRng::from_seed(*unlock);
-    let key = Aes256Gcm::generate_key(&mut rng);
-    let nonce = Aes256Gcm::generate_nonce(&mut rng);
-    let cipher = Aes256Gcm::new(&key);
+    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    let cipher = derive_key(unlock, &nonce)?;
 
     match cipher.encrypt(&nonce, input) {
-        Ok(encrypted) => Ok(encrypted),
+        Ok(ciphertext) => {
+            let mut result = nonce.to_vec();
+            result.extend_from_slice(&ciphertext);
+            Ok(result)
+        }
         Err(e) => {
             error!("Couldn't encrypt data. Reason: {e}");
             Err(OpenVTCError::Encrypt(format!(
@@ -365,8 +389,31 @@ pub fn unlock_code_encrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
     }
 }
 
-/// Creates an AES-256 key from the hash of the unlock code and attempts to decrypt using it
+/// Decrypts data using AES-256-GCM with HKDF-derived key.
+///
+/// Accepts both the new format (`[nonce | ciphertext]`) and the legacy
+/// deterministic format for backward compatibility. Existing configs
+/// encrypted with the old format will be transparently decrypted and
+/// re-encrypted with the secure format on the next save.
 pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
+    // Try new format first: first 12 bytes are the random nonce
+    if input.len() > NONCE_SIZE {
+        let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
+        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+        let cipher = derive_key(unlock, nonce_bytes)?;
+
+        if let Ok(decrypted) = cipher.decrypt(nonce, ciphertext) {
+            return Ok(decrypted);
+        }
+    }
+
+    // Fall back to legacy deterministic format
+    legacy_unlock_code_decrypt(unlock, input)
+}
+
+/// Legacy decryption using the old deterministic PRNG-based key/nonce derivation.
+/// Retained only for backward compatibility with existing encrypted configs.
+fn legacy_unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
     let mut rng = StdRng::from_seed(*unlock);
     let key = Aes256Gcm::generate_key(&mut rng);
     let nonce = Aes256Gcm::generate_nonce(&mut rng);
@@ -380,5 +427,101 @@ pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
                 "Couldn't decrypt data, likely due to incorrect unlock code! Reason: {e}"
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_encrypt_decrypt_roundtrip() {
+        let unlock = [42u8; 32];
+        let plaintext = b"sensitive data here";
+
+        let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_encryption_is_non_deterministic() {
+        let unlock = [42u8; 32];
+        let plaintext = b"same data";
+
+        let cipher1 = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        let cipher2 = unlock_code_encrypt(&unlock, plaintext).unwrap();
+
+        assert_ne!(cipher1, cipher2, "Encryption must be non-deterministic");
+    }
+
+    #[test]
+    fn test_decrypt_wrong_key_fails() {
+        let unlock = [42u8; 32];
+        let wrong_unlock = [99u8; 32];
+        let plaintext = b"secret";
+
+        let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        assert!(unlock_code_decrypt(&wrong_unlock, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_encrypt_empty_data() {
+        let unlock = [42u8; 32];
+        let encrypted = unlock_code_encrypt(&unlock, b"").unwrap();
+        let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
+        assert!(decrypted.is_empty());
+    }
+
+    #[test]
+    fn test_encrypt_large_data() {
+        let unlock = [42u8; 32];
+        let plaintext = vec![0xABu8; 10_000];
+
+        let encrypted = unlock_code_encrypt(&unlock, &plaintext).unwrap();
+        let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
+
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_legacy_format_backward_compatibility() {
+        // Encrypt with the legacy deterministic method
+        let unlock = [42u8; 32];
+        let plaintext = b"legacy data";
+
+        let mut rng = StdRng::from_seed(unlock);
+        let key = Aes256Gcm::generate_key(&mut rng);
+        let nonce = Aes256Gcm::generate_nonce(&mut rng);
+        let cipher = Aes256Gcm::new(&key);
+        let legacy_ciphertext = cipher.encrypt(&nonce, plaintext.as_slice()).unwrap();
+
+        // New decrypt should handle legacy format via fallback
+        let decrypted = unlock_code_decrypt(&unlock, &legacy_ciphertext).unwrap();
+        assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn test_output_contains_nonce_prefix() {
+        let unlock = [42u8; 32];
+        let plaintext = b"test";
+
+        let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        // Output should be: 12 bytes nonce + ciphertext (plaintext len + 16 byte auth tag)
+        assert_eq!(encrypted.len(), NONCE_SIZE + plaintext.len() + 16);
+    }
+
+    #[test]
+    fn test_decrypt_corrupted_data_fails() {
+        let unlock = [42u8; 32];
+        let plaintext = b"test data";
+
+        let mut encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        // Corrupt a byte in the ciphertext (after the nonce)
+        let last = encrypted.len() - 1;
+        encrypted[last] ^= 0xFF;
+
+        assert!(unlock_code_decrypt(&unlock, &encrypted).is_err());
     }
 }
