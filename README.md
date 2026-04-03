@@ -1,6 +1,6 @@
 # Open Verifiable Trust Community (OpenVTC) with First Person Protocol
 
-[![Rust](https://img.shields.io/badge/rust-1.90.0%2B-blue.svg?maxAge=3600)](https://github.com/FirstPersonNetwork/openvtc-openvtc-rs)
+[![Rust](https://img.shields.io/badge/rust-1.91.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/openvtc)
 
 A CLI tool for establishing verifiable trust relationships within developer
 communities using Decentralised Identifiers (DIDs) and Verifiable Credentials
@@ -70,13 +70,9 @@ openvtc --help
 
 ## Decentralised Identity
 
-The OpenVTC tool uses the did:webvh to create your Persona DID. WebVH is a DID method that enhances the existing did:web method, introducing:
-
 The OpenVTC tool uses the `did:webvh` to create your **Persona DID (P-DID)**. It enhances the existing `did:web` method, providing:
 
 - Portability with a self-certifying identifier (SCID), allowing you to move to a different domain.
-
-- Robust security by introducing a pre-rotation key and witness proof that approves changes to the DID.
 
 - Robust security by introducing a pre-rotation key and witness proof that approves changes to the DID.
 
@@ -144,7 +140,7 @@ An encrypted configuration stored inside the public configuration file, containi
 - List of known contacts with their Persona DIDs and Alias.
 - List of known relationships with their:
   - Remote and local Relationship DIDs (R-DIDs)
-  - Remove and local Persona DIDs (P-DIDs)
+  - Remote and local Persona DIDs (P-DIDs)
   - Relationship aliases
 - Verifiable Relationship Credentials (VRCs)
 
@@ -163,7 +159,7 @@ For more details, refer to the [Secured Configuration Management](./docs/secured
 
 ## Prerequisites
 
-1. Rust version 1.88 or higher (Install [Rust](https://rust-lang.org/learn/get-started/))
+1. Rust version 1.91.0 or higher (Install [Rust](https://rust-lang.org/learn/get-started/))
 2. Publicly accessible domain to host your DID document.
 3. **Optional:** DIDComm mediator to send messages. OpenVTC provides a default DIDComm mediator.
 4. **Optional:** Set environment variables.
@@ -232,7 +228,7 @@ The `did:webvh` method resolves your DID by fetching the DID document from a wel
 
 - If your configured URL is `https://mydomain.com/profile1`, you must host the file at:
 
-  ```html
+  ```text
   https://mydomain.com/profile1/did.jsonl
   ```
 
