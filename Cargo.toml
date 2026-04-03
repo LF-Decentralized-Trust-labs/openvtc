@@ -10,7 +10,7 @@ resolver = "3"
 
 [workspace.package]
 description = "Open Verifiable Trust Community (OpenVTC) - First Person Protocol"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 publish = false
 authors = ["Glenn Gore <glenn@affinidi.com>"]
