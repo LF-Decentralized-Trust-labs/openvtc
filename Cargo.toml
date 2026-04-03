@@ -43,6 +43,7 @@ dirs = "6.0"
 dialoguer = { version = "0.12", features = ["password"] }
 didwebvh-rs = "0.3"
 ed25519-dalek-bip32 = "0.3"
+hkdf = "0.12"
 hex = "0.4"
 keyring = "3.6"
 multibase = "0.9"
