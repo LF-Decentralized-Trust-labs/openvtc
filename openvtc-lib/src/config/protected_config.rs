@@ -17,7 +17,7 @@ use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use secrecy::{ExposeSecret, SecretVec};
 use serde::{Deserialize, Serialize};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 /// A record for a single known Contact
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -201,7 +201,12 @@ impl ProtectedConfig {
         let bytes = serde_json::to_vec(self)?;
 
         match unlock_code_encrypt(
-            seed_bytes.expose_secret().first_chunk::<32>().unwrap(),
+            seed_bytes
+                .expose_secret()
+                .first_chunk::<32>()
+                .ok_or_else(|| {
+                    OpenVTCError::Encrypt("Seed bytes are not at least 32 bytes".to_string())
+                })?,
             &bytes,
         ) {
             Ok(result) => Ok(BASE64_URL_SAFE_NO_PAD.encode(&result)),
@@ -213,7 +218,12 @@ impl ProtectedConfig {
         let bytes = BASE64_URL_SAFE_NO_PAD.decode(input)?;
 
         let bytes = unlock_code_decrypt(
-            seed_bytes.expose_secret().first_chunk::<32>().unwrap(),
+            seed_bytes
+                .expose_secret()
+                .first_chunk::<32>()
+                .ok_or_else(|| {
+                    OpenVTCError::Decrypt("Seed bytes are not at least 32 bytes".to_string())
+                })?,
             &bytes,
         )?;
 
@@ -238,12 +248,25 @@ impl ProtectedConfig {
         ))
     }
 
-    /// Derives an encryption seed from a VTA credential's private key multibase
-    /// Used as a replacement for BIP32 m/0'/0'/0' when using VTA key backend
-    pub fn get_seed_from_credential(private_key_multibase: &str) -> Result<SecretVec<u8>, OpenVTCError> {
-        use sha2::{Digest, Sha256};
-        let hash = Sha256::digest(private_key_multibase.as_bytes());
-        Ok(SecretVec::new(hash.to_vec()))
+    /// Derives an encryption seed from a VTA credential's private key multibase.
+    ///
+    /// Uses HKDF-SHA256 with domain separation to derive a 32-byte seed from the
+    /// credential's private key. This ensures the derived seed is cryptographically
+    /// bound to its purpose and cannot be confused with keys derived for other uses.
+    pub fn get_seed_from_credential(
+        private_key_multibase: &str,
+    ) -> Result<SecretVec<u8>, OpenVTCError> {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+
+        debug!("deriving encryption seed from credential via HKDF");
+        let hk = Hkdf::<Sha256>::new(None, private_key_multibase.as_bytes());
+        let mut seed = vec![0u8; 32];
+        hk.expand(b"openvtc-protected-config-seed-v1", &mut seed)
+            .map_err(|e| {
+                OpenVTCError::Encrypt(format!("HKDF expansion failed for credential seed: {e}"))
+            })?;
+        Ok(SecretVec::new(seed))
     }
 }
 
@@ -327,19 +350,13 @@ mod tests {
         let key = "z6MkTestKey123";
         let seed1 = ProtectedConfig::get_seed_from_credential(key).unwrap();
         let seed2 = ProtectedConfig::get_seed_from_credential(key).unwrap();
-        assert_eq!(
-            seed1.expose_secret(),
-            seed2.expose_secret(),
-        );
+        assert_eq!(seed1.expose_secret(), seed2.expose_secret(),);
     }
 
     #[test]
     fn test_get_seed_from_credential_different_keys_differ() {
         let seed1 = ProtectedConfig::get_seed_from_credential("key1").unwrap();
         let seed2 = ProtectedConfig::get_seed_from_credential("key2").unwrap();
-        assert_ne!(
-            seed1.expose_secret(),
-            seed2.expose_secret(),
-        );
+        assert_ne!(seed1.expose_secret(), seed2.expose_secret(),);
     }
 }

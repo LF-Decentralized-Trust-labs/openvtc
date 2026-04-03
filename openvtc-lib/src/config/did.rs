@@ -6,13 +6,39 @@ use affinidi_tdk::{
     },
     secrets_resolver::secrets::Secret,
 };
-use didwebvh_rs::{DIDWebVHError, create::{CreateDIDConfig, create_did}, log_entry::LogEntryMethods, parameters::Parameters};
+use didwebvh_rs::{
+    DIDWebVHError,
+    create::{CreateDIDConfig, create_did},
+    log_entry::LogEntryMethods,
+    parameters::Parameters,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use url::Url;
 
 use crate::{config::PersonaDIDKeys, errors::OpenVTCError};
 
+/// Creates a new `did:webvh` DID with key pre-rotation enabled.
+///
+/// This builds a full DID Document containing three verification methods:
+/// - `#key-1` (Ed25519) -- assertion method (signing)
+/// - `#key-2` (Ed25519) -- authentication
+/// - `#key-3` (X25519) -- key agreement (encryption)
+///
+/// A DIDComm messaging service endpoint pointing to the given `mediator_did` is
+/// also added to the document.
+///
+/// # Parameters
+/// - `raw_url`: The WebVH server URL where the DID log will be hosted (e.g. `https://fpp.storm.ws`).
+/// - `keys`: Mutable persona keys whose secret IDs are updated to match the created DID.
+/// - `mediator_did`: The DID of the mediator used as the DIDComm service endpoint.
+/// - `update_secret`: The Ed25519 secret used to authorize this initial DID log entry.
+/// - `next_update_secret`: The Ed25519 secret whose hash is committed for key pre-rotation.
+///
+/// # Returns
+/// A tuple of `(did_id, Document)` where `did_id` is the fully-qualified `did:webvh:...`
+/// string and `Document` is the resolved DID Document produced by the creation process.
+/// The DID log is also saved to `did.jsonl` in the current working directory.
 pub async fn create_initial_webvh_did(
     raw_url: &str,
     keys: &mut PersonaDIDKeys,
@@ -37,12 +63,11 @@ pub async fn create_initial_webvh_did(
             ))
         })?),
     );
-    let key_id =
-        Url::parse(&[&placeholder_did, "#key-1"].concat()).map_err(|e| {
-            DIDWebVHError::InvalidMethodIdentifier(format!(
-                "Couldn't set verificationMethod Key ID for #key-1: {e}"
-            ))
-        })?;
+    let key_id = Url::parse(&[&placeholder_did, "#key-1"].concat()).map_err(|e| {
+        DIDWebVHError::InvalidMethodIdentifier(format!(
+            "Couldn't set verificationMethod Key ID for #key-1: {e}"
+        ))
+    })?;
     did_document.verification_method.push(VerificationMethod {
         id: key_id.clone(),
         type_: "Multikey".to_string(),
@@ -69,12 +94,11 @@ pub async fn create_initial_webvh_did(
                 })?,
         ),
     );
-    let key_id =
-        Url::parse(&[&placeholder_did, "#key-2"].concat()).map_err(|e| {
-            DIDWebVHError::InvalidMethodIdentifier(format!(
-                "Couldn't set verificationMethod key ID for #key-2: {e}"
-            ))
-        })?;
+    let key_id = Url::parse(&[&placeholder_did, "#key-2"].concat()).map_err(|e| {
+        DIDWebVHError::InvalidMethodIdentifier(format!(
+            "Couldn't set verificationMethod key ID for #key-2: {e}"
+        ))
+    })?;
     did_document.verification_method.push(VerificationMethod {
         id: key_id.clone(),
         type_: "Multikey".to_string(),
@@ -101,12 +125,11 @@ pub async fn create_initial_webvh_did(
                 })?,
         ),
     );
-    let key_id =
-        Url::parse(&[&placeholder_did, "#key-3"].concat()).map_err(|e| {
-            DIDWebVHError::InvalidMethodIdentifier(format!(
-                "Couldn't set verificationMethod key ID for #key-3: {e}"
-            ))
-        })?;
+    let key_id = Url::parse(&[&placeholder_did, "#key-3"].concat()).map_err(|e| {
+        DIDWebVHError::InvalidMethodIdentifier(format!(
+            "Couldn't set verificationMethod key ID for #key-3: {e}"
+        ))
+    })?;
     did_document.verification_method.push(VerificationMethod {
         id: key_id.clone(),
         type_: "Multikey".to_string(),
@@ -123,13 +146,11 @@ pub async fn create_initial_webvh_did(
     let endpoint = Endpoint::Map(json!([{"accept": ["didcomm/v2"], "uri": mediator_did}]));
     did_document.service.push(Service {
         id: Some(
-            Url::parse(&[&placeholder_did, "#public-didcomm"].concat()).map_err(
-                |e| {
-                    DIDWebVHError::InvalidMethodIdentifier(format!(
-                        "Couldn't set Service Endpoint for #public-didcomm: {e}"
-                    ))
-                },
-            )?,
+            Url::parse(&[&placeholder_did, "#public-didcomm"].concat()).map_err(|e| {
+                DIDWebVHError::InvalidMethodIdentifier(format!(
+                    "Couldn't set Service Endpoint for #public-didcomm: {e}"
+                ))
+            })?,
         ),
         type_: vec!["DIDCommMessaging".to_string()],
         property_set: HashMap::new(),
@@ -203,12 +224,11 @@ pub async fn create_initial_webvh_did(
 
 /// Extract domain and path from a URL for building placeholder DIDs.
 fn extract_domain(raw_url: &str) -> Result<String, OpenVTCError> {
-    let url = Url::parse(raw_url).map_err(|e| {
-        OpenVTCError::Config(format!("Invalid URL ({raw_url}): {e}"))
-    })?;
-    let host = url.host_str().ok_or_else(|| {
-        OpenVTCError::Config(format!("URL has no host: {raw_url}"))
-    })?;
+    let url = Url::parse(raw_url)
+        .map_err(|e| OpenVTCError::Config(format!("Invalid URL ({raw_url}): {e}")))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| OpenVTCError::Config(format!("URL has no host: {raw_url}")))?;
     let path = url.path().trim_end_matches('/');
     if path.is_empty() || path == "/" {
         Ok(host.to_string())

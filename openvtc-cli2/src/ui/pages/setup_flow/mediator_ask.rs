@@ -12,13 +12,11 @@ use ratatui::{
 };
 
 use crate::{
-    state_handler::{
-        actions::Action,
-        setup_sequence::SetupState,
-    },
+    state_handler::{actions::Action, setup_sequence::SetupState},
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 

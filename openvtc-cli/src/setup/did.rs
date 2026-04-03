@@ -16,7 +16,12 @@ use affinidi_tdk::{
 use anyhow::{Context, Result};
 use console::style;
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
-use didwebvh_rs::{create::{CreateDIDConfig, create_did}, log_entry::LogEntryMethods, parameters::Parameters, url::WebVHURL};
+use didwebvh_rs::{
+    create::{CreateDIDConfig, create_did},
+    log_entry::LogEntryMethods,
+    parameters::Parameters,
+    url::WebVHURL,
+};
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use openvtc::config::PersonaDIDKeys;
 use serde_json::{Value, json};
@@ -58,7 +63,7 @@ pub async fn did_setup(
             .with_prompt("Use pre-existing DID?")
             .default(true)
             .interact()
-            .unwrap()
+            .context("Failed to read DID prompt")?
         {
             println!(
                 "{}",
@@ -70,7 +75,7 @@ pub async fn did_setup(
                 let did_id: String = Input::with_theme(&ColorfulTheme::default())
                     .with_prompt("Enter existing DID")
                     .interact()
-                    .unwrap();
+                    .context("Failed to read DID input")?;
 
                 // Try to resolve the DID
                 let tdk = TDK::new(
@@ -102,7 +107,7 @@ pub async fn did_setup(
                             .with_prompt("Would you like to try a different DID?")
                             .default(true)
                             .interact()
-                            .unwrap()
+                            .context("Failed to read retry prompt")?
                         {
                             continue;
                         } else {
@@ -143,7 +148,7 @@ pub async fn did_setup(
             }
         })
         .interact()
-        .unwrap();
+        .context("Failed to read URL input")?;
 
     let did_url = WebVHURL::parse_url(&Url::parse(&raw_url)?)?;
 
@@ -232,7 +237,11 @@ pub async fn did_setup(
 
     // Create the WebVH Parameters
     let update_key = bip32_root
-        .derive(&"m/2'/1'/0'".parse::<DerivationPath>().unwrap())
+        .derive(
+            &"m/2'/1'/0'"
+                .parse::<DerivationPath>()
+                .context("Failed to parse update key derivation path")?,
+        )
         .context("Failed to create an Ed25519 signing key.")?;
     let mut update_secret = Secret::generate_ed25519(None, Some(update_key.signing_key.as_bytes()));
     update_secret.id = [
@@ -244,7 +253,11 @@ pub async fn did_setup(
     .concat();
 
     let next_update_key = bip32_root
-        .derive(&"m/2'/1'/1'".parse::<DerivationPath>().unwrap())
+        .derive(
+            &"m/2'/1'/1'"
+                .parse::<DerivationPath>()
+                .context("Failed to parse next update key derivation path")?,
+        )
         .context("Failed to create an Ed25519 signing key.")?;
     let next_update_secret =
         Secret::generate_ed25519(None, Some(next_update_key.signing_key.as_bytes()));

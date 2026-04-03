@@ -87,7 +87,9 @@ async fn auth_with_retry(
             Err(e) => {
                 let err_msg = format!("{e}");
                 if attempt < MAX_AUTH_RETRIES {
-                    eprintln!("VTA auth attempt {attempt}/{MAX_AUTH_RETRIES} failed: {err_msg}, retrying...");
+                    eprintln!(
+                        "VTA auth attempt {attempt}/{MAX_AUTH_RETRIES} failed: {err_msg}, retrying..."
+                    );
                 }
                 last_err = Some(err_msg);
             }

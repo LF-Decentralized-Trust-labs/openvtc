@@ -13,10 +13,9 @@ use affinidi_tdk::{
     affinidi_crypto::ed25519::ed25519_private_to_x25519,
     didcomm::PackEncryptedOptions,
     dids::{DID, PeerKeyRole},
-    messaging::protocols::Protocols,
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::ArgMatches;
 use console::style;
@@ -98,7 +97,14 @@ impl RelationshipsExtension for Relationships {
             println!("{}", style("No relationships exist").color256(CLI_ORANGE));
         } else {
             for r in self.relationships.values() {
-                let r = r.lock().unwrap();
+                let Ok(r) = r.lock() else {
+                    println!(
+                        "{}",
+                        style("ERROR: Relationship mutex poisoned, skipping entry")
+                            .color256(CLI_ORANGE)
+                    );
+                    continue;
+                };
                 let remote_p_did_alias = if let Some(contact) =
                     contacts.find_contact(&r.remote_p_did)
                     && let Some(alias) = &contact.alias
@@ -289,7 +295,9 @@ pub async fn relationships_entry(
             };
 
             let remote_p_did = {
-                let lock = relationship.lock().unwrap();
+                let lock = relationship
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
                 lock.remote_p_did.clone()
             };
 
@@ -370,10 +378,8 @@ pub async fn create_relationship_did(
         _ => bail!("create_relationship_did requires a BIP32 key backend"),
     };
 
-    let v_key = bip32_root
-        .derive(&v_path.parse::<DerivationPath>()?)?;
-    let e_key = bip32_root
-        .derive(&e_path.parse::<DerivationPath>()?)?;
+    let v_key = bip32_root.derive(&v_path.parse::<DerivationPath>()?)?;
+    let e_key = bip32_root.derive(&e_path.parse::<DerivationPath>()?)?;
 
     let mut v_secret = Secret::generate_ed25519(None, Some(v_key.signing_key.as_bytes()));
     let mut e_secret = Secret::generate_x25519(
@@ -429,8 +435,7 @@ pub async fn create_relationship_did(
 }
 
 async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()> {
-    let atm = tdk.atm.clone().unwrap();
-    let protocols = Protocols::new();
+    let atm = tdk.atm.clone().context("ATM not initialized")?;
 
     let Some(contact) = config.private.contacts.find_contact(remote) else {
         println!(
@@ -454,7 +459,9 @@ async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()>
     };
 
     let (our_did, remote_did) = {
-        let lock = relationship.lock().unwrap();
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
         (lock.our_did.clone(), lock.remote_did.clone())
     };
 
@@ -472,8 +479,7 @@ async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()>
     };
 
     let ping_msg =
-        protocols
-            .trust_ping
+        atm.trust_ping()
             .generate_ping_message(Some(our_did.as_str()), &remote_did, true)?;
     let msg_id = ping_msg.id.clone();
 

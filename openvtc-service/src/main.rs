@@ -1,10 +1,11 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use affinidi_tdk::{
     common::TDKSharedState,
     didcomm::{Message, UnpackMetadata},
-    messaging::{ATM, config::ATMConfig, profiles::ATMProfile, protocols::Protocols},
+    messaging::{ATM, config::ATMConfig, profiles::ATMProfile},
     secrets_resolver::SecretsResolver,
 };
 use anyhow::{Result, bail};
@@ -45,7 +46,7 @@ async fn main() -> Result<()> {
 
     // Create a basic ATM instance
     let atm = ATM::new(
-        ATMConfig::builder().build().unwrap(),
+        ATMConfig::builder().build()?,
         Arc::new(TDKSharedState::default().await),
     )
     .await?;
@@ -67,27 +68,58 @@ async fn main() -> Result<()> {
     // Start listening for incoming messages
     let profile = atm.profile_add(&profile, true).await?;
 
-    let protocols = Protocols::new();
+    info!("Service started, listening for incoming messages...");
+
+    tokio::select! {
+        _ = message_loop(&atm, &profile, &config) => {
+            warn!("Message loop exited unexpectedly");
+        }
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received, exiting...");
+        }
+    }
+
+    info!("Service shut down gracefully");
+    Ok(())
+}
+
+async fn message_loop(atm: &ATM, profile: &Arc<ATMProfile>, config: &Config) {
+    // Rate limiting: max 50 messages per second to prevent resource exhaustion
+    const MAX_MSGS_PER_SEC: u32 = 50;
+    let mut msg_count: u32 = 0;
+    let mut window_start = Instant::now();
 
     loop {
-        let (msg, meta) = match protocols
-            .message_pickup
-            .live_stream_next(&atm, &profile, None, true)
+        // Reset counter each second
+        if window_start.elapsed() >= Duration::from_secs(1) {
+            msg_count = 0;
+            window_start = Instant::now();
+        }
+
+        if msg_count >= MAX_MSGS_PER_SEC {
+            warn!("Rate limit reached ({MAX_MSGS_PER_SEC} msgs/sec), throttling");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+
+        let (msg, meta) = match atm
+            .message_pickup()
+            .live_stream_next(profile, None, true)
             .await
         {
             Ok(Some((msg, meta))) => (msg, meta),
-            Ok(None) => {
-                // No messages received - it is ok to continue the loop
-                continue;
-            }
+            Ok(None) => continue,
             Err(e) => {
                 warn!("an error occurred while waiting for new messages: {e}");
                 continue;
             }
         };
 
-        // A valid DIDComm message has been received
-        let _ = handle_message(&atm, &profile, &config, &msg, &meta).await;
+        msg_count += 1;
+
+        if let Err(e) = handle_message(atm, profile, config, &msg, &meta).await {
+            warn!("Failed to handle incoming DIDComm message: {e}");
+        }
     }
 }
 
@@ -99,9 +131,12 @@ async fn handle_message(
     meta: &UnpackMetadata,
 ) -> Result<()> {
     // Ensure we are cleaning up after ourselves
-    let _ = atm
+    if let Err(e) = atm
         .delete_message_background(profile, &meta.sha256_hash)
-        .await;
+        .await
+    {
+        warn!("Failed to delete processed message from mediator: {e}");
+    }
 
     let _ = if let Some(to) = &msg.to
         && let Some(first) = to.first()
@@ -128,7 +163,7 @@ async fn handle_message(
         match msg_type {
             MessageType::MaintainersListRequest => {
                 // Return the list of Kernel Maintainers
-                let _ = create_send_maintainers_list(
+                if let Err(e) = create_send_maintainers_list(
                     atm,
                     profile,
                     &from_did,
@@ -136,8 +171,12 @@ async fn handle_message(
                     &config.maintainers,
                     &msg.id,
                 )
-                .await;
-                info!("Maintainer list requested by {}", from_did);
+                .await
+                {
+                    warn!("Failed to send maintainers list to {from_did}: {e}");
+                } else {
+                    info!("Maintainer list requested by {}", from_did);
+                }
             }
             _ => {
                 warn!("Unsupported MessageType receieved: {}", msg.type_);

@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use secrecy::SecretVec;
 
+use super::SetupFlow;
 use crate::state_handler::{
     actions::Action,
     setup_sequence::{ConfigProtection, SetupPage, SetupState},
 };
-use super::SetupFlow;
 
 /// Every page-exit event that requires a flow decision.
 pub enum SetupEvent {

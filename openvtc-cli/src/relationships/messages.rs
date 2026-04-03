@@ -10,7 +10,7 @@ use affinidi_tdk::{
     TDK,
     didcomm::{Message, PackEncryptedOptions},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use console::style;
 use openvtc::{
@@ -49,7 +49,11 @@ pub async fn create_send_request(
             .relationships
             .find_by_remote_did(&contact.did)
             .as_ref()
-            .map(|r| r.lock().unwrap().state == RelationshipState::Established)
+            .map(|r| {
+                r.lock()
+                    .map(|r| r.state == RelationshipState::Established)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
         {
             println!(
@@ -81,7 +85,7 @@ pub async fn create_send_request(
         }
     };
 
-    let atm = tdk.atm.clone().unwrap();
+    let atm = tdk.atm.clone().context("ATM not initialized")?;
 
     // is a local relationship-did needed?
     let r_did = if generate_did {
@@ -182,7 +186,7 @@ fn create_message_request(
 ) -> Result<Message> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .context("System clock is before UNIX epoch")?
         .as_secs();
 
     let message = Message::build(
@@ -212,7 +216,7 @@ pub async fn send_rejection(
 ) -> Result<()> {
     // Create the Relationship Request rejection Message
     create_send_message_rejected(
-        tdk.atm.as_ref().unwrap(),
+        tdk.atm.as_ref().context("ATM not initialized")?,
         &config.persona_did.profile,
         respondent,
         &config.public.mediator_did,

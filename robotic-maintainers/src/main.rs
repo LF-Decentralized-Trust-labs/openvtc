@@ -86,8 +86,7 @@ async fn main() -> Result<()> {
     let atm = ATM::new(
         ATMConfig::builder()
             .with_inbound_message_channel(10)
-            .build()
-            .unwrap(),
+            .build()?,
         tdk.get_shared_state(),
     )
     .await?;
@@ -167,10 +166,18 @@ async fn main() -> Result<()> {
     cleanup_existing(&atm, mediator_did, &atm_charles, &mut relationships).await;
 
     // Enable websocket live streaming
-    let _ = atm.profile_enable_websocket(&atm_ada).await;
-    let _ = atm.profile_enable_websocket(&atm_grace).await;
-    let _ = atm.profile_enable_websocket(&atm_alan).await;
-    let _ = atm.profile_enable_websocket(&atm_charles).await;
+    if let Err(e) = atm.profile_enable_websocket(&atm_ada).await {
+        warn!("Failed to enable websocket for Ada: {e}");
+    }
+    if let Err(e) = atm.profile_enable_websocket(&atm_grace).await {
+        warn!("Failed to enable websocket for Grace: {e}");
+    }
+    if let Err(e) = atm.profile_enable_websocket(&atm_alan).await {
+        warn!("Failed to enable websocket for Alan: {e}");
+    }
+    if let Err(e) = atm.profile_enable_websocket(&atm_charles).await {
+        warn!("Failed to enable websocket for Charles: {e}");
+    }
 
     info!("Main loop running...");
     loop {
@@ -203,9 +210,15 @@ async fn handle_message(
     };
 
     // Ensure we are cleaning up after ourselves
-    let _ = atm
+    if let Err(e) = atm
         .delete_message_background(&to_profile, &meta.sha256_hash)
-        .await;
+        .await
+    {
+        warn!(
+            "{}: Failed to delete processed message from mediator: {e}",
+            to_profile.inner.alias
+        );
+    }
 
     let from_did = if let Some(from) = &message.from {
         from.to_string()

@@ -23,8 +23,9 @@ use crate::{
         setup_sequence::{Completion, MessageType, SetupState},
     },
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 

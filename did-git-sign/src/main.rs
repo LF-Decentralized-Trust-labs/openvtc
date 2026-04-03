@@ -144,13 +144,14 @@ async fn cmd_init(
     println!("Authenticated.");
     println!();
 
-    let (key_id, did_key_id) = if let (Some(kid), Some(dkid)) = (key_id_override, did_key_id_override) {
-        // Non-interactive: use provided values directly
-        (kid, dkid)
-    } else {
-        // Interactive: select context, DID, and signing key
-        interactive_select(&client).await?
-    };
+    let (key_id, did_key_id) =
+        if let (Some(kid), Some(dkid)) = (key_id_override, did_key_id_override) {
+            // Non-interactive: use provided values directly
+            (kid, dkid)
+        } else {
+            // Interactive: select context, DID, and signing key
+            interactive_select(&client).await?
+        };
 
     // Config file contains only the DID identity
     let cfg = SigningConfig {
@@ -204,7 +205,10 @@ async fn cmd_init(
     println!();
     println!("Setup complete! Git commits will now be signed with:");
     println!("  DID: {did_key_id}");
-    println!("  Key: ssh-ed25519 {}", init::ssh_public_key_string(verifying_key.as_bytes()));
+    println!(
+        "  Key: ssh-ed25519 {}",
+        init::ssh_public_key_string(verifying_key.as_bytes())
+    );
     println!();
     println!("To sign a commit: git commit -S -m \"your message\"");
     println!("To verify: git log --show-signature");
@@ -214,9 +218,7 @@ async fn cmd_init(
 
 /// Interactive flow: select context → DID → signing key.
 /// Returns (vta_key_id, did_key_id).
-async fn interactive_select(
-    client: &vta_sdk::client::VtaClient,
-) -> Result<(String, String)> {
+async fn interactive_select(client: &vta_sdk::client::VtaClient) -> Result<(String, String)> {
     // 1. List and select context
     let contexts = client
         .list_contexts()
@@ -256,14 +258,13 @@ async fn interactive_select(
         .map_err(|e| anyhow::anyhow!("failed to list DIDs: {e}"))?;
 
     if dids.dids.is_empty() {
-        bail!("no DIDs found in context '{}' — create a DID first", context.id);
+        bail!(
+            "no DIDs found in context '{}' — create a DID first",
+            context.id
+        );
     }
 
-    let did_labels: Vec<String> = dids
-        .dids
-        .iter()
-        .map(|d| d.did.clone())
-        .collect();
+    let did_labels: Vec<String> = dids.dids.iter().map(|d| d.did.clone()).collect();
 
     let did_idx = if dids.dids.len() == 1 {
         println!("Using DID: {}", did_labels[0]);
@@ -347,26 +348,19 @@ async fn resolve_did_key_fragment(
         .await
         .map_err(|e| anyhow::anyhow!("failed to get DID log: {e}"))?;
 
-    if let Some(log) = &log_resp.log {
-        // Parse the last log entry to get the DID document
-        if let Some(last_line) = log.lines().last() {
-            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(last_line) {
-                // The DID document state is in the "state" field
-                if let Some(state) = entry.get("state") {
-                    if let Some(vms) = state.get("verificationMethod") {
-                        if let Some(vms_arr) = vms.as_array() {
-                            for vm in vms_arr {
-                                if let Some(pub_key_mb) = vm.get("publicKeyMultibase") {
-                                    if pub_key_mb.as_str() == Some(&key.public_key) {
-                                        if let Some(id) = vm.get("id").and_then(|v| v.as_str()) {
-                                            return Ok(id.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+    if let Some(log) = &log_resp.log
+        && let Some(last_line) = log.lines().last()
+        && let Ok(entry) = serde_json::from_str::<serde_json::Value>(last_line)
+        && let Some(state) = entry.get("state")
+        && let Some(vms) = state.get("verificationMethod")
+        && let Some(vms_arr) = vms.as_array()
+    {
+        for vm in vms_arr {
+            if let Some(pub_key_mb) = vm.get("publicKeyMultibase")
+                && pub_key_mb.as_str() == Some(&key.public_key)
+                && let Some(id) = vm.get("id").and_then(|v| v.as_str())
+            {
+                return Ok(id.to_string());
             }
         }
     }
@@ -386,9 +380,7 @@ fn load_config() -> Result<(PathBuf, SigningConfig)> {
     };
 
     if !config_path.exists() {
-        anyhow::bail!(
-            "No did-git-sign configuration found. Run `did-git-sign init` first."
-        );
+        anyhow::bail!("No did-git-sign configuration found. Run `did-git-sign init` first.");
     }
 
     let cfg = SigningConfig::load(&config_path)?;
@@ -490,10 +482,16 @@ async fn cmd_health() -> Result<()> {
                     println!("OK");
                     println!();
                     println!("SSH Public Key (for signature verification):");
-                    println!("  {}", init::ssh_public_key_string(verifying_key.as_bytes()));
+                    println!(
+                        "  {}",
+                        init::ssh_public_key_string(verifying_key.as_bytes())
+                    );
                     println!();
                     println!("Allowed Signers Entry:");
-                    println!("  {}", init::allowed_signers_entry(&cfg, verifying_key.as_bytes()));
+                    println!(
+                        "  {}",
+                        init::allowed_signers_entry(&cfg, verifying_key.as_bytes())
+                    );
                 }
                 Err(e) => {
                     println!("FAILED");

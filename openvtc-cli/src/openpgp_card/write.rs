@@ -3,16 +3,16 @@
 */
 
 use crate::{CLI_BLUE, CLI_GREEN};
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use chrono::Utc;
-use console::{style, Term};
+use console::{Term, style};
 use ed25519_dalek_bip32::VerifyingKey;
-use openvtc::{
-    config::{KeyInfo, PersonaDIDKeys},
-    KeyPurpose,
-};
-use openpgp_card::{ocard::KeyType, state::Open, Card};
+use openpgp_card::{Card, ocard::KeyType, state::Open};
 use openpgp_card_rpgp::UploadableKey;
+use openvtc::{
+    KeyPurpose,
+    config::{KeyInfo, PersonaDIDKeys},
+};
 use pgp::{
     crypto::{self, ed25519::Mode, public_key::PublicKeyAlgorithm},
     packet::{PacketHeader, PublicKey, SecretKey},
@@ -34,7 +34,9 @@ pub fn write_keys_to_card(
     admin_pin: &SecretString,
 ) -> Result<()> {
     // Try unlocking the card with the admin PIN
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Failed to acquire lock on hardware token"))?;
     let mut open_card = lock.transaction()?;
     open_card.verify_admin_pin(admin_pin.clone())?;
     let mut card = open_card.to_admin_card(None)?;
@@ -85,7 +87,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
                     key: VerifyingKey::from_bytes(
-                        key.secret.get_public_bytes().first_chunk::<32>().unwrap(),
+                        key.secret
+                            .get_public_bytes()
+                            .first_chunk::<32>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Public key bytes shorter than 32 bytes")
+                            })?,
                     )?,
                 }),
             )?;
@@ -93,7 +100,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             // Create SecretParams
             let sp = SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
                 crypto::ed25519::SecretKey::try_from_bytes(
-                    *key.secret.get_private_bytes().first_chunk::<32>().unwrap(),
+                    *key.secret
+                        .get_private_bytes()
+                        .first_chunk::<32>()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Private key bytes shorter than 32 bytes")
+                        })?,
                     Mode::EdDSALegacy,
                 )?,
             ));
@@ -112,7 +124,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
                     key: VerifyingKey::from_bytes(
-                        key.secret.get_public_bytes().first_chunk::<32>().unwrap(),
+                        key.secret
+                            .get_public_bytes()
+                            .first_chunk::<32>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Public key bytes shorter than 32 bytes")
+                            })?,
                     )?,
                 }),
             )?;
@@ -120,7 +137,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             // Create SecretParams
             let sp = SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
                 crypto::ed25519::SecretKey::try_from_bytes(
-                    *key.secret.get_private_bytes().first_chunk::<32>().unwrap(),
+                    *key.secret
+                        .get_private_bytes()
+                        .first_chunk::<32>()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Private key bytes shorter than 32 bytes")
+                        })?,
                     Mode::EdDSALegacy,
                 )?,
             ));
@@ -131,8 +153,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             // Packet Length is 56 octets for ECDH
             let packet_header = PacketHeader::new_fixed(Tag::PublicKey, 56);
 
-            let x25519_sk =
-                StaticSecret::from(*key.secret.get_private_bytes().first_chunk::<32>().unwrap());
+            let x25519_sk = StaticSecret::from(
+                *key.secret
+                    .get_private_bytes()
+                    .first_chunk::<32>()
+                    .ok_or_else(|| anyhow::anyhow!("Private key bytes shorter than 32 bytes"))?,
+            );
             let x25519_pk = X25519PublicKey::from(&x25519_sk);
 
             let pk = PublicKey::new_with_header(

@@ -31,7 +31,10 @@ pub async fn fetch_tasks(
     term: &Term,
     profile: &Arc<ATMProfile>,
 ) -> Result<u32> {
-    let atm = tdk.atm.clone().unwrap();
+    let atm = tdk
+        .atm
+        .clone()
+        .ok_or_else(|| anyhow!("ATM not initialized"))?;
     let our_did = profile.dids()?.0.to_string();
 
     print!(

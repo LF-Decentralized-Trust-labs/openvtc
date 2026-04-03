@@ -10,7 +10,7 @@ use affinidi_tdk::{
         messages::{FetchDeletePolicy, fetch::FetchOptions},
     },
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use console::style;
 use dialoguer::{Confirm, theme::ColorfulTheme};
 use openvtc::config::Config;
@@ -24,7 +24,10 @@ impl TasksClear for Tasks {
     /// force: Whether to ask for confirmation (no if true)
     /// remote: Deletes all messages on the DIDComm mediator if true
     async fn clear_all(tdk: &TDK, config: &mut Config, force: bool, remote: bool) -> Result<bool> {
-        let atm = tdk.atm.clone().unwrap();
+        let atm = tdk
+            .atm
+            .clone()
+            .ok_or_else(|| anyhow!("ATM not initialized"))?;
         let mut change_flag = false;
 
         if !force

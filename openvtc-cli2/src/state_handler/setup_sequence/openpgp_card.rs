@@ -5,13 +5,13 @@
 use anyhow::{Result, bail};
 use chrono::Utc;
 use ed25519_dalek_bip32::VerifyingKey;
-use openvtc::{KeyPurpose, config::KeyInfo};
 use openpgp_card::{
     Card,
     ocard::{KeyType, data::TouchPolicy},
     state::Open,
 };
 use openpgp_card_rpgp::UploadableKey;
+use openvtc::{KeyPurpose, config::KeyInfo};
 use pgp::{
     crypto::{self, ed25519::Mode, public_key::PublicKeyAlgorithm},
     packet::{PacketHeader, PublicKey, SecretKey},
@@ -47,9 +47,16 @@ pub fn write_keys_to_card(
     ));
     let _ = action_tx.send(state.clone());
     // Try unlocking the card with the admin PIN
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Failed to acquire lock on hardware token"))?;
     let mut open_card = lock.transaction()?;
-    open_card.verify_admin_pin(state.token_admin_pin.clone().unwrap())?;
+    open_card.verify_admin_pin(
+        state
+            .token_admin_pin
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+    )?;
     let mut card = open_card.to_admin_card(None)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
         *last = MessageType::Info("✓ Unlocked token in admin mode".to_string());
@@ -105,7 +112,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
                     key: VerifyingKey::from_bytes(
-                        key.secret.get_public_bytes().first_chunk::<32>().unwrap(),
+                        key.secret
+                            .get_public_bytes()
+                            .first_chunk::<32>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Public key bytes shorter than 32 bytes")
+                            })?,
                     )?,
                 }),
             )?;
@@ -113,7 +125,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             // Create SecretParams
             let sp = SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
                 crypto::ed25519::SecretKey::try_from_bytes(
-                    *key.secret.get_private_bytes().first_chunk::<32>().unwrap(),
+                    *key.secret
+                        .get_private_bytes()
+                        .first_chunk::<32>()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Private key bytes shorter than 32 bytes")
+                        })?,
                     Mode::EdDSALegacy,
                 )?,
             ));
@@ -132,7 +149,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
                     key: VerifyingKey::from_bytes(
-                        key.secret.get_public_bytes().first_chunk::<32>().unwrap(),
+                        key.secret
+                            .get_public_bytes()
+                            .first_chunk::<32>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Public key bytes shorter than 32 bytes")
+                            })?,
                     )?,
                 }),
             )?;
@@ -140,7 +162,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             // Create SecretParams
             let sp = SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
                 crypto::ed25519::SecretKey::try_from_bytes(
-                    *key.secret.get_private_bytes().first_chunk::<32>().unwrap(),
+                    *key.secret
+                        .get_private_bytes()
+                        .first_chunk::<32>()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("Private key bytes shorter than 32 bytes")
+                        })?,
                     Mode::EdDSALegacy,
                 )?,
             ));
@@ -151,8 +178,12 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             // Packet Length is 56 octets for ECDH
             let packet_header = PacketHeader::new_fixed(Tag::PublicKey, 56);
 
-            let x25519_sk =
-                StaticSecret::from(*key.secret.get_private_bytes().first_chunk::<32>().unwrap());
+            let x25519_sk = StaticSecret::from(
+                *key.secret
+                    .get_private_bytes()
+                    .first_chunk::<32>()
+                    .ok_or_else(|| anyhow::anyhow!("Private key bytes shorter than 32 bytes"))?,
+            );
             let x25519_pk = X25519PublicKey::from(&x25519_sk);
 
             let pk = PublicKey::new_with_header(
@@ -188,9 +219,16 @@ pub fn set_signing_touch_policy(
     action_tx: &UnboundedSender<State>,
     card: Arc<Mutex<Card<Open>>>,
 ) -> Result<()> {
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Failed to acquire lock on hardware token"))?;
     let mut open_card = lock.transaction()?;
-    open_card.verify_admin_pin(state.token_admin_pin.clone().unwrap())?;
+    open_card.verify_admin_pin(
+        state
+            .token_admin_pin
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+    )?;
     let mut card = open_card.to_admin_card(None)?;
 
     state.setup.token_set_touch.messages.push(MessageType::Info(
@@ -214,9 +252,16 @@ pub fn set_cardholder_name(
     card: Arc<Mutex<Card<Open>>>,
     name: &str,
 ) -> Result<()> {
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card
+        .try_lock()
+        .map_err(|_| anyhow::anyhow!("Failed to acquire lock on hardware token"))?;
     let mut open_card = lock.transaction()?;
-    open_card.verify_admin_pin(state.token_admin_pin.clone().unwrap())?;
+    open_card.verify_admin_pin(
+        state
+            .token_admin_pin
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+    )?;
     let mut card = open_card.to_admin_card(None)?;
 
     state

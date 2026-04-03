@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- **Removed legacy SHA-256+HKDF encryption** — existing configs must be recreated with `openvtc setup`
+- **`UnlockCode::from_string()` now returns `Result`** and enforces minimum 8-character passphrase
+- **`derive_passphrase_key()` now returns `Result`** — callers must handle the error
+
+### Security
+
+- Replaced `rand::thread_rng()` with `OsRng` in all cryptographic key generation paths (BIP39 entropy, PGP export, DID key generation)
+- Hardened Argon2id parameters: 64 MiB memory / 3 iterations (up from default 19 MiB / 2 iterations) per OWASP recommendations
+- Added `#![deny(unsafe_code)]` to `openvtc-lib` — no unsafe code in production paths
+- Added DID format validation for `OPENVTC_MEDIATOR_DID` and `OPENVTC_ORG_DID` environment variable overrides
+- Replaced all production `unwrap()` calls with proper error handling in setup wizard, clipboard operations, and service initialization
+- Replaced ~15 silent `let _ =` error discards with `debug!`/`warn!` logging in state handler, service, and robotic-maintainers
+
+### Added
+
+- Argon2id as sole KDF (removed legacy fallback)
+- Profile name validation (alphanumeric, hyphens, underscores only)
+- Rate limiting to `openvtc-service` (50 msg/sec with throttle logging)
+- Graceful shutdown signal handling (SIGINT/SIGTERM) in `openvtc-service`
+- Criterion benchmarks for `derive_passphrase_key` and `unlock_code_encrypt`/`unlock_code_decrypt`
+- Integration tests for profile validation, relationships, VRCs, tasks, and logs (38 new tests)
+- `CODE_OF_CONDUCT.md` (Contributor Covenant v2.1)
+- Windows to CI test matrix
+- MSRV verification (Rust 1.91.0) in CI pipeline
+- API documentation for public modules (relationships, VRCs, tasks, logs, config)
+
+### Fixed
+
+- All Clippy warnings (migrated deprecated Protocols API, collapsible-if, items-after-test-module)
+
 ### New: `did-git-sign` crate
 
 A standalone CLI tool for signing git commits using DID Ed25519 keys managed by a VTA. Acts as a git SSH signing proxy — no private key material ever touches disk.

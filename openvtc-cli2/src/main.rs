@@ -177,11 +177,8 @@ async fn main() -> Result<()> {
     let mut starting_mode = StartingMode::NotSet;
 
     // Is there a CLI command to force setup wizard?
-    match cli().get_matches().subcommand() {
-        Some(("setup", _)) => {
-            starting_mode = StartingMode::SetupWizard;
-        }
-        _ => {}
+    if let Some(("setup", _)) = cli().get_matches().subcommand() {
+        starting_mode = StartingMode::SetupWizard;
     }
 
     if let StartingMode::NotSet = starting_mode {
@@ -294,15 +291,19 @@ pub fn apply_env_overrides(config: &mut Config) {
     if let Ok(val) = std::env::var("OPENVTC_MEDIATOR_DID") {
         config.public.mediator_did = val;
     }
-    if let Ok(val) = std::env::var("OPENVTC_VTA_URL") {
-        if let KeyBackend::Vta { ref mut vta_url, .. } = config.key_backend {
-            *vta_url = val;
-        }
+    if let Ok(val) = std::env::var("OPENVTC_VTA_URL")
+        && let KeyBackend::Vta {
+            ref mut vta_url, ..
+        } = config.key_backend
+    {
+        *vta_url = val;
     }
-    if let Ok(val) = std::env::var("OPENVTC_VTA_DID") {
-        if let KeyBackend::Vta { ref mut vta_did, .. } = config.key_backend {
-            *vta_did = val;
-        }
+    if let Ok(val) = std::env::var("OPENVTC_VTA_DID")
+        && let KeyBackend::Vta {
+            ref mut vta_did, ..
+        } = config.key_backend
+    {
+        *vta_did = val;
     }
     if let Ok(val) = std::env::var("OPENVTC_FRIENDLY_NAME") {
         config.public.friendly_name = val;
@@ -318,7 +319,7 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
         ConfigProtectionType::Token { .. } => None,
         ConfigProtectionType::Encrypted => {
             if let Some(passphrase) = cli().get_matches().get_one::<String>("unlock-code") {
-                Some(UnlockCode::from_string(passphrase))
+                Some(UnlockCode::from_string(passphrase)?)
             } else {
                 Some(UnlockCode::from_string(
                     &Password::with_theme(&ColorfulTheme::default())
@@ -326,7 +327,7 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
                         .allow_empty_password(false)
                         .interact()
                         .unwrap(),
-                ))
+                )?)
             }
         }
         ConfigProtectionType::Plaintext => None,

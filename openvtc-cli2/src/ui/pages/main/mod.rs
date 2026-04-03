@@ -134,7 +134,8 @@ impl ComponentRender<()> for MainPage {
         let [main_top, main_middle, main_bottom] =
             Layout::vertical([Length(2), Min(0), Length(3)]).areas(frame.area());
 
-        let top = Layout::horizontal([Percentage(35), Percentage(30), Percentage(35)]).split(main_top);
+        let top =
+            Layout::horizontal([Percentage(35), Percentage(30), Percentage(35)]).split(main_top);
         let middle = Layout::horizontal([Percentage(20), Min(0)]).split(main_middle);
 
         frame.render_widget(
@@ -146,21 +147,20 @@ impl ComponentRender<()> for MainPage {
 
         // Connection status indicator
         let connection_line = match &self.props.connection.status {
-            MediatorStatus::Connected { latency_ms } => {
-                Line::from(vec![
-                    Span::styled("Connected ", ratatui::style::Style::default().fg(COLOR_SUCCESS)),
-                    Span::styled(
-                        format!("({}ms)", latency_ms),
-                        ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),
-                    ),
-                ])
-            }
-            MediatorStatus::Connecting => {
-                Line::from(Span::styled(
-                    "Connecting...",
+            MediatorStatus::Connected { latency_ms } => Line::from(vec![
+                Span::styled(
+                    "Connected ",
+                    ratatui::style::Style::default().fg(COLOR_SUCCESS),
+                ),
+                Span::styled(
+                    format!("({}ms)", latency_ms),
                     ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),
-                ))
-            }
+                ),
+            ]),
+            MediatorStatus::Connecting => Line::from(Span::styled(
+                "Connecting...",
+                ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),
+            )),
             MediatorStatus::Failed(reason) => {
                 let display = if reason.len() > 20 {
                     format!("Failed: {}...", &reason[..17])
@@ -172,18 +172,20 @@ impl ComponentRender<()> for MainPage {
                     ratatui::style::Style::default().fg(COLOR_WARNING_ACCESSIBLE_RED),
                 ))
             }
-            MediatorStatus::Initializing(step) => {
-                Line::from(vec![
-                    Span::styled("Initializing: ", ratatui::style::Style::default().fg(COLOR_ORANGE)),
-                    Span::styled(step.to_string(), ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT)),
-                ])
-            }
-            MediatorStatus::Unknown => {
-                Line::from(Span::styled(
-                    "Mediator: --",
+            MediatorStatus::Initializing(step) => Line::from(vec![
+                Span::styled(
+                    "Initializing: ",
                     ratatui::style::Style::default().fg(COLOR_ORANGE),
-                ))
-            }
+                ),
+                Span::styled(
+                    step.to_string(),
+                    ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),
+                ),
+            ]),
+            MediatorStatus::Unknown => Line::from(Span::styled(
+                "Mediator: --",
+                ratatui::style::Style::default().fg(COLOR_ORANGE),
+            )),
         };
         frame.render_widget(
             Paragraph::new(connection_line).alignment(Alignment::Center),

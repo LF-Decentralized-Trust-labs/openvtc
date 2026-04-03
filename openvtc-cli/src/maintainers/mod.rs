@@ -7,9 +7,8 @@ use crate::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED};
 use affinidi_tdk::{
     TDK,
     didcomm::{Message, PackEncryptedOptions},
-    messaging::protocols::Protocols,
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use clap::ArgMatches;
 use console::style;
 use openvtc::{MessageType, config::Config, maintainers::Maintainer};
@@ -55,12 +54,12 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
         .await?;
 
     // Enable streaming for the Profile account
-    let atm = tdk.atm.clone().unwrap();
-    let protocols = Protocols::new();
-
-    protocols
-        .message_pickup
-        .toggle_live_delivery(&atm, &config.persona_did.profile, true)
+    let atm = tdk
+        .atm
+        .clone()
+        .ok_or_else(|| anyhow!("ATM not initialized"))?;
+    atm.message_pickup()
+        .toggle_live_delivery(&config.persona_did.profile, true)
         .await?;
 
     atm.forward_and_send_message(
@@ -81,10 +80,9 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
         style("Requesting list of known Maintainers").color256(CLI_GREEN)
     );
 
-    match protocols
-        .message_pickup
+    match atm
+        .message_pickup()
         .live_stream_get(
-            &atm,
             &config.persona_did.profile,
             &msg_id,
             Duration::from_secs(10),
@@ -143,7 +141,7 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
 fn create_message_maintainers_list(from: &str, to: &str) -> Result<Message> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| anyhow!("System clock error: {e}"))?
         .as_secs();
 
     let message = Message::build(

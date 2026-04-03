@@ -19,8 +19,9 @@ use crate::{
         setup_sequence::{MessageType, SetupState},
     },
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -87,7 +88,8 @@ impl TokenFactoryReset {
                         }
                         ResetState::Writing => {
                             if state.props.state.token_reset.completed_writing {
-                                let result = navigate(SetupEvent::TokenWritingComplete, &state.props.state);
+                                let result =
+                                    navigate(SetupEvent::TokenWritingComplete, &state.props.state);
                                 handle_nav_result(result, state);
                             }
                         }
@@ -104,7 +106,8 @@ impl TokenFactoryReset {
                         ResetState::Resetting => {}
                         ResetState::Writing => {
                             if state.props.state.token_reset.completed_writing {
-                                let result = navigate(SetupEvent::TokenWritingComplete, &state.props.state);
+                                let result =
+                                    navigate(SetupEvent::TokenWritingComplete, &state.props.state);
                                 handle_nav_result(result, state);
                             }
                         }

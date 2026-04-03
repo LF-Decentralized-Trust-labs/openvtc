@@ -89,7 +89,7 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                 .with_prompt("Please enter Token User PIN <blank = default>")
                 .allow_empty_password(true)
                 .interact()
-                .unwrap();
+                .context("Failed to read Token User PIN")?;
             let user_pin = if user_pin.is_empty() {
                 SecretString::new("123456".to_string())
             } else {
@@ -107,11 +107,11 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap()
+                        .context("Failed to read unlock passphrase")?
                 };
             (
                 SecretString::new(String::new()),
-                Some(UnlockCode::from_string(&passphrase)),
+                Some(UnlockCode::from_string(&passphrase)?),
             )
         }
         ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
@@ -135,9 +135,9 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
             println!(
                 "{}{}",
                 style("ERROR: ").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
+                style(&e).color256(CLI_ORANGE)
             );
-            panic!("Exiting...");
+            bail!("Failed to load configuration: {e}");
         }
     };
 
@@ -367,13 +367,15 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                 Some(("settings", sub_args)) => {
                     // Export settings
                     let passphrase = sub_args.get_one::<String>("passphrase");
-                    config.export(
+                    if let Err(e) = config.export(
                         passphrase.map(|s| SecretString::new(s.to_string())),
                         sub_args
                             .get_one::<String>("file")
                             .expect("Code error - file should has a default!")
                             .as_str(),
-                    );
+                    ) {
+                        eprintln!("ERROR: Export failed: {e}");
+                    }
                 }
                 _ => {
                     println!(

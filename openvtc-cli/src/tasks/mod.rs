@@ -38,7 +38,13 @@ impl TasksExtension for Tasks {
             );
         } else {
             for (task_id, task) in &self.tasks {
-                let task = task.lock().unwrap();
+                let Ok(task) = task.lock() else {
+                    println!(
+                        "{}",
+                        style("ERROR: Task mutex poisoned, skipping entry").color256(CLI_ORANGE)
+                    );
+                    continue;
+                };
                 print!(
                     "{}{} {}{} {}{}",
                     style("Id: ").color256(CLI_BLUE),
@@ -50,7 +56,11 @@ impl TasksExtension for Tasks {
                 );
                 match &task.type_ {
                     TaskType::TrustPing { relationship, .. } => {
-                        let lock = relationship.lock().unwrap();
+                        let Ok(lock) = relationship.lock() else {
+                            print!(" {}", style("LOCK ERROR").color256(CLI_ORANGE));
+                            println!();
+                            continue;
+                        };
                         print!(
                             " {} {}",
                             style("Remote P-DID:").color256(CLI_BLUE),
@@ -58,7 +68,11 @@ impl TasksExtension for Tasks {
                         );
                     }
                     TaskType::VRCRequestOutbound { relationship } => {
-                        let lock = relationship.lock().unwrap();
+                        let Ok(lock) = relationship.lock() else {
+                            print!(" {}", style("LOCK ERROR").color256(CLI_ORANGE));
+                            println!();
+                            continue;
+                        };
                         print!(
                             " {} {}",
                             style("Remote P-DID:").color256(CLI_BLUE),

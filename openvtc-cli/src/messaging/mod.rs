@@ -8,23 +8,18 @@ use crate::{CLI_ORANGE, CLI_PURPLE, CLI_RED};
 use affinidi_tdk::{
     TDK,
     didcomm::{Message, PackEncryptedOptions},
-    messaging::protocols::Protocols,
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use console::style;
 use openvtc::{config::Config, logs::LogFamily, relationships::Relationship};
 
 /// Pings the mediator to check connectivity
 /// uses the persona-DID as the TDK/ATM Profile
 pub async fn ping_mediator(tdk: &mut TDK, config: &Config) -> Result<()> {
-    let atm = tdk.atm.clone().unwrap();
+    let atm = tdk.atm.clone().context("ATM not initialized")?;
 
-    let protocols = Protocols::new();
-
-    protocols
-        .trust_ping
+    atm.trust_ping()
         .send_ping(
-            &atm,
             &config.persona_did.profile,
             &config.public.mediator_did,
             true,
@@ -69,11 +64,10 @@ pub async fn handle_inbound_ping(
         && rr
     {
         // Response requested, send PONG
-        let atm = tdk.atm.clone().unwrap();
-        let protocols = Protocols::new();
+        let atm = tdk.atm.clone().context("ATM not initialized")?;
 
-        let pong_msg = protocols
-            .trust_ping
+        let pong_msg = atm
+            .trust_ping()
             .generate_pong_message(msg, Some(to.as_str()))?;
 
         // Pack the message

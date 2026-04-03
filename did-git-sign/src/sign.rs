@@ -101,9 +101,7 @@ fn create_ssh_signature(
     let mut armored = String::new();
     armored.push_str("-----BEGIN SSH SIGNATURE-----\n");
     for chunk in b64.as_bytes().chunks(76) {
-        armored.push_str(
-            std::str::from_utf8(chunk).expect("base64 output is always valid UTF-8"),
-        );
+        armored.push_str(std::str::from_utf8(chunk).expect("base64 output is always valid UTF-8"));
         armored.push('\n');
     }
     armored.push_str("-----END SSH SIGNATURE-----\n");
@@ -195,5 +193,110 @@ mod tests {
         let armored = result.unwrap();
         assert!(armored.starts_with("-----BEGIN SSH SIGNATURE-----\n"));
         assert!(armored.ends_with("-----END SSH SIGNATURE-----\n"));
+    }
+
+    #[test]
+    fn test_sshsig_blob_contains_magic_and_version() {
+        let seed = [7u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let armored = create_ssh_signature(&signing_key, &verifying_key, "git", b"hello").unwrap();
+
+        // Extract base64 content between the armor headers
+        let b64: String = armored
+            .lines()
+            .filter(|l| !l.starts_with("-----"))
+            .collect();
+        let blob =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &b64).unwrap();
+
+        // First 6 bytes must be "SSHSIG" magic
+        assert_eq!(&blob[..6], b"SSHSIG");
+        // Next 4 bytes must be version 1 (big-endian u32)
+        assert_eq!(&blob[6..10], &[0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn test_signature_deterministic_for_same_inputs() {
+        let seed = [99u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let msg = b"same message";
+
+        let sig1 = create_ssh_signature(&signing_key, &verifying_key, "git", msg).unwrap();
+        let sig2 = create_ssh_signature(&signing_key, &verifying_key, "git", msg).unwrap();
+        // Ed25519 signatures are deterministic
+        assert_eq!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_signature_differs_for_different_messages() {
+        let seed = [55u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+
+        let sig1 = create_ssh_signature(&signing_key, &verifying_key, "git", b"msg A").unwrap();
+        let sig2 = create_ssh_signature(&signing_key, &verifying_key, "git", b"msg B").unwrap();
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_signature_differs_for_different_namespaces() {
+        let seed = [88u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let msg = b"same data";
+
+        let sig1 = create_ssh_signature(&signing_key, &verifying_key, "git", msg).unwrap();
+        let sig2 = create_ssh_signature(&signing_key, &verifying_key, "file", msg).unwrap();
+        assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn test_signature_blob_line_length_at_most_76() {
+        let seed = [1u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        let armored =
+            create_ssh_signature(&signing_key, &verifying_key, "git", b"check line wrap").unwrap();
+
+        for line in armored.lines() {
+            if line.starts_with("-----") {
+                continue;
+            }
+            assert!(
+                line.len() <= 76,
+                "base64 line too long: {} chars",
+                line.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_test_sign_accepts_valid_key() {
+        let seed = [0xAA; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+        assert!(test_sign(&signing_key, &verifying_key, b"test data").is_ok());
+    }
+
+    #[test]
+    fn test_write_u32_big_endian() {
+        let mut buf = Vec::new();
+        write_u32(&mut buf, 0x01020304);
+        assert_eq!(buf, vec![0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn test_signature_blob_encoding() {
+        use ed25519_dalek::Signer;
+        let seed = [0xBB; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let sig = signing_key.sign(b"test");
+        let blob = encode_ssh_ed25519_signature(&sig);
+        // "ssh-ed25519" (4+11) + signature (4+64) = 83 bytes
+        assert_eq!(blob.len(), 83);
+        // Type string is "ssh-ed25519"
+        assert_eq!(&blob[4..15], b"ssh-ed25519");
     }
 }

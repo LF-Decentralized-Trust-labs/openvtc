@@ -57,9 +57,7 @@ impl ContentPanelState {
                         );
                     }
                     MediatorStatus::Connecting => {
-                        lines.push(
-                            Line::from("Mediator: Connecting...").fg(COLOR_TEXT_DEFAULT),
-                        );
+                        lines.push(Line::from("Mediator: Connecting...").fg(COLOR_TEXT_DEFAULT));
                     }
                     MediatorStatus::Failed(reason) => {
                         lines.push(
@@ -68,14 +66,10 @@ impl ContentPanelState {
                         );
                     }
                     MediatorStatus::Initializing(step) => {
-                        lines.push(
-                            Line::from(format!("Initializing: {}", step)).fg(COLOR_ORANGE),
-                        );
+                        lines.push(Line::from(format!("Initializing: {}", step)).fg(COLOR_ORANGE));
                     }
                     MediatorStatus::Unknown => {
-                        lines.push(
-                            Line::from("Mediator: Not connected").fg(COLOR_ORANGE),
-                        );
+                        lines.push(Line::from("Mediator: Not connected").fg(COLOR_ORANGE));
                     }
                 }
 

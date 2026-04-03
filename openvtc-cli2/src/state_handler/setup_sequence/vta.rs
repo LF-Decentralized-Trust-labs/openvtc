@@ -5,10 +5,7 @@ use affinidi_tdk::did_common::Document;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use anyhow::Result;
 use chrono::Utc;
-use openvtc::config::{
-    KeyInfo, PersonaDIDKeys,
-    secured_config::KeySourceMaterial,
-};
+use openvtc::config::{KeyInfo, PersonaDIDKeys, secured_config::KeySourceMaterial};
 use vta_sdk::{
     client::{CreateDidWebvhRequest, CreateKeyRequest, VtaClient},
     credentials::CredentialBundle,
@@ -38,7 +35,10 @@ pub async fn authenticate(
 /// Create persona keys via VTA service
 /// Creates 3 keys: Ed25519 signing, Ed25519 auth, X25519 encryption
 /// Returns PersonaDIDKeys with VtaManaged source
-pub async fn create_persona_keys(client: &VtaClient, context_id: Option<&str>) -> Result<PersonaDIDKeys> {
+pub async fn create_persona_keys(
+    client: &VtaClient,
+    context_id: Option<&str>,
+) -> Result<PersonaDIDKeys> {
     let created = Utc::now();
 
     // Signing key (Ed25519)
@@ -143,7 +143,10 @@ pub async fn create_persona_keys(client: &VtaClient, context_id: Option<&str>) -
 
 /// Create WebVH update keys via VTA service
 /// Returns (update_secret, next_update_secret)
-pub async fn create_update_keys(client: &VtaClient, context_id: Option<&str>) -> Result<(Secret, Secret)> {
+pub async fn create_update_keys(
+    client: &VtaClient,
+    context_id: Option<&str>,
+) -> Result<(Secret, Secret)> {
     // Update key (Ed25519)
     let update_resp = client
         .create_key(CreateKeyRequest {
