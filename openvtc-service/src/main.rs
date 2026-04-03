@@ -8,14 +8,30 @@ use affinidi_tdk::{
     secrets_resolver::SecretsResolver,
 };
 use anyhow::{Result, bail};
+use clap::Parser;
 use openvtc::{MessageType, maintainers::create_send_maintainers_list};
 use tracing::{info, warn};
 use tracing_subscriber::filter;
 
 mod config;
 
+/// OpenVTC Service — background DIDComm message handler for community operations.
+///
+/// Listens for incoming DIDComm messages via a mediator and responds to protocol
+/// requests (e.g. maintainer list queries). Configure logging verbosity with the
+/// RUST_LOG environment variable (e.g. RUST_LOG=info or RUST_LOG=openvtc_service=debug).
+#[derive(Parser)]
+#[command(version)]
+struct Cli {
+    /// Path to the JSON configuration file
+    #[arg(short, long, default_value = "conf/config.json")]
+    config: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let cli = Cli::parse();
+
     // construct a subscriber that prints formatted traces to stdout
     let subscriber = tracing_subscriber::fmt()
         // Use a more compact, abbreviated log format
@@ -25,7 +41,7 @@ async fn main() -> Result<()> {
     tracing::subscriber::set_global_default(subscriber).expect("Logging failed, exiting...");
 
     // Load Configuration
-    let config = Config::load("conf/config.json")?;
+    let config = Config::load(&cli.config)?;
 
     // Create a basic ATM instance
     let atm = ATM::new(
