@@ -34,13 +34,13 @@ impl MenuPanelState {
         let mut lines = Vec::new();
         for item in MainMenu::iter() {
             if item == self.selected_menu {
-                // make it colorful
+                // Use an ASCII marker for consistent rendering across terminals.
                 lines.push(
-                    Line::from(["• ".to_string(), item.to_string()].concat()).fg(COLOR_SUCCESS),
+                    Line::from(["* ".to_string(), item.to_string()].concat()).fg(COLOR_SUCCESS),
                 );
             } else {
                 lines.push(
-                    Line::from(["• ".to_string(), item.to_string()].concat())
+                    Line::from(["* ".to_string(), item.to_string()].concat())
                         .fg(COLOR_TEXT_DEFAULT),
                 );
             }

@@ -218,7 +218,7 @@ impl ComponentRender<()> for MainPage {
             .merge_borders(MergeStrategy::Fuzzy)
             .fg(COLOR_BORDER);
         frame.render_widget(
-            Paragraph::new("<TAB> to change panels")
+            Paragraph::new("<TAB>/<LEFT>/<RIGHT> to change panels, <F10> to quit")
                 .dark_gray()
                 .alignment(Alignment::Left)
                 .block(bottom_block),
