@@ -48,8 +48,8 @@ The OpenVTC tool manages configuration data across three storage types:
 
 | Storage Type        | Content                                                                   | Storage Location                                         | Encryption                             |
 | ------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------- |
-| **PublicConfig**    | Metadata, DIDs, friendly names, logs, reference to encrypted private data | `~/.config/openvtc/config.json` (or `config-{profile}.json`) | Private field only                     |
-| **SecuredConfig**   | BIP32 seed, key derivation info, cryptographic materials                  | OS secure storage (keyring/keychain)                     | Based on protection mode               |
+| **PublicConfig**    | Metadata, DIDs, friendly names, logs, reference to encrypted private data | Derived from `dirs::home_dir()` as `~/.config/openvtc/config.json` (or `config-{profile}.json`) unless `OPENVTC_CONFIG_PATH` is set | Private field only                     |
+| **SecuredConfig**   | BIP32 seed, key derivation info, cryptographic materials                  | OS secure storage through the `keyring` crate            | Based on protection mode               |
 | **ProtectedConfig** | Contacts, relationships, tasks, VRCs                                      | Encrypted inside `PublicConfig.private` field            | Always encrypted with `m/1'/0'/0'` key |
 
 **Loading Configuration:**
@@ -70,6 +70,10 @@ When saving the configuration:
 See
 [Profiles and Configurations](../README.md#profiles-and-configurations)
 for configuration file locations and environment variables.
+
+On Windows, the secure-storage behavior is still mediated through the same
+`keyring` abstraction, and the public-config path logic still starts from the
+user home directory unless `OPENVTC_CONFIG_PATH` is set explicitly.
 
 ## Config Data Structure
 
