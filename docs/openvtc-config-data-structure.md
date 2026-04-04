@@ -354,33 +354,6 @@ The party receiving the relationship request goes through these states:
 
 The end-to-end workflow to establish a relationship between two personas:
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant REQ as Requestor
-    participant REC as Recipient
-
-    Note over REQ: State: None
-    Note over REC: State: None
-
-    REQ->>REQ: Create Relationship<br/>State: RequestSent<br/>Task: RelationshipRequestOutbound
-    REQ->>+REC: Send Relationship Request
-
-    Note over REC: Task: RelationshipRequestInbound
-    REC->>REC: User Reviews Request
-    REC->>REC: Accept Request<br/>State: RequestAccepted
-    REC-->>-REQ: Send Acceptance Message
-
-    Note over REQ: Task: RelationshipRequestAccepted
-    REQ->>REQ: Finalize Relationship<br/>State: Established<br/>Task: RelationshipRequestFinalized
-    REQ->>+REC: Send Finalization
-
-    Note over REC: State: Established<br/>Task: RelationshipRequestFinalized
-    REC-->>-REQ: Acknowledge
-
-    Note over REQ,REC: Relationship Fully Established
-```
-
 #### Relationship Workflow Key Points
 
 - **Asynchronous Process**: The workflow involves message exchanges
@@ -429,35 +402,6 @@ the following steps:
 #### VRC Workflow Sequence
 
 The end-to-end workflow for VRC request and issuance:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Requester as VRC Requester<br/>(Subject)
-    participant Issuer as VRC Issuer
-
-    Note over Requester: vrcs_received: empty
-    Note over Issuer: vrcs_issued: empty
-
-    Requester->>Requester: Create VRC Request<br/>Task: VrcRequestOutbound
-    Requester->>+Issuer: Send VRC Request
-
-    Note over Issuer: Task: VrcRequestInbound
-    Issuer->>Issuer: User Reviews Request
-    Issuer->>Issuer: Create & Sign VRC<br/>Store in vrcs_issued
-    Issuer-->>-Requester: Send VRC
-
-    Note over Requester: Task: VrcReceived
-    Requester->>Requester: Verify VRC Signature
-    Requester->>Requester: Store in vrcs_received
-
-    Note over Requester,Issuer: VRC Issuance Complete
-
-    rect rgb(200, 220, 250)
-    Note over Requester: VRC Stored in vrcs_received<br/>Can be used for verification
-    Note over Issuer: VRC Stored in vrcs_issued<br/>Can be used for verification
-    end
-```
 
 #### VRC Workflow Key Points
 
