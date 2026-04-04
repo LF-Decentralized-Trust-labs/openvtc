@@ -1,6 +1,6 @@
 # Handling Secured Configuration
 
-The OpenVTC CLI tool securely stores the sensitive configuration in a Base64 format in the OS secure storage layer of your device. The configuration contains the following information:
+The OpenVTC CLI tool securely stores the sensitive configuration in a Base64 format in the OS secure storage layer of your device. In the current implementation, this is accessed through the Rust keyring crate, so the exact backend is platform-specific. On Windows, OpenVTC uses the operating system secure-store integration provided through that same abstraction. The configuration contains the following information:
 
 - BIP32 seed used to create the cryptographic keys to generate Decentralised Identifiers (DIDs), specifically your Persona DID.
 
@@ -45,7 +45,7 @@ Using the unlock code, the tool performs the following steps:
 
 3. Uses the AES-256 key to encrypt the configuration data using AES-GCM, which includes the BIP32 seed and key information.
 
-The encrypted configuration is securely stored in the OS’s secure storage, ensuring that sensitive key material remains protected.
+The encrypted configuration is securely stored in the OS secure storage, ensuring that sensitive key material remains protected.
 
 When the tool later needs to retrieve the configuration:
 

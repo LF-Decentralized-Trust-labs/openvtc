@@ -107,7 +107,13 @@ To use a specific profile when running the tool, set the environment variable `O
 export OPENVTC_CONFIG_PROFILE=profile-1
 ```
 
-> **Tip:** Add `OPENVTC_CONFIG_PROFILE` variable to ~/.zshrc or ~/.bashrc to persist across terminal sessions.
+PowerShell example:
+
+```powershell
+$env:OPENVTC_CONFIG_PROFILE = "profile-1"
+```
+
+> **Tip:** Use the persistence mechanism that matches your shell or operating system. For example, Bash/Zsh users may add the variable to a shell startup file, while PowerShell users may set it in their profile script or user environment variables.
 
 Each profile manages two types of configurations:
 
@@ -122,8 +128,13 @@ Stored in JSON format, the public configuration contains environment-specific de
 
 Config file location:
 
-- Default profile: `~/.config/openvtc/config.json`
-- Named profiles: `~/.config/openvtc/config-<PROFILE_NAME>.json`
+- Default profile: derived from `dirs::home_dir()` and saved as `~/.config/openvtc/config.json`
+- Named profiles: derived from `dirs::home_dir()` and saved as `~/.config/openvtc/config-<PROFILE_NAME>.json`
+
+On Windows, the current implementation still builds the default path from the
+user home directory and appends `/.config/openvtc/`. If you prefer an explicit
+location, set `OPENVTC_CONFIG_PATH` to the directory where you want OpenVTC to
+write the public config files.
 
 You can change the default location where the public configuration is saved by setting the environment variable `OPENVTC_CONFIG_PATH` with the new path. For example:
 
@@ -131,7 +142,13 @@ You can change the default location where the public configuration is saved by s
 export OPENVTC_CONFIG_PATH=~/.config/openvtc-tool
 ```
 
-> **Tip:** Add `OPENVTC_CONFIG_PATH` variable to ~/.zshrc or ~/.bashrc to persist across terminal sessions.
+PowerShell example:
+
+```powershell
+$env:OPENVTC_CONFIG_PATH = "$HOME/.config/openvtc-tool"
+```
+
+> **Tip:** Use your shell's normal persistence mechanism if you want the variable to survive new terminal sessions.
 
 ### Private Configuration
 
@@ -148,7 +165,7 @@ The private configuration uses the same encryption method as the [secured config
 
 ### Secured Configuration
 
-Sensitive information is stored in the operating system's secure storage, e.g., macOS Keychain or Linux Keyring.
+Sensitive information is stored in the operating system's secure storage through the project's `keyring` integration, e.g., macOS Keychain or Linux keyring. On Windows, OpenVTC also uses the OS secure-store integration exposed through that same abstraction.
 
 The secured configuration includes:
 
@@ -164,7 +181,7 @@ For more details, refer to the [Secured Configuration Management](./docs/secured
 3. **Optional:** DIDComm mediator to send messages. OpenVTC provides a default DIDComm mediator.
 4. **Optional:** Set environment variables.
    - `OPENVTC_CONFIG_PATH`: Path to openvtc configuration files (default:
-     `~/.config/openvtc/config.json`).
+     derived from `dirs::home_dir()` as `~/.config/openvtc/config.json`).
    - `OPENVTC_CONFIG_PROFILE`: Set a specific configuration profile (defaults to `default`).
 
 ## Feature Flags
