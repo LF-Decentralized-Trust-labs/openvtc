@@ -350,10 +350,6 @@ The party receiving the relationship request goes through these states:
 - No relationship → `RequestAccepted` (when user accepts inbound request)
 - `RequestAccepted` → `Established` (when requestor finalizes)
 
-#### Relationship Workflow Sequence
-
-The end-to-end workflow to establish a relationship between two personas:
-
 #### Relationship Workflow Key Points
 
 - **Asynchronous Process**: The workflow involves message exchanges
@@ -398,10 +394,6 @@ the following steps:
 | 1    | Receive VRC request   | N/A           | `VrcRequestInbound` | Incoming credential request is received. A task is created for the user to review. |
 | 2    | Issue VRC             | `vrcs_issued` | N/A                 | User approves and issues the credential. The VRC is stored in `vrcs_issued`.       |
 | 3    | Send VRC to requester | `vrcs_issued` | N/A                 | The issued VRC is sent to the requester.                                           |
-
-#### VRC Workflow Sequence
-
-The end-to-end workflow for VRC request and issuance:
 
 #### VRC Workflow Key Points
 
