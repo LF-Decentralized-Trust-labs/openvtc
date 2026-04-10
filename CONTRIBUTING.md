@@ -66,6 +66,7 @@ cargo test -p openvtc-lib
 
 ### Useful Links
 
+- [README](README.md)
 - [Docs index](docs/)
 - [Config Data Structure](docs/openvtc-config-data-structure.md)
 - [Secured Configuration](docs/secured-configuration-management.md)
