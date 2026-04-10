@@ -8,10 +8,31 @@ use affinidi_tdk::{
 };
 use didwebvh_rs::{DIDWebVHError, DIDWebVHState, parameters::Parameters, url::WebVHURL};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 use url::Url;
 
 use crate::{config::PersonaDIDKeys, errors::OpenVTCError};
+
+/// Writes only the public DID document JSON to disk.
+pub fn write_public_did_document_to_file(
+    did_document: &serde_json::Value,
+    path: impl AsRef<Path>,
+) -> Result<(), OpenVTCError> {
+    let path = path.as_ref();
+    let did_json = serde_json::to_string_pretty(did_document)?;
+    std::fs::write(path, did_json)
+        .map_err(|e| OpenVTCError::Config(format!("Couldn't write {}: {e}", path.display())))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            OpenVTCError::Config(format!("Couldn't set permissions on {}: {e}", path.display()))
+        })?;
+    }
+
+    Ok(())
+}
 
 pub fn create_initial_webvh_did(
     raw_url: &str,
@@ -198,11 +219,43 @@ pub fn create_initial_webvh_did(
     keys.authentication.secret.id = [did_id, "#key-2"].concat();
     keys.decryption.secret.id = [did_id, "#key-3"].concat();
 
-    // Save the DID to local file
-    log_entry.log_entry.save_to_file("did.jsonl")?;
+    // Save only the public DID document to local file.
+    let did_doc_value = log_entry.get_did_document()?;
+    write_public_did_document_to_file(&did_doc_value, "did.jsonl")?;
 
     Ok((
         did_id.to_string(),
-        serde_json::from_value(log_entry.get_did_document()?)?,
+        serde_json::from_value(did_doc_value)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_public_did_document_to_file;
+    use serde_json::json;
+
+    #[test]
+    fn writes_pretty_public_did_document_json() {
+        let temp_file = std::env::temp_dir().join(format!(
+            "openvtc-did-{}.jsonl",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let did_doc = json!({
+            "id": "did:webvh:example",
+            "verificationMethod": [{"id": "did:webvh:example#key-1"}],
+            "service": [{"id": "did:webvh:example#public-didcomm"}]
+        });
+
+        write_public_did_document_to_file(&did_doc, &temp_file).unwrap();
+
+        let written = std::fs::read_to_string(&temp_file).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(parsed, did_doc);
+
+        std::fs::remove_file(&temp_file).unwrap();
+    }
 }

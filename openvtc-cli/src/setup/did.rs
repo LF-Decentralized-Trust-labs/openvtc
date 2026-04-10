@@ -18,7 +18,7 @@ use console::style;
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 use didwebvh_rs::{DIDWebVHState, parameters::Parameters, url::WebVHURL};
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
-use openvtc::config::PersonaDIDKeys;
+use openvtc::config::{PersonaDIDKeys, did::write_public_did_document_to_file};
 use serde_json::{Value, json};
 use std::{collections::HashMap, sync::Arc};
 use url::Url;
@@ -277,8 +277,11 @@ pub async fn did_setup(
         style(did_id).color256(CLI_PURPLE)
     );
 
-    // save to disk
-    log_entry.log_entry.save_to_file("did.jsonl")?;
+    // Save only the public DID document JSON to disk.
+    let did_doc_value = log_entry
+        .get_did_document()
+        .context("Couldn't get initial DID document state.")?;
+    write_public_did_document_to_file(&did_doc_value, "did.jsonl")?;
     println!(
         "{} {}",
         style("DID document saved:").color256(CLI_BLUE),
@@ -308,11 +311,7 @@ pub async fn did_setup(
 
     Ok(DIDConfig {
         did: Arc::new(did_id.to_string()),
-        document: serde_json::from_value(
-            log_entry
-                .get_did_document()
-                .context("Couldn't get initial DID document state.")?,
-        )
-        .context("Serializing initial DID document state failed.")?,
+        document: serde_json::from_value(did_doc_value)
+            .context("Serializing initial DID document state failed.")?,
     })
 }
