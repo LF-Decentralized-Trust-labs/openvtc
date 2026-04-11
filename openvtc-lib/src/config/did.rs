@@ -198,11 +198,31 @@ pub fn create_initial_webvh_did(
     keys.authentication.secret.id = [did_id, "#key-2"].concat();
     keys.decryption.secret.id = [did_id, "#key-3"].concat();
 
-    // Save the DID to local file
-    log_entry.log_entry.save_to_file("did.jsonl")?;
+    // Save only the public DID document to local file
+    let did_doc_value = log_entry.get_did_document()?;
+    let did_json = serde_json::to_string_pretty(&did_doc_value)?;
+    std::fs::write("did.jsonl", did_json)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions("did.jsonl", std::fs::Permissions::from_mode(0o600))?;
+    }
 
     Ok((
         did_id.to_string(),
         serde_json::from_value(log_entry.get_did_document()?)?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn did_export_does_not_write_internal_log_entry() {
+        let src = include_str!("did.rs");
+        assert!(
+            !src.contains("log_entry.log_entry.save_to_file(\"did.jsonl\")"),
+            "did.jsonl export must not write internal log entries"
+        );
+    }
 }

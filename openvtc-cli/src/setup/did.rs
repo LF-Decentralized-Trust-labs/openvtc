@@ -277,8 +277,17 @@ pub async fn did_setup(
         style(did_id).color256(CLI_PURPLE)
     );
 
-    // save to disk
-    log_entry.log_entry.save_to_file("did.jsonl")?;
+    // Save only the public DID document to disk
+    let did_doc_value = log_entry.get_did_document()?;
+    let did_json = serde_json::to_string_pretty(&did_doc_value)?;
+    std::fs::write("did.jsonl", did_json)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions("did.jsonl", std::fs::Permissions::from_mode(0o600))?;
+    }
+
     println!(
         "{} {}",
         style("DID document saved:").color256(CLI_BLUE),
@@ -315,4 +324,16 @@ pub async fn did_setup(
         )
         .context("Serializing initial DID document state failed.")?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn did_export_does_not_write_internal_log_entry() {
+        let src = include_str!("did.rs");
+        assert!(
+            !src.contains("log_entry.log_entry.save_to_file(\"did.jsonl\")"),
+            "did.jsonl export must not write internal log entries"
+        );
+    }
 }
