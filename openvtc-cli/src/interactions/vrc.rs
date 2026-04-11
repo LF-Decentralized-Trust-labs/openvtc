@@ -818,13 +818,11 @@ pub async fn handle_accept_vrcs_request(
         }
     };
 
-    let valid_until = if !Confirm::with_theme(&ColorfulTheme::default())
+    let valid_until = if Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Does this VRC have a valid until timestamp?")
         .default(false)
         .interact()?
     {
-        Some(Local::now())
-    } else {
         let now = Local::now();
         println!(
             "{}",
@@ -844,6 +842,8 @@ pub async fn handle_accept_vrcs_request(
             .unwrap();
 
         Some(custom_valid_until.parse().unwrap())
+    } else {
+        None
     };
 
     let mut vrc = DTGCredential::new_vrc(
