@@ -258,6 +258,10 @@ impl From<KeyType> for KeyPurpose {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Guards tests that mutate OPENVTC_MEDIATOR_DID / OPENVTC_ORG_DID env vars.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_message_type_try_from_valid() {
@@ -331,7 +335,7 @@ mod tests {
 
     #[test]
     fn test_mediator_did_default() {
-        // Clear any override so we get the default
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("OPENVTC_MEDIATOR_DID") };
         let did = mediator_did();
         assert_eq!(did, LF_PUBLIC_MEDIATOR_DID);
@@ -343,6 +347,7 @@ mod tests {
 
     #[test]
     fn test_org_did_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::remove_var("OPENVTC_ORG_DID") };
         let did = org_did();
         assert_eq!(did, LF_ORG_DID);
@@ -354,6 +359,7 @@ mod tests {
 
     #[test]
     fn test_mediator_did_valid_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let custom = "did:web:example.com:mediator";
         unsafe { std::env::set_var("OPENVTC_MEDIATOR_DID", custom) };
         let did = mediator_did();
@@ -363,6 +369,7 @@ mod tests {
 
     #[test]
     fn test_mediator_did_invalid_override_falls_back() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("OPENVTC_MEDIATOR_DID", "not-a-did") };
         let did = mediator_did();
         assert_eq!(
@@ -374,6 +381,7 @@ mod tests {
 
     #[test]
     fn test_org_did_valid_override() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let custom = "did:web:example.com:org";
         unsafe { std::env::set_var("OPENVTC_ORG_DID", custom) };
         let did = org_did();
@@ -383,6 +391,7 @@ mod tests {
 
     #[test]
     fn test_org_did_invalid_override_falls_back() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("OPENVTC_ORG_DID", "bogus-value") };
         let did = org_did();
         assert_eq!(
