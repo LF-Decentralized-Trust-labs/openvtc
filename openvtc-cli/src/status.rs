@@ -138,7 +138,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 eprintln!("Touch confirmation needed for decryption");
             }
             fn touch_completed(&self) {
-                eprintln!("Touch ompleted");
+                eprintln!("Touch completed");
             }
         }
         A

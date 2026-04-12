@@ -80,7 +80,7 @@ pub async fn fetch_tasks(
                             .color256(CLI_ORANGE),
                         style(e).color256(CLI_ORANGE)
                     );
-                    println!("DIDComm bad enevlope:\n{:#?}", message);
+                    println!("DIDComm bad envelope:\n{:#?}", message);
                     continue;
                 }
             };
@@ -162,7 +162,7 @@ pub async fn fetch_tasks(
                                 println!(
                                     "{}",
                                     style(format!(
-                                        "WARN: Invalid body receieved for relationship request rejection message. Reason: {}",
+                                        "WARN: Invalid body received for relationship request rejection message. Reason: {}",
                                         e
                                     ))
                                 );
@@ -205,7 +205,7 @@ pub async fn fetch_tasks(
                                 println!(
                                     "{}",
                                     style(format!(
-                                        "WARN: Invalid body receieved for relationship request accept message. Reason: {}",
+                                        "WARN: Invalid body received for relationship request accept message. Reason: {}",
                                         e
                                     ))
                                 );
@@ -341,7 +341,7 @@ pub async fn fetch_tasks(
                                 println!(
                                     "{}",
                                     style(format!(
-                                        "WARN: Invalid body receieved for VRC request rejection message. Reason: {}",
+                                        "WARN: Invalid body received for VRC request rejection message. Reason: {}",
                                         e
                                     ))
                                 );

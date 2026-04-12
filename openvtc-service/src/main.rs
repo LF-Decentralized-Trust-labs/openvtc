@@ -151,7 +151,7 @@ async fn handle_message(
     let from_did = if let Some(from) = &msg.from {
         from.to_string()
     } else {
-        warn!("Message receieved had no from: address! Ignoring...",);
+        warn!("Message received had no from: address! Ignoring...",);
         bail!("Anonymous messages are not allowed!");
     };
 
@@ -180,7 +180,7 @@ async fn handle_message(
                 }
             }
             _ => {
-                warn!("Unsupported MessageType receieved: {}", msg.typ);
+                warn!("Unsupported MessageType received: {}", msg.typ);
             }
         }
     }

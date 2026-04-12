@@ -93,7 +93,7 @@ impl ConfigRelationships for Config {
                 style(&r_did).color256(CLI_PURPLE)
             );
 
-            self.public.logs.insert(LogFamily::Relationship, format!("Created new r-did ({}) for relationhip from ({}) task ID ({})", r_did, from, task_id));
+            self.public.logs.insert(LogFamily::Relationship, format!("Created new r-did ({}) for relationship from ({}) task ID ({})", r_did, from, task_id));
             r_did
         } else {
             self.public.persona_did.clone()

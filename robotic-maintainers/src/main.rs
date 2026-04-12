@@ -228,7 +228,7 @@ async fn handle_message(
         from.to_string()
     } else {
         warn!(
-            "{}: Message receieved had no from: address! Ignoring...",
+            "{}: Message received had no from: address! Ignoring...",
             to_profile.inner.alias
         );
         return;
@@ -461,7 +461,7 @@ async fn create_vrc(
         .await
     else {
         warn!("{}: Couldn't find signing secret!", profile.inner.alias);
-        bail!("Couldn't find sceret");
+        bail!("Couldn't find secret");
     };
 
     let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None).await?;

@@ -43,7 +43,7 @@ pub async fn handle_inbound_ping(
     {
         relationship.clone()
     } else {
-        println!("{}", style(format!("WARN: A ping message from ({}) was receieved, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
+        println!("{}", style(format!("WARN: A ping message from ({}) was received, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
         bail!("Invalid Ping received");
     };
 
@@ -118,7 +118,7 @@ pub fn handle_inbound_pong(
     {
         relationship.clone()
     } else {
-        println!("{}", style(format!("WARN: A ping response message from ({}) was receieved, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
+        println!("{}", style(format!("WARN: A ping response message from ({}) was received, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
         bail!("Invalid Ping response received");
     };
 
