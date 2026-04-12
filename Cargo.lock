@@ -7607,7 +7607,8 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vta-sdk"
 version = "0.3.1"
-source = "git+https://github.com/LF-Decentralized-Trust-labs/verifiable-trust-infrastructure#ba64f1ea236d73fd8b53b12a2d5c202da25f2d80"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90f88495372a6ebf5f67e38d8c588d19929157c3670c7be640ae23431e2757ef"
 dependencies = [
  "aes",
  "aes-gcm",

@@ -70,7 +70,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.20", features = ["v4", "fast-rng"] }
-vta-sdk = { git = "https://github.com/LF-Decentralized-Trust-labs/verifiable-trust-infrastructure", features = [
+vta-sdk = { version = "0.3", features = [
   "session",
   "client",
   "didcomm",
