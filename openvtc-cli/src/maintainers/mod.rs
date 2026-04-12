@@ -41,30 +41,17 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
         .clone()
         .ok_or_else(|| anyhow!("ATM not initialized"))?;
 
-    // Pack the message
-    let (message, _) = atm
-        .pack_encrypted(
-            &message,
-            &config.public.lk_did,
-            Some(&config.public.persona_did),
-            None,
-        )
-        .await?;
-
     atm.message_pickup()
         .toggle_live_delivery(&config.persona_did.profile, true)
         .await?;
 
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         &config.persona_did.profile,
-        false,
         &message,
-        None,
-        &config.public.mediator_did,
+        &config.public.persona_did,
         &config.public.lk_did,
-        None,
-        None,
-        false,
+        &config.public.mediator_did,
     )
     .await?;
 

@@ -253,21 +253,13 @@ impl ConfigRelationships for Config {
 
         let atm = tdk.atm.clone().context("ATM not initialized")?;
 
-        // Pack the message
-        let (msg, _) = atm
-            .pack_encrypted(&msg, from, Some(&self.public.persona_did), None)
-            .await?;
-
-        atm.forward_and_send_message(
+        openvtc::pack_and_send(
+            &atm,
             &self.persona_did.profile,
-            false,
             &msg,
-            None,
-            &self.public.mediator_did,
+            &self.public.persona_did,
             from,
-            None,
-            None,
-            false,
+            &self.public.mediator_did,
         )
         .await?;
 

@@ -6,9 +6,12 @@
 use crate::errors::OpenVTCError;
 #[cfg(feature = "openpgp-card")]
 use ::openpgp_card::ocard::KeyType;
-use affinidi_tdk::didcomm::Message;
+use affinidi_tdk::{
+    didcomm::Message,
+    messaging::{ATM, profiles::ATMProfile},
+};
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, sync::Arc};
 
 pub mod bip32;
 pub mod colors;
@@ -66,6 +69,43 @@ pub fn org_did() -> String {
     LF_ORG_DID.to_string()
 }
 
+/// Packs a DIDComm message with authenticated encryption and forwards it
+/// through the mediator to the recipient.
+///
+/// This is a convenience helper that combines `ATM::pack_encrypted` and
+/// `ATM::forward_and_send_message` — the two-step pattern used at every
+/// DIDComm send site in the workspace.
+///
+/// # Errors
+///
+/// Returns an error if message packing or delivery fails.
+pub async fn pack_and_send(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    msg: &Message,
+    from: &str,
+    to: &str,
+    mediator: &str,
+) -> Result<(), errors::OpenVTCError> {
+    let (packed, _) = atm.pack_encrypted(msg, to, Some(from), None).await?;
+    atm.forward_and_send_message(profile, false, &packed, None, mediator, to, None, None, false)
+        .await?;
+    Ok(())
+}
+
+/// Extracts the `from` address from a DIDComm message, returning an error
+/// if the field is absent.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::Config`] if the message has no `from` address.
+pub fn require_from(msg: &Message) -> Result<String, errors::OpenVTCError> {
+    msg.from
+        .as_deref()
+        .map(String::from)
+        .ok_or_else(|| errors::OpenVTCError::Config("Message has no 'from' address".to_string()))
+}
+
 /// Protocol URL constants for DIDComm message types used in OpenVTC messaging.
 pub mod protocol_urls {
     /// URL for initiating a new relationship request.
@@ -94,6 +134,8 @@ pub mod protocol_urls {
     pub const MAINTAINERS_LIST_REQUEST: &str = "https://kernel.org/maintainers/1.0/list";
     /// URL for responding with a list of known maintainers.
     pub const MAINTAINERS_LIST_RESPONSE: &str = "https://kernel.org/maintainers/1.0/list/response";
+    /// URL for a DIDComm MessagePickup 3.0 status message.
+    pub const MESSAGEPICKUP_STATUS: &str = "https://didcomm.org/messagepickup/3.0/status";
 }
 
 /// Defined Message Types for OpenVTC DIDComm messaging protocol.

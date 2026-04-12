@@ -105,21 +105,13 @@ pub async fn create_send_request(
     let msg = create_message_request(&config.public.persona_did, &contact.did, reason, &r_did)?;
     let msg_id = Arc::new(msg.id.clone());
 
-    // Pack the message
-    let (msg, _) = atm
-        .pack_encrypted(&msg, &contact.did, Some(&config.public.persona_did), None)
-        .await?;
-
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         &config.persona_did.profile,
-        false,
         &msg,
-        None,
-        &config.public.mediator_did,
+        &config.public.persona_did,
         &contact.did,
-        None,
-        None,
-        false,
+        &config.public.mediator_did,
     )
     .await?;
 

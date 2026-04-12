@@ -67,9 +67,6 @@ pub async fn handle_inbound_ping(
             .trust_ping()
             .generate_pong_message(msg, Some(to.as_str()))?;
 
-        // Pack the message
-        let (pong_msg, _) = atm.pack_encrypted(&pong_msg, from, Some(to), None).await?;
-
         let profile = if to == &config.public.persona_did {
             &config.persona_did.profile
         } else if let Some(profile) = config.atm_profiles.get(to) {
@@ -83,18 +80,8 @@ pub async fn handle_inbound_ping(
             bail!("Missing Messaging Profile");
         };
 
-        atm.forward_and_send_message(
-            profile,
-            false,
-            &pong_msg,
-            None,
-            &config.public.mediator_did,
-            from,
-            None,
-            None,
-            false,
-        )
-        .await?;
+        openvtc::pack_and_send(&atm, profile, &pong_msg, to, from, &config.public.mediator_did)
+            .await?;
 
         config.public.logs.insert(
             LogFamily::Relationship,

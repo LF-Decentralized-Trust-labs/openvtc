@@ -66,18 +66,13 @@ pub(super) async fn vrcs_interactive_request(tdk: &TDK, config: &mut Config) -> 
             .clone()
             .ok_or_else(|| anyhow!("ATM not initialized"))?;
 
-        // Pack the message
-        let (message, _) = atm.pack_encrypted(&message, &to, Some(&from), None).await?;
-        atm.forward_and_send_message(
+        openvtc::pack_and_send(
+            &atm,
             profile,
-            false,
             &message,
-            None,
+            &from,
+            &to,
             &config.public.mediator_did,
-            to.as_str(),
-            None,
-            None,
-            false,
         )
         .await?;
 
@@ -284,18 +279,13 @@ pub async fn interact_vrc_inbound_request(
                     .clone()
                     .ok_or_else(|| anyhow!("ATM not initialized"))?;
 
-                // Pack the message
-                let (msg, _) = atm.pack_encrypted(&msg, &from, Some(&to), None).await?;
-                atm.forward_and_send_message(
+                openvtc::pack_and_send(
+                    &atm,
                     profile,
-                    false,
                     &msg,
-                    None,
+                    &to,
+                    &from,
                     &config.public.mediator_did,
-                    from.as_str(),
-                    None,
-                    None,
-                    false,
                 )
                 .await?;
 

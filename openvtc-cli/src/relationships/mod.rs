@@ -482,21 +482,13 @@ async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()>
             .generate_ping_message(Some(our_did.as_str()), &remote_did, true)?;
     let msg_id = ping_msg.id.clone();
 
-    // Pack the message
-    let (ping_msg, _) = atm
-        .pack_encrypted(&ping_msg, &remote_did, Some(&our_did), None)
-        .await?;
-
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         profile,
-        false,
         &ping_msg,
-        None,
-        &config.public.mediator_did,
+        &our_did,
         &remote_did,
-        None,
-        None,
-        false,
+        &config.public.mediator_did,
     )
     .await?;
 

@@ -353,20 +353,13 @@ pub async fn handle_accept_vrcs_request(
         .clone()
         .ok_or_else(|| anyhow!("ATM not initialized"))?;
 
-    // Pack the message
-    let (msg, _) = atm
-        .pack_encrypted(&msg, &their_r_did, Some(&our_r_did), None)
-        .await?;
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         &config.persona_did.profile,
-        false,
         &msg,
-        None,
+        &our_r_did,
+        &their_r_did,
         &config.public.mediator_did,
-        their_r_did.as_str(),
-        None,
-        None,
-        false,
     )
     .await?;
 

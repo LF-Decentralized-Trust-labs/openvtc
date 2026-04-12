@@ -62,23 +62,8 @@ pub async fn create_send_maintainers_list(
     .expires_time(60 * 60 * 48) // 48 hours
     .finalize();
 
-    // Pack the message
-    let (msg, _) = atm
-        .pack_encrypted(&msg, to, Some(&from_profile.inner.did), None)
+    crate::pack_and_send(atm, from_profile, &msg, &from_profile.inner.did, to, mediator_did)
         .await?;
-
-    atm.forward_and_send_message(
-        from_profile,
-        false,
-        &msg,
-        None,
-        mediator_did,
-        to,
-        None,
-        None,
-        false,
-    )
-    .await?;
 
     Ok(())
 }
