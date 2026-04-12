@@ -23,7 +23,7 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use openvtc::{
-    MessageType,
+    MessageType, protocol_urls,
     relationships::{
         RelationshipRequestBody, create_send_message_accepted, create_send_message_rejected,
     },
@@ -224,17 +224,18 @@ async fn handle_message(
         );
     }
 
-    let from_did = if let Some(from) = &message.from {
-        from.to_string()
-    } else {
-        warn!(
-            "{}: Message received had no from: address! Ignoring...",
-            to_profile.inner.alias
-        );
-        return;
+    let from_did = match openvtc::require_from(message) {
+        Ok(did) => did,
+        Err(_) => {
+            warn!(
+                "{}: Message received had no from: address! Ignoring...",
+                to_profile.inner.alias
+            );
+            return;
+        }
     };
 
-    if message.typ == "https://didcomm.org/messagepickup/3.0/status" {
+    if message.typ == protocol_urls::MESSAGEPICKUP_STATUS {
         // Status message, ignore
         return;
     }

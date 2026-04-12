@@ -243,7 +243,7 @@ async fn dispatch_message(
                 latency_ms: None,
             });
         }
-        t if t.ends_with("messagepickup/3.0/status") => {
+        t if t == openvtc::protocol_urls::MESSAGEPICKUP_STATUS => {
             // Silently ignore message pickup status
         }
         _ => {
