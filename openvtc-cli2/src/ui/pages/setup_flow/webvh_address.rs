@@ -61,7 +61,7 @@ pub enum WebVHChoice {
     Import,
 }
 impl WebVHChoice {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
     pub fn switch(&self) -> Self {
         match self {
             WebVHChoice::Create => WebVHChoice::Import,

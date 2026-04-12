@@ -11,7 +11,7 @@ use crate::vta;
 const SSHSIG_MAGIC: &[u8; 6] = b"SSHSIG";
 
 /// Handle the signing invocation from git.
-/// Git calls: did-git-sign -Y sign -f <config_path> -n <namespace>
+/// Git calls: `did-git-sign -Y sign -f <config_path> -n <namespace>`
 /// Data to sign comes on stdin; armored SSH signature goes to stdout.
 pub async fn handle_sign(config_path: &Path, namespace: &str) -> Result<()> {
     // Read data to sign from stdin

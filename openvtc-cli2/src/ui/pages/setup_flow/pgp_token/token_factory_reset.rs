@@ -49,7 +49,7 @@ pub enum TokenFactoryResetOptions {
 }
 
 impl TokenFactoryResetOptions {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
     pub fn switch(&self) -> Self {
         match self {
             TokenFactoryResetOptions::Reset => TokenFactoryResetOptions::NoReset,

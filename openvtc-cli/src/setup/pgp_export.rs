@@ -27,7 +27,7 @@ use x25519_dalek::StaticSecret;
 /// Prompts the user if they want to export their persona DID keys for PGP Use
 /// term: Terminal Console to help with formatting
 /// keys: Persona DID Keys struct
-/// user_id: Optional PGP User ID String (name <email address>)
+/// user_id: Optional PGP User ID String (name `<email address>`)
 ///            - if not provided, then user is promoted for it
 /// passphrase: Optional passphrase to unlock PGP Armor export
 ///            - if not provided, then user is promoted for it
@@ -133,7 +133,7 @@ pub fn ask_export_persona_did_keys(
 /// Inputs:
 /// - term: Console Terminal manipulation
 /// - keys: Keys that will be exported
-/// - user_id: PGP User ID string (name <email address>)
+/// - user_id: PGP User ID string (name `<email address>`)
 /// - wizard: If true, will print status to STDIO
 pub fn export_persona_did_keys(
     term: &Term,

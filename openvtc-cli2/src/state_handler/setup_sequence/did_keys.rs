@@ -24,7 +24,7 @@ use crate::state_handler::state::State;
 /// Inputs:
 /// - state: Application state
 /// - state_tx: State update channel
-/// - user_id: PGP User ID string (name <email address>)
+/// - user_id: PGP User ID string (name `<email address>`)
 /// - passphrase: Passphrase to protect the exported keys
 pub fn export_persona_did_keys(
     state: &mut State,

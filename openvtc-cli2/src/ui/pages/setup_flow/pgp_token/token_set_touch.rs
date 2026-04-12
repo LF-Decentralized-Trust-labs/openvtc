@@ -39,7 +39,7 @@ pub enum TokenSetTouchOptions {
 }
 
 impl TokenSetTouchOptions {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
     pub fn switch(&self) -> Self {
         match self {
             TokenSetTouchOptions::SetTouch => TokenSetTouchOptions::NoTouch,

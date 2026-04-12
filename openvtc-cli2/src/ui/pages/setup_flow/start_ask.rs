@@ -33,7 +33,7 @@ pub enum StartAskPanel {
 }
 
 impl StartAskPanel {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
     pub fn switch(&self) -> Self {
         match self {
             StartAskPanel::Create => StartAskPanel::Import,
