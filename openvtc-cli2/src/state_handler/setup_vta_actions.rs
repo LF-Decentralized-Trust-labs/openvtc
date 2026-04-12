@@ -14,21 +14,31 @@ pub(crate) async fn handle_vta_submit_credential(
 
     match vta::decode_credential(&credential_input) {
         Ok(bundle) => {
+            // Immediately show progress so the user knows something is happening
+            state.setup.vta.credential_bundle_raw = Some(credential_input);
+            state.setup.vta.credential_did = bundle.did.clone();
+            state.setup.vta.vta_did = bundle.vta_did.clone();
+            state.setup.vta.messages.clear();
+            state.setup.vta.completed = Completion::NotFinished;
+            state.setup.active_page = SetupPage::VtaAuthenticate;
+            state.setup.vta.messages.push(MessageType::Info(
+                "Resolving VTA service endpoint...".to_string(),
+            ));
+            state_tx.send(state.clone())?;
+
             // Resolve VTA URL from DID document's #vta service endpoint,
             // falling back to bundle URL if resolution fails
             let vta_url = match vta_sdk::session::resolve_vta_url(&bundle.vta_did).await {
                 Ok(url) => url,
                 Err(_) => bundle.vta_url.clone().unwrap_or_default(),
             };
-            state.setup.vta.credential_bundle_raw = Some(credential_input);
-            state.setup.vta.credential_did = bundle.did.clone();
             state.setup.vta.vta_url = vta_url.clone();
-            state.setup.vta.vta_did = bundle.vta_did.clone();
-            state.setup.vta.messages.clear();
-            state.setup.vta.completed = Completion::NotFinished;
-            state.setup.active_page = SetupPage::VtaAuthenticate;
 
             // Pre-populate mediator DID from #didcomm service endpoint
+            state.setup.vta.messages.push(MessageType::Info(
+                "Resolving mediator endpoint...".to_string(),
+            ));
+            state_tx.send(state.clone())?;
             if let Ok(Some(mediator_did)) =
                 vta_sdk::session::resolve_mediator_did(&bundle.vta_did).await
             {
