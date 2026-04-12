@@ -187,7 +187,10 @@ async fn main() -> Result<()> {
             Ok(WebSocketResponses::MessageReceived(inbound_message, meta)) = inbound_channel.recv() => {
                 handle_message( &atm, mediator_did, &inbound_message, &meta, &mut relationships).await;
             }
-
+            _ = tokio::signal::ctrl_c() => {
+                info!("Shutting down...");
+                return Ok(());
+            }
         }
     }
 }

@@ -174,7 +174,6 @@ pub(crate) fn handle_set_touch_policy(
             .messages
             .push(MessageType::Error("No token was specified.".to_string()));
     }
-    state.setup.token_set_touch.completed = true;
 }
 
 /// Handle the `SetTokenName` action.
@@ -208,5 +207,4 @@ pub(crate) fn handle_set_token_name(
             .messages
             .push(MessageType::Error("No token was specified.".to_string()));
     }
-    state.setup.token_cardholder_name.completed = true;
 }
