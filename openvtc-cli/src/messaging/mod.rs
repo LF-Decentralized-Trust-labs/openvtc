@@ -80,8 +80,15 @@ pub async fn handle_inbound_ping(
             bail!("Missing Messaging Profile");
         };
 
-        openvtc::pack_and_send(&atm, profile, &pong_msg, to, from, &config.public.mediator_did)
-            .await?;
+        openvtc::pack_and_send(
+            &atm,
+            profile,
+            &pong_msg,
+            to,
+            from,
+            &config.public.mediator_did,
+        )
+        .await?;
 
         config.public.logs.insert(
             LogFamily::Relationship,

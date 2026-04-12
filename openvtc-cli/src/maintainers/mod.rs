@@ -109,7 +109,14 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
             return Ok(());
         }
         Err(e) => {
-            println!("{}{}", style("ERROR: An error occurred while waiting for a response from kernel.org Reason: ").color256(CLI_RED), style(e).color256(CLI_ORANGE));
+            println!(
+                "{}{}",
+                style(
+                    "ERROR: An error occurred while waiting for a response from kernel.org Reason: "
+                )
+                .color256(CLI_RED),
+                style(e).color256(CLI_ORANGE)
+            );
             bail!("Couldn't retrieve maintainer list")
         }
     }
