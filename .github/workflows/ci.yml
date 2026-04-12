@@ -31,7 +31,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libdbus-1-dev
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
@@ -46,7 +46,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libdbus-1-dev
       - name: Test with default features (Linux/macOS)
         if: runner.os != 'Windows'
         run: cargo test --workspace
@@ -61,6 +61,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
       - run: cargo test --workspace --no-default-features
 
   doc:
@@ -71,7 +73,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libdbus-1-dev
       - run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -84,7 +86,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libdbus-1-dev
       - run: cargo bench --workspace --no-run
 
   msrv:
@@ -95,7 +97,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.91.0
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev
+        run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libdbus-1-dev
       - run: cargo check --workspace
 
   audit:

@@ -1,0 +1,12 @@
+# Advisories to ignore (transitive dependencies we cannot easily update)
+[advisories]
+ignore = [
+    # rsa: Marvin Attack timing sidechannel — no patch available yet.
+    # Transitive dep via affinidi crates; not used directly for RSA operations.
+    "RUSTSEC-2023-0071",
+
+    # rand 0.8: unsound with custom logger using rand::rng().
+    # Pinned to 0.8 because aes-gcm 0.10 requires rand_core 0.6.
+    # We do not use a custom logger that calls rand::rng().
+    "RUSTSEC-2026-0097",
+]
