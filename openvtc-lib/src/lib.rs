@@ -88,8 +88,10 @@ pub async fn pack_and_send(
     mediator: &str,
 ) -> Result<(), errors::OpenVTCError> {
     let (packed, _) = atm.pack_encrypted(msg, to, Some(from), None).await?;
-    atm.forward_and_send_message(profile, false, &packed, None, mediator, to, None, None, false)
-        .await?;
+    atm.forward_and_send_message(
+        profile, false, &packed, None, mediator, to, None, None, false,
+    )
+    .await?;
     Ok(())
 }
 

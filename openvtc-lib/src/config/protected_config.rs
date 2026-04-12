@@ -231,21 +231,38 @@ impl ProtectedConfig {
     }
 
     pub fn get_seed(bip32: &ExtendedSigningKey, path: &str) -> Result<SecretVec<u8>, OpenVTCError> {
-        Ok(SecretVec::new(
-            bip32
-                .derive(&path.parse::<DerivationPath>().map_err(|e| {
-                    OpenVTCError::BIP32(format!("Couldn't parse derivation path ({}): {}", path, e))
-                })?)
-                .map_err(|e| {
-                    OpenVTCError::BIP32(format!(
-                        "Couldn't derive secret key for path ({}): {}",
-                        path, e
-                    ))
-                })?
-                .verifying_key()
-                .to_bytes()
-                .to_vec(),
-        ))
+        let derived = bip32
+            .derive(&path.parse::<DerivationPath>().map_err(|e| {
+                OpenVTCError::BIP32(format!("Couldn't parse derivation path ({}): {}", path, e))
+            })?)
+            .map_err(|e| {
+                OpenVTCError::BIP32(format!(
+                    "Couldn't derive secret key for path ({}): {}",
+                    path, e
+                ))
+            })?;
+        Ok(SecretVec::new(derived.signing_key.as_bytes().to_vec()))
+    }
+
+    /// Legacy seed derivation using the verifying (public) key.
+    ///
+    /// Used only for migrating configs encrypted with the old (pre-0.1.4) seed
+    /// derivation. New code should always use [`ProtectedConfig::get_seed`].
+    pub fn get_seed_legacy(
+        bip32: &ExtendedSigningKey,
+        path: &str,
+    ) -> Result<SecretVec<u8>, OpenVTCError> {
+        let derived = bip32
+            .derive(&path.parse::<DerivationPath>().map_err(|e| {
+                OpenVTCError::BIP32(format!("Couldn't parse derivation path ({}): {}", path, e))
+            })?)
+            .map_err(|e| {
+                OpenVTCError::BIP32(format!(
+                    "Couldn't derive secret key for path ({}): {}",
+                    path, e
+                ))
+            })?;
+        Ok(SecretVec::new(derived.verifying_key().to_bytes().to_vec()))
     }
 
     /// Derives an encryption seed from a VTA credential's private key multibase.

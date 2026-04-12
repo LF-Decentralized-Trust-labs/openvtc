@@ -13,6 +13,7 @@ use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretString, SecretVec};
 use std::collections::HashMap;
+use tracing::{info, warn};
 use vta_sdk::credentials::CredentialBundle;
 
 #[cfg(feature = "openpgp-card")]
@@ -125,12 +126,39 @@ impl Config {
             } => SecretVec::new(encryption_seed.expose_secret().to_vec()),
         };
 
-        // Unencrypt the private config data
-        let private_cfg = if let Some(private_cfg_str) = &public_config.private {
-            ProtectedConfig::load(&encryption_seed, private_cfg_str)?
+        // Unencrypt the private config data, with migration from legacy seed
+        let (private_cfg, needs_migration) = if let Some(private_cfg_str) = &public_config.private {
+            match ProtectedConfig::load(&encryption_seed, private_cfg_str) {
+                Ok(cfg) => (cfg, false),
+                Err(_) => {
+                    // Try legacy seed (pre-0.1.4 used verifying key instead of signing key)
+                    if let KeyBackend::Bip32 { root, .. } = &key_backend {
+                        let legacy_seed = ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?;
+                        match ProtectedConfig::load(&legacy_seed, private_cfg_str) {
+                            Ok(cfg) => {
+                                warn!(
+                                    "Config was encrypted with legacy seed — will be \
+                                         re-encrypted with the new seed on next save"
+                                );
+                                (cfg, true)
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    } else {
+                        return Err(OpenVTCError::Decrypt(
+                            "Failed to decrypt protected config".to_string(),
+                        ));
+                    }
+                }
+            }
         } else {
-            ProtectedConfig::default()
+            (ProtectedConfig::default(), false)
         };
+
+        // If migrating from legacy seed, flag for re-encryption on next save
+        if needs_migration {
+            info!("Config will be re-encrypted with the updated seed derivation on next save");
+        }
 
         debug!("Private Config\n{:#?}", private_cfg);
 

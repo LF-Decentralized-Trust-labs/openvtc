@@ -474,8 +474,15 @@ pub async fn create_send_message_rejected(
     .expires_time(60 * 60 * 48) // 48 hours
     .finalize();
 
-    crate::pack_and_send(atm, from_profile, &msg, &from_profile.inner.did, to, mediator_did)
-        .await?;
+    crate::pack_and_send(
+        atm,
+        from_profile,
+        &msg,
+        &from_profile.inner.did,
+        to,
+        mediator_did,
+    )
+    .await?;
 
     Ok(())
 }
@@ -520,8 +527,15 @@ pub async fn create_send_message_accepted(
     .expires_time(60 * 60 * 48) // 48 hours
     .finalize();
 
-    crate::pack_and_send(atm, from_profile, &msg, &from_profile.inner.did, to, mediator_did)
-        .await?;
+    crate::pack_and_send(
+        atm,
+        from_profile,
+        &msg,
+        &from_profile.inner.did,
+        to,
+        mediator_did,
+    )
+    .await?;
 
     Ok(())
 }
