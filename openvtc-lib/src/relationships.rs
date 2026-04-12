@@ -139,9 +139,9 @@ impl From<RelationshipsShadow> for Relationships {
 /// Flat serialization form of [`Relationships`] used for persistence in `SecuredConfig`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RelationshipsShadow {
-    pub relationships: Vec<Arc<Mutex<Relationship>>>,
-    pub path_pointer: u32,
+pub(crate) struct RelationshipsShadow {
+    pub(crate) relationships: Vec<Arc<Mutex<Relationship>>>,
+    pub(crate) path_pointer: u32,
 }
 
 impl From<Relationships> for RelationshipsShadow {

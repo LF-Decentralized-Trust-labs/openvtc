@@ -1,6 +1,6 @@
 //! Integration tests for the Relationships struct and related types.
 
-use openvtc::relationships::{Relationship, RelationshipState, Relationships, RelationshipsShadow};
+use openvtc::relationships::{Relationship, RelationshipState, Relationships};
 use std::sync::{Arc, Mutex};
 
 fn make_relationship(
@@ -192,11 +192,9 @@ fn relationships_shadow_roundtrip() {
     rels.relationships
         .insert(r.remote_p_did.clone(), Arc::new(Mutex::new(r)));
 
-    let shadow: RelationshipsShadow = rels.into();
-    assert_eq!(shadow.path_pointer, 7);
-    assert_eq!(shadow.relationships.len(), 1);
-
-    let restored: Relationships = shadow.into();
+    // Roundtrip via JSON serialization (uses RelationshipsShadow internally via serde)
+    let json = serde_json::to_string(&rels).expect("serialize");
+    let restored: Relationships = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(restored.path_pointer, 7);
     assert_eq!(restored.relationships.len(), 1);
 }
