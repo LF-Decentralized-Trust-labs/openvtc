@@ -4,7 +4,7 @@
 
 use crate::{
     cli::cli,
-    config::ConfigExtension,
+    config::{ConfigExtension, save_config},
     contacts::ContactsExtension,
     interactions::vrc::vrcs_entry,
     log::LogsExtension,
@@ -405,13 +405,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                 .await?
             {
                 // Need to save config
-                config.save(
-                    profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| {
-                        eprintln!("Touch confirmation needed for decryption");
-                    },
-                )?;
+                save_config(&mut config, profile)?;
             }
         }
         Some(("relationships", args)) => {

@@ -160,6 +160,25 @@ impl ConfigExtension for Config {
     }
 }
 
+/// Saves the current configuration to disk for the given profile.
+///
+/// Wraps `Config::save` with the platform-appropriate touch-notification
+/// callback so all call sites use a single consistent invocation.
+///
+/// # Errors
+///
+/// Returns an error if serialization or file I/O fails.
+pub fn save_config(config: &mut openvtc::config::Config, profile: &str) -> anyhow::Result<()> {
+    config.save(
+        profile,
+        #[cfg(feature = "openpgp-card")]
+        &|| {
+            eprintln!("Touch confirmation needed for decryption");
+        },
+    )?;
+    Ok(())
+}
+
 pub trait PublicConfigExtension {
     fn status(&self);
 }

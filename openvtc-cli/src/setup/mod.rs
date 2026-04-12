@@ -5,6 +5,7 @@
 use crate::setup::openpgp_card::setup_hardware_token;
 use crate::{
     CLI_BLUE, CLI_GREEN, CLI_PURPLE,
+    config::save_config,
     setup::{
         bip32_bip39::{generate_bip39_mnemonic, mnemonic_from_recovery_phrase},
         did::did_setup,
@@ -179,7 +180,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
     };
 
     // Initial Configuration state
-    let config = Config {
+    let mut config = Config {
         key_backend: KeyBackend::Bip32 {
             root: get_bip32_root(mnemonic.to_entropy().as_slice())?,
             seed: SecretString::new(BASE64_URL_SAFE_NO_PAD.encode(mnemonic.to_entropy())),
@@ -226,13 +227,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
         vrcs: HashMap::new(),
     };
 
-    config.save(
-        profile,
-        #[cfg(feature = "openpgp-card")]
-        &|| {
-            eprintln!("Touch confirmation needed for decryption");
-        },
-    )?;
+    save_config(&mut config, profile)?;
 
     println!("{}", style("Next Steps:").color256(CLI_BLUE));
     println!(

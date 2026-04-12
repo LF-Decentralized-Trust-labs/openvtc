@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use crate::{
-    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED,
+    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED, config::save_config,
     relationships::messages::create_send_request,
 };
 use affinidi_tdk::{
@@ -229,13 +229,7 @@ pub async fn relationships_entry(
             )
             .await?;
 
-            config.save(
-                profile,
-                #[cfg(feature = "openpgp-card")]
-                &|| {
-                    eprintln!("Touch confirmation needed for decryption");
-                },
-            )?;
+            save_config(config, profile)?;
         }
         Some(("ping", sub_args)) => {
             let remote_did = if let Some(did) = sub_args.get_one::<String>("remote") {
@@ -250,13 +244,7 @@ pub async fn relationships_entry(
 
             remote_ping(&tdk, config, &remote_did).await?;
 
-            config.save(
-                profile,
-                #[cfg(feature = "openpgp-card")]
-                &|| {
-                    eprintln!("Touch confirmation needed for decryption");
-                },
-            )?;
+            save_config(config, profile)?;
         }
         Some(("remove", sub_args)) => {
             let remote_did = if let Some(did) = sub_args.get_one::<String>("remote") {
@@ -312,13 +300,7 @@ pub async fn relationships_entry(
                 style(remote_p_did).color256(CLI_GREEN)
             );
 
-            config.save(
-                profile,
-                #[cfg(feature = "openpgp-card")]
-                &|| {
-                    eprintln!("Touch confirmation needed for decryption");
-                },
-            )?;
+            save_config(config, profile)?;
         }
         _ => {
             println!(

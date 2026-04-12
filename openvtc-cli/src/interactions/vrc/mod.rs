@@ -6,6 +6,7 @@ pub use display::*;
 pub use issued::*;
 pub use request::*;
 
+use crate::config::save_config;
 use anyhow::{Result, bail};
 use clap::ArgMatches;
 use console::style;
@@ -51,13 +52,7 @@ pub async fn vrcs_entry(
     match args.subcommand() {
         Some(("request", _)) => {
             if vrcs_interactive_request(&tdk, config).await? {
-                config.save(
-                    profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| {
-                        eprintln!("Touch confirmation needed for decryption");
-                    },
-                )?;
+                save_config(config, profile)?;
             }
         }
         Some(("list", sub_args)) => {
@@ -90,13 +85,7 @@ pub async fn vrcs_entry(
             if let Some(id) = sub_args.get_one::<String>("id") {
                 remove_vrc_by_id(config, &Arc::new(id.to_string()));
 
-                config.save(
-                    profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| {
-                        eprintln!("Touch confirmation needed for decryption");
-                    },
-                )?;
+                save_config(config, profile)?;
             } else {
                 println!(
                     "{}",
