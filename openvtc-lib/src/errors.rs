@@ -56,7 +56,7 @@ pub enum OpenVTCError {
     Config(String),
 
     /// The configuration file could not be found at the expected path.
-    #[error("Config Not Found! path({0}")]
+    #[error("Config Not Found! path({0}): {1}")]
     ConfigNotFound(String, std::io::Error),
 
     /// An error from a hardware security token (e.g. OpenPGP card / YubiKey).

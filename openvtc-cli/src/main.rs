@@ -449,7 +449,7 @@ pub fn get_unlock_code() -> Result<[u8; 32]> {
         .with_prompt("Please enter your openvtc unlock code")
         .allow_empty_password(true)
         .interact()
-        .unwrap_or_default();
+        .map_err(|e| anyhow::anyhow!("Failed to read unlock code: {e}"))?;
 
     Ok(sha2::Sha256::digest(unlock_code.as_bytes()).into())
 }
