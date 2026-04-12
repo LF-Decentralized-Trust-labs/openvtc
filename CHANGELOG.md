@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-04-12
+
 ### Breaking Changes
 
 - **Removed legacy SHA-256+HKDF encryption** — existing configs must be recreated with `openvtc setup`
@@ -37,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - All Clippy warnings (migrated deprecated Protocols API, collapsible-if, items-after-test-module)
+- Corrected valid-until prompt handling for VRC issuance in `openvtc-cli` (PR #23)
 
 ### New: `did-git-sign` crate
 
@@ -55,13 +58,13 @@ A standalone CLI tool for signing git commits using DID Ed25519 keys managed by 
 
 ### Dependency Updates
 
-- `didwebvh-rs` 0.1 &rarr; 0.3
+- `didwebvh-rs` 0.1 &rarr; 0.4
 - `affinidi-tdk` 0.5 &rarr; 0.6
 - `affinidi-data-integrity` 0.4 &rarr; 0.5
 - `dtg-credentials` updated to use `affinidi-data-integrity` 0.5
 - All transitive dependencies updated to latest compatible versions via `cargo update`
 
-### didwebvh-rs 0.3 Migration
+### didwebvh-rs 0.4 Migration
 
 - Replaced manual `DIDWebVHState::default()` + `create_log_entry()` pattern with the new `create_did(CreateDIDConfig)` API in both `openvtc-lib` and `openvtc-cli`
 - `create_initial_webvh_did()` is now async (required by `create_did`)

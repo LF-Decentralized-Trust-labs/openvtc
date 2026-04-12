@@ -340,7 +340,7 @@ pub async fn handle_accept_vrcs_request(
         config.public.persona_did.to_string(),
         their_r_did.to_string(),
         valid_from,
-        valid_until.map(|dt| dt.to_utc()),
+        valid_until.map(|dt: chrono::DateTime<chrono::FixedOffset>| dt.to_utc()),
     );
 
     let secret = config.get_persona_keys(tdk).await?.signing.secret;

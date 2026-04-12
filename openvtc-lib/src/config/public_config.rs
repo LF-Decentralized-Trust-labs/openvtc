@@ -166,10 +166,15 @@ impl PublicConfig {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Guards tests that mutate the OPENVTC_CONFIG_PATH env var so they
+    /// don't race against each other.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_get_config_path_default_profile() {
-        // Use a known custom path so the test is deterministic
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/openvtc-test") };
         let path = get_config_path("default").unwrap();
         assert_eq!(path, "/tmp/openvtc-test/config.json");
@@ -178,6 +183,7 @@ mod tests {
 
     #[test]
     fn test_get_config_path_named_profile() {
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/openvtc-test/") };
         let path = get_config_path("work").unwrap();
         assert_eq!(path, "/tmp/openvtc-test/config-work.json");
@@ -186,7 +192,7 @@ mod tests {
 
     #[test]
     fn test_get_config_path_trailing_slash_normalization() {
-        // Without trailing slash
+        let _guard = ENV_LOCK.lock().unwrap();
         unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/cfg") };
         let path = get_config_path("default").unwrap();
         assert!(

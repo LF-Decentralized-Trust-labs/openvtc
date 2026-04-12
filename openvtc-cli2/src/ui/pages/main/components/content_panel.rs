@@ -104,8 +104,7 @@ impl ContentPanelState {
                     Line::from(""),
                     Line::from("Press Up/Down to navigate the menu").fg(COLOR_TEXT_DEFAULT),
                     Line::from("Press Enter to open the selected item").fg(COLOR_TEXT_DEFAULT),
-                    Line::from("Press Tab, Left, or Right to switch panels")
-                        .fg(COLOR_TEXT_DEFAULT),
+                    Line::from("Press Tab, Left, or Right to switch panels").fg(COLOR_TEXT_DEFAULT),
                     Line::from("Press F10 to quit from anywhere").fg(COLOR_TEXT_DEFAULT),
                 ]
             }
