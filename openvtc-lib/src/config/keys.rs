@@ -5,16 +5,49 @@ use crate::{
     bip32::Bip32Extension,
     config::{
         Config, KeyBackend, KeyInfo, PersonaDIDKeys,
-        secured_config::{KeySourceMaterial, SecuredConfig},
+        secured_config::{KeyInfoConfig, KeySourceMaterial, SecuredConfig},
     },
     errors::OpenVTCError,
 };
 use affinidi_tdk::{
     TDK,
-    did_common::{Document, document::DocumentExt},
+    did_common::{Document, document::DocumentExt, verification_method::VerificationRelationship},
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
+use std::collections::HashMap;
 use tracing::warn;
+
+/// Resolves a single key from a DID document verification relationship field.
+async fn resolve_key_from_document(
+    doc_field: &[VerificationRelationship],
+    field_name: &str,
+    tdk: &TDK,
+    key_info: &HashMap<String, KeyInfoConfig>,
+) -> Result<KeyInfo, OpenVTCError> {
+    let vm = doc_field.first().ok_or_else(|| {
+        OpenVTCError::Config(format!("DID Document does not contain any {field_name}!"))
+    })?;
+    let secret = tdk
+        .get_shared_state()
+        .secrets_resolver
+        .get_secret(vm.get_id())
+        .await
+        .ok_or_else(|| {
+            OpenVTCError::Config(format!("Couldn't find secret in TDK for ({})", vm.get_id()))
+        })?;
+    let ki = key_info.get(vm.get_id()).ok_or_else(|| {
+        OpenVTCError::Config(format!(
+            "Couldn't find key info in openvtc Config for ({})",
+            vm.get_id()
+        ))
+    })?;
+    Ok(KeyInfo {
+        secret,
+        source: ki.path.clone(),
+        created: ki.create_time,
+        expiry: None,
+    })
+}
 
 impl Config {
     /// Returns the first matching set of keys for the persona DID.
@@ -29,96 +62,24 @@ impl Config {
     /// Returns an error if the DID document is missing any required verification
     /// method, or if the corresponding secret or key info cannot be found.
     pub async fn get_persona_keys(&self, tdk: &TDK) -> Result<PersonaDIDKeys, OpenVTCError> {
-        let signing = if let Some(signing) = self.persona_did.document.assertion_method.first() {
-            let Some(secret) = tdk
-                .get_shared_state()
-                .secrets_resolver
-                .get_secret(signing.get_id())
-                .await
-            else {
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find secret in TDK for ({})",
-                    signing.get_id()
-                )));
-            };
-            let Some(ki) = self.key_info.get(signing.get_id()) else {
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find key info in openvtc Config for ({})",
-                    signing.get_id()
-                )));
-            };
-            KeyInfo {
-                secret,
-                source: ki.path.clone(),
-                created: ki.create_time,
-                expiry: None,
-            }
-        } else {
-            return Err(OpenVTCError::Config(
-                "DID Document does not contain any assertion methods!".to_string(),
-            ));
-        };
-
-        let authentication =
-            if let Some(authentication) = self.persona_did.document.authentication.first() {
-                let Some(secret) = tdk
-                    .get_shared_state()
-                    .secrets_resolver
-                    .get_secret(authentication.get_id())
-                    .await
-                else {
-                    return Err(OpenVTCError::Config(format!(
-                        "Couldn't find secret in TDK for ({})",
-                        authentication.get_id()
-                    )));
-                };
-                let Some(ki) = self.key_info.get(authentication.get_id()) else {
-                    return Err(OpenVTCError::Config(format!(
-                        "Couldn't find key info in openvtc Config for ({})",
-                        authentication.get_id()
-                    )));
-                };
-                KeyInfo {
-                    secret,
-                    source: ki.path.clone(),
-                    created: ki.create_time,
-                    expiry: None,
-                }
-            } else {
-                return Err(OpenVTCError::Config(
-                    "DID Document does not contain any authentication methods!".to_string(),
-                ));
-            };
-
-        let decryption = if let Some(decryption) = self.persona_did.document.key_agreement.first() {
-            let Some(secret) = tdk
-                .get_shared_state()
-                .secrets_resolver
-                .get_secret(decryption.get_id())
-                .await
-            else {
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find secret in TDK for ({})",
-                    decryption.get_id()
-                )));
-            };
-            let Some(ki) = self.key_info.get(decryption.get_id()) else {
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find key info in openvtc Config for ({})",
-                    decryption.get_id()
-                )));
-            };
-            KeyInfo {
-                secret,
-                source: ki.path.clone(),
-                created: ki.create_time,
-                expiry: None,
-            }
-        } else {
-            return Err(OpenVTCError::Config(
-                "DID Document does not contain any key agreements!".to_string(),
-            ));
-        };
+        let doc = &self.persona_did.document;
+        let signing = resolve_key_from_document(
+            &doc.assertion_method,
+            "assertion methods",
+            tdk,
+            &self.key_info,
+        )
+        .await?;
+        let authentication = resolve_key_from_document(
+            &doc.authentication,
+            "authentication methods",
+            tdk,
+            &self.key_info,
+        )
+        .await?;
+        let decryption =
+            resolve_key_from_document(&doc.key_agreement, "key agreements", tdk, &self.key_info)
+                .await?;
         Ok(PersonaDIDKeys {
             signing,
             authentication,
