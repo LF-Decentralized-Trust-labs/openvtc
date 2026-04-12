@@ -6,10 +6,7 @@ use crate::{
     CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE,
     relationships::{RelationshipState, create_relationship_did},
 };
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
+use affinidi_tdk::{TDK, didcomm::Message};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use console::style;
@@ -257,18 +254,8 @@ impl ConfigRelationships for Config {
         let atm = tdk.atm.clone().context("ATM not initialized")?;
 
         // Pack the message
-        let (msg, _) = msg
-            .pack_encrypted(
-                from,
-                Some(&self.public.persona_did),
-                Some(&self.public.persona_did),
-                tdk.did_resolver(),
-                &tdk.get_shared_state().secrets_resolver,
-                &PackEncryptedOptions {
-                    forward: false,
-                    ..Default::default()
-                },
-            )
+        let (msg, _) = atm
+            .pack_encrypted(&msg, from, Some(&self.public.persona_did), None)
             .await?;
 
         atm.forward_and_send_message(
@@ -402,7 +389,7 @@ fn create_message_finalize(from: &str, to: &str, task_id: &Arc<String>) -> Resul
         .as_secs();
 
     let message = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request-finalize".to_string(),
         json!({}),
     )

@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use affinidi_tdk::{
     common::TDKSharedState,
-    didcomm::{Message, UnpackMetadata},
+    didcomm::Message,
+    messaging::messages::compat::UnpackMetadata,
     messaging::{ATM, config::ATMConfig, profiles::ATMProfile},
     secrets_resolver::SecretsResolver,
 };
@@ -154,7 +155,7 @@ async fn handle_message(
         bail!("Anonymous messages are not allowed!");
     };
 
-    if msg.type_ == "https://didcomm.org/messagepickup/3.0/status" {
+    if msg.typ == "https://didcomm.org/messagepickup/3.0/status" {
         // Status message, ignore
         return Ok(());
     }
@@ -179,7 +180,7 @@ async fn handle_message(
                 }
             }
             _ => {
-                warn!("Unsupported MessageType receieved: {}", msg.type_);
+                warn!("Unsupported MessageType receieved: {}", msg.typ);
             }
         }
     }

@@ -191,7 +191,7 @@ pub(crate) async fn handle_vta_create_keys(
         }
     };
     let vta_url = state.setup.vta.vta_url.clone();
-    let mut client = VtaClient::new(&vta_url);
+    let client = VtaClient::new(&vta_url);
     client.set_token(access_token);
 
     // Create persona keys (signing, authentication, encryption)
@@ -242,7 +242,7 @@ async fn discover_context_and_servers(state: &mut State, vta_url: &str) {
     use vta_sdk::client::VtaClient;
 
     if let Some(token) = state.setup.vta.access_token.clone() {
-        let mut acl_client = VtaClient::new(vta_url);
+        let acl_client = VtaClient::new(vta_url);
         acl_client.set_token(token);
         match acl_client.get_acl(&state.setup.vta.credential_did).await {
             Ok(acl) => {

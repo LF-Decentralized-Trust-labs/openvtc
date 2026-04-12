@@ -234,5 +234,8 @@ pub fn secret_from_vta_response(
                     "Failed to create X25519 secret from multibase: {e}"
                 ))
             }),
+        vta_sdk::keys::KeyType::P256 => Err(OpenVTCError::Secret(
+            "P256 key type is not supported for OpenVTC secrets".to_string(),
+        )),
     }
 }

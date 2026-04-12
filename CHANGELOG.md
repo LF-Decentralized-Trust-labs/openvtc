@@ -59,9 +59,10 @@ A standalone CLI tool for signing git commits using DID Ed25519 keys managed by 
 ### Dependency Updates
 
 - `didwebvh-rs` 0.1 &rarr; 0.4
-- `affinidi-tdk` 0.5 &rarr; 0.6
+- `affinidi-tdk` 0.5 &rarr; 0.6 (`affinidi-messaging-didcomm` 0.12 &rarr; 0.13)
 - `affinidi-data-integrity` 0.4 &rarr; 0.5
-- `dtg-credentials` updated to use `affinidi-data-integrity` 0.5
+- `dtg-credentials` switched from local path to crates.io (`0.1`)
+- `vta-sdk` updated to 0.3 (`health.version` is now `Option<String>`, `VtaClient::set_token` no longer requires `&mut self`, `CreateDidWebvhRequest` has new optional fields)
 - All transitive dependencies updated to latest compatible versions via `cargo update`
 
 ### didwebvh-rs 0.4 Migration
@@ -75,8 +76,15 @@ A standalone CLI tool for signing git commits using DID Ed25519 keys managed by 
 - `DataIntegrityProof::sign_jcs_data()` is now async — added `.await` in `openvtc-cli`, `robotic-maintainers`, and `dtg-credentials`
 - `DTGCredential::sign()` is now async
 - `CreateDidWebvhRequest.server_id` changed from `String` to `Option<String>`
-- `CreateDidWebvhRequest` now requires `url: Option<String>` field
+- `CreateDidWebvhRequest` now requires `url: Option<String>` field and new optional fields (`did_document`, `did_log`, `signing_key_id`, `ka_key_id`, `set_primary`)
 - `CreateDidWebvhResultBody.mnemonic` changed to `Option<String>`
+- `Message::pack_encrypted()` removed — replaced with `ATM::pack_encrypted(&msg, to, from, sign_by)`
+- `Message.type_` field renamed to `Message.typ`
+- `didcomm::error::Error` replaced by `didcomm::DIDCommError`
+- `PackEncryptedOptions` removed — encryption options are now implicit in the pack function choice
+- `UnpackMetadata` moved from `didcomm` to `messaging::messages::compat`
+- `VtaClient::set_token()` no longer requires `&mut self`
+- `HealthResponse.version` changed from `String` to `Option<String>`
 
 ### Security Improvements
 

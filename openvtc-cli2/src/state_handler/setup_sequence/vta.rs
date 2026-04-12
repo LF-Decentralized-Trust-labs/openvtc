@@ -225,6 +225,11 @@ pub async fn create_did_via_server(
         add_mediator_service: true,
         additional_services: None,
         pre_rotation_count: 1,
+        did_document: None,
+        did_log: None,
+        set_primary: false,
+        signing_key_id: None,
+        ka_key_id: None,
     };
 
     let result = client

@@ -33,7 +33,7 @@ pub enum OpenVTCError {
 
     /// A DIDComm protocol-level error.
     #[error("DIDComm Error: {0}")]
-    DIDComm(#[from] didcomm::error::Error),
+    DIDComm(#[from] didcomm::DIDCommError),
 
     /// A BIP32 key derivation error.
     #[error("BIP32 Error: {0}")]

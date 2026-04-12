@@ -131,7 +131,7 @@ async fn cmd_init(
 
     // Authenticate with VTA
     println!("Authenticating with VTA at {vta_url}...");
-    let mut client = vta_sdk::client::VtaClient::new(&vta_url);
+    let client = vta_sdk::client::VtaClient::new(&vta_url);
     let token = vta_sdk::session::challenge_response(
         &vta_url,
         &bundle.did,
@@ -456,7 +456,7 @@ async fn cmd_health() -> Result<()> {
     let vta_client = vta_sdk::client::VtaClient::new(&creds.vta_url);
     match vta_client.health().await {
         Ok(health) => {
-            println!("OK (v{})", health.version);
+            println!("OK (v{})", health.version.as_deref().unwrap_or("unknown"));
             if let Some(mediator_did) = &health.mediator_did {
                 println!("  Mediator DID:  {mediator_did}");
             }

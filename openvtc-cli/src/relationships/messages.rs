@@ -6,10 +6,7 @@ use crate::{
     CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED,
     relationships::{RelationshipState, create_relationship_did},
 };
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
+use affinidi_tdk::{TDK, didcomm::Message};
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use console::style;
@@ -109,18 +106,8 @@ pub async fn create_send_request(
     let msg_id = Arc::new(msg.id.clone());
 
     // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            &contact.did,
-            Some(&config.public.persona_did),
-            Some(&config.public.persona_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
+    let (msg, _) = atm
+        .pack_encrypted(&msg, &contact.did, Some(&config.public.persona_did), None)
         .await?;
 
     atm.forward_and_send_message(
@@ -190,7 +177,7 @@ fn create_message_request(
         .as_secs();
 
     let message = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request".to_string(),
         json!(RelationshipRequestBody {
             reason: reason.map(|r| r.to_string()),

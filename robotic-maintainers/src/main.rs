@@ -5,7 +5,8 @@ use affinidi_tdk::{
     TDK,
     common::config::TDKConfig,
     data_integrity::DataIntegrityProof,
-    didcomm::{Message, PackEncryptedOptions, UnpackMetadata},
+    didcomm::Message,
+    messaging::messages::compat::UnpackMetadata,
     messaging::{
         ATM,
         config::ATMConfig,
@@ -230,7 +231,7 @@ async fn handle_message(
         return;
     };
 
-    if message.type_ == "https://didcomm.org/messagepickup/3.0/status" {
+    if message.typ == "https://didcomm.org/messagepickup/3.0/status" {
         // Status message, ignore
         return;
     }
@@ -321,18 +322,8 @@ async fn handle_message(
                 };
 
                 // Pack the message
-                let (msg, _) = match msg
-                    .pack_encrypted(
-                        &from_did,
-                        Some(&to_profile.inner.did),
-                        Some(&to_profile.inner.did),
-                        &atm.get_tdk().did_resolver,
-                        &atm.get_tdk().secrets_resolver,
-                        &PackEncryptedOptions {
-                            forward: false,
-                            ..Default::default()
-                        },
-                    )
+                let (msg, _) = match atm
+                    .pack_encrypted(&msg, &from_did, Some(&to_profile.inner.did), None)
                     .await
                 {
                     Ok(res) => res,

@@ -11,7 +11,6 @@ use crate::{
 use affinidi_tdk::{
     TDK,
     affinidi_crypto::ed25519::ed25519_private_to_x25519,
-    didcomm::PackEncryptedOptions,
     dids::{DID, PeerKeyRole},
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
@@ -484,18 +483,8 @@ async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()>
     let msg_id = ping_msg.id.clone();
 
     // Pack the message
-    let (ping_msg, _) = ping_msg
-        .pack_encrypted(
-            &remote_did,
-            Some(&our_did),
-            Some(&our_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
+    let (ping_msg, _) = atm
+        .pack_encrypted(&ping_msg, &remote_did, Some(&our_did), None)
         .await?;
 
     atm.forward_and_send_message(

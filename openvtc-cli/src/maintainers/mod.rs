@@ -4,10 +4,7 @@ use std::{
 };
 
 use crate::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED};
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
+use affinidi_tdk::{TDK, didcomm::Message};
 use anyhow::{Result, anyhow, bail};
 use clap::ArgMatches;
 use console::style;
@@ -38,26 +35,22 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
         create_message_maintainers_list(&config.public.persona_did, &config.public.lk_did)?;
     let msg_id = Arc::new(message.id.clone());
 
-    // Pack the message
-    let (message, _) = message
-        .pack_encrypted(
-            &config.public.lk_did,
-            Some(&config.public.persona_did),
-            Some(&config.public.persona_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
     // Enable streaming for the Profile account
     let atm = tdk
         .atm
         .clone()
         .ok_or_else(|| anyhow!("ATM not initialized"))?;
+
+    // Pack the message
+    let (message, _) = atm
+        .pack_encrypted(
+            &message,
+            &config.public.lk_did,
+            Some(&config.public.persona_did),
+            None,
+        )
+        .await?;
+
     atm.message_pickup()
         .toggle_live_delivery(&config.persona_did.profile, true)
         .await?;
@@ -145,7 +138,7 @@ fn create_message_maintainers_list(from: &str, to: &str) -> Result<Message> {
         .as_secs();
 
     let message = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://kernel.org/maintainers/1.0/list".to_string(),
         json!({}),
     )

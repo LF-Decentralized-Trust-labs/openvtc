@@ -119,7 +119,7 @@ impl DtgCredentialMessage for DTGCredential {
             .as_secs();
         let mut builder = Message::build(
             Uuid::new_v4().to_string(),
-            MessageType::VRCIssued.into(),
+            String::from(MessageType::VRCIssued),
             serde_json::to_value(self)?,
         )
         .from(from.to_string())

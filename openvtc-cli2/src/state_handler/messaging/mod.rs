@@ -223,7 +223,7 @@ async fn dispatch_message(
     event_tx: &mpsc::UnboundedSender<MessagingEvent>,
     msg: &Message,
 ) {
-    let msg_type = msg.type_.as_str();
+    let msg_type = msg.typ.as_str();
     let from = msg.from.as_deref().unwrap_or("unknown").to_string();
 
     match msg_type {
@@ -275,13 +275,7 @@ async fn handle_trust_ping(
     let pong = TrustPing::default().generate_pong_message(ping, Some(persona_did))?;
 
     let (packed, _) = atm
-        .pack_encrypted(
-            &pong,
-            sender_did,
-            Some(persona_did),
-            Some(persona_did),
-            None,
-        )
+        .pack_encrypted(&pong, sender_did, Some(persona_did), None)
         .await?;
 
     atm.send_message(profile, &packed, &pong.id, false, false)

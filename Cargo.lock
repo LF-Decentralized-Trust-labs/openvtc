@@ -2020,6 +2020,8 @@ dependencies = [
 [[package]]
 name = "dtg-credentials"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93b2c7a8e3cc436c9c1f78c5cdf54bdf67275d4fd112f6c94f62316bfed811dd"
 dependencies = [
  "affinidi-data-integrity",
  "affinidi-secrets-resolver",

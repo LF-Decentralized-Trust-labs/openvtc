@@ -1,4 +1,4 @@
-use affinidi_tdk::{TDK, didcomm::PackEncryptedOptions};
+use affinidi_tdk::TDK;
 use anyhow::{Result, anyhow, bail};
 use console::style;
 use dialoguer::{Confirm, Input, Select, theme::ColorfulTheme};
@@ -61,25 +61,13 @@ pub(super) async fn vrcs_interactive_request(tdk: &TDK, config: &mut Config) -> 
         let message = request_body.create_message(&to, &from)?;
         let msg_id = Arc::new(message.id.clone());
 
-        // Pack the message
-        let (message, _) = message
-            .pack_encrypted(
-                &to,
-                Some(&from),
-                Some(&from),
-                tdk.did_resolver(),
-                &tdk.get_shared_state().secrets_resolver,
-                &PackEncryptedOptions {
-                    forward: false,
-                    ..Default::default()
-                },
-            )
-            .await?;
-
         let atm = tdk
             .atm
             .clone()
             .ok_or_else(|| anyhow!("ATM not initialized"))?;
+
+        // Pack the message
+        let (message, _) = atm.pack_encrypted(&message, &to, Some(&from), None).await?;
         atm.forward_and_send_message(
             profile,
             false,
@@ -291,25 +279,13 @@ pub async fn interact_vrc_inbound_request(
                     bail!("Couldn't find messaging profile for DID");
                 };
 
-                // Pack the message
-                let (msg, _) = msg
-                    .pack_encrypted(
-                        &from,
-                        Some(&to),
-                        Some(&to),
-                        tdk.did_resolver(),
-                        &tdk.get_shared_state().secrets_resolver,
-                        &PackEncryptedOptions {
-                            forward: false,
-                            ..Default::default()
-                        },
-                    )
-                    .await?;
-
                 let atm = tdk
                     .atm
                     .clone()
                     .ok_or_else(|| anyhow!("ATM not initialized"))?;
+
+                // Pack the message
+                let (msg, _) = atm.pack_encrypted(&msg, &from, Some(&to), None).await?;
                 atm.forward_and_send_message(
                     profile,
                     false,

@@ -5,10 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{CLI_ORANGE, CLI_PURPLE, CLI_RED};
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
+use affinidi_tdk::{TDK, didcomm::Message};
 use anyhow::{Context, Result, bail};
 use console::style;
 use openvtc::{config::Config, logs::LogFamily, relationships::Relationship};
@@ -71,19 +68,7 @@ pub async fn handle_inbound_ping(
             .generate_pong_message(msg, Some(to.as_str()))?;
 
         // Pack the message
-        let (pong_msg, _) = pong_msg
-            .pack_encrypted(
-                from,
-                Some(to),
-                Some(to),
-                tdk.did_resolver(),
-                &tdk.get_shared_state().secrets_resolver,
-                &PackEncryptedOptions {
-                    forward: false,
-                    ..Default::default()
-                },
-            )
-            .await?;
+        let (pong_msg, _) = atm.pack_encrypted(&pong_msg, from, Some(to), None).await?;
 
         let profile = if to == &config.public.persona_did {
             &config.persona_did.profile

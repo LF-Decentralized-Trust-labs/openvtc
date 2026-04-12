@@ -16,7 +16,7 @@ use crate::{
 };
 use affinidi_tdk::{
     TDK,
-    didcomm::{Message, PackEncryptedOptions},
+    didcomm::Message,
     messaging::{ATM, profiles::ATMProfile},
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
@@ -209,7 +209,7 @@ impl Relationships {
                     .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
 
                     owned_vta_client = {
-                        let mut c = vta_sdk::client::VtaClient::new(vta_url);
+                        let c = vta_sdk::client::VtaClient::new(vta_url);
                         c.set_token(token_result.access_token);
                         c
                     };
@@ -461,7 +461,7 @@ pub async fn create_send_message_rejected(
         .as_secs();
 
     let msg = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request-reject".to_string(),
         json!(RelationshipRejectBody {
             reason: reason.map(|r| r.to_string())
@@ -475,18 +475,8 @@ pub async fn create_send_message_rejected(
     .finalize();
 
     // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            to,
-            Some(&from_profile.inner.did),
-            Some(&from_profile.inner.did),
-            &atm.get_tdk().did_resolver,
-            &atm.get_tdk().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
+    let (msg, _) = atm
+        .pack_encrypted(&msg, to, Some(&from_profile.inner.did), None)
         .await?;
 
     atm.forward_and_send_message(
@@ -532,7 +522,7 @@ pub async fn create_send_message_accepted(
         .as_secs();
 
     let msg = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request-accept".to_string(),
         json!(RelationshipAcceptBody {
             did: r_did.to_string()
@@ -545,18 +535,8 @@ pub async fn create_send_message_accepted(
     .expires_time(60 * 60 * 48) // 48 hours
     .finalize();
 
-    let (msg, _) = msg
-        .pack_encrypted(
-            to,
-            Some(&from_profile.inner.did),
-            Some(&from_profile.inner.did),
-            &atm.get_tdk().did_resolver,
-            &atm.get_tdk().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
+    let (msg, _) = atm
+        .pack_encrypted(&msg, to, Some(&from_profile.inner.did), None)
         .await?;
 
     atm.forward_and_send_message(

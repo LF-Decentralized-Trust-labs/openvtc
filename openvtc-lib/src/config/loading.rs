@@ -153,7 +153,7 @@ impl Config {
             .await
             .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
 
-            let mut client = vta_sdk::client::VtaClient::new(vta_url);
+            let client = vta_sdk::client::VtaClient::new(vta_url);
             client.set_token(token_result.access_token);
             Some(client)
         } else {

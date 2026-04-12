@@ -112,7 +112,7 @@ pub(crate) async fn handle_webvh_server_create_did(
         }
     };
     let vta_url = state.setup.vta.vta_url.clone();
-    let mut client = VtaClient::new(&vta_url);
+    let client = VtaClient::new(&vta_url);
     client.set_token(access_token);
 
     let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
@@ -156,7 +156,7 @@ pub(crate) async fn handle_custom_mediator_webvh(
         }
     };
     let vta_url = state.setup.vta.vta_url.clone();
-    let mut client = VtaClient::new(&vta_url);
+    let client = VtaClient::new(&vta_url);
     client.set_token(access_token);
 
     let context_id = state.setup.vta.context_id.clone().unwrap_or_default();

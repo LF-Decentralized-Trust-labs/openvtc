@@ -20,7 +20,7 @@ pub async fn authenticate(cfg: &SigningConfig) -> Result<(VtaClient, VtaCredenti
     let creds = config::load_vta_credentials(&cfg.did_key_id)?;
     validate_credentials(&creds)?;
 
-    let mut client = VtaClient::new(&creds.vta_url);
+    let client = VtaClient::new(&creds.vta_url);
 
     // Try cached token first
     if let Some(token) = config::load_cached_token(&cfg.did_key_id) {

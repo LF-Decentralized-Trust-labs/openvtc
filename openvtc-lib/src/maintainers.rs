@@ -6,7 +6,7 @@
 use std::{sync::Arc, time::SystemTime};
 
 use affinidi_tdk::{
-    didcomm::{Message, PackEncryptedOptions},
+    didcomm::Message,
     messaging::{ATM, profiles::ATMProfile},
 };
 use serde::{Deserialize, Serialize};
@@ -51,7 +51,7 @@ pub async fn create_send_maintainers_list(
         .as_secs();
 
     let msg = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://kernel.org/maintainers/1.0/list/response".to_string(),
         json!(list),
     )
@@ -63,18 +63,8 @@ pub async fn create_send_maintainers_list(
     .finalize();
 
     // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            to,
-            Some(&from_profile.inner.did),
-            Some(&from_profile.inner.did),
-            &atm.get_tdk().did_resolver,
-            &atm.get_tdk().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
+    let (msg, _) = atm
+        .pack_encrypted(&msg, to, Some(&from_profile.inner.did), None)
         .await?;
 
     atm.forward_and_send_message(

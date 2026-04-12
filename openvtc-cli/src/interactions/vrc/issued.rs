@@ -1,8 +1,5 @@
 use affinidi_data_integrity::DataIntegrityProof;
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
+use affinidi_tdk::{TDK, didcomm::Message};
 use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Local, Utc};
 use console::style;
@@ -351,25 +348,15 @@ pub async fn handle_accept_vrcs_request(
     // Send VRC to the requestor
     let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
 
-    // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            &their_r_did,
-            Some(&our_r_did),
-            Some(&our_r_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
     let atm = tdk
         .atm
         .clone()
         .ok_or_else(|| anyhow!("ATM not initialized"))?;
+
+    // Pack the message
+    let (msg, _) = atm
+        .pack_encrypted(&msg, &their_r_did, Some(&our_r_did), None)
+        .await?;
     atm.forward_and_send_message(
         &config.persona_did.profile,
         false,

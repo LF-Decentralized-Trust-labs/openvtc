@@ -386,7 +386,7 @@ pub async fn fetch_tasks(
                 println!(
                     "{}{}",
                     style("INVALID Task Type: ").color256(CLI_RED),
-                    style(unpacked_msg.type_).color256(CLI_ORANGE)
+                    style(&unpacked_msg.typ).color256(CLI_ORANGE)
                 );
                 continue;
             };

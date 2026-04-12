@@ -24,8 +24,7 @@ repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
 openvtc = { version = "0.1", path = "openvtc-lib", default-features = false }
 
 # Decentralized Trust Graph Credentials
-# NOTE: When this is published, switch from git to crates.io
-dtg-credentials = { version = "0.1", path = "../dtg-credentials" }
+dtg-credentials = "0.1"
 
 aes-gcm = "0.10"
 argon2 = "0.5"

@@ -209,7 +209,7 @@ impl TryFrom<&Message> for MessageType {
     type Error = OpenVTCError;
 
     fn try_from(value: &Message) -> Result<Self, Self::Error> {
-        value.type_.as_str().try_into()
+        value.typ.as_str().try_into()
     }
 }
 
