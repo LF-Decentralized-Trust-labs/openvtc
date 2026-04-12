@@ -6,11 +6,8 @@ use crate::{
     CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED,
     relationships::{RelationshipState, create_relationship_did},
 };
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
-use anyhow::{Result, bail};
+use affinidi_tdk::{TDK, didcomm::Message};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use console::style;
 use openvtc::{
@@ -49,7 +46,11 @@ pub async fn create_send_request(
             .relationships
             .find_by_remote_did(&contact.did)
             .as_ref()
-            .map(|r| r.lock().unwrap().state == RelationshipState::Established)
+            .map(|r| {
+                r.lock()
+                    .map(|r| r.state == RelationshipState::Established)
+                    .unwrap_or(false)
+            })
             .unwrap_or(false)
         {
             println!(
@@ -81,7 +82,7 @@ pub async fn create_send_request(
         }
     };
 
-    let atm = tdk.atm.clone().unwrap();
+    let atm = tdk.atm.clone().context("ATM not initialized")?;
 
     // is a local relationship-did needed?
     let r_did = if generate_did {
@@ -104,31 +105,13 @@ pub async fn create_send_request(
     let msg = create_message_request(&config.public.persona_did, &contact.did, reason, &r_did)?;
     let msg_id = Arc::new(msg.id.clone());
 
-    // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            &contact.did,
-            Some(&config.public.persona_did),
-            Some(&config.public.persona_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         &config.persona_did.profile,
-        false,
         &msg,
-        None,
-        &config.public.mediator_did,
+        &config.public.persona_did,
         &contact.did,
-        None,
-        None,
-        false,
+        &config.public.mediator_did,
     )
     .await?;
 
@@ -182,11 +165,11 @@ fn create_message_request(
 ) -> Result<Message> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .context("System clock is before UNIX epoch")?
         .as_secs();
 
     let message = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request".to_string(),
         json!(RelationshipRequestBody {
             reason: reason.map(|r| r.to_string()),
@@ -212,7 +195,7 @@ pub async fn send_rejection(
 ) -> Result<()> {
     // Create the Relationship Request rejection Message
     create_send_message_rejected(
-        tdk.atm.as_ref().unwrap(),
+        tdk.atm.as_ref().context("ATM not initialized")?,
         &config.persona_did.profile,
         respondent,
         &config.public.mediator_did,

@@ -1,7 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent};
 use openvtc::colors::{
-    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-    COLOR_WARNING_ACCESSIBLE_RED,
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
 };
 use ratatui::{
     Frame,
@@ -20,8 +19,9 @@ use crate::{
         setup_sequence::{Completion, MessageType, SetupState},
     },
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -113,10 +113,7 @@ impl VtaKeysFetch {
             }
         }
 
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            content,
-        );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content);
 
         let bottom_line = Line::from(vec![
             Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),

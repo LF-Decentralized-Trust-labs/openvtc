@@ -23,8 +23,9 @@ use crate::{
         setup_sequence::{Completion, MessageType, SetupState},
     },
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -60,7 +61,7 @@ pub enum WebVHChoice {
     Import,
 }
 impl WebVHChoice {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
     pub fn switch(&self) -> Self {
         match self {
             WebVHChoice::Create => WebVHChoice::Import,
@@ -197,12 +198,10 @@ fn render_input(input: &Input, frame: &mut Frame, area: Rect) {
 
 /// Renders the WebVH Selection Choice
 fn render_selection(state: &WebvhAddress, frame: &mut Frame<'_>, area: Rect) {
-    let mut lines = Vec::new();
-
-    lines.push(Line::styled(
+    let mut lines = vec![Line::styled(
         "You can create a new WebVH DID using the keys created via your VTA service, or restore an existing DID.",
         Style::new().fg(COLOR_DARK_GRAY),
-    ));
+    )];
     lines.push(Line::default());
     lines.push(Line::styled(
         "How would you like to set up your DID?",

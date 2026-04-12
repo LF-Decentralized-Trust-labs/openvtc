@@ -19,8 +19,9 @@ use crate::{
         setup_sequence::{MessageType, SetupState},
     },
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -38,7 +39,7 @@ pub enum TokenSetTouchOptions {
 }
 
 impl TokenSetTouchOptions {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
     pub fn switch(&self) -> Self {
         match self {
             TokenSetTouchOptions::SetTouch => TokenSetTouchOptions::NoTouch,

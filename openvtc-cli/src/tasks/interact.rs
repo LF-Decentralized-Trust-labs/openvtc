@@ -27,7 +27,12 @@ impl TasksInteraction for Tasks {
         tdk: &TDK,
         config: &mut Config,
     ) -> Result<bool> {
-        let type_ = { task.lock().unwrap().type_.clone() };
+        let type_ = {
+            task.lock()
+                .map_err(|e| anyhow::anyhow!("Task mutex poisoned: {e}"))?
+                .type_
+                .clone()
+        };
         Ok(match type_ {
             TaskType::RelationshipRequestInbound {
                 from,
@@ -86,8 +91,14 @@ impl TasksInteraction for Tasks {
                 .tasks
                 .iter()
                 .map(|(id, task)| {
-                    style(format!("{} Type: {}", id, task.lock().unwrap().type_))
-                        .color256(CLI_PURPLE)
+                    style(format!(
+                        "{} Type: {}",
+                        id,
+                        task.lock()
+                            .map(|t| t.type_.to_string())
+                            .unwrap_or_else(|_| "LOCK ERROR".to_string())
+                    ))
+                    .color256(CLI_PURPLE)
                 })
                 .collect();
             select_list.push(style("Exit Task Interaction".to_string()).color256(CLI_ORANGE));
@@ -96,8 +107,7 @@ impl TasksInteraction for Tasks {
                 .with_prompt("Select a task to interact with")
                 .items(&select_list)
                 .default(0)
-                .interact()
-                .unwrap();
+                .interact()?;
 
             if selected == select_list.len() - 1 {
                 // exit option
@@ -125,7 +135,12 @@ fn interact_relationship_outbound(
     task: &Arc<Mutex<Task>>,
     to: Arc<String>,
 ) -> Result<bool> {
-    let task_id = { task.lock().unwrap().id.clone() };
+    let task_id = {
+        task.lock()
+            .map_err(|e| anyhow::anyhow!("Task mutex poisoned: {e}"))?
+            .id
+            .clone()
+    };
 
     println!();
     println!(
@@ -184,7 +199,12 @@ async fn interact_relationship_request(
     from: &Arc<String>,
     request: &RelationshipRequestBody,
 ) -> Result<bool> {
-    let task_id = { task.lock().unwrap().id.clone() };
+    let task_id = {
+        task.lock()
+            .map_err(|e| anyhow::anyhow!("Task mutex poisoned: {e}"))?
+            .id
+            .clone()
+    };
 
     // Show relationship request info
     println!();
@@ -249,7 +269,9 @@ async fn interact_relationship_request(
                     .handle_relationship_request_send_accept(tdk, from, &task_id, &request.did)
                     .await?;
 
-                task.lock().unwrap().type_ = TaskType::RelationshipRequestAccepted;
+                task.lock()
+                    .map_err(|e| anyhow::anyhow!("Task mutex poisoned: {e}"))?
+                    .type_ = TaskType::RelationshipRequestAccepted;
 
                 Ok(true)
             } else {
@@ -264,8 +286,7 @@ async fn interact_relationship_request(
                     "Would you like to provide a reason for this rejection (Leave BLANK for None)?",
                 )
                 .allow_empty(true)
-                .interact_text()
-                .unwrap();
+                .interact_text()?;
 
             let reason = if reason.trim().is_empty() {
                 None
@@ -331,7 +352,12 @@ async fn interact_relationship_accepted(
     config: &mut Config,
     task: &Arc<Mutex<Task>>,
 ) -> Result<bool> {
-    let task_id = { task.lock().unwrap().id.clone() };
+    let task_id = {
+        task.lock()
+            .map_err(|e| anyhow::anyhow!("Task mutex poisoned: {e}"))?
+            .id
+            .clone()
+    };
 
     let relationship =
         if let Some(relationship) = config.private.relationships.find_by_task_id(&task_id) {
@@ -352,7 +378,13 @@ async fn interact_relationship_accepted(
             return Ok(true);
         };
 
-    let from = { relationship.lock().unwrap().remote_p_did.clone() };
+    let from = {
+        relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?
+            .remote_p_did
+            .clone()
+    };
     // Show relationship request info
     println!();
     println!(

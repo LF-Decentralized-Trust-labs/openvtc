@@ -6,11 +6,8 @@ use crate::{
     CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE,
     relationships::{RelationshipState, create_relationship_did},
 };
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-};
-use anyhow::{Result, bail};
+use affinidi_tdk::{TDK, didcomm::Message};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use console::style;
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
@@ -83,7 +80,7 @@ impl ConfigRelationships for Config {
         let r_did = if Confirm::with_theme(&ColorfulTheme::default())
                     .with_prompt("Do you want to create a random relationship DID to be used with this Relationship?")
                     .default(use_r_did)
-                    .interact().unwrap()
+                    .interact()?
         {
             let mediator = self.public.mediator_did.clone(); // Clone so we can borrow config
                 // as mutable below
@@ -96,7 +93,7 @@ impl ConfigRelationships for Config {
                 style(&r_did).color256(CLI_PURPLE)
             );
 
-            self.public.logs.insert(LogFamily::Relationship, format!("Created new r-did ({}) for relationhip from ({}) task ID ({})", r_did, from, task_id));
+            self.public.logs.insert(LogFamily::Relationship, format!("Created new r-did ({}) for relationship from ({}) task ID ({})", r_did, from, task_id));
             r_did
         } else {
             self.public.persona_did.clone()
@@ -122,7 +119,7 @@ impl ConfigRelationships for Config {
 
         // Create the DIDComm message
         create_send_message_accepted(
-            tdk.atm.as_ref().unwrap(),
+            tdk.atm.as_ref().context("ATM not initialized")?,
             &self.persona_did.profile,
             from,
             &self.public.mediator_did,
@@ -172,7 +169,8 @@ impl ConfigRelationships for Config {
             task_id,
             &mut self.private.vrcs_issued,
             &mut self.private.vrcs_received,
-        ) else {
+        )?
+        else {
             println!(
                 "{}{}{}",
                 style("WARN: Couldn't find relationship with task ID(").color256(CLI_ORANGE),
@@ -202,7 +200,10 @@ impl ConfigRelationships for Config {
             LogFamily::Task,
             format!(
                 "Relationship request rejected by remote DID({}) Task ID({}) Reason({})",
-                relationship.lock().unwrap().remote_did,
+                relationship
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?
+                    .remote_did,
                 task_id,
                 reason
             ),
@@ -222,7 +223,9 @@ impl ConfigRelationships for Config {
     ) -> Result<()> {
         // Update the relationship state with new r-did if required
         if let Some(relationship) = self.private.relationships.get(from) {
-            let mut lock = relationship.lock().unwrap();
+            let mut lock = relationship
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
             lock.state = RelationshipState::Established;
             if lock.remote_did.as_str() != r_did {
                 lock.remote_did = Arc::new(r_did.to_string());
@@ -248,33 +251,15 @@ impl ConfigRelationships for Config {
         // Create the DIDComm message
         let msg = create_message_finalize(&self.public.persona_did, from, task_id)?;
 
-        let atm = tdk.atm.clone().unwrap();
+        let atm = tdk.atm.clone().context("ATM not initialized")?;
 
-        // Pack the message
-        let (msg, _) = msg
-            .pack_encrypted(
-                from,
-                Some(&self.public.persona_did),
-                Some(&self.public.persona_did),
-                tdk.did_resolver(),
-                &tdk.get_shared_state().secrets_resolver,
-                &PackEncryptedOptions {
-                    forward: false,
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        atm.forward_and_send_message(
+        openvtc::pack_and_send(
+            &atm,
             &self.persona_did.profile,
-            false,
             &msg,
-            None,
-            &self.public.mediator_did,
+            &self.public.persona_did,
             from,
-            None,
-            None,
-            false,
+            &self.public.mediator_did,
         )
         .await?;
 
@@ -306,7 +291,9 @@ impl ConfigRelationships for Config {
     ) -> Result<()> {
         // Update the relationship state with new remote r-did if required
         let relationship = if let Some(relationship) = self.private.relationships.get(from) {
-            let mut lock = relationship.lock().unwrap();
+            let mut lock = relationship
+                .lock()
+                .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
             lock.state = RelationshipState::Established;
             relationship.clone()
         } else {
@@ -327,7 +314,9 @@ impl ConfigRelationships for Config {
             style(from).color256(CLI_PURPLE)
         );
 
-        let lock = relationship.lock().unwrap();
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
         print!(
             "  {}{}{}",
             style("Remote: p-did(").color256(CLI_BLUE),
@@ -388,11 +377,11 @@ impl ConfigRelationships for Config {
 fn create_message_finalize(from: &str, to: &str, task_id: &Arc<String>) -> Result<Message> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .context("System clock is before UNIX epoch")?
         .as_secs();
 
     let message = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request-finalize".to_string(),
         json!({}),
     )

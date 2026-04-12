@@ -4,7 +4,7 @@
 
 use crate::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED};
 use affinidi_tdk::TDK;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{ArgMatches, Id};
 use console::style;
 use openvtc::{
@@ -82,9 +82,11 @@ impl ContactsExtension for Contacts {
             Some(("remove", sub_args)) => {
                 let name = sub_args
                     .get_one::<Id>("remove-by")
-                    .expect("No valid contact name to remove")
+                    .context("No valid contact name to remove")?
                     .as_str();
-                let id = sub_args.get_one::<String>(name).unwrap();
+                let id = sub_args
+                    .get_one::<String>(name)
+                    .context("Missing contact identifier")?;
 
                 let changed = self.remove_contact(logs, id);
 
@@ -152,7 +154,11 @@ impl ContactsExtension for Contacts {
             }
 
             let relationship_status = if let Some(relationship) = relationships.get(&contact.did) {
-                style(relationship.lock().unwrap().state.clone()).color256(CLI_GREEN)
+                if let Ok(lock) = relationship.lock() {
+                    style(lock.state.clone()).color256(CLI_GREEN)
+                } else {
+                    style(RelationshipState::None).color256(CLI_ORANGE)
+                }
             } else {
                 style(RelationshipState::None).color256(CLI_ORANGE)
             };

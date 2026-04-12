@@ -9,6 +9,7 @@ use openvtc::{
     LF_ORG_DID, LF_PUBLIC_MEDIATOR_DID,
     config::{
         Config, ConfigProtectionType, ExportedConfig, KeyBackend, KeyTypes, PersonaDID,
+        derive_passphrase_key,
         protected_config::ProtectedConfig,
         public_config::PublicConfig,
         secured_config::{KeyInfoConfig, ProtectionMethod, unlock_code_decrypt},
@@ -16,7 +17,6 @@ use openvtc::{
     logs::{LogFamily, LogMessage, Logs},
 };
 use secrecy::{ExposeSecret, SecretString};
-use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, VecDeque},
     fs,
@@ -99,11 +99,10 @@ impl ConfigExtension for Config {
             }
         };
 
-        let seed_bytes = Sha256::digest(import_unlock_passphrase.expose_secret())
-            .first_chunk::<32>()
-            .expect("Couldn't get 32 bytes for passphrase hash")
-            .to_owned();
-
+        let seed_bytes = derive_passphrase_key(
+            import_unlock_passphrase.expose_secret().as_bytes(),
+            b"openvtc-export-v1",
+        )?;
         let decoded = unlock_code_decrypt(&seed_bytes, &decoded)?;
 
         let config: ExportedConfig = match serde_json::from_slice(&decoded) {
@@ -121,7 +120,10 @@ impl ConfigExtension for Config {
             }
         };
 
-        let bip32_seed = config.sc.bip32_seed.as_ref()
+        let bip32_seed = config
+            .sc
+            .bip32_seed
+            .as_ref()
             .expect("Imported config missing BIP32 seed");
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
@@ -156,8 +158,11 @@ impl ConfigExtension for Config {
                         None
                     },
                     Some(
-                        &sha2::Sha256::digest(new_unlock_passphrase.expose_secret().as_bytes())
-                            .to_vec(),
+                        &derive_passphrase_key(
+                            new_unlock_passphrase.expose_secret().as_bytes(),
+                            b"openvtc-unlock-code-v1",
+                        )?
+                        .to_vec(),
                     ),
                     &move || {
                         let mut state_mut = state_clone.clone();
@@ -244,11 +249,15 @@ impl ConfigExtension for Config {
         );
 
         // Build VTA key backend from setup state
-        let credential_raw = state.vta.credential_bundle_raw.clone()
+        let credential_raw = state
+            .vta
+            .credential_bundle_raw
+            .clone()
             .expect("VTA credential bundle not set");
         let bundle = crate::state_handler::setup_sequence::vta::decode_credential(&credential_raw)
             .expect("Failed to decode credential bundle");
-        let encryption_seed = ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
+        let encryption_seed =
+            ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
         let key_backend = KeyBackend::Vta {
             credential_bundle: SecretString::new(credential_raw),
             credential_did: bundle.did.clone(),

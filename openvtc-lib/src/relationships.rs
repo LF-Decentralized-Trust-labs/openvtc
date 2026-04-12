@@ -1,3 +1,9 @@
+//! Relationship management for OpenVTC.
+//!
+//! Relationships represent DIDComm connections between the local persona and
+//! remote parties. Each relationship tracks its own DID pair, state machine
+//! status, and associated VRCs.
+
 use crate::{
     KeyPurpose,
     bip32::Bip32Extension,
@@ -10,7 +16,7 @@ use crate::{
 };
 use affinidi_tdk::{
     TDK,
-    didcomm::{Message, PackEncryptedOptions},
+    didcomm::Message,
     messaging::{ATM, profiles::ATMProfile},
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
@@ -24,12 +30,14 @@ use std::{
     sync::{Arc, Mutex},
     time::SystemTime,
 };
+use tracing::{debug, warn};
 use uuid::Uuid;
 
 // ****************************************************************************
 // Relationship Structures
 // ****************************************************************************
 
+/// State machine for the lifecycle of a relationship between two parties.
 #[derive(Clone, Debug, Hash, Serialize, Deserialize, PartialEq, Eq)]
 pub enum RelationshipState {
     /// Relationship Request has been sent to the remote party
@@ -62,39 +70,41 @@ impl Display for RelationshipState {
     }
 }
 
+/// Collection of all known relationships, indexed by the remote party's persona DID (P-DID).
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(from = "RelationshipsShadow", into = "RelationshipsShadow")]
 pub struct Relationships {
-    /// Mapping relationships by the remote P-DID
+    /// Map from remote P-DID to the relationship state.
     pub relationships: HashMap<Arc<String>, Arc<Mutex<Relationship>>>,
 
     /*
     /// Mapping relationships by our R-DIDs
     pub r_map: HashMap<Arc<String>, Vec<HashSet<Arc<Relationship>>>>,
     */
-    /// latest BIP32 path pointer to use for new keys
+    /// Next BIP32 derivation path index to use when creating keys for a new relationship.
     pub path_pointer: u32,
 }
 
+/// A single relationship between the local user and a remote party.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct Relationship {
-    /// Task ID that this relationship may be attached to
+    /// The task ID associated with the relationship handshake workflow.
     pub task_id: Arc<String>,
 
-    /// What DID are we using in this relationship?
+    /// The local DID used in this relationship (may be the persona DID or a dedicated R-DID).
     pub our_did: Arc<String>,
 
-    /// What is the DID of the remote party in this relationship?
+    /// The DID provided by the remote party for this relationship (may be an R-DID).
     pub remote_did: Arc<String>,
 
-    /// What is the remote end persona DID?
-    /// NOTE: This may be the same as the remote did itself, or it may be a random r-did
+    /// The remote party's persona DID (P-DID).
+    /// May equal `remote_did` if the remote party did not use a separate R-DID.
     pub remote_p_did: Arc<String>,
 
-    /// When was this relationship created?
+    /// Timestamp when this relationship was created.
     pub created: DateTime<Utc>,
 
-    /// State machine status of this relationship
+    /// Current state of the relationship lifecycle.
     pub state: RelationshipState,
 }
 
@@ -104,7 +114,10 @@ impl From<RelationshipsShadow> for Relationships {
         //let mut r_map: HashMap<Arc<String>, Vec<HashSet<Arc<Relationship>>>> = HashMap::new();
 
         for relationship in value.relationships {
-            let remote_did = relationship.lock().unwrap().remote_p_did.clone();
+            let remote_did = match relationship.lock() {
+                Ok(r) => r.remote_p_did.clone(),
+                Err(e) => e.into_inner().remote_p_did.clone(),
+            };
             relationships.insert(remote_did.clone(), relationship.clone());
 
             /*
@@ -123,12 +136,12 @@ impl From<RelationshipsShadow> for Relationships {
     }
 }
 
-/// Used to serialize the more complex Relationships structure to SecuredConfig
+/// Flat serialization form of [`Relationships`] used for persistence in `SecuredConfig`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct RelationshipsShadow {
-    pub relationships: Vec<Arc<Mutex<Relationship>>>,
-    pub path_pointer: u32,
+pub(crate) struct RelationshipsShadow {
+    pub(crate) relationships: Vec<Arc<Mutex<Relationship>>>,
+    pub(crate) path_pointer: u32,
 }
 
 impl From<Relationships> for RelationshipsShadow {
@@ -146,8 +159,13 @@ impl From<Relationships> for RelationshipsShadow {
 }
 
 impl Relationships {
-    /// Generates ATM Profiles for established relationships where the local r-did is different
-    /// than the local p-did
+    /// Generates ATM profiles for established relationships where the local R-DID differs
+    /// from the persona P-DID, and registers the corresponding secrets with the TDK.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the TDK ATM service is not initialized, VTA authentication
+    /// fails, a mutex is poisoned, or secret derivation/import fails.
     pub async fn generate_profiles(
         &self,
         tdk: &TDK,
@@ -157,9 +175,16 @@ impl Relationships {
         key_info: &HashMap<String, KeyInfoConfig>,
         vta_client: Option<&vta_sdk::client::VtaClient>,
     ) -> Result<HashMap<Arc<String>, Arc<ATMProfile>>, OpenVTCError> {
-        let atm = tdk.atm.clone().unwrap();
+        let atm = tdk
+            .atm
+            .clone()
+            .ok_or_else(|| OpenVTCError::Config("TDK ATM service not initialized".to_string()))?;
 
         let mut profiles: HashMap<Arc<String>, Arc<ATMProfile>> = HashMap::new();
+        debug!(
+            "generating {} relationship profiles",
+            self.relationships.len()
+        );
 
         // Use provided VTA client, or create one as fallback for backward compat
         let owned_vta_client;
@@ -181,12 +206,10 @@ impl Relationships {
                         vta_did,
                     )
                     .await
-                    .map_err(|e| {
-                        OpenVTCError::Config(format!("VTA authentication failed: {e}"))
-                    })?;
+                    .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
 
                     owned_vta_client = {
-                        let mut c = vta_sdk::client::VtaClient::new(vta_url);
+                        let c = vta_sdk::client::VtaClient::new(vta_url);
                         c.set_token(token_result.access_token);
                         c
                     };
@@ -199,7 +222,10 @@ impl Relationships {
 
         for relationship in self.relationships.values() {
             let (our_did, state) = {
-                let lock = relationship.lock().unwrap();
+                let lock = relationship.lock().map_err(|e| {
+                    warn!("relationship mutex poisoned: {e}");
+                    OpenVTCError::MutexPoisoned(format!("Relationship mutex poisoned: {e}"))
+                })?;
                 (lock.our_did.clone(), lock.state.clone())
             };
             if state == RelationshipState::Established && &our_did != our_p_did {
@@ -225,29 +251,44 @@ impl Relationships {
                             let KeyBackend::Bip32 { root, .. } = key_backend else {
                                 continue;
                             };
-                            root.get_secret_from_path(path, kp).ok().map(|mut s| {
+                            root.get_secret_from_path(path, kp)
+                                .map(|mut s| {
+                                    s.id = k.clone();
+                                    s
+                                })
+                                .map_err(|e| {
+                                    warn!("secret derivation failed for key {}: {e}", k);
+                                    e
+                                })
+                                .ok()
+                        }
+                        KeySourceMaterial::Imported { seed } => Secret::from_multibase(seed, None)
+                            .map(|mut s| {
                                 s.id = k.clone();
                                 s
                             })
-                        }
-                        KeySourceMaterial::Imported { seed } => {
-                            Secret::from_multibase(seed, None).ok().map(|mut s| {
-                                s.id = k.clone();
-                                s
+                            .map_err(|e| {
+                                warn!("secret import failed for key {}: {e}", k);
+                                e
                             })
-                        }
+                            .ok(),
                         KeySourceMaterial::VtaManaged { key_id } => {
                             if let Some(client) = vta_client {
                                 match client.get_key_secret(key_id).await {
-                                    Ok(resp) => {
-                                        crate::config::secret_from_vta_response(&resp, kp)
-                                            .ok()
-                                            .map(|mut s| {
-                                                s.id = k.clone();
-                                                s
-                                            })
+                                    Ok(resp) => crate::config::secret_from_vta_response(&resp, kp)
+                                        .map(|mut s| {
+                                            s.id = k.clone();
+                                            s
+                                        })
+                                        .map_err(|e| {
+                                            warn!("VTA secret retrieval failed for key {}: {e}", k);
+                                            e
+                                        })
+                                        .ok(),
+                                    Err(e) => {
+                                        warn!("VTA get_key_secret failed for key {}: {e}", k);
+                                        None
                                     }
-                                    Err(_) => None,
                                 }
                             } else {
                                 None
@@ -268,35 +309,42 @@ impl Relationships {
         Ok(profiles)
     }
 
-    /// Removes a relationship by it's task_id
+    /// Removes a relationship by its task ID, along with any associated VRCs.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the relationship mutex is poisoned.
     pub fn remove_by_task_id(
         &mut self,
         id: &Arc<String>,
         vrcs_issued: &mut Vrcs,
         vrcs_recieved: &mut Vrcs,
-    ) -> Option<Arc<Mutex<Relationship>>> {
-        if let Some(relationship) = self
+    ) -> Result<Option<Arc<Mutex<Relationship>>>, OpenVTCError> {
+        let found = self
             .relationships
             .values()
-            .find(|f| f.lock().unwrap().task_id == *id)
-            .cloned()
-        {
-            self.remove(
-                &relationship.lock().unwrap().remote_did,
-                vrcs_issued,
-                vrcs_recieved,
-            )
+            .find(|f| f.lock().map(|r| r.task_id == *id).unwrap_or(false))
+            .cloned();
+
+        if let Some(relationship) = found {
+            let remote_did = relationship
+                .lock()
+                .map_err(|e| {
+                    warn!("relationship mutex poisoned: {e}");
+                    OpenVTCError::MutexPoisoned(format!("Relationship mutex poisoned: {e}"))
+                })?
+                .remote_did
+                .clone();
+            debug!("relationship removed: task_id={}", id);
+            Ok(self.remove(&remote_did, vrcs_issued, vrcs_recieved))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    /// Removes a relationship by it's key, removes associated information tagged to the
-    /// relationship such as VRCs
-    /// Returns
-    /// relationship removed if successful
-    /// None if not found
-    /// Error if something went wrong
+    /// Removes a relationship by its remote P-DID key, along with any associated VRCs.
+    ///
+    /// Returns the removed relationship if found, or `None` if no match exists.
     pub fn remove(
         &mut self,
         key: &Arc<String>,
@@ -307,7 +355,11 @@ impl Relationships {
         vrcs_issued.remove_relationship(key);
         vrcs_recieved.remove_relationship(key);
 
-        self.relationships.remove(key)
+        let removed = self.relationships.remove(key);
+        if removed.is_some() {
+            debug!("relationship removed: remote_did={}", key);
+        }
+        removed
     }
 
     /// Gets a relationship using the remote P-DID key
@@ -315,31 +367,32 @@ impl Relationships {
         self.relationships.get(p_did).cloned()
     }
 
-    /// Finds a relationship by it's task ID
+    /// Finds a relationship by its task ID.
     pub fn find_by_task_id(&self, task_id: &Arc<String>) -> Option<Arc<Mutex<Relationship>>> {
         self.relationships
             .values()
-            .find(|f| &f.lock().unwrap().task_id == task_id)
+            .find(|f| f.lock().map(|r| &r.task_id == task_id).unwrap_or(false))
             .cloned()
     }
 
-    /// Finds a relationship by it's remote DID (could be P-DID or R-DID)
+    /// Finds a relationship by its remote DID (either P-DID or R-DID).
     pub fn find_by_remote_did(&self, did: &Arc<String>) -> Option<Arc<Mutex<Relationship>>> {
         self.relationships
             .values()
             .find(|r| {
-                let lock = r.lock().unwrap();
-                lock.remote_did == *did || lock.remote_p_did == *did
+                r.lock()
+                    .map(|lock| lock.remote_did == *did || lock.remote_p_did == *did)
+                    .unwrap_or(false)
             })
             .cloned()
     }
 
-    /// Filters relationships and only returns those that are established
+    /// Returns only the relationships in the [`RelationshipState::Established`] state.
     pub fn get_established_relationships(&self) -> Vec<Arc<Mutex<Relationship>>> {
         self.relationships
             .values()
             .filter_map(|r| {
-                let lock = r.lock().unwrap();
+                let lock = r.lock().ok()?;
                 if lock.state == RelationshipState::Established {
                     Some(r.clone())
                 } else {
@@ -354,23 +407,26 @@ impl Relationships {
 // Message Body Structure types
 // ****************************************************************************
 
-/// DIDComm message body sent to the remote party when requesting a relationship
+/// DIDComm message body sent to the remote party when requesting a new relationship.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelationshipRequestBody {
+    /// Optional human-readable reason for the request.
     pub reason: Option<String>,
+    /// The DID the requester wants to use for this relationship.
     pub did: String,
 }
 
-/// DIDComm message body sent to the initiator of a relationship request when the request is
-/// rejected
+/// DIDComm message body sent to the initiator when a relationship request is rejected.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelationshipRejectBody {
+    /// Optional human-readable reason for the rejection.
     pub reason: Option<String>,
 }
 
-/// Body of a Relationship Rquest accept message
+/// DIDComm message body sent to the initiator when a relationship request is accepted.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelationshipAcceptBody {
+    /// The DID the acceptor will use for this relationship.
     pub did: String,
 }
 
@@ -378,13 +434,19 @@ pub struct RelationshipAcceptBody {
 // Message Handling
 // ****************************************************************************
 
-/// Creates and send the relationship rejection message to the remote party
-/// atm: Affinidi Trusted Messaging instance
-/// from_profile: ATM Profile of the responder
-/// to: DID of who we will send this rejection message to
-/// mediator_did: DID of the mediator to forward this message through
-/// reason: Optional reason for rejecting the relationship request
-/// thid: Thread ID for the DIDComm message
+/// Creates and sends a relationship rejection message to the remote party via DIDComm.
+///
+/// - `atm`: The Affinidi Trusted Messaging service instance.
+/// - `from_profile`: ATM profile of the responder (our identity).
+/// - `to`: DID of the remote party who initiated the request.
+/// - `mediator_did`: DID of the mediator used for message forwarding.
+/// - `reason`: Optional human-readable reason for the rejection.
+/// - `thid`: Thread ID linking this rejection to the original request.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is unavailable, message encryption fails,
+/// or message delivery fails.
 pub async fn create_send_message_rejected(
     atm: &ATM,
     from_profile: &Arc<ATMProfile>,
@@ -395,11 +457,11 @@ pub async fn create_send_message_rejected(
 ) -> Result<(), OpenVTCError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| OpenVTCError::Config(format!("System clock error: {e}")))?
         .as_secs();
 
     let msg = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request-reject".to_string(),
         json!(RelationshipRejectBody {
             reason: reason.map(|r| r.to_string())
@@ -412,44 +474,32 @@ pub async fn create_send_message_rejected(
     .expires_time(60 * 60 * 48) // 48 hours
     .finalize();
 
-    // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            to,
-            Some(&from_profile.inner.did),
-            Some(&from_profile.inner.did),
-            &atm.get_tdk().did_resolver,
-            &atm.get_tdk().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    atm.forward_and_send_message(
+    crate::pack_and_send(
+        atm,
         from_profile,
-        false,
         &msg,
-        None,
-        mediator_did,
+        &from_profile.inner.did,
         to,
-        None,
-        None,
-        false,
+        mediator_did,
     )
     .await?;
 
     Ok(())
 }
 
-/// Creates and sends the relationship request accept message to the remote party
-/// atm: Affinidi Trusted Messaging instance
-/// from_profile: ATM Profile of the responder
-/// to: DID of who we will send this rejection message to
-/// mediator_did: DID of the mediator to forward this message through
-/// r_did: The relationship DID to use for this relationship (May be the P-DID or R-DID)
-/// thid: Thread ID for the DIDComm message
+/// Creates and sends a relationship acceptance message to the remote party via DIDComm.
+///
+/// - `atm`: The Affinidi Trusted Messaging service instance.
+/// - `from_profile`: ATM profile of the responder (our identity).
+/// - `to`: DID of the remote party who initiated the request.
+/// - `mediator_did`: DID of the mediator used for message forwarding.
+/// - `r_did`: The relationship DID to use (may be the persona DID or a dedicated R-DID).
+/// - `thid`: Thread ID linking this acceptance to the original request.
+///
+/// # Errors
+///
+/// Returns an error if the system clock is unavailable, message encryption fails,
+/// or message delivery fails.
 pub async fn create_send_message_accepted(
     atm: &ATM,
     from_profile: &Arc<ATMProfile>,
@@ -460,11 +510,11 @@ pub async fn create_send_message_accepted(
 ) -> Result<(), OpenVTCError> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| OpenVTCError::Config(format!("System clock error: {e}")))?
         .as_secs();
 
     let msg = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://linuxfoundation.org/openvtc/1.0/relationship-request-accept".to_string(),
         json!(RelationshipAcceptBody {
             did: r_did.to_string()
@@ -477,34 +527,173 @@ pub async fn create_send_message_accepted(
     .expires_time(60 * 60 * 48) // 48 hours
     .finalize();
 
-    // Pack the message
-    // Pack the message
-    let (msg, _) = msg
-        .pack_encrypted(
-            to,
-            Some(&from_profile.inner.did),
-            Some(&from_profile.inner.did),
-            &atm.get_tdk().did_resolver,
-            &atm.get_tdk().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    atm.forward_and_send_message(
+    crate::pack_and_send(
+        atm,
         from_profile,
-        false,
         &msg,
-        None,
-        mediator_did,
+        &from_profile.inner.did,
         to,
-        None,
-        None,
-        false,
+        mediator_did,
     )
     .await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_relationship(
+        task_id: &str,
+        our_did: &str,
+        remote_did: &str,
+        remote_p_did: &str,
+        state: RelationshipState,
+    ) -> Relationship {
+        Relationship {
+            task_id: Arc::new(task_id.to_string()),
+            our_did: Arc::new(our_did.to_string()),
+            remote_did: Arc::new(remote_did.to_string()),
+            remote_p_did: Arc::new(remote_p_did.to_string()),
+            created: Utc::now(),
+            state,
+        }
+    }
+
+    #[test]
+    fn test_relationships_default_empty() {
+        let rels = Relationships::default();
+        assert!(
+            rels.relationships.is_empty(),
+            "Default Relationships should have no entries"
+        );
+        assert_eq!(rels.path_pointer, 0);
+    }
+
+    #[test]
+    fn test_add_and_find_relationship() {
+        let mut rels = Relationships::default();
+        let r = make_relationship(
+            "task-1",
+            "did:our:1",
+            "did:remote:1",
+            "did:remote-p:1",
+            RelationshipState::Established,
+        );
+        let key = r.remote_p_did.clone();
+        rels.relationships
+            .insert(key.clone(), Arc::new(Mutex::new(r)));
+
+        // get by p-did
+        let found = rels.get(&key);
+        assert!(found.is_some(), "Should find relationship by remote P-DID");
+
+        // find by task id
+        let found_task = rels.find_by_task_id(&Arc::new("task-1".to_string()));
+        assert!(found_task.is_some(), "Should find relationship by task ID");
+
+        // find by remote did
+        let found_remote = rels.find_by_remote_did(&Arc::new("did:remote:1".to_string()));
+        assert!(
+            found_remote.is_some(),
+            "Should find relationship by remote DID"
+        );
+    }
+
+    #[test]
+    fn test_get_established_relationships() {
+        let mut rels = Relationships::default();
+
+        let r1 = make_relationship(
+            "t1",
+            "did:our:1",
+            "did:r:1",
+            "did:rp:1",
+            RelationshipState::Established,
+        );
+        let r2 = make_relationship(
+            "t2",
+            "did:our:2",
+            "did:r:2",
+            "did:rp:2",
+            RelationshipState::RequestSent,
+        );
+        rels.relationships
+            .insert(r1.remote_p_did.clone(), Arc::new(Mutex::new(r1)));
+        rels.relationships
+            .insert(r2.remote_p_did.clone(), Arc::new(Mutex::new(r2)));
+
+        let established = rels.get_established_relationships();
+        assert_eq!(
+            established.len(),
+            1,
+            "Only one relationship should be established"
+        );
+    }
+
+    #[test]
+    fn test_remove_relationship() {
+        let mut rels = Relationships::default();
+        let mut vrcs_issued = crate::vrc::Vrcs::default();
+        let mut vrcs_received = crate::vrc::Vrcs::default();
+
+        let r = make_relationship(
+            "t1",
+            "did:our:1",
+            "did:r:1",
+            "did:rp:1",
+            RelationshipState::Established,
+        );
+        let key = r.remote_p_did.clone();
+        rels.relationships
+            .insert(key.clone(), Arc::new(Mutex::new(r)));
+
+        let removed = rels.remove(&key, &mut vrcs_issued, &mut vrcs_received);
+        assert!(removed.is_some(), "Should return the removed relationship");
+        assert!(
+            rels.relationships.is_empty(),
+            "Relationships should be empty after removal"
+        );
+    }
+
+    #[test]
+    fn test_relationship_state_display() {
+        assert_eq!(RelationshipState::RequestSent.to_string(), "Request Sent");
+        assert_eq!(
+            RelationshipState::RequestAccepted.to_string(),
+            "Request Accepted"
+        );
+        assert_eq!(
+            RelationshipState::RequestRejected.to_string(),
+            "Request Rejected"
+        );
+        assert_eq!(RelationshipState::Established.to_string(), "Established");
+        assert_eq!(RelationshipState::None.to_string(), "None");
+    }
+
+    #[test]
+    fn test_relationships_shadow_roundtrip() {
+        let mut rels = Relationships {
+            path_pointer: 42,
+            ..Default::default()
+        };
+        let r = make_relationship(
+            "t1",
+            "did:our:1",
+            "did:r:1",
+            "did:rp:1",
+            RelationshipState::Established,
+        );
+        rels.relationships
+            .insert(r.remote_p_did.clone(), Arc::new(Mutex::new(r)));
+
+        let shadow: RelationshipsShadow = rels.into();
+        assert_eq!(shadow.path_pointer, 42);
+        assert_eq!(shadow.relationships.len(), 1);
+
+        let restored: Relationships = shadow.into();
+        assert_eq!(restored.path_pointer, 42);
+        assert_eq!(restored.relationships.len(), 1);
+    }
 }

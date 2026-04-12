@@ -9,6 +9,8 @@ use crate::{
 };
 use secrecy::SecretVec;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::{env, fs, path::Path, sync::Arc};
 use tracing::warn;
 
@@ -44,8 +46,28 @@ impl From<&Config> for PublicConfig {
     }
 }
 
+/// Validates that a profile name contains only safe characters.
+pub fn validate_profile_name(profile: &str) -> Result<(), OpenVTCError> {
+    if profile != "default"
+        && !profile
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(OpenVTCError::Config(format!(
+            "Invalid profile name '{profile}'. Only alphanumeric characters, hyphens, and underscores are allowed."
+        )));
+    }
+    if profile.is_empty() {
+        return Err(OpenVTCError::Config(
+            "Profile name cannot be empty".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Private helper to determine where the config file is located
 fn get_config_path(profile: &str) -> Result<String, OpenVTCError> {
+    validate_profile_name(profile)?;
     let path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
         if config_path.ends_with('/') {
             config_path
@@ -108,6 +130,16 @@ impl PublicConfig {
             ))
         })?;
 
+        // Restrict file permissions to owner-only on Unix systems
+        #[cfg(unix)]
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+            OpenVTCError::Config(format!(
+                "Couldn't set permissions on config file ({}): {}",
+                path.to_string_lossy(),
+                e
+            ))
+        })?;
+
         Ok(())
     }
 
@@ -117,8 +149,8 @@ impl PublicConfig {
         let cfg_path = get_config_path(profile)?;
         let path = Path::new(&cfg_path);
 
-        let file =
-            fs::File::open(path).map_err(|e| OpenVTCError::ConfigNotFound(cfg_path.to_string(), e))?;
+        let file = fs::File::open(path)
+            .map_err(|e| OpenVTCError::ConfigNotFound(cfg_path.to_string(), e))?;
 
         match serde_json::from_reader(file) {
             Ok(s) => Ok(s),
@@ -127,5 +159,56 @@ impl PublicConfig {
                 Err(e.into())
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Guards tests that mutate the OPENVTC_CONFIG_PATH env var so they
+    /// don't race against each other.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn test_get_config_path_default_profile() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/openvtc-test") };
+        let path = get_config_path("default").unwrap();
+        assert_eq!(path, "/tmp/openvtc-test/config.json");
+        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+    }
+
+    #[test]
+    fn test_get_config_path_named_profile() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/openvtc-test/") };
+        let path = get_config_path("work").unwrap();
+        assert_eq!(path, "/tmp/openvtc-test/config-work.json");
+        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+    }
+
+    #[test]
+    fn test_get_config_path_trailing_slash_normalization() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/cfg") };
+        let path = get_config_path("default").unwrap();
+        assert!(
+            path.starts_with("/tmp/cfg/"),
+            "Path should have a slash appended: {}",
+            path
+        );
+        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+    }
+
+    #[test]
+    fn test_public_config_default() {
+        let pc = PublicConfig::default();
+        assert!(pc.persona_did.is_empty());
+        assert!(pc.mediator_did.is_empty());
+        assert!(pc.friendly_name.is_empty());
+        assert!(pc.private.is_none());
     }
 }

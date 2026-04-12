@@ -5,7 +5,8 @@ use affinidi_tdk::{
     TDK,
     common::config::TDKConfig,
     data_integrity::DataIntegrityProof,
-    didcomm::{Message, PackEncryptedOptions, UnpackMetadata},
+    didcomm::Message,
+    messaging::messages::compat::UnpackMetadata,
     messaging::{
         ATM,
         config::ATMConfig,
@@ -22,7 +23,7 @@ use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use openvtc::{
-    MessageType,
+    MessageType, protocol_urls,
     relationships::{
         RelationshipRequestBody, create_send_message_accepted, create_send_message_rejected,
     },
@@ -86,8 +87,7 @@ async fn main() -> Result<()> {
     let atm = ATM::new(
         ATMConfig::builder()
             .with_inbound_message_channel(10)
-            .build()
-            .unwrap(),
+            .build()?,
         tdk.get_shared_state(),
     )
     .await?;
@@ -167,10 +167,18 @@ async fn main() -> Result<()> {
     cleanup_existing(&atm, mediator_did, &atm_charles, &mut relationships).await;
 
     // Enable websocket live streaming
-    let _ = atm.profile_enable_websocket(&atm_ada).await;
-    let _ = atm.profile_enable_websocket(&atm_grace).await;
-    let _ = atm.profile_enable_websocket(&atm_alan).await;
-    let _ = atm.profile_enable_websocket(&atm_charles).await;
+    if let Err(e) = atm.profile_enable_websocket(&atm_ada).await {
+        warn!("Failed to enable websocket for Ada: {e}");
+    }
+    if let Err(e) = atm.profile_enable_websocket(&atm_grace).await {
+        warn!("Failed to enable websocket for Grace: {e}");
+    }
+    if let Err(e) = atm.profile_enable_websocket(&atm_alan).await {
+        warn!("Failed to enable websocket for Alan: {e}");
+    }
+    if let Err(e) = atm.profile_enable_websocket(&atm_charles).await {
+        warn!("Failed to enable websocket for Charles: {e}");
+    }
 
     info!("Main loop running...");
     loop {
@@ -179,7 +187,10 @@ async fn main() -> Result<()> {
             Ok(WebSocketResponses::MessageReceived(inbound_message, meta)) = inbound_channel.recv() => {
                 handle_message( &atm, mediator_did, &inbound_message, &meta, &mut relationships).await;
             }
-
+            _ = tokio::signal::ctrl_c() => {
+                info!("Shutting down...");
+                return Ok(());
+            }
         }
     }
 }
@@ -203,21 +214,28 @@ async fn handle_message(
     };
 
     // Ensure we are cleaning up after ourselves
-    let _ = atm
+    if let Err(e) = atm
         .delete_message_background(&to_profile, &meta.sha256_hash)
-        .await;
-
-    let from_did = if let Some(from) = &message.from {
-        from.to_string()
-    } else {
+        .await
+    {
         warn!(
-            "{}: Message receieved had no from: address! Ignoring...",
+            "{}: Failed to delete processed message from mediator: {e}",
             to_profile.inner.alias
         );
-        return;
+    }
+
+    let from_did = match openvtc::require_from(message) {
+        Ok(did) => did,
+        Err(_) => {
+            warn!(
+                "{}: Message received had no from: address! Ignoring...",
+                to_profile.inner.alias
+            );
+            return;
+        }
     };
 
-    if message.type_ == "https://didcomm.org/messagepickup/3.0/status" {
+    if message.typ == protocol_urls::MESSAGEPICKUP_STATUS {
         // Status message, ignore
         return;
     }
@@ -308,18 +326,8 @@ async fn handle_message(
                 };
 
                 // Pack the message
-                let (msg, _) = match msg
-                    .pack_encrypted(
-                        &from_did,
-                        Some(&to_profile.inner.did),
-                        Some(&to_profile.inner.did),
-                        &atm.get_tdk().did_resolver,
-                        &atm.get_tdk().secrets_resolver,
-                        &PackEncryptedOptions {
-                            forward: false,
-                            ..Default::default()
-                        },
-                    )
+                let (msg, _) = match atm
+                    .pack_encrypted(&msg, &from_did, Some(&to_profile.inner.did), None)
                     .await
                 {
                     Ok(res) => res,
@@ -454,10 +462,10 @@ async fn create_vrc(
         .await
     else {
         warn!("{}: Couldn't find signing secret!", profile.inner.alias);
-        bail!("Couldn't find sceret");
+        bail!("Couldn't find secret");
     };
 
-    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None)?;
+    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None).await?;
     vrc.credential_mut().proof = Some(proof);
 
     Ok(vrc)

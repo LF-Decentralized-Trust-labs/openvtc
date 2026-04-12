@@ -1,23 +1,23 @@
 /*! Contains specific Config extensions for the CLI Application. */
 
 use crate::{
-    relationships::RelationshipsExtension, setup::create_unlock_code, CLI_BLUE, CLI_GREEN,
-    CLI_ORANGE, CLI_PURPLE, CLI_RED,
+    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED, relationships::RelationshipsExtension,
+    setup::create_unlock_code,
 };
-use anyhow::{bail, Result};
-use base64::{prelude::BASE64_URL_SAFE_NO_PAD, Engine};
+use anyhow::{Context, Result, bail};
+use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use console::style;
-use dialoguer::{theme::ColorfulTheme, Password};
+use dialoguer::{Password, theme::ColorfulTheme};
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use openvtc::{
-    config::{
-        protected_config::ProtectedConfig, public_config::PublicConfig,
-        secured_config::unlock_code_decrypt, Config, ConfigProtectionType, ExportedConfig,
-    },
     LF_PUBLIC_MEDIATOR_DID,
+    config::{
+        Config, ConfigProtectionType, ExportedConfig, derive_passphrase_key,
+        protected_config::ProtectedConfig, public_config::PublicConfig,
+        secured_config::unlock_code_decrypt,
+    },
 };
 use secrecy::{ExposeSecret, SecretString};
-use sha2::{Digest, Sha256};
 use std::fs;
 
 pub trait ConfigExtension {
@@ -55,23 +55,17 @@ impl ConfigExtension for Config {
             }
         };
 
-        let seed_bytes = if let Some(passphrase) = passphrase {
-            Sha256::digest(passphrase.expose_secret())
-                .first_chunk::<32>()
-                .expect("Couldn't get 32 bytes for passphrase hash")
-                .to_owned()
+        let passphrase_bytes = if let Some(passphrase) = passphrase {
+            passphrase.expose_secret().as_bytes().to_vec()
         } else {
-            Sha256::digest(
-                Password::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Enter passphrase to decrypt imported configuration")
-                    .interact()
-                    .expect("Failed to read passphrase"),
-            )
-            .first_chunk::<32>()
-            .expect("Couldn't get 32 bytes for passphrase hash")
-            .to_owned()
+            let input = Password::with_theme(&ColorfulTheme::default())
+                .with_prompt("Enter passphrase to decrypt imported configuration")
+                .interact()
+                .context("Failed to read passphrase")?;
+            input.into_bytes()
         };
 
+        let seed_bytes = derive_passphrase_key(&passphrase_bytes, b"openvtc-export-v1")?;
         let decoded = unlock_code_decrypt(&seed_bytes, &decoded)?;
 
         let config: ExportedConfig = match serde_json::from_slice(&decoded) {
@@ -88,7 +82,7 @@ impl ConfigExtension for Config {
         };
 
         let passphrase = if let ConfigProtectionType::Encrypted = config.pc.protection {
-            create_unlock_code()
+            create_unlock_code()?
         } else {
             None
         };
@@ -97,11 +91,11 @@ impl ConfigExtension for Config {
             .sc
             .bip32_seed
             .as_ref()
-            .expect("Imported config does not contain a BIP32 seed (VTA configs cannot be imported via CLI)");
+            .context("Imported config does not contain a BIP32 seed (VTA configs cannot be imported via CLI)")?;
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
                 .decode(bip32_seed)
-                .expect("Couldn't base64 decode BIP32 seed")
+                .context("Couldn't base64 decode BIP32 seed")?
                 .as_slice(),
         )?;
         let private_seed = ProtectedConfig::get_seed(&bip32_root, "m/0'/0'/0'")?;
@@ -115,7 +109,7 @@ impl ConfigExtension for Config {
         config
             .pc
             .save(profile, &private, &private_seed)
-            .expect("Couldn't save Public Config");
+            .context("Couldn't save Public Config")?;
         config
             .sc
             .save(
@@ -131,7 +125,7 @@ impl ConfigExtension for Config {
                     eprintln!("Touch confirmation needed for decryption");
                 },
             )
-            .expect("Couldn't save Public Config");
+            .context("Couldn't save Secured Config")?;
 
         println!(
             "{}",
@@ -164,6 +158,25 @@ impl ConfigExtension for Config {
             &self.private.vrcs_received,
         );
     }
+}
+
+/// Saves the current configuration to disk for the given profile.
+///
+/// Wraps `Config::save` with the platform-appropriate touch-notification
+/// callback so all call sites use a single consistent invocation.
+///
+/// # Errors
+///
+/// Returns an error if serialization or file I/O fails.
+pub fn save_config(config: &mut openvtc::config::Config, profile: &str) -> anyhow::Result<()> {
+    config.save(
+        profile,
+        #[cfg(feature = "openpgp-card")]
+        &|| {
+            eprintln!("Touch confirmation needed for decryption");
+        },
+    )?;
+    Ok(())
 }
 
 pub trait PublicConfigExtension {

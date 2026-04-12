@@ -4,7 +4,7 @@
 
 use crate::{
     cli::cli,
-    config::ConfigExtension,
+    config::{ConfigExtension, save_config},
     contacts::ContactsExtension,
     interactions::vrc::vrcs_entry,
     log::LogsExtension,
@@ -89,7 +89,7 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                 .with_prompt("Please enter Token User PIN <blank = default>")
                 .allow_empty_password(true)
                 .interact()
-                .unwrap();
+                .context("Failed to read Token User PIN")?;
             let user_pin = if user_pin.is_empty() {
                 SecretString::new("123456".to_string())
             } else {
@@ -107,11 +107,11 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap()
+                        .context("Failed to read unlock passphrase")?
                 };
             (
                 SecretString::new(String::new()),
-                Some(UnlockCode::from_string(&passphrase)),
+                Some(UnlockCode::from_string(&passphrase)?),
             )
         }
         ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
@@ -135,9 +135,9 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
             println!(
                 "{}{}",
                 style("ERROR: ").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
+                style(&e).color256(CLI_ORANGE)
             );
-            panic!("Exiting...");
+            bail!("Failed to load configuration: {e}");
         }
     };
 
@@ -367,13 +367,15 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                 Some(("settings", sub_args)) => {
                     // Export settings
                     let passphrase = sub_args.get_one::<String>("passphrase");
-                    config.export(
+                    if let Err(e) = config.export(
                         passphrase.map(|s| SecretString::new(s.to_string())),
                         sub_args
                             .get_one::<String>("file")
                             .expect("Code error - file should has a default!")
                             .as_str(),
-                    );
+                    ) {
+                        eprintln!("ERROR: Export failed: {e}");
+                    }
                 }
                 _ => {
                     println!(
@@ -403,13 +405,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                 .await?
             {
                 // Need to save config
-                config.save(
-                    profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| {
-                        eprintln!("Touch confirmation needed for decryption");
-                    },
-                )?;
+                save_config(&mut config, profile)?;
             }
         }
         Some(("relationships", args)) => {
@@ -447,7 +443,7 @@ pub fn get_unlock_code() -> Result<[u8; 32]> {
         .with_prompt("Please enter your openvtc unlock code")
         .allow_empty_password(true)
         .interact()
-        .unwrap_or_default();
+        .map_err(|e| anyhow::anyhow!("Failed to read unlock code: {e}"))?;
 
     Ok(sha2::Sha256::digest(unlock_code.as_bytes()).into())
 }

@@ -31,7 +31,10 @@ pub async fn fetch_tasks(
     term: &Term,
     profile: &Arc<ATMProfile>,
 ) -> Result<u32> {
-    let atm = tdk.atm.clone().unwrap();
+    let atm = tdk
+        .atm
+        .clone()
+        .ok_or_else(|| anyhow!("ATM not initialized"))?;
     let our_did = profile.dids()?.0.to_string();
 
     print!(
@@ -77,7 +80,7 @@ pub async fn fetch_tasks(
                             .color256(CLI_ORANGE),
                         style(e).color256(CLI_ORANGE)
                     );
-                    println!("DIDComm bad enevlope:\n{:#?}", message);
+                    println!("DIDComm bad envelope:\n{:#?}", message);
                     continue;
                 }
             };
@@ -159,7 +162,7 @@ pub async fn fetch_tasks(
                                 println!(
                                     "{}",
                                     style(format!(
-                                        "WARN: Invalid body receieved for relationship request rejection message. Reason: {}",
+                                        "WARN: Invalid body received for relationship request rejection message. Reason: {}",
                                         e
                                     ))
                                 );
@@ -202,7 +205,7 @@ pub async fn fetch_tasks(
                                 println!(
                                     "{}",
                                     style(format!(
-                                        "WARN: Invalid body receieved for relationship request accept message. Reason: {}",
+                                        "WARN: Invalid body received for relationship request accept message. Reason: {}",
                                         e
                                     ))
                                 );
@@ -338,7 +341,7 @@ pub async fn fetch_tasks(
                                 println!(
                                     "{}",
                                     style(format!(
-                                        "WARN: Invalid body receieved for VRC request rejection message. Reason: {}",
+                                        "WARN: Invalid body received for VRC request rejection message. Reason: {}",
                                         e
                                     ))
                                 );
@@ -383,7 +386,7 @@ pub async fn fetch_tasks(
                 println!(
                     "{}{}",
                     style("INVALID Task Type: ").color256(CLI_RED),
-                    style(unpacked_msg.type_).color256(CLI_ORANGE)
+                    style(&unpacked_msg.typ).color256(CLI_ORANGE)
                 );
                 continue;
             };

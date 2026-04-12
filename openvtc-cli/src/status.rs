@@ -138,7 +138,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 eprintln!("Touch confirmation needed for decryption");
             }
             fn touch_completed(&self) {
-                eprintln!("Touch ompleted");
+                eprintln!("Touch completed");
             }
         }
         A
@@ -162,8 +162,18 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
             let user_pin = Password::with_theme(&ColorfulTheme::default())
                 .with_prompt("Please enter Token User PIN <blank = default>")
                 .allow_empty_password(true)
-                .interact()
-                .unwrap();
+                .interact();
+            let user_pin = match user_pin {
+                Ok(pin) => pin,
+                Err(e) => {
+                    println!(
+                        "{} {}",
+                        style("ERROR: Failed to read Token User PIN:").color256(CLI_RED),
+                        style(e).color256(CLI_ORANGE)
+                    );
+                    return;
+                }
+            };
             let user_pin = if user_pin.is_empty() {
                 SecretString::new("123456".to_string())
             } else {
@@ -177,15 +187,35 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 if let Some(passphrase) = cli().get_matches().get_one::<String>("unlock-code") {
                     passphrase.to_string()
                 } else {
-                    Password::with_theme(&ColorfulTheme::default())
+                    match Password::with_theme(&ColorfulTheme::default())
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap()
+                    {
+                        Ok(p) => p,
+                        Err(e) => {
+                            println!(
+                                "{} {}",
+                                style("ERROR: Failed to read unlock passphrase:").color256(CLI_RED),
+                                style(e).color256(CLI_ORANGE)
+                            );
+                            return;
+                        }
+                    }
                 };
             (
                 SecretString::new(String::new()),
-                Some(UnlockCode::from_string(&passphrase)),
+                match UnlockCode::from_string(&passphrase) {
+                    Ok(uc) => Some(uc),
+                    Err(e) => {
+                        println!(
+                            "{} {}",
+                            style("ERROR: Invalid passphrase:").color256(CLI_RED),
+                            style(e).color256(CLI_ORANGE)
+                        );
+                        return;
+                    }
+                },
             )
         }
         ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
@@ -248,7 +278,8 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
             println!(
                 " {}{}{}",
                 style("✅ Successfull ping/pong. RTT: ").color256(CLI_GREEN),
-                style(end.duration_since(start).unwrap().as_millis()).color256(CLI_GREEN),
+                style(end.duration_since(start).unwrap_or_default().as_millis())
+                    .color256(CLI_GREEN),
                 style("ms").color256(CLI_GREEN)
             );
         }

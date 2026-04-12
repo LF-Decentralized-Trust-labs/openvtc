@@ -16,13 +16,11 @@ use ratatui::{
 use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
-    state_handler::{
-        actions::Action,
-        setup_sequence::SetupState,
-    },
+    state_handler::{actions::Action, setup_sequence::SetupState},
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -168,7 +166,10 @@ fn handle_server_config(state: &mut SetupFlow, key: KeyEvent) {
                 state.props.state.webvh_server.custom_path = custom_path.clone();
 
                 let result = navigate(
-                    SetupEvent::UseWebvhServer { server_id, custom_path },
+                    SetupEvent::UseWebvhServer {
+                        server_id,
+                        custom_path,
+                    },
                     &state.props.state,
                 );
                 handle_nav_result(result, state);
@@ -239,10 +240,7 @@ fn render_choose_method(select: &WebvhServerSelect, frame: &mut Frame, area: Rec
         Span::styled(" to confirm", Style::new().fg(COLOR_TEXT_DEFAULT)),
     ]));
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        content,
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content);
 }
 
 fn render_server_config(
@@ -267,10 +265,7 @@ fn render_server_config(
         lines.push(Line::default());
 
         for (i, server) in servers.iter().enumerate() {
-            let label = server
-                .label
-                .as_deref()
-                .unwrap_or(&server.id);
+            let label = server.label.as_deref().unwrap_or(&server.id);
             if i == select.selected_server_index {
                 lines.push(Line::styled(
                     format!("[✓] {}", label),
@@ -285,10 +280,7 @@ fn render_server_config(
         }
         lines.push(Line::default());
     } else if let Some(server) = servers.first() {
-        let label = server
-            .label
-            .as_deref()
-            .unwrap_or(&server.id);
+        let label = server.label.as_deref().unwrap_or(&server.id);
         lines.push(Line::from(vec![
             Span::styled("Server: ", Style::new().fg(COLOR_BORDER).bold()),
             Span::styled(label, Style::new().fg(COLOR_SOFT_PURPLE)),
@@ -296,10 +288,7 @@ fn render_server_config(
         lines.push(Line::default());
     }
 
-    frame.render_widget(
-        Paragraph::new(lines).wrap(Wrap { trim: false }),
-        content[0],
-    );
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content[0]);
 
     // Path input
     let path_header = Line::styled(
@@ -308,13 +297,12 @@ fn render_server_config(
     );
     frame.render_widget(Paragraph::new(path_header), content[1]);
 
-    let [input_prompt, input_box] =
-        Layout::horizontal([Length(2), Min(0)]).areas(Rect {
-            x: content[1].x,
-            y: content[1].y + 1,
-            width: content[1].width,
-            height: 1,
-        });
+    let [input_prompt, input_box] = Layout::horizontal([Length(2), Min(0)]).areas(Rect {
+        x: content[1].x,
+        y: content[1].y + 1,
+        width: content[1].width,
+        height: 1,
+    });
 
     frame.render_widget(
         Paragraph::new(Span::styled(

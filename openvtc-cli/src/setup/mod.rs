@@ -5,6 +5,7 @@
 use crate::setup::openpgp_card::setup_hardware_token;
 use crate::{
     CLI_BLUE, CLI_GREEN, CLI_PURPLE,
+    config::save_config,
     setup::{
         bip32_bip39::{generate_bip39_mnemonic, mnemonic_from_recovery_phrase},
         did::did_setup,
@@ -13,7 +14,7 @@ use crate::{
     },
 };
 use affinidi_tdk::{TDK, common::config::TDKConfig, messaging::profiles::ATMProfile};
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use bip39::Mnemonic;
 use chrono::Utc;
@@ -58,20 +59,20 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
         .with_prompt("Recover Secrets from 24 word recovery phrase?")
         .default(false)
         .interact()
-        .unwrap()
+        .context("Failed to read recovery phrase prompt")?
     {
         // Using Recovery Phrase
         imported_bip32 = true;
         mnemonic_from_recovery_phrase()?
     } else {
-        generate_bip39_mnemonic()
+        generate_bip39_mnemonic()?
     };
 
     let imported_keys = if Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt("Use (import) existing PGP keys?")
         .default(false)
         .interact()
-        .unwrap()
+        .context("Failed to read PGP import prompt")?
     {
         // Import PGP Secret key material
         terminal_input_pgp_key()?
@@ -96,7 +97,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
             .with_prompt("Please enter Token Admin PIN <blank = default>")
             .allow_empty_password(true)
             .interact()
-            .unwrap();
+            .context("Failed to read admin PIN")?;
         let admin_pin = if admin_pin.is_empty() {
             SecretString::new("12345678".to_string())
         } else {
@@ -110,16 +111,16 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
     // If hardware token is not being used, then ask for an unlock code
     let unlock_code = if token_id.is_none() {
         // Check if an unlock code is desired?
-        create_unlock_code().map(|c| c.to_vec())
+        create_unlock_code()?.map(|c| c.to_vec())
     } else {
         // No need for an unlock code when using hardware token
         None
     };
 
     // Use a different Mediator?
-    let mediator_did = change_mediator();
+    let mediator_did = change_mediator()?;
 
-    let lk_did = change_lf_did();
+    let lk_did = change_lf_did()?;
 
     // Create a DID - will also rename the P-DID Keys with the right key-IDS
     let p_did = did_setup(
@@ -158,10 +159,10 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
     );
 
     println!("{}", style("Please enter a name for yourself, this is used to give a human readable name to your DID and Verifiable Relationship Credentials.").color256(CLI_BLUE));
-    let friendly_name = Input::with_theme(&ColorfulTheme::default())
+    let friendly_name: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt("Enter a name for yourself")
         .interact_text()
-        .unwrap();
+        .context("Failed to read friendly name")?;
 
     // Instantiate TDK
     let tdk = TDK::new(
@@ -179,7 +180,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
     };
 
     // Initial Configuration state
-    let config = Config {
+    let mut config = Config {
         key_backend: KeyBackend::Bip32 {
             root: get_bip32_root(mnemonic.to_entropy().as_slice())?,
             seed: SecretString::new(BASE64_URL_SAFE_NO_PAD.encode(mnemonic.to_entropy())),
@@ -205,7 +206,9 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
             document: p_did.document,
             profile: Arc::new(
                 ATMProfile::new(
-                    tdk.atm.as_ref().unwrap(),
+                    tdk.atm
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("ATM not initialized"))?,
                     Some("Persona DID".to_string()),
                     p_did.did.to_string(),
                     Some(mediator_did.clone()),
@@ -224,13 +227,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
         vrcs: HashMap::new(),
     };
 
-    config.save(
-        profile,
-        #[cfg(feature = "openpgp-card")]
-        &|| {
-            eprintln!("Touch confirmation needed for decryption");
-        },
-    )?;
+    save_config(&mut config, profile)?;
 
     println!("{}", style("Next Steps:").color256(CLI_BLUE));
     println!(
@@ -345,7 +342,7 @@ fn create_keys(mnemonic: &Mnemonic, imported_keys: &PGPKeys) -> Result<PersonaDI
 }
 
 /// Generates a sha256 hash of an unlock code if required
-pub fn create_unlock_code() -> Option<[u8; 32]> {
+pub fn create_unlock_code() -> Result<Option<[u8; 32]>> {
     println!("{}", style("NOTE: You are not using any hardware token. While secret information will be stored in your OS secure store where possible, it is best practice to protect this data with an unlock code.").color256(CLI_BLUE));
     println!("  {}", style("This unlock code is asked on application start so it can unlock secret configuration data required.").color256(CLI_BLUE));
 
@@ -353,24 +350,24 @@ pub fn create_unlock_code() -> Option<[u8; 32]> {
         .with_prompt("Would you like to set an unlock code to protect your secrets?")
         .default(true)
         .interact()
-        .unwrap()
+        .context("Failed to read unlock code prompt")?
     {
         // Get unlock code from terminal
         let unlock_code: String = dialoguer::Password::with_theme(&ColorfulTheme::default())
             .with_prompt("Enter Unlock Code")
             .with_confirmation("Confirm Unlock Code", "Unlock Codes do not match")
             .interact()
-            .unwrap();
+            .context("Failed to read unlock code")?;
 
         // Create SHA2-256 hash of the unlock code
-        Some(sha2::Sha256::digest(unlock_code.as_bytes()).into())
+        Ok(Some(sha2::Sha256::digest(unlock_code.as_bytes()).into()))
     } else {
-        None
+        Ok(None)
     }
 }
 
 /// Do you want to use an alternative mediator?
-fn change_mediator() -> String {
+fn change_mediator() -> Result<String> {
     println!();
     println!("{}", style("openvtc utilizes DIDComm protocol to communicate. openvtc requires the use of a DIDComm Mediator to store and forward messages between parties privately and securely").color256(CLI_BLUE));
     println!(
@@ -383,19 +380,19 @@ fn change_mediator() -> String {
         .with_prompt("Do you want to use an alternative DIDComm Mediator?")
         .default(false)
         .interact()
-        .unwrap()
+        .context("Failed to read mediator prompt")?
     {
-        Input::with_theme(&ColorfulTheme::default())
+        Ok(Input::with_theme(&ColorfulTheme::default())
             .with_prompt("DIDComm Mediator DID:")
             .interact()
-            .unwrap()
+            .context("Failed to read mediator DID")?)
     } else {
-        LF_PUBLIC_MEDIATOR_DID.to_string()
+        Ok(LF_PUBLIC_MEDIATOR_DID.to_string())
     }
 }
 
 /// Do you want to use an alternative LF DID?
-fn change_lf_did() -> String {
+fn change_lf_did() -> Result<String> {
     println!();
     println!("{}", style("openvtc interacts with the Linux Foundation , Linux Foundation is represented by a well-known DID. Do not change the following unless you know what you are doing!").color256(CLI_BLUE));
     println!(
@@ -408,13 +405,13 @@ fn change_lf_did() -> String {
         .with_prompt("Do you want to use an alternative Linux Foundation DID?")
         .default(false)
         .interact()
-        .unwrap()
+        .context("Failed to read LF DID prompt")?
     {
-        Input::with_theme(&ColorfulTheme::default())
+        Ok(Input::with_theme(&ColorfulTheme::default())
             .with_prompt("Linux Foundation DID:")
             .interact()
-            .unwrap()
+            .context("Failed to read LF DID")?)
     } else {
-        LF_ORG_DID.to_string()
+        Ok(LF_ORG_DID.to_string())
     }
 }

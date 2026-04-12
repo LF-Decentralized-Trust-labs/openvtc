@@ -24,7 +24,7 @@ use crate::state_handler::state::State;
 /// Inputs:
 /// - state: Application state
 /// - state_tx: State update channel
-/// - user_id: PGP User ID string (name <email address>)
+/// - user_id: PGP User ID string (name `<email address>`)
 /// - passphrase: Passphrase to protect the exported keys
 pub fn export_persona_did_keys(
     state: &mut State,
@@ -37,7 +37,7 @@ pub fn export_persona_did_keys(
     };
 
     let password = types::Password::from(passphrase.expose_secret().as_str());
-    let mut rng = rand::thread_rng();
+    let mut rng = rand::rngs::OsRng;
 
     // Signing key
     state
@@ -59,7 +59,7 @@ pub fn export_persona_did_keys(
                     .secret
                     .get_public_bytes()
                     .first_chunk::<32>()
-                    .unwrap(),
+                    .ok_or_else(|| anyhow::anyhow!("Signing public key is not 32 bytes"))?,
             )?,
         }),
     )?;
@@ -73,7 +73,7 @@ pub fn export_persona_did_keys(
                     .secret
                     .get_private_bytes()
                     .first_chunk::<32>()
-                    .unwrap(),
+                    .ok_or_else(|| anyhow::anyhow!("Signing private key is not 32 bytes"))?,
                 Mode::EdDSALegacy,
             )?,
         )),
@@ -130,7 +130,7 @@ pub fn export_persona_did_keys(
                     .secret
                     .get_public_bytes()
                     .first_chunk::<32>()
-                    .unwrap(),
+                    .ok_or_else(|| anyhow::anyhow!("Authentication public key is not 32 bytes"))?,
             )?,
         }),
     )?;
@@ -144,7 +144,7 @@ pub fn export_persona_did_keys(
                     .secret
                     .get_private_bytes()
                     .first_chunk::<32>()
-                    .unwrap(),
+                    .ok_or_else(|| anyhow::anyhow!("Authentication private key is not 32 bytes"))?,
                 Mode::EdDSALegacy,
             )?,
         )),
@@ -152,9 +152,9 @@ pub fn export_persona_did_keys(
 
     let mut auth_kf = KeyFlags::default();
     auth_kf.set_authentication(true);
-    let auth_sig = auth_key.sign(rng.clone(), &signing_key, &sk_pk, &password, auth_kf, None)?;
+    let auth_sig = auth_key.sign(rng, &signing_key, &sk_pk, &password, auth_kf, None)?;
 
-    auth_key.set_password(rng.clone(), &password)?;
+    auth_key.set_password(rng, &password)?;
     let auth_ssk = SignedSecretSubKey::new(auth_key, vec![auth_sig]);
 
     if let Some(last_entry) = state.setup.did_keys_export.messages.last_mut() {
@@ -179,7 +179,7 @@ pub fn export_persona_did_keys(
                     .secret
                     .get_public_bytes()
                     .first_chunk::<32>()
-                    .unwrap(),
+                    .ok_or_else(|| anyhow::anyhow!("Decryption public key is not 32 bytes"))?,
             ),
             hash: crypto::hash::HashAlgorithm::Sha256,
             alg_sym: crypto::sym::SymmetricKeyAlgorithm::AES256,
@@ -197,7 +197,7 @@ pub fn export_persona_did_keys(
                         .secret
                         .get_private_bytes()
                         .first_chunk::<32>()
-                        .unwrap(),
+                        .ok_or_else(|| anyhow::anyhow!("Decryption private key is not 32 bytes"))?,
                 )
                 .into(),
             ),
@@ -207,9 +207,9 @@ pub fn export_persona_did_keys(
     let mut dec_kf = KeyFlags::default();
     dec_kf.set_encrypt_comms(true);
     dec_kf.set_encrypt_storage(true);
-    let dec_sig = dec_key.sign(rng.clone(), &signing_key, &sk_pk, &password, dec_kf, None)?;
+    let dec_sig = dec_key.sign(rng, &signing_key, &sk_pk, &password, dec_kf, None)?;
 
-    dec_key.set_password(rng.clone(), &password)?;
+    dec_key.set_password(rng, &password)?;
     let dec_ssk = SignedSecretSubKey::new(dec_key, vec![dec_sig]);
 
     // This must be signed last
@@ -222,7 +222,7 @@ pub fn export_persona_did_keys(
         .messages
         .push("Securing exported keys...".to_string());
     state_tx.send(state.clone())?;
-    signing_key.set_password(rng.clone(), &password)?;
+    signing_key.set_password(rng, &password)?;
     if let Some(last_entry) = state.setup.did_keys_export.messages.last_mut() {
         *last_entry = "✓ Keys Secured and exported".to_string();
     }
