@@ -51,9 +51,7 @@ mod serde_opt_secret_str {
             None => s.serialize_none(),
         }
     }
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<Option<SecretString>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SecretString>, D::Error> {
         Ok(Option::<String>::deserialize(d)?.map(SecretString::new))
     }
 }

@@ -142,7 +142,7 @@ impl Config {
                             "Couldn't create secret from multibase for key id. Reason: {e}"
                         ))
                     })?
-                },
+                }
                 KeySourceMaterial::VtaManaged { key_id } => {
                     // Use pre-authenticated VTA client
                     let client = vta_client.ok_or_else(|| {

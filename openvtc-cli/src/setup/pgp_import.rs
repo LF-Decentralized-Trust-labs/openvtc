@@ -9,7 +9,6 @@ use crate::{
     setup::{KeyInfo, KeyPurpose},
 };
 use affinidi_tdk::secrets_resolver::secrets::Secret;
-use secrecy::SecretString;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, MappedLocalTime, TimeDelta, TimeZone, Utc};
 use console::{StyledObject, style};
@@ -22,6 +21,7 @@ use pgp::{
     types::{KeyDetails, PlainSecretParams, SecretParams},
 };
 use regex::Regex;
+use secrecy::SecretString;
 use zeroize::Zeroize;
 
 /// Holds imported PGP Keys

@@ -263,17 +263,16 @@ impl Relationships {
                                 .ok()
                         }
                         KeySourceMaterial::Imported { seed } => {
-                            Secret::from_multibase(seed.expose_secret(), None)
-                                .map(|mut s| {
-                                    s.id = k.clone();
-                                    s
-                                })
-                        }
-                            .map_err(|e| {
-                                warn!("secret import failed for key {}: {e}", k);
-                                e
+                            Secret::from_multibase(seed.expose_secret(), None).map(|mut s| {
+                                s.id = k.clone();
+                                s
                             })
-                            .ok(),
+                        }
+                        .map_err(|e| {
+                            warn!("secret import failed for key {}: {e}", k);
+                            e
+                        })
+                        .ok(),
                         KeySourceMaterial::VtaManaged { key_id } => {
                             if let Some(client) = vta_client {
                                 match client.get_key_secret(key_id).await {
