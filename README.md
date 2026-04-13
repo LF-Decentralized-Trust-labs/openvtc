@@ -314,7 +314,7 @@ See the [did-git-sign README](./did-git-sign/README.md) for full documentation.
 
 ## Additional Resources
 
-Additional resources to learn more about the Open Source Trust Community (OpenVTC) Tool.
+Additional resources to learn more about the Open Verifiable Trust Community (OpenVTC) Tool.
 
 - [First Person Project White Paper](https://www.firstperson.network/white-paper)
 - [Relationships and VRCs Guide](./docs/relationships-vrcs.md)
