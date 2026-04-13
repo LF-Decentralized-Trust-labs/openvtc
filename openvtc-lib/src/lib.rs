@@ -307,6 +307,22 @@ mod tests {
     /// Guards tests that mutate OPENVTC_MEDIATOR_DID / OPENVTC_ORG_DID env vars.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn all_message_types() -> [MessageType; 11] {
+        [
+            MessageType::RelationshipRequest,
+            MessageType::RelationshipRequestRejected,
+            MessageType::RelationshipRequestAccepted,
+            MessageType::RelationshipRequestFinalize,
+            MessageType::TrustPing,
+            MessageType::TrustPong,
+            MessageType::VRCRequest,
+            MessageType::VRCRequestRejected,
+            MessageType::VRCIssued,
+            MessageType::MaintainersListRequest,
+            MessageType::MaintainersListResponse,
+        ]
+    }
+
     #[test]
     fn test_message_type_try_from_valid() {
         use protocol_urls::*;
@@ -333,47 +349,71 @@ mod tests {
     }
 
     #[test]
-    fn test_message_type_try_from_invalid() {
-        let result = MessageType::try_from("https://example.com/unknown");
-        assert!(result.is_err(), "Unknown URL should return an error");
+    fn test_message_type_try_from_unknown_yields_invalid_message() {
+        let unknown = "https://example.com/not-a-real-openvtc-type";
+        let err = MessageType::try_from(unknown).unwrap_err();
+        match err {
+            errors::OpenVTCError::InvalidMessage(s) => assert_eq!(s, unknown),
+            other => panic!("expected InvalidMessage, got {other:?}"),
+        }
     }
 
     #[test]
-    fn test_message_type_roundtrip() {
-        // Convert MessageType -> String -> MessageType and verify consistency
-        let original = MessageType::TrustPing;
-        let url: String = original.clone().into();
-        let roundtripped = MessageType::try_from(url.as_str()).unwrap();
-        assert_eq!(
-            format!("{:?}", original),
-            format!("{:?}", roundtripped),
-            "Roundtrip should produce equivalent variant"
-        );
+    fn test_message_type_string_roundtrip_all_variants() {
+        for ty in all_message_types() {
+            let url: String = ty.clone().into();
+            let parsed = MessageType::try_from(url.as_str()).unwrap_or_else(|e| {
+                panic!("try_from failed for variant url {url:?}: {e:?}");
+            });
+            let again: String = parsed.into();
+            assert_eq!(url, again, "From<MessageType> and TryFrom drift");
+        }
     }
 
     #[test]
-    fn test_message_type_friendly_name() {
-        let variants = vec![
-            MessageType::RelationshipRequest,
-            MessageType::RelationshipRequestRejected,
-            MessageType::RelationshipRequestAccepted,
-            MessageType::RelationshipRequestFinalize,
-            MessageType::TrustPing,
-            MessageType::TrustPong,
-            MessageType::VRCRequest,
-            MessageType::VRCRequestRejected,
-            MessageType::VRCIssued,
-            MessageType::MaintainersListRequest,
-            MessageType::MaintainersListResponse,
+    fn test_message_type_try_from_message() {
+        let msg = Message::build(
+            "test-id".to_string(),
+            String::from(MessageType::TrustPing),
+            serde_json::json!({}),
+        )
+        .finalize();
+        let parsed = MessageType::try_from(&msg).expect("valid message type");
+        assert_eq!(String::from(parsed), String::from(MessageType::TrustPing));
+    }
+
+    #[test]
+    fn test_message_type_friendly_names() {
+        let cases = [
+            (MessageType::RelationshipRequest, "Relationship Request"),
+            (
+                MessageType::RelationshipRequestRejected,
+                "Relationship Request Rejected",
+            ),
+            (
+                MessageType::RelationshipRequestAccepted,
+                "Relationship Request Accepted",
+            ),
+            (
+                MessageType::RelationshipRequestFinalize,
+                "Relationship Request Finalize",
+            ),
+            (MessageType::TrustPing, "Trust Ping (Send)"),
+            (MessageType::TrustPong, "Trust Pong (Receive)"),
+            (MessageType::VRCRequest, "VRC Request"),
+            (MessageType::VRCRequestRejected, "VRC Request Rejected"),
+            (MessageType::VRCIssued, "VRC Issued"),
+            (
+                MessageType::MaintainersListRequest,
+                "List Known Maintainers (request)",
+            ),
+            (
+                MessageType::MaintainersListResponse,
+                "List Known Maintainers (response)",
+            ),
         ];
-
-        for variant in variants {
-            let name = variant.friendly_name();
-            assert!(
-                !name.is_empty(),
-                "Friendly name for {:?} should not be empty",
-                variant
-            );
+        for (ty, want) in cases {
+            assert_eq!(ty.friendly_name(), want);
         }
     }
 
