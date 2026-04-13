@@ -30,7 +30,7 @@ pub const COLOR_TEXT_DEFAULT: Color = Color::White;
 /// Muted Text
 pub const COLOR_DARK_GRAY: Color = Color::DarkGray;
 
-/// Copy/Export actions and sensitive data shortcuts ([C], [C1], [C2], [C3])
+/// Copy/Export actions and sensitive data shortcuts (\[C\], \[C1\], \[C2\], \[C3\])
 /// Soft Purple to distinguish special operations
 pub const COLOR_SOFT_PURPLE: Color = Color::Rgb(189, 147, 249); // #BD93F9
 

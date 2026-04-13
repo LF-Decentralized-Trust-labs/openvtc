@@ -1,4 +1,22 @@
 target/
-Cargo.lock
 **/*.backup
 **/*.jsonl
+.DS_Store
+*.swp
+*.swo
+
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+environments.json
+
+# IDE
+.idea/
+.vscode/
+
+# Logs and OS artifacts
+*.log
+Thumbs.db

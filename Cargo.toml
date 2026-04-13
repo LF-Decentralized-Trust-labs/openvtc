@@ -5,12 +5,13 @@ members = [
   "robotic-maintainers",
   "openvtc-service",
   "openvtc-cli2",
+  "did-git-sign",
 ]
 resolver = "3"
 
 [workspace.package]
 description = "Open Verifiable Trust Community (OpenVTC) - First Person Protocol"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 publish = false
 authors = ["Glenn Gore <glenn@affinidi.com>"]
@@ -23,12 +24,12 @@ repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
 openvtc = { version = "0.1", path = "openvtc-lib", default-features = false }
 
 # Decentralized Trust Graph Credentials
-# NOTE: When this is published, switch from git to crates.io
-dtg-credentials = { version = "0.1", git = "https://github.com/LF-Decentralized-Trust-labs/dtg-credentials" }
+dtg-credentials = "0.1"
 
 aes-gcm = "0.10"
-affinidi-tdk = "0.5"
-affinidi-data-integrity = "0.4"
+argon2 = "0.5"
+affinidi-tdk = "0.6"
+affinidi-data-integrity = "0.5"
 anyhow = "1.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22"
@@ -40,21 +41,23 @@ console = "0.16"
 crossterm = { version = "0.29", features = ["event-stream"] }
 dirs = "6.0"
 dialoguer = { version = "0.12", features = ["password"] }
-didwebvh-rs = "0.1"
+didwebvh-rs = "0.4"
 ed25519-dalek-bip32 = "0.3"
+hkdf = "0.12"
 hex = "0.4"
 keyring = "3.6"
 multibase = "0.9"
 pgp = "0.18"
-# This is locked 0.8 due to *-dalek crates not udpated to rand 0.9
+# Locked to 0.8 — aes-gcm 0.10 depends on rand_core 0.6 (rand 0.8), not 0.9 (rand 0.10)
 rand = "0.8"
 ratatui = "0.30"
 regex = "1.12"
-# this is locked to 0.8.x as openpgp-card is only using 0.8 in it's interfaces - checked 0.5.1 version
+# Locked to 0.8 — openpgp-card 0.5 and openvtc use SecretVec which was removed in 0.10
 secrecy = "0.8"
 serde = "1.0"
 serde_json = "1.0"
 serde_json_canonicalizer = "0.3"
+# Locked to 0.10 — aes-gcm 0.10 uses digest 0.10 ecosystem (sha2 0.10), not 0.11
 sha2 = "0.10"
 strum = "0.28"
 strum_macros = "0.28"
@@ -67,7 +70,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.20", features = ["v4", "fast-rng"] }
-vta-sdk = { git = "https://github.com/LF-Decentralized-Trust-labs/verifiable-trust-infrastructure", features = [
+vta-sdk = { version = "0.3", features = [
   "session",
   "client",
   "didcomm",
@@ -78,6 +81,12 @@ x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zeroize = "1.8"
 
 # Openpgp-Card Support
+# Locked to 0.5/0.6 — upgrading to openpgp-card 0.6 / rpgp 0.7 requires secrecy 0.10 + pgp 0.19 migration
 openpgp-card = "0.5"
 card-backend-pcsc = "0.5"
 openpgp-card-rpgp = "0.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"

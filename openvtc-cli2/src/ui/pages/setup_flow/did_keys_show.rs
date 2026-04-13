@@ -16,13 +16,11 @@ use ratatui::{
 };
 
 use crate::{
-    state_handler::{
-        actions::Action,
-        setup_sequence::SetupState,
-    },
+    state_handler::{actions::Action, setup_sequence::SetupState},
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -43,26 +41,36 @@ impl DIDKeysShow {
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 if let Some(did_keys) = &state.props.state.did_keys {
-                    let mut clipboard = Clipboard::new().unwrap();
-                    let signing_key = did_keys.signing.secret.get_public_keymultibase().unwrap();
-                    let auth_key = did_keys
-                        .authentication
-                        .secret
-                        .get_public_keymultibase()
-                        .unwrap();
-                    let decrypt_key = did_keys
-                        .decryption
-                        .secret
-                        .get_public_keymultibase()
-                        .unwrap();
+                    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+                        let mut clipboard = Clipboard::new()?;
+                        let signing_key = did_keys
+                            .signing
+                            .secret
+                            .get_public_keymultibase()
+                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                        let auth_key = did_keys
+                            .authentication
+                            .secret
+                            .get_public_keymultibase()
+                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                        let decrypt_key = did_keys
+                            .decryption
+                            .secret
+                            .get_public_keymultibase()
+                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
 
-                    let clipboard_text = format!(
-                        "Signing Key (Ed25519): {}\n\nAuthentication Key (Ed25519): {}\n\nDecryption Key (X25519): {}",
-                        signing_key, auth_key, decrypt_key
-                    );
+                        let clipboard_text = format!(
+                            "Signing Key (Ed25519): {}\n\nAuthentication Key (Ed25519): {}\n\nDecryption Key (X25519): {}",
+                            signing_key, auth_key, decrypt_key
+                        );
 
-                    clipboard.set_text(clipboard_text).unwrap();
-                    state.did_keys_show.cc_copy = true;
+                        clipboard.set_text(clipboard_text)?;
+                        Ok(())
+                    })();
+
+                    if result.is_ok() {
+                        state.did_keys_show.cc_copy = true;
+                    }
                 }
             }
             KeyCode::Enter => {
@@ -110,7 +118,11 @@ impl DIDKeysShow {
             lines.push(Line::from(vec![
                 Span::styled("🔑 ", Style::new()),
                 Span::styled(
-                    did_keys.signing.secret.get_public_keymultibase().unwrap(),
+                    did_keys
+                        .signing
+                        .secret
+                        .get_public_keymultibase()
+                        .unwrap_or_else(|_| "unavailable".to_string()),
                     Style::new().fg(COLOR_DARK_PURPLE),
                 ),
             ]));
@@ -131,7 +143,7 @@ impl DIDKeysShow {
                         .authentication
                         .secret
                         .get_public_keymultibase()
-                        .unwrap(),
+                        .unwrap_or_else(|_| "unavailable".to_string()),
                     Style::new().fg(COLOR_DARK_PURPLE),
                 ),
             ]));
@@ -152,7 +164,7 @@ impl DIDKeysShow {
                         .decryption
                         .secret
                         .get_public_keymultibase()
-                        .unwrap(),
+                        .unwrap_or_else(|_| "unavailable".to_string()),
                     Style::new().fg(COLOR_DARK_PURPLE),
                 ),
             ]));

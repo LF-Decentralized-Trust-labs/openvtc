@@ -43,7 +43,8 @@ pub enum MainPanel {
 }
 
 impl MainPanel {
-    /// Switches to the next panel when pressing <TAB>
+    /// Switches to the next panel when pressing `TAB`
+    #[allow(dead_code)]
     pub fn switch(&self) -> Self {
         match self {
             MainPanel::MainMenu => MainPanel::ContentPanel,

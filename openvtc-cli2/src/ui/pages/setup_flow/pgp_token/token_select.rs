@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
+use openpgp_card::{Card, state::Open};
 use openvtc::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
     COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
 };
-use openpgp_card::{Card, state::Open};
 use ratatui::{
     Frame,
     layout::{
@@ -21,13 +21,11 @@ use tokio::sync::Mutex;
 use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
-    state_handler::{
-        actions::Action,
-        setup_sequence::SetupState,
-    },
+    state_handler::{actions::Action, setup_sequence::SetupState},
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -73,23 +71,32 @@ impl TokenSelect {
                     };
                     let token = if let Some(token) = &state.token_select.selected_token {
                         // Need to get ADMIN Pin from the user
-                        let mut lock = token.try_lock().unwrap();
-                        let open_card = match lock.transaction() {
-                            Ok(card) => card,
-                            Err(e) => {
-                                panic!(
-                                    "Selected a token but then couldn't read from it - likely could have been unplugged. Reason: {e}"
-                                );
+                        let mut lock = match token.try_lock() {
+                            Ok(lock) => lock,
+                            Err(_) => {
+                                let _ = state.action_tx.send(Action::Exit);
+                                return;
                             }
                         };
-                        open_card
-                            .application_identifier()
-                            .expect("Couldn't get card app_identifier")
-                            .ident()
+                        let open_card = match lock.transaction() {
+                            Ok(card) => card,
+                            Err(_) => {
+                                // Token likely unplugged - exit gracefully
+                                let _ = state.action_tx.send(Action::Exit);
+                                return;
+                            }
+                        };
+                        match open_card.application_identifier() {
+                            Ok(id) => id.ident(),
+                            Err(_) => {
+                                let _ = state.action_tx.send(Action::Exit);
+                                return;
+                            }
+                        }
                     } else {
-                        panic!(
-                            "Code logic error, should never get here without having a valid token selected"
-                        )
+                        // No valid token selected - should not happen, exit gracefully
+                        let _ = state.action_tx.send(Action::Exit);
+                        return;
                     };
                     let _ = state.action_tx.send(Action::SetAdminPin(token, admin_pin));
                 } else {
@@ -125,18 +132,18 @@ impl TokenSelect {
 
         if self.ask_admin_pin {
             // Need to get ADMIN Pin from the user
-            let mut lock = state.tokens.tokens[self.selected].try_lock().unwrap();
+            let mut lock = match state.tokens.tokens[self.selected].try_lock() {
+                Ok(lock) => lock,
+                Err(_) => return,
+            };
             let mut open_card = match lock.transaction() {
                 Ok(card) => card,
-                Err(e) => {
-                    panic!(
-                        "Selected a token but then couldn't read from it - likely could have been unplugged. Reason: {e}"
-                    );
-                }
+                Err(_) => return,
             };
-            let app_identifier = open_card
-                .application_identifier()
-                .expect("Couldn't get card app_identifier");
+            let app_identifier = match open_card.application_identifier() {
+                Ok(id) => id,
+                Err(_) => return,
+            };
 
             // 0: Selected Token
             // 1: Input 0 Header (ADMIN PIN)
@@ -267,16 +274,20 @@ impl TokenSelect {
                 ));
                 lines.push(Line::default());
                 for (index, card) in state.tokens.tokens.iter().enumerate() {
-                    let mut lock = card.try_lock().unwrap();
+                    let mut lock = match card.try_lock() {
+                        Ok(lock) => lock,
+                        Err(_) => continue,
+                    };
                     let mut open_card = match lock.transaction() {
                         Ok(card) => card,
                         Err(_) => {
                             continue;
                         }
                     };
-                    let app_identifier = open_card
-                        .application_identifier()
-                        .expect("Couldn't get card app_identifier");
+                    let app_identifier = match open_card.application_identifier() {
+                        Ok(id) => id,
+                        Err(_) => continue,
+                    };
                     if index == self.selected {
                         // Highlight selected
                         lines.push(Line::from(vec![

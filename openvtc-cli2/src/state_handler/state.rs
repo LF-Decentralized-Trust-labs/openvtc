@@ -37,6 +37,8 @@ pub enum MediatorStatus {
     Unknown,
     Initializing(String),
     Connecting,
-    Connected { latency_ms: u128 },
+    Connected {
+        latency_ms: u128,
+    },
     Failed(String),
 }

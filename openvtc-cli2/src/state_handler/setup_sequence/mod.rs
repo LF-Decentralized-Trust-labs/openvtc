@@ -8,11 +8,11 @@ use affinidi_tdk::did_common::Document;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use openvtc::config::PersonaDIDKeys;
 use secrecy::SecretVec;
-use vta_sdk::webvh::WebvhServerRecord;
 use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
 use tokio::sync::Mutex;
+use vta_sdk::webvh::WebvhServerRecord;
 
 pub mod config;
 pub mod did_keys;

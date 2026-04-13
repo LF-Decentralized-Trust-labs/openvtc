@@ -18,6 +18,7 @@ use crate::{
     ui::pages::setup_flow::{SetupFlow, did_keys_export_inputs::DIDKeysExportInputs},
 };
 
+#[allow(dead_code)]
 pub enum Action {
     Exit,
 
