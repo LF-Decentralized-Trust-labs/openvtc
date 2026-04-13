@@ -148,7 +148,6 @@ async fn handle_message(
         bail!("Couldn't get a valid to: address from message");
     };
 
-<<<<<<< HEAD
     let from_did = match openvtc::require_from(msg) {
         Ok(did) => did,
         Err(_) => {
@@ -182,11 +181,7 @@ async fn handle_message(
                 }
             }
             _ => {
-<<<<<<< HEAD
-                warn!("Unsupported MessageType received: {}", msg.type_);
-=======
                 warn!("Unsupported MessageType received: {}", msg.typ);
->>>>>>> upstream/main
             }
         }
     }
