@@ -5,6 +5,16 @@ Thank you for contributing! Before you contribute, we ask some things of you:
 - Please follow our Code of Conduct, the Contributor Covenant. You can find a copy [in this repository](CODE_OF_CONDUCT.md) or under https://www.contributor-covenant.org/
 - All Contributors must agree to [a CLA](.github/CLA/INDIVIDUAL.md). When opening a PR, the system will guide you through the process. However, if you contribute on behalf of a legal entity, we ask of you to agree to [a different CLA](.github/CLA/ENTITY.md). In that case, please contact us.
 
+## Start with a Discussion
+
+Before opening an issue or pull request, please start a conversation in [GitHub Discussions](https://github.com/OpenVTC/openvtc/discussions). This gives maintainers and the community a chance to provide early feedback, avoid duplicate effort, and help shape the direction of proposed changes.
+
+- **Bug reports** — confirm the behavior and get initial triage before filing an issue.
+- **Feature ideas** — discuss the use case and approach before writing code.
+- **Questions** — ask in Discussions rather than opening an issue.
+
+Once there is agreement on the approach, you can proceed with an issue or PR and link back to the discussion for context.
+
 ## Development Setup
 
 1. Install Rust 1.91.0 or later via [rustup](https://rustup.rs/)
