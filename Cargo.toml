@@ -53,7 +53,7 @@ rand = "0.8"
 ratatui = "0.30"
 regex = "1.12"
 # Locked to 0.8 — openpgp-card 0.5 and openvtc use SecretVec which was removed in 0.10
-secrecy = "0.8"
+secrecy = { version = "0.8", features = ["serde"] }
 serde = "1.0"
 serde_json = "1.0"
 serde_json_canonicalizer = "0.3"

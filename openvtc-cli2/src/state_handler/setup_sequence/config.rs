@@ -127,7 +127,7 @@ impl ConfigExtension for Config {
             .expect("Imported config missing BIP32 seed");
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
-                .decode(bip32_seed)
+                .decode(bip32_seed.expose_secret())
                 .expect("Couldn't base64 decode BIP32 seed")
                 .as_slice(),
         )?;

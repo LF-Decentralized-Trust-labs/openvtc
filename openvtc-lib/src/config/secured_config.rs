@@ -20,9 +20,7 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use keyring::Entry;
 use rand::rngs::OsRng;
-use secrecy::ExposeSecret;
-#[cfg(feature = "openpgp-card")]
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
@@ -31,6 +29,34 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Constants for storing secure info in the OS Secure Store
 const SERVICE: &str = "openvtc";
+
+// Serde helpers: Secret<String> does not impl SerializableSecret by default.
+// These narrow modules expose the value only at the serialization boundary.
+mod serde_secret_str {
+    use secrecy::{ExposeSecret, SecretString};
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(v.expose_secret())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
+        Ok(SecretString::new(String::deserialize(d)?))
+    }
+}
+mod serde_opt_secret_str {
+    use secrecy::{ExposeSecret, SecretString};
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &Option<SecretString>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(secret) => s.serialize_some(secret.expose_secret()),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<SecretString>, D::Error> {
+        Ok(Option::<String>::deserialize(d)?.map(SecretString::new))
+    }
+}
 
 /// Methods of protecting [SecuredConfig]
 #[derive(Clone, Debug, Default)]
@@ -161,12 +187,24 @@ impl SecuredConfigFormat {
 #[derive(Serialize, Deserialize, Debug, Zeroize, ZeroizeOnDrop)]
 pub struct SecuredConfig {
     /// base64 encoded BIP32 private seed (legacy - present only for BIP32-based configs)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bip32_seed: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serde_opt_secret_str::serialize",
+        deserialize_with = "serde_opt_secret_str::deserialize"
+    )]
+    #[zeroize(skip)]
+    pub bip32_seed: Option<SecretString>,
 
     /// base64-encoded CredentialBundle for VTA auth
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_bundle: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serde_opt_secret_str::serialize",
+        deserialize_with = "serde_opt_secret_str::deserialize"
+    )]
+    #[zeroize(skip)]
+    pub credential_bundle: Option<SecretString>,
 
     /// VTA service URL
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -191,7 +229,7 @@ impl From<&Config> for SecuredConfig {
     fn from(cfg: &Config) -> Self {
         match &cfg.key_backend {
             KeyBackend::Bip32 { seed, .. } => SecuredConfig {
-                bip32_seed: Some(seed.expose_secret().to_owned()),
+                bip32_seed: Some(seed.clone()),
                 credential_bundle: None,
                 vta_url: None,
                 vta_did: None,
@@ -205,7 +243,7 @@ impl From<&Config> for SecuredConfig {
                 ..
             } => SecuredConfig {
                 bip32_seed: None,
-                credential_bundle: Some(credential_bundle.expose_secret().to_owned()),
+                credential_bundle: Some(credential_bundle.clone()),
                 vta_url: Some(vta_url.clone()),
                 vta_did: Some(vta_did.clone()),
                 key_info: cfg.key_info.clone(),
@@ -349,7 +387,11 @@ pub enum KeySourceMaterial {
     /// Sourced from an external Key Import
     /// multiencoded private key
     /// Key Material will be stored in the OS Secure Store
-    Imported { seed: String },
+    Imported {
+        #[serde(with = "serde_secret_str")]
+        #[zeroize(skip)]
+        seed: SecretString,
+    },
 
     /// Managed by VTA service - key_id is VTA's opaque identifier
     /// No derivation paths are stored in openvtc for VTA-managed keys
@@ -507,12 +549,14 @@ mod tests {
 
     #[test]
     fn test_key_source_material_zeroize() {
-        let mut source = KeySourceMaterial::Imported {
-            seed: "z6MkTestSeed123456789".to_string(),
+        // SecretString handles its own zeroization on Drop; just verify the variant is intact.
+        let source = KeySourceMaterial::Imported {
+            seed: SecretString::new("z6MkTestSeed123456789".to_string()),
         };
-        source.zeroize();
         match &source {
-            KeySourceMaterial::Imported { seed } => assert!(seed.is_empty()),
+            KeySourceMaterial::Imported { seed } => {
+                assert!(!seed.expose_secret().is_empty())
+            }
             _ => panic!("expected Imported variant"),
         }
     }

@@ -262,11 +262,13 @@ impl Relationships {
                                 })
                                 .ok()
                         }
-                        KeySourceMaterial::Imported { seed } => Secret::from_multibase(seed, None)
-                            .map(|mut s| {
-                                s.id = k.clone();
-                                s
-                            })
+                        KeySourceMaterial::Imported { seed } => {
+                            Secret::from_multibase(seed.expose_secret(), None)
+                                .map(|mut s| {
+                                    s.id = k.clone();
+                                    s
+                                })
+                        }
                             .map_err(|e| {
                                 warn!("secret import failed for key {}: {e}", k);
                                 e

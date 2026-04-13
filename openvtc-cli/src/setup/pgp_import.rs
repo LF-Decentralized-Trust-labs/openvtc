@@ -9,6 +9,7 @@ use crate::{
     setup::{KeyInfo, KeyPurpose},
 };
 use affinidi_tdk::secrets_resolver::secrets::Secret;
+use secrecy::SecretString;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, MappedLocalTime, TimeDelta, TimeZone, Utc};
 use console::{StyledObject, style};
@@ -145,7 +146,7 @@ impl PGPKeys {
         };
         let ki = KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: private_keymultibase,
+                seed: SecretString::new(private_keymultibase),
             },
             secret,
             expiry: signature.key_expiration_time().map(|e| e.to_owned()),
@@ -383,9 +384,11 @@ fn extract_primary_key_details(primary_key: &SignedSecretKey) -> Result<(KeyFlag
         signature.key_flags(),
         KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: secret
-                    .get_private_keymultibase()
-                    .context("Failed to encode primary key as multibase")?,
+                seed: SecretString::new(
+                    secret
+                        .get_private_keymultibase()
+                        .context("Failed to encode primary key as multibase")?,
+                ),
             },
             secret,
             expiry: signature.key_expiration_time().map(|e| e.to_owned()),

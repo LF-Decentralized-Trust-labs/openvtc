@@ -1,5 +1,7 @@
 //! Key resolution and regeneration logic for persona and relationship DIDs.
 
+use secrecy::ExposeSecret;
+
 use crate::{
     KeyPurpose,
     bip32::Bip32Extension,
@@ -134,12 +136,13 @@ impl Config {
                     };
                     root.get_secret_from_path(path, k_purpose)?
                 }
-                KeySourceMaterial::Imported { seed } => Secret::from_multibase(seed, None)
-                    .map_err(|e| {
+                KeySourceMaterial::Imported { seed } => {
+                    Secret::from_multibase(seed.expose_secret(), None).map_err(|e| {
                         OpenVTCError::Secret(format!(
                             "Couldn't create secret from multibase for key id. Reason: {e}"
                         ))
-                    })?,
+                    })?
+                },
                 KeySourceMaterial::VtaManaged { key_id } => {
                     // Use pre-authenticated VTA client
                     let client = vta_client.ok_or_else(|| {

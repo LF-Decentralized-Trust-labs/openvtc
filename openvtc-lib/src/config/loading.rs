@@ -85,7 +85,9 @@ impl Config {
         let key_backend = if let Some(ref bip32_seed) = sc.bip32_seed {
             // Legacy BIP32 config
             let bip32_root = ExtendedSigningKey::from_seed(
-                BASE64_URL_SAFE_NO_PAD.decode(bip32_seed)?.as_slice(),
+                BASE64_URL_SAFE_NO_PAD
+                    .decode(bip32_seed.expose_secret())?
+                    .as_slice(),
             )
             .map_err(|e| {
                 OpenVTCError::BIP32(format!(
@@ -95,17 +97,18 @@ impl Config {
             })?;
             KeyBackend::Bip32 {
                 root: bip32_root,
-                seed: SecretString::new(bip32_seed.clone()),
+                seed: bip32_seed.clone(),
             }
         } else if let Some(ref credential_bundle) = sc.credential_bundle {
             // VTA-managed config
-            let bundle = CredentialBundle::decode(credential_bundle).map_err(|e| {
-                OpenVTCError::Config(format!("Couldn't decode VTA credential bundle: {:?}", e))
-            })?;
+            let bundle =
+                CredentialBundle::decode(credential_bundle.expose_secret()).map_err(|e| {
+                    OpenVTCError::Config(format!("Couldn't decode VTA credential bundle: {:?}", e))
+                })?;
             let encryption_seed =
                 ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
             KeyBackend::Vta {
-                credential_bundle: SecretString::new(credential_bundle.clone()),
+                credential_bundle: credential_bundle.clone(),
                 credential_did: bundle.did.clone(),
                 credential_private_key: SecretString::new(bundle.private_key_multibase.clone()),
                 vta_did: sc.vta_did.clone().unwrap_or_default(),
