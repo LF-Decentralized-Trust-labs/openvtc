@@ -273,7 +273,7 @@ impl Relationships {
         &mut self,
         id: &Arc<String>,
         vrcs_issued: &mut Vrcs,
-        vrcs_recieved: &mut Vrcs,
+        vrcs_received: &mut Vrcs,
     ) -> Option<Arc<Mutex<Relationship>>> {
         if let Some(relationship) = self
             .relationships
@@ -284,7 +284,7 @@ impl Relationships {
             self.remove(
                 &relationship.lock().unwrap().remote_did,
                 vrcs_issued,
-                vrcs_recieved,
+                vrcs_received,
             )
         } else {
             None
@@ -301,11 +301,11 @@ impl Relationships {
         &mut self,
         key: &Arc<String>,
         vrcs_issued: &mut Vrcs,
-        vrcs_recieved: &mut Vrcs,
+        vrcs_received: &mut Vrcs,
     ) -> Option<Arc<Mutex<Relationship>>> {
         // Find and remove any VRCs associated with this relationship
         vrcs_issued.remove_relationship(key);
-        vrcs_recieved.remove_relationship(key);
+        vrcs_received.remove_relationship(key);
 
         self.relationships.remove(key)
     }

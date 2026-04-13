@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
     )
     .await?;
 
-    // Custom Trusted Messaging interface, where all messsages for all profiles will come in on a
+    // Custom Trusted Messaging interface, where all messages for all profiles will come in on a
     // single channel
 
     let atm = ATM::new(
@@ -211,7 +211,7 @@ async fn handle_message(
         from.to_string()
     } else {
         warn!(
-            "{}: Message receieved had no from: address! Ignoring...",
+            "{}: Message received had no from: address! Ignoring...",
             to_profile.inner.alias
         );
         return;
