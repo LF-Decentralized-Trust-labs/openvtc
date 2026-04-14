@@ -135,6 +135,111 @@ impl Component for MainPage {
             _ => {}
         }
     }
+
+    fn handle_paste_event(&mut self, text: &str) {
+        use crate::state_handler::main_page::content::{
+            CredentialsMode, RelationshipsMode, SettingsMode,
+        };
+
+        if !self.props.main_page.content_panel.selected {
+            return;
+        }
+
+        let menu = self.props.main_page.menu_panel.selected_menu.clone();
+        let trimmed = text.trim();
+
+        match menu {
+            MainMenu::Relationships => {
+                if let RelationshipsMode::NewRequest {
+                    did_input,
+                    alias_input,
+                    reason_input,
+                    active_field,
+                    ..
+                } = &self.props.main_page.content_panel.relationships.mode
+                {
+                    // Paste into the currently active field
+                    let current = match active_field {
+                        0 => format!("{}{}", did_input, trimmed),
+                        1 => format!("{}{}", alias_input, trimmed),
+                        2 => format!("{}{}", reason_input, trimmed),
+                        _ => return,
+                    };
+                    let _ = self.action_tx.send(Action::Relationship(
+                        RelationshipAction::InputUpdate {
+                            field: *active_field,
+                            value: current,
+                        },
+                    ));
+                }
+            }
+            MainMenu::Credentials => {
+                if let CredentialsMode::NewRequest { reason_input, .. } =
+                    &self.props.main_page.content_panel.credentials.mode
+                {
+                    let updated = format!("{}{}", reason_input, trimmed);
+                    let _ = self
+                        .action_tx
+                        .send(Action::Credential(CredentialAction::ReasonUpdate(updated)));
+                }
+            }
+            MainMenu::Settings => {
+                match &self.props.main_page.content_panel.settings.mode {
+                    SettingsMode::EditFriendlyName { input }
+                    | SettingsMode::EditMediatorDid { input }
+                    | SettingsMode::EditOrgDid { input } => {
+                        let updated = format!("{}{}", input, trimmed);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::FieldUpdate(updated)));
+                    }
+                    SettingsMode::ExportConfig {
+                        path_input,
+                        active_field,
+                        ..
+                    }
+                    | SettingsMode::ImportConfig {
+                        path_input,
+                        active_field,
+                        ..
+                    } => {
+                        if *active_field == 0 {
+                            let updated = format!("{}{}", path_input, trimmed);
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::FormFieldUpdate {
+                                    field: 0,
+                                    value: updated,
+                                },
+                            ));
+                        } else {
+                            // Passphrase field — append to secure buffer
+                            self.passphrase_buffer.push_str(trimmed);
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
+                            ));
+                        }
+                    }
+                    SettingsMode::ChangeProtection { active_field, .. } => {
+                        if *active_field == 1 {
+                            self.passphrase_buffer.push_str(trimmed);
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::ProtectionPassphraseLen(
+                                    self.passphrase_buffer.len(),
+                                ),
+                            ));
+                        } else if *active_field == 2 {
+                            self.confirm_buffer.push_str(trimmed);
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::ProtectionConfirmLen(self.confirm_buffer.len()),
+                            ));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ****************************************************************************
