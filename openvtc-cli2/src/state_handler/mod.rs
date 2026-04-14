@@ -319,28 +319,32 @@ impl StateHandler {
         let (didcomm_event_tx, mut didcomm_event_rx) = mpsc::unbounded_channel();
         let shutdown_token = tokio_util::sync::CancellationToken::new();
 
-        let didcomm_service =
-            match didcomm::start_service(&config, didcomm_event_tx.clone(), shutdown_token.clone())
-                .await
-            {
-                Ok(svc) => svc,
-                Err(e) => {
-                    state.connection.status =
-                        state::MediatorStatus::Failed(format!("DIDComm service: {e}"));
-                    state
-                        .main_page
-                        .log(format!("DIDComm service failed to start: {e}"));
-                    let _ = self.state_tx.send(state.clone());
-                    return self
-                        .run_degraded_loop(
-                            &mut action_rx,
-                            &mut interrupt_rx,
-                            &mut terminator,
-                            &mut state,
-                        )
-                        .await;
-                }
-            };
+        let didcomm_service = match didcomm::start_service(
+            &config,
+            &tdk,
+            didcomm_event_tx.clone(),
+            shutdown_token.clone(),
+        )
+        .await
+        {
+            Ok(svc) => svc,
+            Err(e) => {
+                state.connection.status =
+                    state::MediatorStatus::Failed(format!("DIDComm service: {e}"));
+                state
+                    .main_page
+                    .log(format!("DIDComm service failed to start: {e}"));
+                let _ = self.state_tx.send(state.clone());
+                return self
+                    .run_degraded_loop(
+                        &mut action_rx,
+                        &mut interrupt_rx,
+                        &mut terminator,
+                        &mut state,
+                    )
+                    .await;
+            }
+        };
 
         // Forward lifecycle events (connect/disconnect/restart) to the activity log
         let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
@@ -348,7 +352,7 @@ impl StateHandler {
 
         // Wait for persona listener to connect (up to 15 s)
         match didcomm_service
-            .wait_connected("persona", std::time::Duration::from_secs(15))
+            .wait_connected("persona", std::time::Duration::from_secs(30))
             .await
         {
             Ok(()) => {
@@ -553,14 +557,14 @@ impl StateHandler {
 
                                 // Replace the persona listener with the new mediator DID
                                 let _ = didcomm_service.remove_listener("persona").await;
-                                let new_config = didcomm::persona_listener_config(&config);
+                                let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                                 if let Err(e) = didcomm_service.add_listener(new_config).await {
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
                                     state.main_page.log(format!("Reconnect failed: {e}"));
                                 } else {
                                     match didcomm_service
-                                        .wait_connected("persona", std::time::Duration::from_secs(15))
+                                        .wait_connected("persona", std::time::Duration::from_secs(30))
                                         .await
                                     {
                                         Ok(()) => {
@@ -620,14 +624,14 @@ impl StateHandler {
 
                             // Replace the persona listener
                             let _ = didcomm_service.remove_listener("persona").await;
-                            let new_config = didcomm::persona_listener_config(&config);
+                            let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                             if let Err(e) = didcomm_service.add_listener(new_config).await {
                                 state.connection.status =
                                     state::MediatorStatus::Failed(format!("{e}"));
                                 state.main_page.log(format!("Reconnect failed: {e}"));
                             } else {
                                 match didcomm_service
-                                    .wait_connected("persona", std::time::Duration::from_secs(15))
+                                    .wait_connected("persona", std::time::Duration::from_secs(30))
                                     .await
                                 {
                                     Ok(()) => {

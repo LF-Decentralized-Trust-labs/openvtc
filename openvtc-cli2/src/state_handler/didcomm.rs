@@ -10,6 +10,7 @@ use affinidi_messaging_didcomm_service::{
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::didcomm::Message;
+use affinidi_tdk::secrets_resolver::SecretsResolver;
 use openvtc::config::Config;
 use openvtc::relationships::RelationshipState;
 use tokio::sync::mpsc;
@@ -96,9 +97,36 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
         ))
 }
 
-/// Create a `TDKProfile` from DID/mediator strings.
-fn make_profile(did: &str, mediator: &str, alias: &str) -> TDKProfile {
-    TDKProfile::new(alias, did, Some(mediator), vec![])
+/// Extract secrets for a DID from the TDK's secrets resolver.
+///
+/// Uses `config.key_info` to find the verification method IDs associated with the DID,
+/// then looks up the corresponding secrets from the TDK's threaded secrets resolver.
+async fn get_secrets_for_did(
+    tdk: &affinidi_tdk::TDK,
+    config: &Config,
+    did: &str,
+) -> Vec<affinidi_tdk::secrets_resolver::secrets::Secret> {
+    let resolver = &tdk.get_shared_state().secrets_resolver;
+
+    let mut secrets = vec![];
+    for key_id in config.key_info.keys() {
+        if key_id.starts_with(did)
+            && let Some(secret) = resolver.get_secret(key_id).await
+        {
+            secrets.push(secret);
+        }
+    }
+    secrets
+}
+
+/// Create a `TDKProfile` from DID/mediator strings with optional secrets.
+fn make_profile(
+    did: &str,
+    mediator: &str,
+    alias: &str,
+    secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
+) -> TDKProfile {
+    TDKProfile::new(alias, did, Some(mediator), secrets)
 }
 
 /// Build `ListenerConfig`s from the loaded `Config`.
@@ -106,10 +134,18 @@ fn make_profile(did: &str, mediator: &str, alias: &str) -> TDKProfile {
 /// Always includes a "persona" listener. Adds per-relationship listeners
 /// for established relationships that use a dedicated R-DID (different
 /// from the persona DID).
-pub fn build_listener_configs(config: &Config) -> Vec<ListenerConfig> {
+///
+/// Secrets for each DID are extracted from the TDK's secrets resolver
+/// so that each listener can authenticate with the mediator.
+pub async fn build_listener_configs(
+    config: &Config,
+    tdk: &affinidi_tdk::TDK,
+) -> Vec<ListenerConfig> {
     let restart = RestartPolicy::Always {
         backoff: RetryConfig::default(),
     };
+
+    let persona_secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
 
     let mut configs = vec![ListenerConfig {
         id: "persona".to_string(),
@@ -117,31 +153,47 @@ pub fn build_listener_configs(config: &Config) -> Vec<ListenerConfig> {
             &config.public.persona_did,
             &config.public.mediator_did,
             "Persona",
+            persona_secrets,
         ),
         restart_policy: restart.clone(),
         auto_delete: true,
         ..Default::default()
     }];
 
-    // Add listeners for each relationship with a dedicated R-DID
-    for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
-        if let Ok(rel) = rel_arc.lock()
-            && rel.state == RelationshipState::Established
-            && *rel.our_did != *config.public.persona_did
-        {
-            let short_did = truncate_did_id(&rel.our_did);
-            configs.push(ListenerConfig {
-                id: format!("rel-{short_did}"),
-                profile: make_profile(
-                    &rel.our_did,
-                    &config.public.mediator_did,
-                    &format!("R-DID for {}", truncate_did_id(remote_p_did)),
-                ),
-                restart_policy: restart.clone(),
-                auto_delete: true,
-                ..Default::default()
-            });
-        }
+    // Add listeners for each relationship with a dedicated R-DID.
+    // Extract data from the Mutex before any .await to avoid holding the guard.
+    let r_did_entries: Vec<(String, String)> = config
+        .private
+        .relationships
+        .relationships
+        .iter()
+        .filter_map(|(remote_p_did, rel_arc)| {
+            let rel = rel_arc.lock().ok()?;
+            if rel.state == RelationshipState::Established
+                && *rel.our_did != *config.public.persona_did
+            {
+                Some((rel.our_did.to_string(), remote_p_did.to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (our_did, remote_p_did) in &r_did_entries {
+        let short_did = truncate_did_id(our_did);
+        let r_did_secrets = get_secrets_for_did(tdk, config, our_did).await;
+        configs.push(ListenerConfig {
+            id: format!("rel-{short_did}"),
+            profile: make_profile(
+                our_did,
+                &config.public.mediator_did,
+                &format!("R-DID for {}", truncate_did_id(remote_p_did)),
+                r_did_secrets,
+            ),
+            restart_policy: restart.clone(),
+            auto_delete: true,
+            ..Default::default()
+        });
     }
 
     configs
@@ -219,13 +271,15 @@ pub fn spawn_lifecycle_logger(
 }
 
 /// Build a single `ListenerConfig` for the persona DID.
-pub fn persona_listener_config(config: &Config) -> ListenerConfig {
+pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -> ListenerConfig {
+    let secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
     ListenerConfig {
         id: "persona".to_string(),
         profile: make_profile(
             &config.public.persona_did,
             &config.public.mediator_did,
             "Persona",
+            secrets,
         ),
         restart_policy: RestartPolicy::Always {
             backoff: RetryConfig::default(),
@@ -238,11 +292,12 @@ pub fn persona_listener_config(config: &Config) -> ListenerConfig {
 /// Start the DIDComm service with the given config.
 pub async fn start_service(
     config: &Config,
+    tdk: &affinidi_tdk::TDK,
     event_tx: mpsc::UnboundedSender<DIDCommEvent>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<DIDCommService, DIDCommServiceError> {
     let router = build_router(event_tx);
-    let listener_configs = build_listener_configs(config);
+    let listener_configs = build_listener_configs(config, tdk).await;
 
     DIDCommService::start(
         DIDCommServiceConfig {
@@ -262,18 +317,22 @@ fn truncate_did_id(did: &str) -> &str {
 
 /// Create a `ListenerConfig` for a relationship R-DID.
 #[allow(dead_code)]
-pub fn relationship_listener_config(
+pub async fn relationship_listener_config(
+    config: &Config,
+    tdk: &affinidi_tdk::TDK,
     our_did: &str,
     remote_p_did: &str,
     mediator_did: &str,
 ) -> ListenerConfig {
     let short_did = truncate_did_id(our_did);
+    let secrets = get_secrets_for_did(tdk, config, our_did).await;
     ListenerConfig {
         id: format!("rel-{short_did}"),
         profile: make_profile(
             our_did,
             mediator_did,
             &format!("R-DID for {}", truncate_did_id(remote_p_did)),
+            secrets,
         ),
         restart_policy: RestartPolicy::Always {
             backoff: RetryConfig::default(),
