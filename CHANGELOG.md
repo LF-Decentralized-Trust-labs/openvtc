@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-14
+
+### Added
+
+- **Full TUI main menu panels** in `openvtc-cli2` — all 6 panels (Inbox, Relationships, Credentials, Settings, Help/Status, Quit) are now fully functional with live DIDComm updates
+- **Inbox panel** with real-time task processing: auto-handles trust-pongs, relationship finalization, and rejections; queues interactive tasks for user decisions (accept/reject relationship requests, VRC requests, issued VRCs)
+- **Relationships panel** with list/detail/new-request views: create relationship requests with optional R-DID generation for privacy, send trust-pings, remove relationships
+- **Credentials panel** with Received/Issued tabs: view VRC details with validity date ranges, request new VRCs from established relationships, remove VRCs
+- **Settings panel** with inline editing for friendly name, mediator DID, and org DID; config export/import; passphrase protection management (set/remove); hardware token detection and factory reset
+- **Activity log panel** at the bottom of the main screen showing real-time events (messages received, tasks created, config saved, errors)
+- **Status/Help panel** showing persona DID, mediator DID, protection type, relationship/task/VRC counts, connection status, and keyboard shortcuts
+- **R-DID generation** for relationship requests — derives Ed25519/X25519 keys from BIP32 path, creates did:peer with mediator routing for privacy
+- **VRC issuance** from inbox — sign and send VRCs back to requesters using DataIntegrityProof
+- **Contact management** actions (add/remove) accessible from settings
+- **DIDComm message dispatch** — inbound messages are now processed instead of silently dropped
+
+### Fixed
+
+- **Config persistence** (critical) — inbox, relationship, and credential actions now save config to disk after every mutation, preventing data loss on crash or restart
+
+### Changed
+
+- Replaced `0x8000_0000` bit flag encoding for detail view triggers with separate typed action variants (`InboxOpenDetail`, `RelationshipOpenDetail`, `CredentialOpenDetail`)
+- Replaced control character encoding (`\x00`-`\x04`) in settings form updates with typed action variants (`SettingsFieldUpdate`, `SettingsFormFieldUpdate`, `SettingsProtection*`)
+- Extracted ~40 action handler functions from the 700+ line match block in the state handler, reducing each match arm to 1-3 lines
+- Replaced `Vec<String>` with `VecDeque<String>` for activity log — O(1) bounded insertion instead of O(n)
+- Extracted panel renderers from content_panel.rs (822 lines) into separate files: inbox_panel.rs, relationships_panel.rs, credentials_panel.rs, settings_panel.rs
+- Protection type display now shows human-readable labels ("Keyring Only", "Passphrase Encrypted", "Hardware Token") instead of debug enum names
+
 ## [0.1.5] - 2026-04-14
 
 ### Security
