@@ -175,7 +175,11 @@ The private configuration uses the same encryption method as the [secured config
 
 ### Secured Configuration
 
-Sensitive information is stored in the operating system's secure storage, e.g., macOS Keychain or Linux Keyring.
+Sensitive information is stored in the operating system's secure storage through the project's `keyring` integration:
+
+- **macOS** — Keychain
+- **Linux** — Secret Service keyring
+- **Windows** — Windows Credential Manager
 
 The secured configuration includes:
 
