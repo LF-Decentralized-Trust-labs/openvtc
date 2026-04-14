@@ -263,6 +263,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-messaging-didcomm-service"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "847fa5915e4087c30a364430694efe87f67c80df5a1fb7be2f2cb9a95117e385"
+dependencies = [
+ "affinidi-messaging-didcomm",
+ "affinidi-messaging-sdk",
+ "affinidi-secrets-resolver",
+ "affinidi-tdk-common",
+ "async-trait",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha256",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "affinidi-messaging-sdk"
 version = "0.16.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4479,6 +4502,7 @@ version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
+ "affinidi-messaging-didcomm-service",
  "affinidi-tdk",
  "anyhow",
  "arboard",
@@ -4515,6 +4539,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "tui-input",
@@ -7182,6 +7207,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

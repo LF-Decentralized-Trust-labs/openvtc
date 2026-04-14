@@ -34,11 +34,10 @@ fn truncate_did(did: &str) -> Cow<'_, str> {
 
 pub mod actions;
 mod credential_actions;
+pub mod didcomm;
 mod inbox_actions;
 pub mod main_page;
 mod message_dispatch;
-pub mod messaging;
-pub mod outbound_queue;
 mod relationship_actions;
 mod settings_actions;
 mod setup_did_actions;
@@ -316,28 +315,55 @@ impl StateHandler {
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());
 
-        // Outbound message queue for offline resilience (retry on reconnect)
-        let mut outbound_queue = outbound_queue::OutboundQueue::default();
+        // Start the DIDComm service (connection lifecycle, message dispatch, sending)
+        let (didcomm_event_tx, mut didcomm_event_rx) = mpsc::unbounded_channel();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
 
-        // Spawn DIDComm init + validation as a background task
-        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
-        let mut msg_task_handle: Option<tokio::task::JoinHandle<()>> = None;
-
-        let (conn_result_tx, mut conn_result_rx) = mpsc::channel::<messaging::ConnInitResult>(2);
-        let shared_state = tdk.get_shared_state();
-        let persona_did = config.public.persona_did.to_string();
-        let mediator_did = config.public.mediator_did.clone();
-
-        {
-            let tx = conn_result_tx.clone();
-            tokio::spawn(async move {
-                let result =
-                    messaging::init_and_validate(shared_state, persona_did, mediator_did).await;
-                if let Err(e) = tx.send(result).await {
-                    debug!("Failed to send connection init result: {e}");
+        let didcomm_service =
+            match didcomm::start_service(&config, didcomm_event_tx.clone(), shutdown_token.clone())
+                .await
+            {
+                Ok(svc) => svc,
+                Err(e) => {
+                    state.connection.status =
+                        state::MediatorStatus::Failed(format!("DIDComm service: {e}"));
+                    state
+                        .main_page
+                        .log(format!("DIDComm service failed to start: {e}"));
+                    let _ = self.state_tx.send(state.clone());
+                    return self
+                        .run_degraded_loop(
+                            &mut action_rx,
+                            &mut interrupt_rx,
+                            &mut terminator,
+                            &mut state,
+                        )
+                        .await;
                 }
-            });
+            };
+
+        // Forward lifecycle events (connect/disconnect/restart) to the activity log
+        let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
+        let _lifecycle_handle = didcomm::spawn_lifecycle_logger(&didcomm_service, lifecycle_log_tx);
+
+        // Wait for persona listener to connect (up to 15 s)
+        match didcomm_service
+            .wait_connected("persona", std::time::Duration::from_secs(15))
+            .await
+        {
+            Ok(()) => {
+                state.connection.status = state::MediatorStatus::Connected { latency_ms: 0 };
+                state.connection.messaging_active = true;
+                state.main_page.log("Connected to mediator");
+            }
+            Err(e) => {
+                state.connection.status = state::MediatorStatus::Failed(format!("{e}"));
+                state
+                    .main_page
+                    .log(format!("Mediator connection failed: {e}"));
+            }
         }
+        let _ = self.state_tx.send(state.clone());
 
         let result = loop {
             tokio::select! {
@@ -386,19 +412,19 @@ impl StateHandler {
                             state.main_page.content_panel.inbox.active_task = None;
                         },
                         InboxAction::AcceptRelationship { task_id } => {
-                            handle_inbox_accept_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
+                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id).await;
                         },
                         InboxAction::RejectRelationship { task_id, reason } => {
-                            handle_inbox_reject_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
+                            handle_inbox_reject_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
                         },
                         InboxAction::AcceptVrc { task_id } => {
                             handle_inbox_accept_vrc(&mut config, &mut state, &self.profile, &task_id);
                         },
                         InboxAction::AcceptVrcRequest { task_id } => {
-                            handle_inbox_accept_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
+                            handle_inbox_accept_vrc_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id).await;
                         },
                         InboxAction::RejectVrcRequest { task_id, reason } => {
-                            handle_inbox_reject_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
+                            handle_inbox_reject_vrc_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
                         },
                         InboxAction::DismissTask { task_id } => {
                             handle_inbox_dismiss_task(&mut config, &mut state, &self.profile, &task_id);
@@ -435,10 +461,10 @@ impl StateHandler {
                             }
                         },
                         RelationshipAction::SubmitRequest { did, alias, reason, generate_r_did } => {
-                            handle_relationship_submit(&mut config, &tdk, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
+                            handle_relationship_submit(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
                         },
                         RelationshipAction::Ping { remote_p_did } => {
-                            handle_relationship_ping(&mut config, &tdk, &mut state, &self.profile, &remote_p_did).await;
+                            handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
                         },
                         RelationshipAction::Remove { remote_p_did } => {
                             handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
@@ -467,7 +493,7 @@ impl StateHandler {
                             handle_credential_reason_update(&mut state, value);
                         },
                         CredentialAction::SubmitRequest { relationship_p_did, reason } => {
-                            handle_credential_submit_request(&mut config, &tdk, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
+                            handle_credential_submit_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
                         },
                         CredentialAction::Remove { vrc_id } => {
                             handle_credential_remove(&mut config, &mut state, &self.profile, &vrc_id);
@@ -521,29 +547,35 @@ impl StateHandler {
                         SettingsAction::SubmitEdit { value } => {
                             let needs_reconnect = handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
                             if needs_reconnect {
-                                // Abort the existing DIDComm loop if one is running
-                                if let Some(handle) = msg_task_handle.take() {
-                                    handle.abort();
-                                    state.connection.messaging_active = false;
-                                }
                                 state.connection.status = state::MediatorStatus::Connecting;
+                                state.connection.messaging_active = false;
                                 state.main_page.log("Reconnecting to mediator...");
 
-                                let shared_state = tdk.get_shared_state();
-                                let persona_did = config.public.persona_did.to_string();
-                                let mediator_did = config.public.mediator_did.clone();
-                                let tx = conn_result_tx.clone();
-                                tokio::spawn(async move {
-                                    let result = messaging::init_and_validate(
-                                        shared_state,
-                                        persona_did,
-                                        mediator_did,
-                                    )
-                                    .await;
-                                    if let Err(e) = tx.send(result).await {
-                                        debug!("Failed to send reconnection result: {e}");
+                                // Replace the persona listener with the new mediator DID
+                                let _ = didcomm_service.remove_listener("persona").await;
+                                let new_config = didcomm::persona_listener_config(&config);
+                                if let Err(e) = didcomm_service.add_listener(new_config).await {
+                                    state.connection.status =
+                                        state::MediatorStatus::Failed(format!("{e}"));
+                                    state.main_page.log(format!("Reconnect failed: {e}"));
+                                } else {
+                                    match didcomm_service
+                                        .wait_connected("persona", std::time::Duration::from_secs(15))
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            state.connection.status =
+                                                state::MediatorStatus::Connected { latency_ms: 0 };
+                                            state.connection.messaging_active = true;
+                                            state.main_page.log("Reconnected to mediator");
+                                        }
+                                        Err(e) => {
+                                            state.connection.status =
+                                                state::MediatorStatus::Failed(format!("{e}"));
+                                            state.main_page.log(format!("Reconnect failed: {e}"));
+                                        }
                                     }
-                                });
+                                }
                             }
                         },
                         SettingsAction::ExportConfig { path, passphrase } => {
@@ -582,120 +614,47 @@ impl StateHandler {
                             state.main_page.log(msg);
                         },
                         SettingsAction::ReconnectMediator => {
-                            // Abort the existing DIDComm loop if one is running
-                            if let Some(handle) = msg_task_handle.take() {
-                                handle.abort();
-                                state.connection.messaging_active = false;
-                            }
                             state.connection.status = state::MediatorStatus::Connecting;
+                            state.connection.messaging_active = false;
                             state.main_page.log("Reconnecting to mediator...");
 
-                            let shared_state = tdk.get_shared_state();
-                            let persona_did = config.public.persona_did.to_string();
-                            let mediator_did = config.public.mediator_did.clone();
-                            let tx = conn_result_tx.clone();
-                            tokio::spawn(async move {
-                                let result = messaging::init_and_validate(
-                                    shared_state,
-                                    persona_did,
-                                    mediator_did,
-                                )
-                                .await;
-                                if let Err(e) = tx.send(result).await {
-                                    debug!("Failed to send reconnection result: {e}");
+                            // Replace the persona listener
+                            let _ = didcomm_service.remove_listener("persona").await;
+                            let new_config = didcomm::persona_listener_config(&config);
+                            if let Err(e) = didcomm_service.add_listener(new_config).await {
+                                state.connection.status =
+                                    state::MediatorStatus::Failed(format!("{e}"));
+                                state.main_page.log(format!("Reconnect failed: {e}"));
+                            } else {
+                                match didcomm_service
+                                    .wait_connected("persona", std::time::Duration::from_secs(15))
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        state.connection.status =
+                                            state::MediatorStatus::Connected { latency_ms: 0 };
+                                        state.connection.messaging_active = true;
+                                        state.main_page.log("Reconnected to mediator");
+                                    }
+                                    Err(e) => {
+                                        state.connection.status =
+                                            state::MediatorStatus::Failed(format!("{e}"));
+                                        state.main_page.log(format!("Reconnect failed: {e}"));
+                                    }
                                 }
-                            });
+                            }
                         },
                     },
                     _ => {}
                 },
-                Some(conn_result) = conn_result_rx.recv() => {
-                    state.connection.status = conn_result.status;
-                    state.connection.last_ping_latency_ms = conn_result.latency_ms;
-
-                    if let Some(ms) = conn_result.latency_ms {
-                        state.main_page.log(format!("Connected to mediator ({}ms)", ms));
-                    } else {
-                        state.main_page.log("Connected to mediator");
-                    }
-
-                    if let (Some(atm), Some(profile)) = (conn_result.atm, conn_result.profile) {
-                        let atm_retry = atm.clone();
-                        let handle = tokio::spawn(messaging::run_didcomm_loop(
-                            atm,
-                            profile,
-                            conn_result.persona_did,
-                            msg_tx.clone(),
-                            interrupt_rx.resubscribe(),
-                        ));
-                        msg_task_handle = Some(handle);
-                        state.connection.messaging_active = true;
-                        state.main_page.log("DIDComm messaging active");
-
-                        // Retry queued outbound messages now that we are connected
-                        if !outbound_queue.is_empty() {
-                            let count = outbound_queue.len();
-                            state.main_page.log(format!(
-                                "Retrying {count} queued outbound message(s)"
-                            ));
-                            let to_retry = outbound_queue.drain_for_retry();
-                            for pending in to_retry {
-                                match openvtc::pack_and_send(
-                                    &atm_retry,
-                                    &config.persona_did.profile,
-                                    &pending.message,
-                                    &pending.from,
-                                    &pending.to,
-                                    &pending.mediator,
-                                )
-                                .await
-                                {
-                                    Ok(()) => {
-                                        state.main_page.log(format!(
-                                            "Retry succeeded: {}",
-                                            pending.description
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        outbound_queue.enqueue(pending);
-                                        state.main_page.log(format!("Retry failed: {e}"));
-                                    }
-                                }
-                            }
-                            state.connection.queued_outbound = outbound_queue.len();
-                        }
-                    }
-                },
-                Some(event) = msg_rx.recv() => {
+                // DIDComm inbound message events
+                Some(event) = didcomm_event_rx.recv() => {
                     match event {
-                        messaging::MessagingEvent::TrustPingReceived { .. } => {}
-                        messaging::MessagingEvent::TrustPongReceived { latency_ms, .. } => {
-                            if let Some(ms) = latency_ms {
-                                state.connection.last_ping_latency_ms = Some(ms);
-                            }
-                        }
-                        messaging::MessagingEvent::ConnectionStatus(status) => {
-                            match status {
-                                messaging::ConnectionStatus::Connected => {
-                                    state.connection.status = state::MediatorStatus::Connected {
-                                        latency_ms: state.connection.last_ping_latency_ms.unwrap_or(0),
-                                    };
-                                }
-                                messaging::ConnectionStatus::Disconnected => {
-                                    state.connection.status = state::MediatorStatus::Unknown;
-                                    state.connection.messaging_active = false;
-                                    state.main_page.log("Mediator disconnected");
-                                }
-                                messaging::ConnectionStatus::Error(e) => {
-                                    state.main_page.log(format!("Connection error: {}", &e));
-                                    state.connection.status = state::MediatorStatus::Failed(e);
-                                }
-                            }
-                        }
-                        messaging::MessagingEvent::InboundMessage { message } => {
+                        didcomm::DIDCommEvent::InboundMessage { message, .. } => {
                             match message_dispatch::process_inbound_message(
                                 &mut config,
                                 &tdk,
+                                &didcomm_service,
                                 &message,
                             )
                             .await
@@ -716,6 +675,10 @@ impl StateHandler {
                         }
                     }
                 },
+                // Lifecycle log messages from the DIDCommService
+                Some(log_msg) = lifecycle_log_rx.recv() => {
+                    state.main_page.log(log_msg);
+                },
                 // Catch and handle interrupt signal to gracefully shutdown
                 Ok(interrupted) = interrupt_rx.recv() => {
                     break interrupted;
@@ -724,10 +687,9 @@ impl StateHandler {
             let _ = self.state_tx.send(state.clone());
         };
 
-        // Wait for messaging task to finish shutdown
-        if let Some(handle) = msg_task_handle {
-            let _ = handle.await;
-        }
+        // Shut down the DIDComm service gracefully
+        shutdown_token.cancel();
+        didcomm_service.shutdown().await;
 
         Ok(result)
     }
@@ -845,11 +807,12 @@ fn inbox_error(state: &mut State, context: &str, err: &anyhow::Error) {
 async fn handle_inbox_accept_relationship(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     task_id: &str,
 ) {
-    match inbox_actions::accept_relationship_request(config, tdk, task_id).await {
+    match inbox_actions::accept_relationship_request(config, tdk, service, task_id).await {
         Ok(()) => inbox_save_and_sync(
             config,
             state,
@@ -864,12 +827,13 @@ async fn handle_inbox_accept_relationship(
 async fn handle_inbox_reject_relationship(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     task_id: &str,
     reason: Option<&str>,
 ) {
-    match inbox_actions::reject_relationship_request(config, tdk, task_id, reason).await {
+    match inbox_actions::reject_relationship_request(config, tdk, service, task_id, reason).await {
         Ok(()) => inbox_save_and_sync(
             config,
             state,
@@ -902,11 +866,12 @@ fn handle_inbox_accept_vrc(
 async fn handle_inbox_accept_vrc_request(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     task_id: &str,
 ) {
-    match inbox_actions::accept_vrc_request(config, tdk, task_id).await {
+    match inbox_actions::accept_vrc_request(config, tdk, service, task_id).await {
         Ok(()) => inbox_save_and_sync(
             config,
             state,
@@ -921,12 +886,13 @@ async fn handle_inbox_accept_vrc_request(
 async fn handle_inbox_reject_vrc_request(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     task_id: &str,
     reason: Option<&str>,
 ) {
-    match inbox_actions::reject_vrc_request(config, tdk, task_id, reason).await {
+    match inbox_actions::reject_vrc_request(config, tdk, service, task_id, reason).await {
         Ok(()) => inbox_save_and_sync(
             config,
             state,
@@ -1022,6 +988,7 @@ fn handle_relationship_toggle_r_did(state: &mut State) {
 async fn handle_relationship_submit(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     did: &str,
@@ -1033,6 +1000,7 @@ async fn handle_relationship_submit(
     match relationship_actions::send_relationship_request(
         config,
         tdk,
+        service,
         did,
         alias,
         reason,
@@ -1066,12 +1034,13 @@ async fn handle_relationship_submit(
 async fn handle_relationship_ping(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     remote_p_did: &str,
 ) {
     use main_page::content::RelationshipsMode;
-    match relationship_actions::ping_relationship(config, tdk, remote_p_did).await {
+    match relationship_actions::ping_relationship(config, tdk, service, remote_p_did).await {
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
             state.main_page.content_panel.relationships.status_message =
@@ -1177,13 +1146,16 @@ fn handle_credential_reason_update(state: &mut State, value: String) {
 async fn handle_credential_submit_request(
     config: &mut Box<Config>,
     tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     relationship_p_did: &str,
     reason: Option<&str>,
 ) {
     use main_page::content::CredentialsMode;
-    match credential_actions::send_vrc_request(config, tdk, relationship_p_did, reason).await {
+    match credential_actions::send_vrc_request(config, tdk, service, relationship_p_did, reason)
+        .await
+    {
         Ok(()) => {
             state.main_page.content_panel.credentials.mode = CredentialsMode::List;
             state.main_page.content_panel.credentials.status_message = Some(format!(

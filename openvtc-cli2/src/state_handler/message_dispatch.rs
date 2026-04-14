@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{TDK, didcomm::Message};
 use openvtc::{
     MessageType,
@@ -36,7 +37,8 @@ const MAX_RELATIONSHIPS: usize = 5_000;
 /// Returns `true` if Config was mutated and needs saving.
 pub async fn process_inbound_message(
     config: &mut Config,
-    tdk: &TDK,
+    _tdk: &TDK,
+    service: &DIDCommService,
     message: &Message,
 ) -> Result<bool, anyhow::Error> {
     // Validate sender
@@ -132,17 +134,15 @@ pub async fn process_inbound_message(
             let finalize_msg =
                 create_finalize_message(&config.public.persona_did, &from_did, &task_id)?;
 
-            if let Some(atm) = &tdk.atm {
-                openvtc::pack_and_send(
-                    atm,
-                    &config.persona_did.profile,
-                    &finalize_msg,
-                    &config.public.persona_did,
-                    &from_did,
-                    &config.public.mediator_did,
-                )
-                .await?;
-            }
+            super::didcomm::send_message(
+                service,
+                config,
+                &finalize_msg,
+                &config.public.persona_did,
+                &from_did,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("failed to send finalize: {e}"))?;
 
             config.private.tasks.remove(&task_id);
             config.public.logs.insert(

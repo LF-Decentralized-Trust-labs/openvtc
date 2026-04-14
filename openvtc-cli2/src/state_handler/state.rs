@@ -38,6 +38,8 @@ pub struct ConnectionState {
     /// Current mediator connection status.
     pub status: MediatorStatus,
     /// Round-trip latency of the last successful trust-ping (milliseconds).
+    /// Not yet populated via DIDCommService — reserved for future use.
+    #[allow(dead_code)]
     pub last_ping_latency_ms: Option<u128>,
     /// Whether the DIDComm message loop is actively running.
     pub messaging_active: bool,

@@ -1,0 +1,284 @@
+//! DIDComm service integration for the TUI.
+//!
+//! Replaces the manual ATM/WebSocket/message-loop plumbing in `messaging/mod.rs`
+//! with `DIDCommService`, which handles connection lifecycle, message pickup,
+//! dispatch via `Router`, and outbound sending with retry.
+
+use affinidi_messaging_didcomm_service::{
+    DIDCommService, DIDCommServiceConfig, DIDCommServiceError, ListenerConfig, ListenerEvent,
+    RestartPolicy, RetryConfig, Router, handler_fn, trust_ping_handler,
+};
+use affinidi_tdk::common::profiles::TDKProfile;
+use affinidi_tdk::didcomm::Message;
+use openvtc::config::Config;
+use openvtc::relationships::RelationshipState;
+use tokio::sync::mpsc;
+use tracing::debug;
+
+/// Events sent from DIDComm router handlers to the state handler main loop.
+#[derive(Debug)]
+pub enum DIDCommEvent {
+    /// An inbound message that needs business-logic processing.
+    InboundMessage {
+        message: Box<Message>,
+        #[allow(dead_code)]
+        from: Option<String>,
+    },
+}
+
+/// Build the DIDComm message router.
+///
+/// Trust pings are handled automatically via the built-in handler.
+/// All OpenVTC protocol messages and trust pongs are forwarded as
+/// `DIDCommEvent::InboundMessage` for the state handler to process.
+pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
+    let openvtc_handler = handler_fn({
+        let tx = event_tx.clone();
+        move |_ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(DIDCommEvent::InboundMessage {
+                    from: msg.from.clone(),
+                    message: Box::new(msg),
+                });
+                Ok(None)
+            }
+        }
+    });
+
+    Router::new()
+        // Trust ping auto-response (built-in pong generation)
+        .route(
+            affinidi_messaging_didcomm_service::TRUST_PING_TYPE,
+            handler_fn(trust_ping_handler),
+        )
+        .expect("valid route")
+        // Trust pong — forward to state handler for latency tracking
+        .route(
+            affinidi_messaging_didcomm_service::TRUST_PONG_TYPE,
+            handler_fn({
+                let tx = event_tx.clone();
+                move |_ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
+                    let tx = tx.clone();
+                    async move {
+                        let _ = tx.send(DIDCommEvent::InboundMessage {
+                            from: msg.from.clone(),
+                            message: Box::new(msg),
+                        });
+                        Ok(None)
+                    }
+                }
+            }),
+        )
+        .expect("valid route")
+        // Catch-all for OpenVTC protocol messages
+        .route_regex(
+            "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*",
+            openvtc_handler,
+        )
+        .expect("valid route")
+        // Message pickup status — silently drop
+        .route(
+            openvtc::protocol_urls::MESSAGEPICKUP_STATUS,
+            handler_fn(
+                |_ctx: affinidi_messaging_didcomm_service::HandlerContext, _msg: Message| async {
+                    Ok(None)
+                },
+            ),
+        )
+        .expect("valid route")
+        // Fallback for unknown message types
+        .fallback(handler_fn(
+            |_ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| async move {
+                debug!(typ = %msg.typ, "unhandled message type — dropped");
+                Ok(None)
+            },
+        ))
+}
+
+/// Create a `TDKProfile` from DID/mediator strings.
+fn make_profile(did: &str, mediator: &str, alias: &str) -> TDKProfile {
+    TDKProfile::new(alias, did, Some(mediator), vec![])
+}
+
+/// Build `ListenerConfig`s from the loaded `Config`.
+///
+/// Always includes a "persona" listener. Adds per-relationship listeners
+/// for established relationships that use a dedicated R-DID (different
+/// from the persona DID).
+pub fn build_listener_configs(config: &Config) -> Vec<ListenerConfig> {
+    let restart = RestartPolicy::Always {
+        backoff: RetryConfig::default(),
+    };
+
+    let mut configs = vec![ListenerConfig {
+        id: "persona".to_string(),
+        profile: make_profile(
+            &config.public.persona_did,
+            &config.public.mediator_did,
+            "Persona",
+        ),
+        restart_policy: restart.clone(),
+        auto_delete: true,
+        ..Default::default()
+    }];
+
+    // Add listeners for each relationship with a dedicated R-DID
+    for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
+        if let Ok(rel) = rel_arc.lock()
+            && rel.state == RelationshipState::Established
+            && *rel.our_did != *config.public.persona_did
+        {
+            let short_did = truncate_did_id(&rel.our_did);
+            configs.push(ListenerConfig {
+                id: format!("rel-{short_did}"),
+                profile: make_profile(
+                    &rel.our_did,
+                    &config.public.mediator_did,
+                    &format!("R-DID for {}", truncate_did_id(remote_p_did)),
+                ),
+                restart_policy: restart.clone(),
+                auto_delete: true,
+                ..Default::default()
+            });
+        }
+    }
+
+    configs
+}
+
+/// Determine the listener ID to use for sending messages from a given DID.
+///
+/// If `our_did` matches the persona DID, use "persona". Otherwise, use
+/// the relationship-listener naming convention.
+pub fn listener_id_for_did(our_did: &str, persona_did: &str) -> String {
+    if our_did == persona_did {
+        "persona".to_string()
+    } else {
+        format!("rel-{}", truncate_did_id(our_did))
+    }
+}
+
+/// Convenience wrapper: send a DIDComm message through the correct listener
+/// based on the sender DID, with retry on transient failures.
+pub async fn send_message(
+    service: &DIDCommService,
+    config: &Config,
+    message: &Message,
+    from_did: &str,
+    to_did: &str,
+) -> Result<(), DIDCommServiceError> {
+    let listener_id = listener_id_for_did(from_did, &config.public.persona_did);
+    service
+        .send_message_with_retry(
+            &listener_id,
+            message.clone(),
+            to_did,
+            3,
+            std::time::Duration::from_secs(2),
+        )
+        .await
+}
+
+/// Subscribe to `DIDCommService` lifecycle events and forward them as
+/// log messages via the provided sender. Returns the spawned task handle.
+pub fn spawn_lifecycle_logger(
+    service: &DIDCommService,
+    log_tx: mpsc::UnboundedSender<String>,
+) -> tokio::task::JoinHandle<()> {
+    let mut events_rx = service.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match events_rx.recv().await {
+                Ok(ListenerEvent::Connected { listener_id }) => {
+                    let _ = log_tx.send(format!("Listener '{listener_id}' connected"));
+                }
+                Ok(ListenerEvent::Disconnected { listener_id, error }) => {
+                    let msg = match error {
+                        Some(e) => format!("Listener '{listener_id}' disconnected: {e}"),
+                        None => format!("Listener '{listener_id}' disconnected"),
+                    };
+                    let _ = log_tx.send(msg);
+                }
+                Ok(ListenerEvent::Restarting {
+                    listener_id,
+                    attempt,
+                    delay,
+                }) => {
+                    let _ = log_tx.send(format!(
+                        "Listener '{listener_id}' restarting (attempt {attempt}, backoff {delay:?})"
+                    ));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    let _ = log_tx.send(format!("Missed {n} lifecycle event(s)"));
+                }
+            }
+        }
+    })
+}
+
+/// Build a single `ListenerConfig` for the persona DID.
+pub fn persona_listener_config(config: &Config) -> ListenerConfig {
+    ListenerConfig {
+        id: "persona".to_string(),
+        profile: make_profile(
+            &config.public.persona_did,
+            &config.public.mediator_did,
+            "Persona",
+        ),
+        restart_policy: RestartPolicy::Always {
+            backoff: RetryConfig::default(),
+        },
+        auto_delete: true,
+        ..Default::default()
+    }
+}
+
+/// Start the DIDComm service with the given config.
+pub async fn start_service(
+    config: &Config,
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Result<DIDCommService, DIDCommServiceError> {
+    let router = build_router(event_tx);
+    let listener_configs = build_listener_configs(config);
+
+    DIDCommService::start(
+        DIDCommServiceConfig {
+            listeners: listener_configs,
+        },
+        router,
+        shutdown,
+    )
+    .await
+}
+
+/// Truncate a DID to a short identifier for listener IDs and display.
+fn truncate_did_id(did: &str) -> &str {
+    let end = did.len().min(24);
+    &did[..end]
+}
+
+/// Create a `ListenerConfig` for a relationship R-DID.
+#[allow(dead_code)]
+pub fn relationship_listener_config(
+    our_did: &str,
+    remote_p_did: &str,
+    mediator_did: &str,
+) -> ListenerConfig {
+    let short_did = truncate_did_id(our_did);
+    ListenerConfig {
+        id: format!("rel-{short_did}"),
+        profile: make_profile(
+            our_did,
+            mediator_did,
+            &format!("R-DID for {}", truncate_did_id(remote_p_did)),
+        ),
+        restart_policy: RestartPolicy::Always {
+            backoff: RetryConfig::default(),
+        },
+        auto_delete: true,
+        ..Default::default()
+    }
+}

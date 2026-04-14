@@ -5,19 +5,24 @@
 //! `&mut Config` and `&TDK` owned by the StateHandler.
 
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
+use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::TDK;
-use anyhow::{Context, Result};
+use affinidi_tdk::didcomm::Message;
+use anyhow::Result;
 use chrono::Utc;
 use openvtc::{
     config::Config,
     logs::LogFamily,
     relationships::{
-        Relationship, RelationshipState, create_send_message_accepted, create_send_message_rejected,
+        Relationship, RelationshipAcceptBody, RelationshipRejectBody, RelationshipState,
     },
     tasks::TaskType,
 };
+use serde_json::json;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
 
 /// Accept an inbound relationship request.
 ///
@@ -26,6 +31,7 @@ use tracing::{debug, info, warn};
 pub async fn accept_relationship_request(
     config: &mut Config,
     tdk: &TDK,
+    service: &DIDCommService,
     task_id: &str,
 ) -> Result<()> {
     let task_id = Arc::new(task_id.to_string());
@@ -62,17 +68,11 @@ pub async fn accept_relationship_request(
             .await?;
     }
 
-    // Send acceptance message
-    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
-    create_send_message_accepted(
-        atm,
-        &config.persona_did.profile,
-        &from_did,
-        &config.public.mediator_did,
-        &our_did,
-        &task_id,
-    )
-    .await?;
+    // Build and send acceptance message
+    let msg = build_accept_message(&config.public.persona_did, &from_did, &our_did, &task_id)?;
+    super::didcomm::send_message(service, config, &msg, &config.public.persona_did, &from_did)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send acceptance: {e}"))?;
 
     // Create relationship entry
     config.private.relationships.relationships.insert(
@@ -103,7 +103,8 @@ pub async fn accept_relationship_request(
 /// Sends rejection message to the remote party and removes the task.
 pub async fn reject_relationship_request(
     config: &mut Config,
-    tdk: &TDK,
+    _tdk: &TDK,
+    service: &DIDCommService,
     task_id: &str,
     reason: Option<&str>,
 ) -> Result<()> {
@@ -127,17 +128,11 @@ pub async fn reject_relationship_request(
         }
     };
 
-    // Send rejection message
-    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
-    create_send_message_rejected(
-        atm,
-        &config.persona_did.profile,
-        &from_did,
-        &config.public.mediator_did,
-        reason,
-        &task_id,
-    )
-    .await?;
+    // Build and send rejection message
+    let msg = build_reject_message(&config.public.persona_did, &from_did, reason, &task_id)?;
+    super::didcomm::send_message(service, config, &msg, &config.public.persona_did, &from_did)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send rejection: {e}"))?;
 
     // Remove the task
     config.private.tasks.remove(&task_id);
@@ -197,7 +192,12 @@ pub fn accept_vrc(config: &mut Config, task_id: &str) -> Result<()> {
 /// Accept an inbound VRC request — create, sign, and send a VRC back to the requester.
 ///
 /// Uses current timestamp as valid_from and no valid_until (simplest default).
-pub async fn accept_vrc_request(config: &mut Config, tdk: &TDK, task_id: &str) -> Result<()> {
+pub async fn accept_vrc_request(
+    config: &mut Config,
+    tdk: &TDK,
+    service: &DIDCommService,
+    task_id: &str,
+) -> Result<()> {
     use affinidi_data_integrity::DataIntegrityProof;
     use dtg_credentials::DTGCredential;
     use openvtc::vrc::DtgCredentialMessage;
@@ -250,26 +250,10 @@ pub async fn accept_vrc_request(config: &mut Config, tdk: &TDK, task_id: &str) -
 
     // Send VRC back to the requester
     let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
-    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
 
-    let profile = if our_r_did == config.public.persona_did {
-        &config.persona_did.profile
-    } else {
-        config
-            .atm_profiles
-            .get(&our_r_did)
-            .ok_or_else(|| anyhow::anyhow!("No messaging profile for DID: {}", our_r_did))?
-    };
-
-    openvtc::pack_and_send(
-        atm,
-        profile,
-        &msg,
-        &our_r_did,
-        &their_r_did,
-        &config.public.mediator_did,
-    )
-    .await?;
+    super::didcomm::send_message(service, config, &msg, &our_r_did, &their_r_did)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send VRC: {e}"))?;
 
     // Store in issued VRCs
     config
@@ -294,7 +278,8 @@ pub async fn accept_vrc_request(config: &mut Config, tdk: &TDK, task_id: &str) -
 /// Sends a rejection message to the requester and removes the task.
 pub async fn reject_vrc_request(
     config: &mut Config,
-    tdk: &TDK,
+    _tdk: &TDK,
+    service: &DIDCommService,
     task_id: &str,
     reason: Option<&str>,
 ) -> Result<()> {
@@ -331,7 +316,7 @@ pub async fn reject_vrc_request(
         )
     };
 
-    // Send rejection message
+    // Build and send rejection message
     let msg = VRCRequestReject::create_message(
         &their_r_did,
         &our_r_did,
@@ -339,25 +324,9 @@ pub async fn reject_vrc_request(
         reason.map(|s| s.to_string()),
     )?;
 
-    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
-    let profile = if our_r_did == config.public.persona_did {
-        &config.persona_did.profile
-    } else {
-        config
-            .atm_profiles
-            .get(&our_r_did)
-            .ok_or_else(|| anyhow::anyhow!("No messaging profile for DID: {}", our_r_did))?
-    };
-
-    openvtc::pack_and_send(
-        atm,
-        profile,
-        &msg,
-        &our_r_did,
-        &their_r_did,
-        &config.public.mediator_did,
-    )
-    .await?;
+    super::didcomm::send_message(service, config, &msg, &our_r_did, &their_r_did)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send VRC rejection: {e}"))?;
 
     // Remove the task
     config.private.tasks.remove(&task_id);
@@ -390,4 +359,52 @@ pub fn dismiss_task(config: &mut Config, task_id: &str) -> Result<()> {
         warn!(task_id = %task_id, "task not found for dismissal");
     }
     Ok(())
+}
+
+// ------------------------------------------------------------------
+// Message construction helpers (extracted from openvtc-lib's
+// create_send_message_accepted / create_send_message_rejected so that
+// message building is decoupled from transport)
+// ------------------------------------------------------------------
+
+/// Build a DIDComm relationship-acceptance message.
+fn build_accept_message(from: &str, to: &str, r_did: &str, thid: &str) -> Result<Message> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
+    Ok(Message::build(
+        Uuid::new_v4().to_string(),
+        openvtc::protocol_urls::RELATIONSHIP_REQUEST_ACCEPT.to_string(),
+        json!(RelationshipAcceptBody {
+            did: r_did.to_string()
+        }),
+    )
+    .from(from.to_string())
+    .to(to.to_string())
+    .thid(thid.to_string())
+    .created_time(now)
+    .expires_time(60 * 60 * 48)
+    .finalize())
+}
+
+/// Build a DIDComm relationship-rejection message.
+fn build_reject_message(from: &str, to: &str, reason: Option<&str>, thid: &str) -> Result<Message> {
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
+    Ok(Message::build(
+        Uuid::new_v4().to_string(),
+        openvtc::protocol_urls::RELATIONSHIP_REQUEST_REJECT.to_string(),
+        json!(RelationshipRejectBody {
+            reason: reason.map(|r| r.to_string())
+        }),
+    )
+    .from(from.to_string())
+    .to(to.to_string())
+    .thid(thid.to_string())
+    .created_time(now)
+    .expires_time(60 * 60 * 48)
+    .finalize())
 }

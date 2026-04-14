@@ -5,6 +5,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{
     TDK,
     affinidi_crypto::ed25519::ed25519_private_to_x25519,
@@ -36,6 +37,7 @@ use uuid::Uuid;
 pub async fn send_relationship_request(
     config: &mut Config,
     tdk: &TDK,
+    service: &DIDCommService,
     respondent_did: &str,
     alias: &str,
     reason: Option<&str>,
@@ -83,8 +85,6 @@ pub async fn send_relationship_request(
             .await?;
     }
 
-    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
-
     // Optionally generate a random relationship DID for privacy
     let our_did: Arc<String> = if generate_r_did
         && matches!(config.key_backend, KeyBackend::Bip32 { .. })
@@ -98,15 +98,15 @@ pub async fn send_relationship_request(
     let msg = create_request_message(&config.public.persona_did, respondent_did, reason, &our_did)?;
     let msg_id = Arc::new(msg.id.clone());
 
-    openvtc::pack_and_send(
-        atm,
-        &config.persona_did.profile,
+    super::didcomm::send_message(
+        service,
+        config,
         &msg,
         &config.public.persona_did,
         respondent_did,
-        &config.public.mediator_did,
     )
-    .await?;
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to send relationship request: {e}"))?;
 
     // Create relationship entry
     config.private.relationships.relationships.insert(
@@ -142,7 +142,12 @@ pub async fn send_relationship_request(
 }
 
 /// Send a trust-ping to a relationship.
-pub async fn ping_relationship(config: &mut Config, tdk: &TDK, remote_p_did: &str) -> Result<()> {
+pub async fn ping_relationship(
+    config: &mut Config,
+    tdk: &TDK,
+    service: &DIDCommService,
+    remote_p_did: &str,
+) -> Result<()> {
     let atm = tdk.atm.as_ref().context("ATM not initialized")?;
     let remote_key = Arc::new(remote_p_did.to_string());
 
@@ -159,29 +164,14 @@ pub async fn ping_relationship(config: &mut Config, tdk: &TDK, remote_p_did: &st
         (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
     };
 
-    let profile = if our_did == config.public.persona_did {
-        &config.persona_did.profile
-    } else {
-        config
-            .atm_profiles
-            .get(&our_did)
-            .ok_or_else(|| anyhow::anyhow!("No messaging profile for DID: {}", our_did))?
-    };
-
     let ping_msg =
         atm.trust_ping()
             .generate_ping_message(Some(our_did.as_str()), &remote_did, true)?;
     let msg_id = ping_msg.id.clone();
 
-    openvtc::pack_and_send(
-        atm,
-        profile,
-        &ping_msg,
-        &our_did,
-        &remote_did,
-        &config.public.mediator_did,
-    )
-    .await?;
+    super::didcomm::send_message(service, config, &ping_msg, &our_did, &remote_did)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send trust-ping: {e}"))?;
 
     config.public.logs.insert(
         LogFamily::Relationship,
