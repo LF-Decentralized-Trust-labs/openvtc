@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use openvtc::{config::Config, tasks::TaskType};
@@ -10,7 +11,6 @@ use crate::state_handler::main_page::{
 pub mod content;
 pub mod menu;
 
-/// Holds all state related info for the main page
 /// Maximum number of activity log entries to keep in the UI.
 const MAX_ACTIVITY_LOG_ENTRIES: usize = 100;
 
@@ -25,16 +25,16 @@ pub struct MainPageState {
     pub config: MainMenuConfigState,
 
     /// Activity log entries shown in the bottom panel (newest last).
-    pub activity_log: Vec<String>,
+    pub activity_log: VecDeque<String>,
 }
 
 impl MainPageState {
-    /// Push a new entry to the activity log.
+    /// Push a new entry to the activity log (O(1) bounded insertion).
     pub fn log(&mut self, message: impl Into<String>) {
-        self.activity_log.push(message.into());
-        if self.activity_log.len() > MAX_ACTIVITY_LOG_ENTRIES {
-            self.activity_log.remove(0);
+        if self.activity_log.len() >= MAX_ACTIVITY_LOG_ENTRIES {
+            self.activity_log.pop_front();
         }
+        self.activity_log.push_back(message.into());
     }
 }
 
