@@ -124,6 +124,13 @@ impl StateHandler {
                 {
                     Ok(SetupWizardExit::Config(mut config)) => {
                         crate::apply_env_overrides(&mut config);
+
+                        // Initialize main page state from the freshly created config
+                        state.active_page = ActivePage::Main;
+                        state.main_page.menu_panel.selected = true;
+                        state.main_page.sync_from_config(&config);
+                        state.main_page.log("Setup complete — configuration loaded");
+
                         (tdk, config)
                     }
                     Ok(SetupWizardExit::Interrupted(interrupted)) => {
