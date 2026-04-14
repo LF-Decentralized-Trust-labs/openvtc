@@ -175,16 +175,36 @@ impl ContentPanelState {
     }
 
     // ========================================================================
-    // Relationships rendering (placeholder for Phase 3)
+    // Relationships rendering
     // ========================================================================
     fn render_relationships(&self) -> Vec<Line<'static>> {
+        use crate::state_handler::main_page::content::RelationshipsMode;
+
+        match &self.relationships.mode {
+            RelationshipsMode::Detail { index } => self.render_relationship_detail(*index),
+            RelationshipsMode::NewRequest {
+                did_input,
+                alias_input,
+                reason_input,
+                active_field,
+            } => render_relationship_form(did_input, alias_input, reason_input, *active_field),
+            RelationshipsMode::List => self.render_relationship_list(),
+        }
+    }
+
+    fn render_relationship_list(&self) -> Vec<Line<'static>> {
         let mut lines = vec![Line::from("")];
+
+        if let Some(msg) = &self.relationships.status_message {
+            lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
+            lines.push(Line::from(""));
+        }
 
         if self.relationships.relationships.is_empty() {
             lines.push(Line::from("No relationships yet").fg(COLOR_DARK_GRAY));
             lines.push(Line::from(""));
             lines.push(
-                Line::from("Use 'n' to create a new relationship request.").fg(COLOR_DARK_GRAY),
+                Line::from("Press 'n' to create a new relationship request.").fg(COLOR_DARK_GRAY),
             );
         } else {
             lines.push(
@@ -205,11 +225,15 @@ impl ContentPanelState {
                     Style::new().fg(COLOR_TEXT_DEFAULT)
                 };
 
-                let display_name = rel.alias.as_deref().unwrap_or(&rel.remote_p_did);
+                let display_name = rel
+                    .alias
+                    .as_deref()
+                    .unwrap_or(&rel.remote_p_did)
+                    .to_string();
 
                 lines.push(Line::from(vec![
                     Span::styled(prefix, style),
-                    Span::styled(display_name.to_string(), style),
+                    Span::styled(display_name, style),
                     Span::styled("  ", Style::default()),
                     Span::styled(
                         format!("[{}]", rel.state),
@@ -227,6 +251,71 @@ impl ContentPanelState {
                 Line::from("↑/↓ navigate  Enter: details  n: new request").fg(COLOR_DARK_GRAY),
             );
         }
+
+        lines
+    }
+
+    fn render_relationship_detail(&self, index: usize) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from("")];
+
+        let Some(rel) = self.relationships.relationships.get(index) else {
+            lines.push(Line::from("Relationship not found").fg(COLOR_WARNING_ACCESSIBLE_RED));
+            return lines;
+        };
+
+        lines.push(Line::from("Relationship Details").fg(COLOR_SUCCESS).bold());
+        lines.push(Line::from(""));
+
+        if let Some(alias) = &rel.alias {
+            lines.push(Line::from(vec![
+                Span::styled("Alias:        ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled(alias.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("Remote P-DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(rel.remote_p_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Remote R-DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(rel.remote_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Our DID:      ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(rel.our_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("State:        ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(
+                rel.state.clone(),
+                if rel.state == "Established" {
+                    Style::new().fg(COLOR_SUCCESS)
+                } else {
+                    Style::new().fg(COLOR_ORANGE)
+                },
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Created:      ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(rel.created.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("VRCs sent:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(
+                rel.vrc_sent_count.to_string(),
+                Style::new().fg(COLOR_TEXT_DEFAULT),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("VRCs received: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(
+                rel.vrc_received_count.to_string(),
+                Style::new().fg(COLOR_TEXT_DEFAULT),
+            ),
+        ]));
+
+        lines.push(Line::from(""));
+        lines.push(Line::from("p: ping  d: remove  Esc: back").fg(COLOR_DARK_GRAY));
 
         lines
     }
@@ -452,6 +541,57 @@ fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             lines.push(Line::from("a: accept (store)  d: dismiss  Esc: back").fg(COLOR_DARK_GRAY));
         }
     }
+
+    lines
+}
+
+/// Render the new-relationship-request form.
+fn render_relationship_form(
+    did_input: &str,
+    alias_input: &str,
+    reason_input: &str,
+    active_field: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from("")];
+    lines.push(
+        Line::from("New Relationship Request")
+            .fg(COLOR_SUCCESS)
+            .bold(),
+    );
+    lines.push(Line::from(""));
+
+    let fields = [
+        ("DID:    ", did_input),
+        ("Alias:  ", alias_input),
+        ("Reason: ", reason_input),
+    ];
+
+    for (i, (label, value)) in fields.iter().enumerate() {
+        let is_active = i == active_field;
+        let cursor = if is_active { "▎" } else { "" };
+        let field_style = if is_active {
+            Style::new().fg(COLOR_SUCCESS)
+        } else {
+            Style::new().fg(COLOR_TEXT_DEFAULT)
+        };
+        let value_style = if is_active {
+            Style::new().fg(COLOR_SOFT_PURPLE)
+        } else {
+            Style::new().fg(COLOR_DARK_GRAY)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(if is_active { "▸ " } else { "  " }, field_style),
+            Span::styled(label.to_string(), field_style),
+            Span::styled(value.to_string(), value_style),
+            Span::styled(cursor, Style::new().fg(COLOR_SUCCESS)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from("Tab: next field  Enter (on Reason): submit  Esc: cancel").fg(COLOR_DARK_GRAY),
+    );
 
     lines
 }

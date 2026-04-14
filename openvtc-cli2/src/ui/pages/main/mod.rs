@@ -141,6 +141,7 @@ impl MainPage {
 
         match menu {
             MainMenu::Inbox => self.handle_inbox_key(key),
+            MainMenu::Relationships => self.handle_relationships_key(key),
             _ => false,
         }
     }
@@ -255,6 +256,145 @@ impl MainPage {
                 true
             }
             _ => false,
+        }
+    }
+
+    fn handle_relationships_key(&mut self, key: KeyEvent) -> bool {
+        use crate::state_handler::main_page::content::RelationshipsMode;
+
+        let rels = &self.props.main_page.content_panel.relationships;
+
+        match &rels.mode {
+            RelationshipsMode::NewRequest {
+                did_input,
+                alias_input,
+                reason_input,
+                active_field,
+            } => {
+                // Form input handling
+                let active_field = *active_field;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::RelationshipCancelNewRequest);
+                        true
+                    }
+                    KeyCode::Tab => {
+                        // Cycle through fields 0->1->2->0
+                        let next = (active_field + 1) % 3;
+                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
+                            field: next,
+                            value: String::new(), // just switching field, no value change
+                        });
+                        true
+                    }
+                    KeyCode::Enter if active_field == 2 => {
+                        // Submit from the last field
+                        let did = did_input.clone();
+                        let alias = alias_input.clone();
+                        let reason = if reason_input.trim().is_empty() {
+                            None
+                        } else {
+                            Some(reason_input.clone())
+                        };
+                        let _ = self.action_tx.send(Action::RelationshipSubmitRequest {
+                            did,
+                            alias,
+                            reason,
+                        });
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut current = match active_field {
+                            0 => did_input.clone(),
+                            1 => alias_input.clone(),
+                            _ => reason_input.clone(),
+                        };
+                        current.pop();
+                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
+                            field: active_field,
+                            value: current,
+                        });
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut current = match active_field {
+                            0 => did_input.clone(),
+                            1 => alias_input.clone(),
+                            _ => reason_input.clone(),
+                        };
+                        current.push(c);
+                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
+                            field: active_field,
+                            value: current,
+                        });
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            RelationshipsMode::Detail { index } => {
+                let index = *index;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::RelationshipBack);
+                        true
+                    }
+                    KeyCode::Char('p') => {
+                        if let Some(rel) = rels.relationships.get(index) {
+                            let _ = self.action_tx.send(Action::RelationshipPing {
+                                remote_p_did: rel.remote_p_did.clone(),
+                            });
+                        }
+                        true
+                    }
+                    KeyCode::Char('d') => {
+                        if let Some(rel) = rels.relationships.get(index) {
+                            let _ = self.action_tx.send(Action::RelationshipRemove {
+                                remote_p_did: rel.remote_p_did.clone(),
+                            });
+                        }
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            RelationshipsMode::List => {
+                let selected = rels.selected_index;
+                let count = rels.relationships.len();
+
+                match key.code {
+                    KeyCode::Up if selected > 0 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::RelationshipSelect(selected - 1));
+                        true
+                    }
+                    KeyCode::Down if selected + 1 < count => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::RelationshipSelect(selected + 1));
+                        true
+                    }
+                    KeyCode::Enter if selected < count => {
+                        // Open detail view using high-bit flag
+                        let _ = self
+                            .action_tx
+                            .send(Action::RelationshipSelect(selected | 0x8000_0000));
+                        true
+                    }
+                    KeyCode::Char('n') => {
+                        let _ = self.action_tx.send(Action::RelationshipStartNewRequest);
+                        true
+                    }
+                    KeyCode::Esc => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                        true
+                    }
+                    _ => false,
+                }
+            }
         }
     }
 }

@@ -21,6 +21,7 @@ mod inbox_actions;
 pub mod main_page;
 mod message_dispatch;
 pub mod messaging;
+mod relationship_actions;
 mod setup_did_actions;
 pub mod setup_sequence;
 mod setup_token_actions;
@@ -416,6 +417,109 @@ impl StateHandler {
                     Action::InboxDismissTask { task_id } => {
                         let _ = inbox_actions::dismiss_task(&mut config, &task_id);
                         state.main_page.content_panel.inbox.active_task = None;
+                        state.main_page.sync_from_config(&config);
+                    },
+                    // Relationship actions
+                    Action::RelationshipSelect(index) => {
+                        use main_page::content::RelationshipsMode;
+                        if index & 0x8000_0000 != 0 {
+                            let real = index & 0x7FFF_FFFF;
+                            state.main_page.content_panel.relationships.selected_index = real;
+                            state.main_page.content_panel.relationships.mode =
+                                RelationshipsMode::Detail { index: real };
+                        } else {
+                            state.main_page.content_panel.relationships.selected_index = index;
+                        }
+                    },
+                    Action::RelationshipStartNewRequest => {
+                        use main_page::content::RelationshipsMode;
+                        state.main_page.content_panel.relationships.mode =
+                            RelationshipsMode::NewRequest {
+                                did_input: String::new(),
+                                alias_input: String::new(),
+                                reason_input: String::new(),
+                                active_field: 0,
+                            };
+                    },
+                    Action::RelationshipCancelNewRequest | Action::RelationshipBack => {
+                        use main_page::content::RelationshipsMode;
+                        state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+                        state.main_page.content_panel.relationships.status_message = None;
+                    },
+                    Action::RelationshipInputUpdate { field, value } => {
+                        use main_page::content::RelationshipsMode;
+                        if let RelationshipsMode::NewRequest {
+                            ref mut did_input,
+                            ref mut alias_input,
+                            ref mut reason_input,
+                            ref mut active_field,
+                        } = state.main_page.content_panel.relationships.mode
+                        {
+                            if value.is_empty() {
+                                // Just switching field (Tab)
+                                *active_field = field;
+                            } else {
+                                match field {
+                                    0 => *did_input = value,
+                                    1 => *alias_input = value,
+                                    _ => *reason_input = value,
+                                }
+                            }
+                        }
+                    },
+                    Action::RelationshipSubmitRequest { did, alias, reason } => {
+                        use main_page::content::RelationshipsMode;
+                        match relationship_actions::send_relationship_request(
+                            &mut config,
+                            &tdk,
+                            &did,
+                            &alias,
+                            reason.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                state.main_page.content_panel.relationships.mode =
+                                    RelationshipsMode::List;
+                                state.main_page.content_panel.relationships.status_message =
+                                    Some(format!("Request sent to {}", did));
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.relationships.status_message =
+                                    Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    Action::RelationshipPing { remote_p_did } => {
+                        use main_page::content::RelationshipsMode;
+                        match relationship_actions::ping_relationship(
+                            &mut config,
+                            &tdk,
+                            &remote_p_did,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                state.main_page.content_panel.relationships.mode =
+                                    RelationshipsMode::List;
+                                state.main_page.content_panel.relationships.status_message =
+                                    Some("Ping sent".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.relationships.status_message =
+                                    Some(format!("Ping failed: {e}"));
+                            }
+                        }
+                    },
+                    Action::RelationshipRemove { remote_p_did } => {
+                        use main_page::content::RelationshipsMode;
+                        let _ = relationship_actions::remove_relationship(&mut config, &remote_p_did);
+                        state.main_page.content_panel.relationships.mode =
+                            RelationshipsMode::List;
+                        state.main_page.content_panel.relationships.status_message =
+                            Some("Relationship removed".to_string());
                         state.main_page.sync_from_config(&config);
                     },
                     _ => {}

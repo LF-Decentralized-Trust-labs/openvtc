@@ -140,4 +140,41 @@ pub enum Action {
 
     /// Return from task detail to the inbox list
     InboxBack,
+
+    // ************************************************************************
+    // RELATIONSHIP Actions
+    /// Select a relationship by index
+    RelationshipSelect(usize),
+
+    /// Open the new-request form
+    RelationshipStartNewRequest,
+
+    /// Submit a new relationship request
+    RelationshipSubmitRequest {
+        did: String,
+        alias: String,
+        reason: Option<String>,
+    },
+
+    /// Cancel the new-request form
+    RelationshipCancelNewRequest,
+
+    /// Send a trust-ping to a relationship
+    RelationshipPing {
+        remote_p_did: String,
+    },
+
+    /// Remove a relationship
+    RelationshipRemove {
+        remote_p_did: String,
+    },
+
+    /// Return from detail view to the list
+    RelationshipBack,
+
+    /// Update a text input field in the new-request form (field index, new value)
+    RelationshipInputUpdate {
+        field: usize,
+        value: String,
+    },
 }
