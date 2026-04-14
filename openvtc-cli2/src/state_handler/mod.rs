@@ -984,18 +984,13 @@ fn handle_relationship_input_update(state: &mut State, field: usize, value: Stri
         ref mut did_input,
         ref mut alias_input,
         ref mut reason_input,
-        ref mut active_field,
         ..
     } = state.main_page.content_panel.relationships.mode
     {
-        if value.is_empty() {
-            *active_field = field;
-        } else {
-            match field {
-                0 => *did_input = value,
-                1 => *alias_input = value,
-                _ => *reason_input = value,
-            }
+        match field {
+            0 => *did_input = value,
+            1 => *alias_input = value,
+            _ => *reason_input = value,
         }
     }
 }
