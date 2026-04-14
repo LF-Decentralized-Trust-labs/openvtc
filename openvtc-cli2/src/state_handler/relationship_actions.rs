@@ -383,6 +383,7 @@ async fn create_relationship_did_vta(
     use vta_sdk::keys::KeyType;
 
     // Authenticate with VTA
+    info!("authenticating with VTA for R-DID creation...");
     let token = super::setup_sequence::vta::authenticate(
         vta_url,
         credential_did,
@@ -395,6 +396,7 @@ async fn create_relationship_did_vta(
     client.set_token(token.access_token);
 
     // Create signing key (Ed25519) for verification
+    info!("creating Ed25519 signing key via VTA...");
     let sign_resp = client
         .create_key(CreateKeyRequest {
             key_type: KeyType::Ed25519,
@@ -417,6 +419,7 @@ async fn create_relationship_did_vta(
     v_secret.id = v_secret.get_public_keymultibase()?;
 
     // Create encryption key (X25519)
+    info!("creating X25519 encryption key via VTA...");
     let enc_resp = client
         .create_key(CreateKeyRequest {
             key_type: KeyType::X25519,

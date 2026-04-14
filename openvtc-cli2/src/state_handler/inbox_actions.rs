@@ -85,8 +85,28 @@ pub async fn accept_relationship_request(
         Arc::clone(&config.public.persona_did)
     };
 
-    // Add contact if not already known
-    if config.private.contacts.find_contact(&from_did).is_none() {
+    // Add or update contact with sender's name as alias
+    if let Some(existing) = config.private.contacts.find_contact(&from_did) {
+        // Contact exists — update alias if sender provided a name and contact has no alias
+        if existing.alias.is_none() && sender_name.is_some() {
+            // Remove and re-add with the alias
+            config
+                .private
+                .contacts
+                .remove_contact(&mut config.public.logs, &from_did);
+            config
+                .private
+                .contacts
+                .add_contact(
+                    tdk,
+                    &from_did,
+                    sender_name.clone(),
+                    false,
+                    &mut config.public.logs,
+                )
+                .await?;
+        }
+    } else {
         config
             .private
             .contacts

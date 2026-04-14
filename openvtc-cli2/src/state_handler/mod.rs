@@ -486,7 +486,7 @@ impl StateHandler {
                             }
                         },
                         RelationshipAction::SubmitRequest { did, alias, reason, generate_r_did } => {
-                            handle_relationship_submit(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
+                            handle_relationship_submit(&mut config, &tdk, &didcomm_service, &mut state, &self.state_tx, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
                         },
                         RelationshipAction::Ping { remote_p_did } => {
                             handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
@@ -1145,6 +1145,7 @@ async fn handle_relationship_submit(
     tdk: &TDK,
     service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
+    state_tx: &tokio::sync::watch::Sender<State>,
     profile: &str,
     did: &str,
     alias: &str,
@@ -1152,6 +1153,21 @@ async fn handle_relationship_submit(
     generate_r_did: bool,
 ) {
     use main_page::content::RelationshipsMode;
+
+    // Show progress immediately if R-DID generation will involve network calls
+    if generate_r_did {
+        state.main_page.content_panel.relationships.status_message =
+            Some("Creating relationship DID...".to_string());
+        state
+            .main_page
+            .log("Creating relationship DID via key backend...");
+        let _ = state_tx.send(state.clone());
+    } else {
+        state.main_page.content_panel.relationships.status_message =
+            Some("Sending request...".to_string());
+        let _ = state_tx.send(state.clone());
+    }
+
     match relationship_actions::send_relationship_request(
         config,
         tdk,
