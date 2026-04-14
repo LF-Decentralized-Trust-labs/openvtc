@@ -318,6 +318,9 @@ pub enum Action {
     /// Remove passphrase protection (revert to keyring only)
     SettingsRemovePassphrase,
 
+    /// Reconnect to the mediator (e.g., after mediator DID change)
+    SettingsReconnectMediator,
+
     /// Open the token management sub-screen in settings
     #[cfg(feature = "openpgp-card")]
     SettingsTokenManagement,

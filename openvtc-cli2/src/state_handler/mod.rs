@@ -309,18 +309,21 @@ impl StateHandler {
         let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
         let mut msg_task_handle: Option<tokio::task::JoinHandle<()>> = None;
 
-        let (conn_result_tx, mut conn_result_rx) = mpsc::channel::<messaging::ConnInitResult>(1);
+        let (conn_result_tx, mut conn_result_rx) = mpsc::channel::<messaging::ConnInitResult>(2);
         let shared_state = tdk.get_shared_state();
         let persona_did = config.public.persona_did.to_string();
         let mediator_did = config.public.mediator_did.clone();
 
-        tokio::spawn(async move {
-            let result =
-                messaging::init_and_validate(shared_state, persona_did, mediator_did).await;
-            if let Err(e) = conn_result_tx.send(result).await {
-                debug!("Failed to send connection init result: {e}");
-            }
-        });
+        {
+            let tx = conn_result_tx.clone();
+            tokio::spawn(async move {
+                let result =
+                    messaging::init_and_validate(shared_state, persona_did, mediator_did).await;
+                if let Err(e) = tx.send(result).await {
+                    debug!("Failed to send connection init result: {e}");
+                }
+            });
+        }
 
         let result = loop {
             tokio::select! {
@@ -489,7 +492,32 @@ impl StateHandler {
                         handle_settings_passphrase_len(&mut state, len);
                     },
                     Action::SettingsSubmitEdit { value } => {
-                        handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
+                        let needs_reconnect = handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
+                        if needs_reconnect {
+                            // Abort the existing DIDComm loop if one is running
+                            if let Some(handle) = msg_task_handle.take() {
+                                handle.abort();
+                                state.connection.messaging_active = false;
+                            }
+                            state.connection.status = state::MediatorStatus::Connecting;
+                            state.main_page.log("Reconnecting to mediator...");
+
+                            let shared_state = tdk.get_shared_state();
+                            let persona_did = config.public.persona_did.to_string();
+                            let mediator_did = config.public.mediator_did.clone();
+                            let tx = conn_result_tx.clone();
+                            tokio::spawn(async move {
+                                let result = messaging::init_and_validate(
+                                    shared_state,
+                                    persona_did,
+                                    mediator_did,
+                                )
+                                .await;
+                                if let Err(e) = tx.send(result).await {
+                                    debug!("Failed to send reconnection result: {e}");
+                                }
+                            });
+                        }
                     },
                     Action::SettingsExportConfig { path, passphrase } => {
                         handle_settings_export_config(&mut config, &mut state, &self.profile, &path, &passphrase);
@@ -521,6 +549,31 @@ impl StateHandler {
                     #[cfg(feature = "openpgp-card")]
                     Action::SettingsTokenBack => {
                         handle_settings_token_back(&mut state);
+                    },
+                    Action::SettingsReconnectMediator => {
+                        // Abort the existing DIDComm loop if one is running
+                        if let Some(handle) = msg_task_handle.take() {
+                            handle.abort();
+                            state.connection.messaging_active = false;
+                        }
+                        state.connection.status = state::MediatorStatus::Connecting;
+                        state.main_page.log("Reconnecting to mediator...");
+
+                        let shared_state = tdk.get_shared_state();
+                        let persona_did = config.public.persona_did.to_string();
+                        let mediator_did = config.public.mediator_did.clone();
+                        let tx = conn_result_tx.clone();
+                        tokio::spawn(async move {
+                            let result = messaging::init_and_validate(
+                                shared_state,
+                                persona_did,
+                                mediator_did,
+                            )
+                            .await;
+                            if let Err(e) = tx.send(result).await {
+                                debug!("Failed to send reconnection result: {e}");
+                            }
+                        });
                     },
                     _ => {}
                 },
@@ -1294,12 +1347,13 @@ fn handle_settings_protection_tab_switch(state: &mut State, next_field: usize) {
     }
 }
 
+/// Returns `true` if the mediator DID was changed and a reconnect is needed.
 fn handle_settings_submit_edit(
     config: &mut Box<Config>,
     state: &mut State,
     profile: &str,
     value: &str,
-) {
+) -> bool {
     use main_page::content::SettingsMode;
     let idx = state.main_page.content_panel.settings.selected_index;
     let result = match idx {
@@ -1321,10 +1375,13 @@ fn handle_settings_submit_edit(
                 Some("Setting saved".to_string());
             state.main_page.sync_from_config(config);
             state.main_page.log(format!("{} updated", setting_name));
+            // Mediator DID is index 1 — caller should trigger reconnect
+            idx == 1
         }
         Err(e) => {
             state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
             state.main_page.log(format!("Failed to save setting: {e}"));
+            false
         }
     }
 }
