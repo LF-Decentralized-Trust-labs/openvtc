@@ -487,6 +487,7 @@ impl StateHandler {
                                 did_input: String::new(),
                                 alias_input: String::new(),
                                 reason_input: String::new(),
+                                generate_r_did: false,
                                 active_field: 0,
                             };
                     },
@@ -501,12 +502,16 @@ impl StateHandler {
                             ref mut did_input,
                             ref mut alias_input,
                             ref mut reason_input,
+                            ref mut generate_r_did,
                             ref mut active_field,
                         } = state.main_page.content_panel.relationships.mode
                         {
                             if value.is_empty() {
                                 // Just switching field (Tab)
                                 *active_field = field;
+                            } else if field == 3 && value == "\x01" {
+                                // Toggle generate_r_did
+                                *generate_r_did = !*generate_r_did;
                             } else {
                                 match field {
                                     0 => *did_input = value,
@@ -516,7 +521,7 @@ impl StateHandler {
                             }
                         }
                     },
-                    Action::RelationshipSubmitRequest { did, alias, reason } => {
+                    Action::RelationshipSubmitRequest { did, alias, reason, generate_r_did } => {
                         use main_page::content::RelationshipsMode;
                         match relationship_actions::send_relationship_request(
                             &mut config,
@@ -524,6 +529,7 @@ impl StateHandler {
                             &did,
                             &alias,
                             reason.as_deref(),
+                            generate_r_did,
                         )
                         .await
                         {

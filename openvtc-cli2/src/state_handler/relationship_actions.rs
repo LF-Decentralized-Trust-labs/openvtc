@@ -5,11 +5,21 @@
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
-use affinidi_tdk::{TDK, didcomm::Message};
-use anyhow::{Context, Result};
+use affinidi_tdk::{
+    TDK,
+    affinidi_crypto::ed25519::ed25519_private_to_x25519,
+    didcomm::Message,
+    dids::{DID, PeerKeyRole},
+    secrets_resolver::{SecretsResolver, secrets::Secret},
+};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use ed25519_dalek_bip32::DerivationPath;
 use openvtc::{
-    config::Config,
+    config::{
+        Config, KeyBackend, KeyTypes,
+        secured_config::{KeyInfoConfig, KeySourceMaterial},
+    },
     logs::LogFamily,
     relationships::{Relationship, RelationshipRequestBody, RelationshipState},
     tasks::TaskType,
@@ -20,13 +30,16 @@ use uuid::Uuid;
 
 /// Create and send a new relationship request to a remote party.
 ///
-/// Simplified version for the TUI: always uses persona DID (no R-DID generation yet).
+/// When `generate_r_did` is true and the key backend is BIP32, a unique
+/// relationship DID (did:peer) is derived for privacy. Otherwise the
+/// persona DID is used directly.
 pub async fn send_relationship_request(
     config: &mut Config,
     tdk: &TDK,
     respondent_did: &str,
     alias: &str,
     reason: Option<&str>,
+    generate_r_did: bool,
 ) -> Result<()> {
     // Validate DID format
     if !respondent_did.starts_with("did:") {
@@ -72,8 +85,14 @@ pub async fn send_relationship_request(
 
     let atm = tdk.atm.as_ref().context("ATM not initialized")?;
 
-    // Use persona DID as our relationship DID
-    let our_did = config.public.persona_did.clone();
+    // Optionally generate a random relationship DID for privacy
+    let our_did: Arc<String> = if generate_r_did
+        && matches!(config.key_backend, KeyBackend::Bip32 { .. })
+    {
+        Arc::new(create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?)
+    } else {
+        config.public.persona_did.clone()
+    };
 
     // Build the relationship request message
     let msg = create_request_message(&config.public.persona_did, respondent_did, reason, &our_did)?;
@@ -199,6 +218,92 @@ pub fn remove_relationship(config: &mut Config, remote_p_did: &str) -> Result<()
 
     info!(remote = %remote_p_did, "relationship removed");
     Ok(())
+}
+
+/// Creates a random did:peer DID representing a relationship DID.
+///
+/// Derives signing and encryption keys from the BIP32 root using the
+/// relationship path pointer, registers the secrets with the TDK resolver,
+/// and records key metadata in the configuration.
+async fn create_relationship_did(tdk: &TDK, config: &mut Config, mediator: &str) -> Result<String> {
+    // Derive a key path for the verification (signing) key
+    let v_path = [
+        "m/3'/1'/1'/",
+        config
+            .private
+            .relationships
+            .path_pointer
+            .to_string()
+            .as_str(),
+        "'",
+    ]
+    .concat();
+    config.private.relationships.path_pointer += 1;
+
+    // Derive a key path for the encryption key
+    let e_path = [
+        "m/3'/1'/1'/",
+        config
+            .private
+            .relationships
+            .path_pointer
+            .to_string()
+            .as_str(),
+        "'",
+    ]
+    .concat();
+    config.private.relationships.path_pointer += 1;
+
+    let bip32_root = match &config.key_backend {
+        KeyBackend::Bip32 { root, .. } => root,
+        _ => bail!("create_relationship_did requires a BIP32 key backend"),
+    };
+
+    let v_key = bip32_root.derive(&v_path.parse::<DerivationPath>()?)?;
+    let e_key = bip32_root.derive(&e_path.parse::<DerivationPath>()?)?;
+
+    let mut v_secret = Secret::generate_ed25519(None, Some(v_key.signing_key.as_bytes()));
+    let mut e_secret = Secret::generate_x25519(
+        None,
+        Some(&ed25519_private_to_x25519(e_key.signing_key.as_bytes())),
+    )?;
+
+    let mut keys = vec![
+        (PeerKeyRole::Verification, &mut v_secret),
+        (PeerKeyRole::Encryption, &mut e_secret),
+    ];
+    let r_did = DID::generate_did_peer_from_secrets(&mut keys, Some(mediator.to_string()))
+        .map_err(|e| anyhow::anyhow!("Failed to create relationship DID: {e}"))?;
+
+    // Add the secrets to the config
+    config.key_info.insert(
+        v_secret.id.clone(),
+        KeyInfoConfig {
+            path: KeySourceMaterial::Derived { path: v_path },
+            create_time: Utc::now(),
+            purpose: KeyTypes::RelationshipVerification,
+        },
+    );
+    config.key_info.insert(
+        e_secret.id.clone(),
+        KeyInfoConfig {
+            path: KeySourceMaterial::Derived { path: e_path },
+            create_time: Utc::now(),
+            purpose: KeyTypes::RelationshipEncryption,
+        },
+    );
+
+    // Add the secrets to the TDK secret resolver
+    tdk.get_shared_state()
+        .secrets_resolver
+        .insert(v_secret)
+        .await;
+    tdk.get_shared_state()
+        .secrets_resolver
+        .insert(e_secret)
+        .await;
+
+    Ok(r_did)
 }
 
 /// Build a DIDComm relationship request message.

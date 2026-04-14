@@ -286,25 +286,35 @@ impl MainPage {
                 did_input,
                 alias_input,
                 reason_input,
+                generate_r_did,
                 active_field,
             } => {
                 // Form input handling
                 let active_field = *active_field;
+                let generate_r_did = *generate_r_did;
                 match key.code {
                     KeyCode::Esc => {
                         let _ = self.action_tx.send(Action::RelationshipCancelNewRequest);
                         true
                     }
                     KeyCode::Tab => {
-                        // Cycle through fields 0->1->2->0
-                        let next = (active_field + 1) % 3;
+                        // Cycle through fields 0->1->2->3->0
+                        let next = (active_field + 1) % 4;
                         let _ = self.action_tx.send(Action::RelationshipInputUpdate {
                             field: next,
                             value: String::new(), // just switching field, no value change
                         });
                         true
                     }
-                    KeyCode::Enter if active_field == 2 => {
+                    KeyCode::Char(' ') if active_field == 3 => {
+                        // Toggle the generate_r_did boolean
+                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
+                            field: 3,
+                            value: "\x01".to_string(), // special value to toggle
+                        });
+                        true
+                    }
+                    KeyCode::Enter if active_field == 3 => {
                         // Submit from the last field
                         let did = did_input.clone();
                         let alias = alias_input.clone();
@@ -317,10 +327,11 @@ impl MainPage {
                             did,
                             alias,
                             reason,
+                            generate_r_did,
                         });
                         true
                     }
-                    KeyCode::Backspace => {
+                    KeyCode::Backspace if active_field < 3 => {
                         let mut current = match active_field {
                             0 => did_input.clone(),
                             1 => alias_input.clone(),
@@ -333,7 +344,7 @@ impl MainPage {
                         });
                         true
                     }
-                    KeyCode::Char(c) => {
+                    KeyCode::Char(c) if active_field < 3 => {
                         let mut current = match active_field {
                             0 => did_input.clone(),
                             1 => alias_input.clone(),

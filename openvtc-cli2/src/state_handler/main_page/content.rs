@@ -123,7 +123,9 @@ pub enum RelationshipsMode {
         did_input: String,
         alias_input: String,
         reason_input: String,
-        /// Which form field is currently focused (0=DID, 1=Alias, 2=Reason)
+        /// Whether to generate a random relationship DID (privacy)
+        generate_r_did: bool,
+        /// Which form field is currently focused (0=DID, 1=Alias, 2=Reason, 3=R-DID toggle)
         active_field: usize,
     },
 }

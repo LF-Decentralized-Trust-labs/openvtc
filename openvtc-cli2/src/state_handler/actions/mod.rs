@@ -168,6 +168,7 @@ pub enum Action {
         did: String,
         alias: String,
         reason: Option<String>,
+        generate_r_did: bool,
     },
 
     /// Cancel the new-request form

@@ -16,8 +16,15 @@ pub fn render(state: &RelationshipsState) -> Vec<Line<'static>> {
             did_input,
             alias_input,
             reason_input,
+            generate_r_did,
             active_field,
-        } => render_form(did_input, alias_input, reason_input, *active_field),
+        } => render_form(
+            did_input,
+            alias_input,
+            reason_input,
+            *generate_r_did,
+            *active_field,
+        ),
         RelationshipsMode::List => render_list(state),
     }
 }
@@ -152,6 +159,7 @@ fn render_form(
     did_input: &str,
     alias_input: &str,
     reason_input: &str,
+    generate_r_did: bool,
     active_field: usize,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
@@ -190,9 +198,29 @@ fn render_form(
         ]));
     }
 
+    // R-DID toggle (field index 3)
+    let is_active = active_field == 3;
+    let field_style = if is_active {
+        Style::new().fg(COLOR_SUCCESS)
+    } else {
+        Style::new().fg(COLOR_TEXT_DEFAULT)
+    };
+    let value_style = if is_active {
+        Style::new().fg(COLOR_SOFT_PURPLE)
+    } else {
+        Style::new().fg(COLOR_DARK_GRAY)
+    };
+    let toggle_value = if generate_r_did { "Yes" } else { "No" };
+    lines.push(Line::from(vec![
+        Span::styled(if is_active { "▸ " } else { "  " }, field_style),
+        Span::styled("[Space] Generate random R-DID: ".to_string(), field_style),
+        Span::styled(toggle_value.to_string(), value_style),
+    ]));
+
     lines.push(Line::from(""));
     lines.push(
-        Line::from("Tab: next field  Enter (on Reason): submit  Esc: cancel").fg(COLOR_DARK_GRAY),
+        Line::from("Tab: next field  Space: toggle R-DID  Enter (on R-DID): submit  Esc: cancel")
+            .fg(COLOR_DARK_GRAY),
     );
 
     lines
