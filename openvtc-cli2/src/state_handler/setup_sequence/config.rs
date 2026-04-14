@@ -273,6 +273,7 @@ impl ConfigExtension for Config {
         let config = Config {
             key_backend,
             public: PublicConfig {
+                config_version: openvtc::config::public_config::CONFIG_VERSION,
                 protection,
                 persona_did: Arc::new(state.webvh_address.did.clone()),
                 mediator_did: mediator_did.clone(),
