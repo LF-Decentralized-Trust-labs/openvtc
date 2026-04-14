@@ -34,14 +34,20 @@ pub struct DIDKeysExportShow {
 impl DIDKeysExportShow {
     pub fn handle_key_event(state: &mut SetupFlow, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('c') | KeyCode::Char('C') => {
-                let mut clipboard = Clipboard::new().unwrap();
-                clipboard
-                    .set_text(state.props.state.did_keys_export.exported.clone().unwrap())
-                    .unwrap();
-
-                state.did_keys_export_show.clipboard_copy = true;
-            }
+            KeyCode::Char('c') | KeyCode::Char('C') => match Clipboard::new() {
+                Ok(mut clipboard) => {
+                    if let Some(ref exported) = state.props.state.did_keys_export.exported {
+                        if let Err(e) = clipboard.set_text(exported.clone()) {
+                            tracing::warn!("Failed to copy to clipboard: {e}");
+                        } else {
+                            state.did_keys_export_show.clipboard_copy = true;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Clipboard not available: {e}");
+                }
+            },
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
             }

@@ -25,27 +25,35 @@ pub struct State {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum ActivePage {
+    /// The main application page with menu, content panels, and activity log.
     #[default]
     Main,
-    // Setup is comprised of multiple screens, handled in setup_page module
+    /// The setup wizard flow (comprised of multiple sequential screens).
     Setup,
 }
 
+/// Tracks the state of the DIDComm mediator connection.
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionState {
+    /// Current mediator connection status.
     pub status: MediatorStatus,
+    /// Round-trip latency of the last successful trust-ping (milliseconds).
     pub last_ping_latency_ms: Option<u128>,
+    /// Whether the DIDComm message loop is actively running.
     pub messaging_active: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub enum MediatorStatus {
+    /// Status has not been determined yet.
     #[default]
     Unknown,
+    /// Mediator is initializing with a progress message.
     Initializing(String),
+    /// Actively connecting to the mediator.
     Connecting,
-    Connected {
-        latency_ms: u128,
-    },
+    /// Successfully connected, with measured round-trip latency.
+    Connected { latency_ms: u128 },
+    /// Connection failed with an error description.
     Failed(String),
 }

@@ -170,6 +170,7 @@ impl MainPageState {
 }
 
 /// Collect VRC summaries from a Vrcs collection.
+#[must_use]
 fn collect_vrcs(vrcs: &openvtc::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
     let mut result = Vec::new();
     for remote_p_did in vrcs.keys() {
@@ -197,6 +198,7 @@ fn collect_vrcs(vrcs: &openvtc::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
 
 /// Sanitize a string from an untrusted source for safe terminal display.
 /// Strips ANSI escape codes and control characters, truncates to max_len.
+#[must_use]
 pub fn sanitize_display(input: &str, max_len: usize) -> String {
     let sanitized: String = input
         .chars()
@@ -223,6 +225,7 @@ pub fn sanitize_display(input: &str, max_len: usize) -> String {
 }
 
 /// Shortens a DID for display (first 20 chars + "...").
+#[must_use]
 fn shorten_did(did: &str) -> String {
     let sanitized = sanitize_display(did, 256);
     if sanitized.len() > 24 {

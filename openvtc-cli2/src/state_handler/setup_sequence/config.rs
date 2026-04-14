@@ -124,11 +124,11 @@ impl ConfigExtension for Config {
             .sc
             .bip32_seed
             .as_ref()
-            .expect("Imported config missing BIP32 seed");
+            .ok_or_else(|| anyhow::anyhow!("Imported config missing BIP32 seed"))?;
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
                 .decode(bip32_seed)
-                .expect("Couldn't base64 decode BIP32 seed")
+                .map_err(|e| anyhow::anyhow!("Couldn't base64 decode BIP32 seed: {e}"))?
                 .as_slice(),
         )?;
         let private_seed = ProtectedConfig::get_seed(&bip32_root, "m/0'/0'/0'")?;
@@ -142,7 +142,7 @@ impl ConfigExtension for Config {
         config
             .pc
             .save(profile, &private, &private_seed)
-            .expect("Couldn't save Public Config");
+            .map_err(|e| anyhow::anyhow!("Couldn't save Public Config: {e}"))?;
 
         #[cfg(feature = "openpgp-card")]
         {
@@ -176,7 +176,7 @@ impl ConfigExtension for Config {
                         let _ = state_tx_clone.send(state_mut);
                     },
                 )
-                .expect("Couldn't save Secured Config");
+                .map_err(|e| anyhow::anyhow!("Couldn't save Secured Config: {e}"))?;
         }
 
         #[cfg(not(feature = "openpgp-card"))]
@@ -191,7 +191,7 @@ impl ConfigExtension for Config {
                 },
                 Some(&new_unlock_passphrase.expose_secret().as_bytes().to_vec()),
             )
-            .expect("Couldn't save Secured Config");
+            .map_err(|e| anyhow::anyhow!("Couldn't save Secured Config: {e}"))?;
 
         Ok(())
     }
@@ -222,7 +222,10 @@ impl ConfigExtension for Config {
 
         // Build key info from persona keys
         let mut key_info = HashMap::new();
-        let persona_keys = state.did_keys.clone().unwrap();
+        let persona_keys = state
+            .did_keys
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Persona DID keys not set during setup"))?;
         key_info.insert(
             persona_keys.signing.secret.id.clone(),
             KeyInfoConfig {
@@ -253,9 +256,9 @@ impl ConfigExtension for Config {
             .vta
             .credential_bundle_raw
             .clone()
-            .expect("VTA credential bundle not set");
+            .ok_or_else(|| anyhow::anyhow!("VTA credential bundle not set"))?;
         let bundle = crate::state_handler::setup_sequence::vta::decode_credential(&credential_raw)
-            .expect("Failed to decode credential bundle");
+            .map_err(|e| anyhow::anyhow!("Failed to decode credential bundle: {e}"))?;
         let encryption_seed =
             ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
         let key_backend = KeyBackend::Vta {
@@ -290,7 +293,9 @@ impl ConfigExtension for Config {
                 document: state.webvh_address.document.clone(),
                 profile: Arc::new(
                     ATMProfile::new(
-                        tdk.atm.as_ref().unwrap(),
+                        tdk.atm
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("TDK ATM not initialized"))?,
                         Some("Persona DID".to_string()),
                         state.webvh_address.did.to_string(),
                         Some(mediator_did.clone()),

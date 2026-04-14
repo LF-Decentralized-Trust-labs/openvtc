@@ -18,6 +18,7 @@ use tokio::sync::{
 use tracing::debug;
 
 /// Truncate a DID string for display in activity log messages.
+#[must_use]
 fn truncate_did(did: &str) -> String {
     if did.len() > 30 {
         format!("{}...", &did[..27])

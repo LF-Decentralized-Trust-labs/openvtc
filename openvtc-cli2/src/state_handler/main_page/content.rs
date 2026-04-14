@@ -51,6 +51,8 @@ pub struct TaskSummary {
 
 /// Categorizes tasks for UI rendering and determining available actions.
 #[derive(Clone, Debug)]
+// Some variant fields (e.g. `Informational(String)`) are populated but not yet
+// read by the UI — kept for future detail-view rendering.
 #[allow(dead_code)]
 pub enum TaskKind {
     /// Inbound relationship request awaiting accept/reject

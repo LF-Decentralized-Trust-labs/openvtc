@@ -23,6 +23,7 @@ use tokio_stream::StreamExt;
 pub mod component;
 pub mod pages;
 
+#[must_use]
 pub fn shorten_did(did: &str, max_len: usize) -> String {
     let char_count = did.chars().count();
 

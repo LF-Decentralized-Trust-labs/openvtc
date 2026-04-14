@@ -15,22 +15,27 @@ use super::state::MediatorStatus;
 
 /// Events sent from the messaging loop to the state handler.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum MessagingEvent {
     TrustPingReceived {
+        /// Sender DID — not yet displayed but kept for future activity-log use.
+        #[allow(dead_code)]
         from: String,
     },
     TrustPongReceived {
+        /// Sender DID — not yet displayed but kept for future activity-log use.
+        #[allow(dead_code)]
         from: String,
         latency_ms: Option<u128>,
     },
+    /// Not yet emitted — reserved for explicit connect/disconnect events.
+    #[allow(dead_code)]
     ConnectionStatus(ConnectionStatus),
     /// A DIDComm message that needs processing by the state handler.
-    InboundMessage {
-        message: Box<Message>,
-    },
+    InboundMessage { message: Box<Message> },
 }
 
+/// Connection status events — not yet emitted but matched in the state handler
+/// for when explicit connect/disconnect signalling is added.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub enum ConnectionStatus {

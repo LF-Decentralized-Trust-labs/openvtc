@@ -29,7 +29,7 @@ pub async fn send_vrc_request(
         let lock = relationship
             .lock()
             .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (lock.our_did.clone(), lock.remote_did.clone())
+        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
     };
 
     let profile = if our_did == config.public.persona_did {

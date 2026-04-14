@@ -26,15 +26,14 @@ pub fn cli() -> Command {
         .subcommand(Command::new("setup").about("Initial configuration of the openvtc tool"))
 }
 
-pub fn get_user_pin() -> SecretString {
+pub fn get_user_pin() -> anyhow::Result<SecretString> {
     let user_pin = Password::with_theme(&ColorfulTheme::default())
         .with_prompt("Please enter Token User PIN")
         .allow_empty_password(false)
-        .interact()
-        .unwrap();
+        .interact()?;
     if user_pin.is_empty() {
-        SecretString::new("123456".to_string().into())
+        Ok(SecretString::new("123456".into()))
     } else {
-        SecretString::new(user_pin.into())
+        Ok(SecretString::new(user_pin.into()))
     }
 }

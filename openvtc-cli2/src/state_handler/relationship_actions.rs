@@ -91,7 +91,7 @@ pub async fn send_relationship_request(
     {
         Arc::new(create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?)
     } else {
-        config.public.persona_did.clone()
+        Arc::clone(&config.public.persona_did)
     };
 
     // Build the relationship request message
@@ -110,12 +110,12 @@ pub async fn send_relationship_request(
 
     // Create relationship entry
     config.private.relationships.relationships.insert(
-        respondent_arc.clone(),
+        Arc::clone(&respondent_arc),
         Arc::new(Mutex::new(Relationship {
-            task_id: msg_id.clone(),
+            task_id: Arc::clone(&msg_id),
             our_did,
-            remote_p_did: respondent_arc.clone(),
-            remote_did: respondent_arc.clone(),
+            remote_p_did: Arc::clone(&respondent_arc),
+            remote_did: Arc::clone(&respondent_arc),
             created: Utc::now(),
             state: RelationshipState::RequestSent,
         })),
@@ -125,7 +125,7 @@ pub async fn send_relationship_request(
     config.private.tasks.new_task(
         &msg_id,
         TaskType::RelationshipRequestOutbound {
-            to: respondent_arc.clone(),
+            to: Arc::clone(&respondent_arc),
         },
     );
 
@@ -156,7 +156,7 @@ pub async fn ping_relationship(config: &mut Config, tdk: &TDK, remote_p_did: &st
         let lock = relationship
             .lock()
             .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (lock.our_did.clone(), lock.remote_did.clone())
+        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
     };
 
     let profile = if our_did == config.public.persona_did {

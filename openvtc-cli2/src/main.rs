@@ -154,8 +154,8 @@ async fn main() -> Result<()> {
         let cli_profile = cli()
             .get_matches()
             .get_one::<String>("profile")
-            .unwrap_or(&"default".to_string())
-            .to_string();
+            .cloned()
+            .unwrap_or_else(|| "default".to_string());
         if cli_profile != "default" && cli_profile != env_profile {
             println!("{}", 
                 style("WARNING: Using both ENV OPENVTC_CONFIG_PROFILE and CLI profile! These do not match!").color256(CLI_ORANGE)
@@ -179,8 +179,8 @@ async fn main() -> Result<()> {
         cli()
             .get_matches()
             .get_one::<String>("profile")
-            .unwrap_or(&"default".to_string())
-            .to_string()
+            .cloned()
+            .unwrap_or_else(|| "default".to_string())
     };
 
     // Check if profile is currently active elsewhere?
@@ -278,14 +278,19 @@ impl Terminator {
 
 #[cfg(unix)]
 async fn terminate_by_unix_signal(mut terminator: Terminator) {
-    let mut interrupt_signal = signal(tokio::signal::unix::SignalKind::interrupt())
-        .expect("failed to create interrupt signal stream");
+    let mut interrupt_signal = match signal(tokio::signal::unix::SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to create interrupt signal stream: {e}");
+            return;
+        }
+    };
 
     interrupt_signal.recv().await;
 
-    terminator
-        .terminate(Interrupted::OsSigInt)
-        .expect("failed to send interrupt signal");
+    if let Err(e) = terminator.terminate(Interrupted::OsSigInt) {
+        tracing::error!("Failed to send interrupt signal: {e}");
+    }
 }
 
 // create a broadcast channel for retrieving the application kill signal
@@ -346,11 +351,19 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
                         let delay = std::time::Duration::from_secs(1 << (attempt - 3).min(3));
                         std::thread::sleep(delay);
                     }
-                    let input = Password::with_theme(&ColorfulTheme::default())
+                    let input = match Password::with_theme(&ColorfulTheme::default())
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap();
+                    {
+                        Ok(input) => input,
+                        Err(e) => {
+                            eprintln!("Failed to read passphrase input: {e}");
+                            return Err(OpenVTCError::Config(format!(
+                                "Passphrase input failed: {e}"
+                            )));
+                        }
+                    };
                     match UnlockCode::from_string(&input) {
                         Ok(code) => {
                             result = Some(code);
@@ -370,7 +383,7 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
                         }
                     }
                 }
-                result.map(Some).unwrap_or(None)
+                result
             }
         }
         ConfigProtectionType::Plaintext => None,
@@ -378,9 +391,9 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
 
     #[cfg(feature = "openpgp-card")]
     let user_pin = if matches!(&public_config.protection, ConfigProtectionType::Token(_)) {
-        get_user_pin()
+        get_user_pin().map_err(|e| OpenVTCError::Config(format!("Failed to get user PIN: {e}")))?
     } else {
-        SecretString::new("123456".to_string().into())
+        SecretString::new("123456".into())
     };
 
     Ok(DeferredLoad {

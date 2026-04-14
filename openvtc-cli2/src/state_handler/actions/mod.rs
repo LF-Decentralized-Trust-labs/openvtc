@@ -18,6 +18,8 @@ use crate::{
     ui::pages::setup_flow::{SetupFlow, did_keys_export_inputs::DIDKeysExportInputs},
 };
 
+// Some variants (e.g. ContactAdd, ContactRemove) are defined for the handler
+// but not yet wired to UI construction; others are gated behind cfg features.
 #[allow(dead_code)]
 pub enum Action {
     Exit,
