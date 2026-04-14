@@ -342,722 +342,162 @@ impl StateHandler {
                         }
                     },
                     Action::InboxSelectTask(index) => {
-                        state.main_page.content_panel.inbox.selected_index = index;
+                        handle_inbox_select(&mut state, index);
                     },
                     Action::InboxOpenDetail(index) => {
-                        state.main_page.content_panel.inbox.selected_index = index;
-                        // Build ActiveTaskView from the task at this index
-                        if let Some(task) = state.main_page.content_panel.inbox.tasks.get(index) {
-                            use main_page::content::{ActiveTaskView, TaskKind};
-                            let view = match &task.kind {
-                                TaskKind::RelationshipRequestInbound { from_did, their_did, reason } => {
-                                    Some(ActiveTaskView::RelationshipRequestInbound {
-                                        task_id: task.id.clone(),
-                                        from_did: from_did.clone(),
-                                        their_did: their_did.clone(),
-                                        reason: reason.clone(),
-                                    })
-                                }
-                                TaskKind::VRCRequestInbound { reason } => {
-                                    Some(ActiveTaskView::VRCRequestInbound {
-                                        task_id: task.id.clone(),
-                                        from_did: task.remote_did.clone(),
-                                        reason: reason.clone(),
-                                    })
-                                }
-                                TaskKind::VRCIssued => {
-                                    Some(ActiveTaskView::VRCIssued {
-                                        task_id: task.id.clone(),
-                                        issuer: task.remote_did.clone(),
-                                    })
-                                }
-                                _ => None,
-                            };
-                            state.main_page.content_panel.inbox.active_task = view;
-                        }
+                        handle_inbox_open_detail(&mut state, index);
                     },
                     Action::InboxBack => {
                         state.main_page.content_panel.inbox.active_task = None;
                     },
                     Action::InboxAcceptRelationship { task_id } => {
-                        match inbox_actions::accept_relationship_request(&mut config, &tdk, &task_id).await {
-                            Ok(()) => {
-                                state.main_page.content_panel.inbox.active_task = None;
-                                state.main_page.content_panel.inbox.status_message = Some("Relationship request accepted".to_string());
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("Accepted relationship request");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to accept relationship: {e}"));
-                            }
-                        }
+                        handle_inbox_accept_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
                     },
                     Action::InboxRejectRelationship { task_id, reason } => {
-                        match inbox_actions::reject_relationship_request(&mut config, &tdk, &task_id, reason.as_deref()).await {
-                            Ok(()) => {
-                                state.main_page.content_panel.inbox.active_task = None;
-                                state.main_page.content_panel.inbox.status_message = Some("Relationship request rejected".to_string());
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("Rejected relationship request");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to reject relationship: {e}"));
-                            }
-                        }
+                        handle_inbox_reject_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
                     },
                     Action::InboxAcceptVrc { task_id } => {
-                        match inbox_actions::accept_vrc(&mut config, &task_id) {
-                            Ok(()) => {
-                                state.main_page.content_panel.inbox.active_task = None;
-                                state.main_page.content_panel.inbox.status_message = Some("VRC accepted and stored".to_string());
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("VRC accepted and stored");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to accept VRC: {e}"));
-                            }
-                        }
+                        handle_inbox_accept_vrc(&mut config, &mut state, &self.profile, &task_id);
                     },
                     Action::InboxAcceptVrcRequest { task_id } => {
-                        match inbox_actions::accept_vrc_request(&mut config, &tdk, &task_id).await {
-                            Ok(()) => {
-                                state.main_page.content_panel.inbox.active_task = None;
-                                state.main_page.content_panel.inbox.status_message =
-                                    Some("VRC issued and sent".to_string());
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("VRC issued and sent");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.inbox.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to issue VRC: {e}"));
-                            }
-                        }
+                        handle_inbox_accept_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
                     },
                     Action::InboxRejectVrcRequest { task_id, reason } => {
-                        match inbox_actions::reject_vrc_request(&mut config, &tdk, &task_id, reason.as_deref()).await {
-                            Ok(()) => {
-                                state.main_page.content_panel.inbox.active_task = None;
-                                state.main_page.content_panel.inbox.status_message =
-                                    Some("VRC request rejected".to_string());
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("Rejected VRC request");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.inbox.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to reject VRC request: {e}"));
-                            }
-                        }
+                        handle_inbox_reject_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
                     },
                     Action::InboxDismissTask { task_id } => {
-                        let _ = inbox_actions::dismiss_task(&mut config, &task_id);
-                        state.main_page.content_panel.inbox.active_task = None;
-                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                            state.main_page.log(format!("Failed to save config: {e}"));
-                        }
-                        state.main_page.sync_from_config(&config);
-                        state.main_page.log("Task dismissed");
+                        handle_inbox_dismiss_task(&mut config, &mut state, &self.profile, &task_id);
                     },
                     Action::InboxClearAll => {
-                        let _ = inbox_actions::clear_all_tasks(&mut config);
-                        state.main_page.content_panel.inbox.active_task = None;
-                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                            state.main_page.log(format!("Failed to save config: {e}"));
-                        }
-                        state.main_page.sync_from_config(&config);
-                        state.main_page.log("All inbox tasks cleared");
+                        handle_inbox_clear_all(&mut config, &mut state, &self.profile);
                     },
                     // Relationship actions
                     Action::RelationshipSelect(index) => {
                         state.main_page.content_panel.relationships.selected_index = index;
                     },
                     Action::RelationshipOpenDetail(index) => {
-                        use main_page::content::RelationshipsMode;
-                        state.main_page.content_panel.relationships.selected_index = index;
-                        state.main_page.content_panel.relationships.mode =
-                            RelationshipsMode::Detail { index };
+                        handle_relationship_open_detail(&mut state, index);
                     },
                     Action::RelationshipStartNewRequest => {
-                        use main_page::content::RelationshipsMode;
-                        state.main_page.content_panel.relationships.mode =
-                            RelationshipsMode::NewRequest {
-                                did_input: String::new(),
-                                alias_input: String::new(),
-                                reason_input: String::new(),
-                                generate_r_did: false,
-                                active_field: 0,
-                            };
+                        handle_relationship_start_new_request(&mut state);
                     },
                     Action::RelationshipCancelNewRequest | Action::RelationshipBack => {
-                        use main_page::content::RelationshipsMode;
-                        state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-                        state.main_page.content_panel.relationships.status_message = None;
+                        handle_relationship_cancel_or_back(&mut state);
                     },
                     Action::RelationshipInputUpdate { field, value } => {
-                        use main_page::content::RelationshipsMode;
-                        if let RelationshipsMode::NewRequest {
-                            ref mut did_input,
-                            ref mut alias_input,
-                            ref mut reason_input,
-                            ref mut active_field,
-                            ..
-                        } = state.main_page.content_panel.relationships.mode
-                        {
-                            if value.is_empty() {
-                                // Just switching field (Tab)
-                                *active_field = field;
-                            } else {
-                                match field {
-                                    0 => *did_input = value,
-                                    1 => *alias_input = value,
-                                    _ => *reason_input = value,
-                                }
-                            }
-                        }
+                        handle_relationship_input_update(&mut state, field, value);
                     },
                     Action::RelationshipToggleRDid => {
-                        use main_page::content::RelationshipsMode;
-                        if let RelationshipsMode::NewRequest {
-                            ref mut generate_r_did,
-                            ..
-                        } = state.main_page.content_panel.relationships.mode
-                        {
-                            *generate_r_did = !*generate_r_did;
-                        }
+                        handle_relationship_toggle_r_did(&mut state);
                     },
                     Action::RelationshipSubmitRequest { did, alias, reason, generate_r_did } => {
-                        use main_page::content::RelationshipsMode;
-                        match relationship_actions::send_relationship_request(
-                            &mut config,
-                            &tdk,
-                            &did,
-                            &alias,
-                            reason.as_deref(),
-                            generate_r_did,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                state.main_page.content_panel.relationships.mode =
-                                    RelationshipsMode::List;
-                                state.main_page.content_panel.relationships.status_message =
-                                    Some(format!("Request sent to {}", did));
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log(format!("Relationship request sent to {}", did));
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.relationships.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to send relationship request: {e}"));
-                            }
-                        }
+                        handle_relationship_submit(&mut config, &tdk, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
                     },
                     Action::RelationshipPing { remote_p_did } => {
-                        use main_page::content::RelationshipsMode;
-                        match relationship_actions::ping_relationship(
-                            &mut config,
-                            &tdk,
-                            &remote_p_did,
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                state.main_page.content_panel.relationships.mode =
-                                    RelationshipsMode::List;
-                                state.main_page.content_panel.relationships.status_message =
-                                    Some("Ping sent".to_string());
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("Trust ping sent");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.relationships.status_message =
-                                    Some(format!("Ping failed: {e}"));
-                                state.main_page.log(format!("Ping failed: {e}"));
-                            }
-                        }
+                        handle_relationship_ping(&mut config, &tdk, &mut state, &self.profile, &remote_p_did).await;
                     },
                     Action::RelationshipRemove { remote_p_did } => {
-                        use main_page::content::RelationshipsMode;
-                        let _ = relationship_actions::remove_relationship(&mut config, &remote_p_did);
-                        state.main_page.content_panel.relationships.mode =
-                            RelationshipsMode::List;
-                        state.main_page.content_panel.relationships.status_message =
-                            Some("Relationship removed".to_string());
-                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                            state.main_page.log(format!("Failed to save config: {e}"));
-                        }
-                        state.main_page.sync_from_config(&config);
-                        state.main_page.log("Relationship removed");
+                        handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
                     },
                     // Credential actions
                     Action::CredentialSwitchTab => {
-                        use main_page::content::CredentialTab;
-                        state.main_page.content_panel.credentials.selected_tab =
-                            match state.main_page.content_panel.credentials.selected_tab {
-                                CredentialTab::Received => CredentialTab::Issued,
-                                CredentialTab::Issued => CredentialTab::Received,
-                            };
-                        state.main_page.content_panel.credentials.selected_index = 0;
+                        handle_credential_switch_tab(&mut state);
                     },
                     Action::CredentialSelect(index) => {
                         state.main_page.content_panel.credentials.selected_index = index;
                     },
                     Action::CredentialOpenDetail(index) => {
-                        use main_page::content::CredentialsMode;
-                        state.main_page.content_panel.credentials.selected_index = index;
-                        state.main_page.content_panel.credentials.mode =
-                            CredentialsMode::Detail { index };
+                        handle_credential_open_detail(&mut state, index);
                     },
                     Action::CredentialBack | Action::CredentialCancelNewRequest => {
-                        use main_page::content::CredentialsMode;
-                        state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-                        state.main_page.content_panel.credentials.selected_index = 0;
+                        handle_credential_back(&mut state);
                     },
                     Action::CredentialStartNewRequest => {
-                        use main_page::content::CredentialsMode;
-                        state.main_page.content_panel.credentials.mode =
-                            CredentialsMode::NewRequest {
-                                relationship_index: 0,
-                                reason_input: String::new(),
-                            };
+                        handle_credential_start_new_request(&mut state);
                     },
                     Action::CredentialSelectRelationship(index) => {
-                        use main_page::content::CredentialsMode;
-                        if let CredentialsMode::NewRequest {
-                            ref mut relationship_index,
-                            ..
-                        } = state.main_page.content_panel.credentials.mode
-                        {
-                            // Bound check against established relationships count
-                            let established_count = state
-                                .main_page
-                                .content_panel
-                                .relationships
-                                .relationships
-                                .iter()
-                                .filter(|r| r.state == "Established")
-                                .count();
-                            if index < established_count {
-                                *relationship_index = index;
-                            }
-                        }
+                        handle_credential_select_relationship(&mut state, index);
                     },
                     Action::CredentialReasonUpdate(value) => {
-                        use main_page::content::CredentialsMode;
-                        if let CredentialsMode::NewRequest {
-                            ref mut reason_input,
-                            ..
-                        } = state.main_page.content_panel.credentials.mode
-                        {
-                            *reason_input = value;
-                        }
+                        handle_credential_reason_update(&mut state, value);
                     },
-                    Action::CredentialSubmitRequest {
-                        relationship_p_did,
-                        reason,
-                    } => {
-                        use main_page::content::CredentialsMode;
-                        match credential_actions::send_vrc_request(
-                            &mut config,
-                            &tdk,
-                            &relationship_p_did,
-                            reason.as_deref(),
-                        )
-                        .await
-                        {
-                            Ok(()) => {
-                                state.main_page.content_panel.credentials.mode =
-                                    CredentialsMode::List;
-                                state.main_page.content_panel.credentials.status_message =
-                                    Some(format!("VRC request sent to {}", relationship_p_did));
-                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                    state.main_page.log(format!("Failed to save config: {e}"));
-                                }
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log(format!("VRC request sent to {}", relationship_p_did));
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.credentials.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to send VRC request: {e}"));
-                            }
-                        }
+                    Action::CredentialSubmitRequest { relationship_p_did, reason } => {
+                        handle_credential_submit_request(&mut config, &tdk, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
                     },
                     Action::CredentialRemove { vrc_id } => {
-                        use main_page::content::CredentialsMode;
-                        let _ = credential_actions::remove_vrc(&mut config, &vrc_id);
-                        state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-                        state.main_page.content_panel.credentials.selected_index = 0;
-                        state.main_page.content_panel.credentials.status_message =
-                            Some("VRC removed".to_string());
-                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                            state.main_page.log(format!("Failed to save config: {e}"));
-                        }
-                        state.main_page.sync_from_config(&config);
-                        state.main_page.log("VRC removed");
+                        handle_credential_remove(&mut config, &mut state, &self.profile, &vrc_id);
                     },
                     // Contact actions
                     Action::ContactAdd { did, alias } => {
-                        let profile = self.profile.clone();
-                        match settings_actions::add_contact(&mut config, &profile, &did, alias.as_deref()) {
-                            Ok(()) => {
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log(format!("Contact added: {}", did));
-                            }
-                            Err(e) => {
-                                state.main_page.log(format!("Failed to add contact: {e}"));
-                            }
-                        }
+                        handle_contact_add(&mut config, &mut state, &self.profile, &did, alias.as_deref());
                     },
                     Action::ContactRemove { did } => {
-                        let profile = self.profile.clone();
-                        match settings_actions::remove_contact(&mut config, &profile, &did) {
-                            Ok(()) => {
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log(format!("Contact removed: {}", did));
-                            }
-                            Err(e) => {
-                                state.main_page.log(format!("Failed to remove contact: {e}"));
-                            }
-                        }
+                        handle_contact_remove(&mut config, &mut state, &self.profile, &did);
                     },
                     // Settings actions
                     Action::SettingsSelect(index) => {
-                        use main_page::content::SettingsMode;
-                        // If in TokenManagement mode, update the token sub-index
-                        #[cfg(feature = "openpgp-card")]
-                        if let SettingsMode::TokenManagement { selected_index } =
-                            &mut state.main_page.content_panel.settings.mode
-                        {
-                            *selected_index = index;
-                        } else {
-                            state.main_page.content_panel.settings.selected_index = index;
-                        }
-                        #[cfg(not(feature = "openpgp-card"))]
-                        {
-                            state.main_page.content_panel.settings.selected_index = index;
-                        }
+                        handle_settings_select(&mut state, index);
                     },
                     Action::SettingsStartEdit => {
-                        use main_page::content::SettingsMode;
-                        let idx = state.main_page.content_panel.settings.selected_index;
-                        let s = &state.main_page.content_panel.settings;
-                        state.main_page.content_panel.settings.mode = match idx {
-                            0 => SettingsMode::EditFriendlyName {
-                                input: s.friendly_name.clone(),
-                            },
-                            1 => SettingsMode::EditMediatorDid {
-                                input: s.mediator_did.clone(),
-                            },
-                            2 => SettingsMode::EditOrgDid {
-                                input: s.org_did.clone(),
-                            },
-                            5 => SettingsMode::ExportConfig {
-                                path_input: "openvtc-export.enc".to_string(),
-                                passphrase_input: String::new(),
-                                active_field: 0,
-                            },
-                            6 => SettingsMode::ImportConfig {
-                                path_input: "openvtc-export.enc".to_string(),
-                                passphrase_input: String::new(),
-                                active_field: 0,
-                            },
-                            _ => SettingsMode::View,
-                        };
+                        handle_settings_start_edit(&mut state);
                     },
                     Action::SettingsCancelEdit => {
-                        use main_page::content::SettingsMode;
-                        state.main_page.content_panel.settings.mode = SettingsMode::View;
+                        state.main_page.content_panel.settings.mode = main_page::content::SettingsMode::View;
                     },
                     Action::SettingsFieldUpdate(value) => {
-                        use main_page::content::SettingsMode;
-                        match &mut state.main_page.content_panel.settings.mode {
-                            SettingsMode::EditFriendlyName { input }
-                            | SettingsMode::EditMediatorDid { input }
-                            | SettingsMode::EditOrgDid { input } => {
-                                *input = value;
-                            }
-                            _ => {}
-                        }
+                        handle_settings_field_update(&mut state, value);
                     },
                     Action::SettingsFormFieldUpdate { field, value } => {
-                        use main_page::content::SettingsMode;
-                        match &mut state.main_page.content_panel.settings.mode {
-                            SettingsMode::ExportConfig {
-                                path_input,
-                                passphrase_input,
-                                ..
-                            }
-                            | SettingsMode::ImportConfig {
-                                path_input,
-                                passphrase_input,
-                                ..
-                            } => {
-                                if field == 0 {
-                                    *path_input = value;
-                                } else {
-                                    *passphrase_input = value;
-                                }
-                            }
-                            _ => {}
-                        }
+                        handle_settings_form_field_update(&mut state, field, value);
                     },
                     Action::SettingsFormTabSwitch => {
-                        use main_page::content::SettingsMode;
-                        match &mut state.main_page.content_panel.settings.mode {
-                            SettingsMode::ExportConfig { active_field, .. }
-                            | SettingsMode::ImportConfig { active_field, .. } => {
-                                *active_field = if *active_field == 0 { 1 } else { 0 };
-                            }
-                            _ => {}
-                        }
+                        handle_settings_form_tab_switch(&mut state);
                     },
                     Action::SettingsProtectionOptionSelect(option) => {
-                        use main_page::content::SettingsMode;
-                        if let SettingsMode::ChangeProtection { selected_option, .. } =
-                            &mut state.main_page.content_panel.settings.mode
-                        {
-                            *selected_option = option;
-                        }
+                        handle_settings_protection_option_select(&mut state, option);
                     },
                     Action::SettingsProtectionStartInput => {
-                        use main_page::content::SettingsMode;
-                        if let SettingsMode::ChangeProtection { active_field, .. } =
-                            &mut state.main_page.content_panel.settings.mode
-                        {
-                            *active_field = 1;
-                        }
+                        handle_settings_protection_start_input(&mut state);
                     },
                     Action::SettingsProtectionFieldUpdate { field, value } => {
-                        use main_page::content::SettingsMode;
-                        if let SettingsMode::ChangeProtection {
-                            passphrase_input,
-                            confirm_input,
-                            ..
-                        } = &mut state.main_page.content_panel.settings.mode
-                        {
-                            if field == 1 {
-                                *passphrase_input = value;
-                            } else {
-                                *confirm_input = value;
-                            }
-                        }
+                        handle_settings_protection_field_update(&mut state, field, value);
                     },
                     Action::SettingsProtectionTabSwitch(next_field) => {
-                        use main_page::content::SettingsMode;
-                        if let SettingsMode::ChangeProtection { active_field, .. } =
-                            &mut state.main_page.content_panel.settings.mode
-                        {
-                            *active_field = next_field;
-                        }
+                        handle_settings_protection_tab_switch(&mut state, next_field);
                     },
                     Action::SettingsSubmitEdit { value } => {
-                        use main_page::content::SettingsMode;
-                        let idx = state.main_page.content_panel.settings.selected_index;
-                        let profile = self.profile.clone();
-                        let result = match idx {
-                            0 => settings_actions::update_friendly_name(&mut config, &profile, &value),
-                            1 => settings_actions::update_mediator_did(&mut config, &profile, &value),
-                            2 => settings_actions::update_org_did(&mut config, &profile, &value),
-                            _ => Ok(()),
-                        };
-                        match result {
-                            Ok(()) => {
-                                let setting_name = match idx {
-                                    0 => "Friendly name",
-                                    1 => "Mediator DID",
-                                    2 => "Organization DID",
-                                    _ => "Setting",
-                                };
-                                state.main_page.content_panel.settings.mode = SettingsMode::View;
-                                state.main_page.content_panel.settings.status_message =
-                                    Some("Setting saved".to_string());
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log(format!("{} updated", setting_name));
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to save setting: {e}"));
-                            }
-                        }
+                        handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
                     },
                     Action::SettingsExportConfig { path, passphrase } => {
-                        use main_page::content::SettingsMode;
-                        match settings_actions::export_config(&config, &path, &passphrase) {
-                            Ok(()) => {
-                                state.main_page.content_panel.settings.mode = SettingsMode::View;
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(format!("Config exported to {}", path));
-                                state.main_page.log(format!("Config exported to {}", path));
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(format!("Export failed: {e}"));
-                                state.main_page.log(format!("Config export failed: {e}"));
-                            }
-                        }
+                        handle_settings_export_config(&config, &mut state, &path, &passphrase);
                     },
                     Action::SettingsImportConfig { path, passphrase } => {
-                        use main_page::content::SettingsMode;
-                        match settings_actions::import_config(&path, &passphrase) {
-                            Ok(msg) => {
-                                state.main_page.content_panel.settings.mode = SettingsMode::View;
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(msg.clone());
-                                state.main_page.log(msg);
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(format!("Import failed: {e}"));
-                                state.main_page.log(format!("Config import failed: {e}"));
-                            }
-                        }
+                        handle_settings_import_config(&mut state, &path, &passphrase);
                     },
                     Action::SettingsChangeProtection => {
-                        use main_page::content::SettingsMode;
-                        state.main_page.content_panel.settings.mode =
-                            SettingsMode::ChangeProtection {
-                                selected_option: 0,
-                                passphrase_input: String::new(),
-                                confirm_input: String::new(),
-                                active_field: 0,
-                            };
+                        handle_settings_change_protection(&mut state);
                     },
                     Action::SettingsSetPassphrase { passphrase } => {
-                        use main_page::content::SettingsMode;
-                        let profile = self.profile.clone();
-                        match settings_actions::set_passphrase(&mut config, &profile, &passphrase) {
-                            Ok(()) => {
-                                state.main_page.content_panel.settings.mode = SettingsMode::View;
-                                state.main_page.content_panel.settings.status_message =
-                                    Some("Passphrase protection enabled".to_string());
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("Passphrase protection enabled");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to set passphrase: {e}"));
-                            }
-                        }
+                        handle_settings_set_passphrase(&mut config, &mut state, &self.profile, &passphrase);
                     },
                     Action::SettingsRemovePassphrase => {
-                        use main_page::content::SettingsMode;
-                        let profile = self.profile.clone();
-                        match settings_actions::remove_passphrase(&mut config, &profile) {
-                            Ok(()) => {
-                                state.main_page.content_panel.settings.mode = SettingsMode::View;
-                                state.main_page.content_panel.settings.status_message =
-                                    Some("Protection reverted to keyring only".to_string());
-                                state.main_page.sync_from_config(&config);
-                                state.main_page.log("Protection reverted to keyring only");
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.status_message =
-                                    Some(format!("Error: {e}"));
-                                state.main_page.log(format!("Failed to remove passphrase: {e}"));
-                            }
-                        }
+                        handle_settings_remove_passphrase(&mut config, &mut state, &self.profile);
                     },
                     #[cfg(feature = "openpgp-card")]
                     Action::SettingsTokenManagement => {
-                        use main_page::content::SettingsMode;
-                        state.main_page.content_panel.settings.mode =
-                            SettingsMode::TokenManagement { selected_index: 0 };
-                        // Auto-detect tokens on entry
-                        match openvtc::openpgp_card::get_cards() {
-                            Ok(cards) => {
-                                state.main_page.content_panel.settings.token.detected_count =
-                                    cards.len();
-                                state.main_page.content_panel.settings.token.messages.clear();
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.token.detected_count = 0;
-                                state.main_page.content_panel.settings.token.messages =
-                                    vec![format!("Error detecting tokens: {e}")];
-                            }
-                        }
+                        handle_settings_token_management(&mut state);
                     },
                     #[cfg(feature = "openpgp-card")]
                     Action::SettingsTokenDetect => {
-                        match openvtc::openpgp_card::get_cards() {
-                            Ok(cards) => {
-                                state.main_page.content_panel.settings.token.detected_count =
-                                    cards.len();
-                                state.main_page.content_panel.settings.token.messages =
-                                    vec![format!("{} token(s) detected", cards.len())];
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.token.detected_count = 0;
-                                state.main_page.content_panel.settings.token.messages =
-                                    vec![format!("Error: {e}")];
-                            }
-                        }
+                        handle_settings_token_detect(&mut state);
                     },
                     #[cfg(feature = "openpgp-card")]
                     Action::SettingsTokenFactoryReset => {
-                        match openvtc::openpgp_card::get_cards() {
-                            Ok(cards) if !cards.is_empty() => {
-                                // Reset the first detected card
-                                match openvtc::openpgp_card::factory_reset(cards[0].clone()) {
-                                    Ok(()) => {
-                                        state.main_page.content_panel.settings.token.messages =
-                                            vec!["Factory reset completed successfully.".to_string()];
-                                        state
-                                            .main_page
-                                            .content_panel
-                                            .settings
-                                            .token
-                                            .reset_completed = true;
-                                    }
-                                    Err(e) => {
-                                        state.main_page.content_panel.settings.token.messages =
-                                            vec![format!("Factory reset failed: {e}")];
-                                    }
-                                }
-                            }
-                            Ok(_) => {
-                                state.main_page.content_panel.settings.token.messages =
-                                    vec!["No tokens detected. Insert a token first.".to_string()];
-                            }
-                            Err(e) => {
-                                state.main_page.content_panel.settings.token.messages =
-                                    vec![format!("Error: {e}")];
-                            }
-                        }
+                        handle_settings_token_factory_reset(&mut state);
                     },
                     #[cfg(feature = "openpgp-card")]
                     Action::SettingsTokenBack => {
-                        use main_page::content::SettingsMode;
-                        state.main_page.content_panel.settings.mode = SettingsMode::View;
-                        state.main_page.content_panel.settings.token.messages.clear();
-                        state.main_page.content_panel.settings.token.reset_completed = false;
+                        handle_settings_token_back(&mut state);
                     },
                     _ => {}
                 },
@@ -1150,7 +590,7 @@ impl StateHandler {
         Ok(result)
     }
 
-    /// Minimal event loop for when init fails — keeps UI alive so user sees the error and can exit.
+    /// Minimal event loop for when init fails -- keeps UI alive so user sees the error and can exit.
     async fn run_degraded_loop(
         &self,
         action_rx: &mut UnboundedReceiver<Action>,
@@ -1197,4 +637,824 @@ impl StateHandler {
             self.state_tx.send(state.clone())?;
         }
     }
+}
+
+// ============================================================
+// Inbox action handlers
+// ============================================================
+
+fn handle_inbox_select(state: &mut State, index: usize) {
+    state.main_page.content_panel.inbox.selected_index = index;
+}
+
+fn handle_inbox_open_detail(state: &mut State, index: usize) {
+    use main_page::content::{ActiveTaskView, TaskKind};
+
+    state.main_page.content_panel.inbox.selected_index = index;
+    if let Some(task) = state.main_page.content_panel.inbox.tasks.get(index) {
+        let view = match &task.kind {
+            TaskKind::RelationshipRequestInbound {
+                from_did,
+                their_did,
+                reason,
+            } => Some(ActiveTaskView::RelationshipRequestInbound {
+                task_id: task.id.clone(),
+                from_did: from_did.clone(),
+                their_did: their_did.clone(),
+                reason: reason.clone(),
+            }),
+            TaskKind::VRCRequestInbound { reason } => Some(ActiveTaskView::VRCRequestInbound {
+                task_id: task.id.clone(),
+                from_did: task.remote_did.clone(),
+                reason: reason.clone(),
+            }),
+            TaskKind::VRCIssued => Some(ActiveTaskView::VRCIssued {
+                task_id: task.id.clone(),
+                issuer: task.remote_did.clone(),
+            }),
+            _ => None,
+        };
+        state.main_page.content_panel.inbox.active_task = view;
+    }
+}
+
+/// Helper: save config after an inbox action, sync UI state, and log messages.
+fn inbox_save_and_sync(
+    config: &Config,
+    state: &mut State,
+    profile: &str,
+    success_status: &str,
+    success_log: &str,
+) {
+    state.main_page.content_panel.inbox.active_task = None;
+    state.main_page.content_panel.inbox.status_message = Some(success_status.to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log(success_log);
+}
+
+fn inbox_error(state: &mut State, context: &str, err: &anyhow::Error) {
+    state.main_page.content_panel.inbox.status_message = Some(format!("Error: {err}"));
+    state.main_page.log(format!("{context}: {err}"));
+}
+
+async fn handle_inbox_accept_relationship(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    match inbox_actions::accept_relationship_request(config, tdk, task_id).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "Relationship request accepted",
+            "Accepted relationship request",
+        ),
+        Err(e) => inbox_error(state, "Failed to accept relationship", &e),
+    }
+}
+
+async fn handle_inbox_reject_relationship(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+    reason: Option<&str>,
+) {
+    match inbox_actions::reject_relationship_request(config, tdk, task_id, reason).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "Relationship request rejected",
+            "Rejected relationship request",
+        ),
+        Err(e) => inbox_error(state, "Failed to reject relationship", &e),
+    }
+}
+
+fn handle_inbox_accept_vrc(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    match inbox_actions::accept_vrc(config, task_id) {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "VRC accepted and stored",
+            "VRC accepted and stored",
+        ),
+        Err(e) => inbox_error(state, "Failed to accept VRC", &e),
+    }
+}
+
+async fn handle_inbox_accept_vrc_request(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    match inbox_actions::accept_vrc_request(config, tdk, task_id).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "VRC issued and sent",
+            "VRC issued and sent",
+        ),
+        Err(e) => inbox_error(state, "Failed to issue VRC", &e),
+    }
+}
+
+async fn handle_inbox_reject_vrc_request(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+    reason: Option<&str>,
+) {
+    match inbox_actions::reject_vrc_request(config, tdk, task_id, reason).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "VRC request rejected",
+            "Rejected VRC request",
+        ),
+        Err(e) => inbox_error(state, "Failed to reject VRC request", &e),
+    }
+}
+
+fn handle_inbox_dismiss_task(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    let _ = inbox_actions::dismiss_task(config, task_id);
+    state.main_page.content_panel.inbox.active_task = None;
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("Task dismissed");
+}
+
+fn handle_inbox_clear_all(config: &mut Box<Config>, state: &mut State, profile: &str) {
+    let _ = inbox_actions::clear_all_tasks(config);
+    state.main_page.content_panel.inbox.active_task = None;
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("All inbox tasks cleared");
+}
+
+// ============================================================
+// Relationship action handlers
+// ============================================================
+
+fn handle_relationship_open_detail(state: &mut State, index: usize) {
+    use main_page::content::RelationshipsMode;
+    state.main_page.content_panel.relationships.selected_index = index;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail { index };
+}
+
+fn handle_relationship_start_new_request(state: &mut State) {
+    use main_page::content::RelationshipsMode;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::NewRequest {
+        did_input: String::new(),
+        alias_input: String::new(),
+        reason_input: String::new(),
+        generate_r_did: false,
+        active_field: 0,
+    };
+}
+
+fn handle_relationship_cancel_or_back(state: &mut State) {
+    use main_page::content::RelationshipsMode;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+    state.main_page.content_panel.relationships.status_message = None;
+}
+
+fn handle_relationship_input_update(state: &mut State, field: usize, value: String) {
+    use main_page::content::RelationshipsMode;
+    if let RelationshipsMode::NewRequest {
+        ref mut did_input,
+        ref mut alias_input,
+        ref mut reason_input,
+        ref mut active_field,
+        ..
+    } = state.main_page.content_panel.relationships.mode
+    {
+        if value.is_empty() {
+            *active_field = field;
+        } else {
+            match field {
+                0 => *did_input = value,
+                1 => *alias_input = value,
+                _ => *reason_input = value,
+            }
+        }
+    }
+}
+
+fn handle_relationship_toggle_r_did(state: &mut State) {
+    use main_page::content::RelationshipsMode;
+    if let RelationshipsMode::NewRequest {
+        ref mut generate_r_did,
+        ..
+    } = state.main_page.content_panel.relationships.mode
+    {
+        *generate_r_did = !*generate_r_did;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_relationship_submit(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    did: &str,
+    alias: &str,
+    reason: Option<&str>,
+    generate_r_did: bool,
+) {
+    use main_page::content::RelationshipsMode;
+    match relationship_actions::send_relationship_request(
+        config,
+        tdk,
+        did,
+        alias,
+        reason,
+        generate_r_did,
+    )
+    .await
+    {
+        Ok(()) => {
+            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("Request sent to {}", did));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            state
+                .main_page
+                .log(format!("Relationship request sent to {}", did));
+        }
+        Err(e) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to send relationship request: {e}"));
+        }
+    }
+}
+
+async fn handle_relationship_ping(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+) {
+    use main_page::content::RelationshipsMode;
+    match relationship_actions::ping_relationship(config, tdk, remote_p_did).await {
+        Ok(()) => {
+            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+            state.main_page.content_panel.relationships.status_message =
+                Some("Ping sent".to_string());
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            state.main_page.log("Trust ping sent");
+        }
+        Err(e) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("Ping failed: {e}"));
+            state.main_page.log(format!("Ping failed: {e}"));
+        }
+    }
+}
+
+fn handle_relationship_remove(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+) {
+    use main_page::content::RelationshipsMode;
+    let _ = relationship_actions::remove_relationship(config, remote_p_did);
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+    state.main_page.content_panel.relationships.status_message =
+        Some("Relationship removed".to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("Relationship removed");
+}
+
+// ============================================================
+// Credential action handlers
+// ============================================================
+
+fn handle_credential_switch_tab(state: &mut State) {
+    use main_page::content::CredentialTab;
+    state.main_page.content_panel.credentials.selected_tab =
+        match state.main_page.content_panel.credentials.selected_tab {
+            CredentialTab::Received => CredentialTab::Issued,
+            CredentialTab::Issued => CredentialTab::Received,
+        };
+    state.main_page.content_panel.credentials.selected_index = 0;
+}
+
+fn handle_credential_open_detail(state: &mut State, index: usize) {
+    use main_page::content::CredentialsMode;
+    state.main_page.content_panel.credentials.selected_index = index;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::Detail { index };
+}
+
+fn handle_credential_back(state: &mut State) {
+    use main_page::content::CredentialsMode;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+    state.main_page.content_panel.credentials.selected_index = 0;
+}
+
+fn handle_credential_start_new_request(state: &mut State) {
+    use main_page::content::CredentialsMode;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::NewRequest {
+        relationship_index: 0,
+        reason_input: String::new(),
+    };
+}
+
+fn handle_credential_select_relationship(state: &mut State, index: usize) {
+    use main_page::content::CredentialsMode;
+    if let CredentialsMode::NewRequest {
+        ref mut relationship_index,
+        ..
+    } = state.main_page.content_panel.credentials.mode
+    {
+        let established_count = state
+            .main_page
+            .content_panel
+            .relationships
+            .relationships
+            .iter()
+            .filter(|r| r.state == "Established")
+            .count();
+        if index < established_count {
+            *relationship_index = index;
+        }
+    }
+}
+
+fn handle_credential_reason_update(state: &mut State, value: String) {
+    use main_page::content::CredentialsMode;
+    if let CredentialsMode::NewRequest {
+        ref mut reason_input,
+        ..
+    } = state.main_page.content_panel.credentials.mode
+    {
+        *reason_input = value;
+    }
+}
+
+async fn handle_credential_submit_request(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    profile: &str,
+    relationship_p_did: &str,
+    reason: Option<&str>,
+) {
+    use main_page::content::CredentialsMode;
+    match credential_actions::send_vrc_request(config, tdk, relationship_p_did, reason).await {
+        Ok(()) => {
+            state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+            state.main_page.content_panel.credentials.status_message =
+                Some(format!("VRC request sent to {}", relationship_p_did));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            state
+                .main_page
+                .log(format!("VRC request sent to {}", relationship_p_did));
+        }
+        Err(e) => {
+            state.main_page.content_panel.credentials.status_message = Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to send VRC request: {e}"));
+        }
+    }
+}
+
+fn handle_credential_remove(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    vrc_id: &str,
+) {
+    use main_page::content::CredentialsMode;
+    let _ = credential_actions::remove_vrc(config, vrc_id);
+    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+    state.main_page.content_panel.credentials.selected_index = 0;
+    state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("VRC removed");
+}
+
+// ============================================================
+// Contact action handlers
+// ============================================================
+
+fn handle_contact_add(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    did: &str,
+    alias: Option<&str>,
+) {
+    match settings_actions::add_contact(config, profile, did, alias) {
+        Ok(()) => {
+            state.main_page.sync_from_config(config);
+            state.main_page.log(format!("Contact added: {}", did));
+        }
+        Err(e) => {
+            state.main_page.log(format!("Failed to add contact: {e}"));
+        }
+    }
+}
+
+fn handle_contact_remove(config: &mut Box<Config>, state: &mut State, profile: &str, did: &str) {
+    match settings_actions::remove_contact(config, profile, did) {
+        Ok(()) => {
+            state.main_page.sync_from_config(config);
+            state.main_page.log(format!("Contact removed: {}", did));
+        }
+        Err(e) => {
+            state
+                .main_page
+                .log(format!("Failed to remove contact: {e}"));
+        }
+    }
+}
+
+// ============================================================
+// Settings action handlers
+// ============================================================
+
+fn handle_settings_select(state: &mut State, index: usize) {
+    use main_page::content::SettingsMode;
+    #[cfg(feature = "openpgp-card")]
+    if let SettingsMode::TokenManagement { selected_index } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *selected_index = index;
+    } else {
+        state.main_page.content_panel.settings.selected_index = index;
+    }
+    #[cfg(not(feature = "openpgp-card"))]
+    {
+        state.main_page.content_panel.settings.selected_index = index;
+    }
+}
+
+fn handle_settings_start_edit(state: &mut State) {
+    use main_page::content::SettingsMode;
+    let idx = state.main_page.content_panel.settings.selected_index;
+    let s = &state.main_page.content_panel.settings;
+    state.main_page.content_panel.settings.mode = match idx {
+        0 => SettingsMode::EditFriendlyName {
+            input: s.friendly_name.clone(),
+        },
+        1 => SettingsMode::EditMediatorDid {
+            input: s.mediator_did.clone(),
+        },
+        2 => SettingsMode::EditOrgDid {
+            input: s.org_did.clone(),
+        },
+        5 => SettingsMode::ExportConfig {
+            path_input: "openvtc-export.enc".to_string(),
+            passphrase_input: String::new(),
+            active_field: 0,
+        },
+        6 => SettingsMode::ImportConfig {
+            path_input: "openvtc-export.enc".to_string(),
+            passphrase_input: String::new(),
+            active_field: 0,
+        },
+        _ => SettingsMode::View,
+    };
+}
+
+fn handle_settings_field_update(state: &mut State, value: String) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::EditFriendlyName { input }
+        | SettingsMode::EditMediatorDid { input }
+        | SettingsMode::EditOrgDid { input } => {
+            *input = value;
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_form_field_update(state: &mut State, field: usize, value: String) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::ExportConfig {
+            path_input,
+            passphrase_input,
+            ..
+        }
+        | SettingsMode::ImportConfig {
+            path_input,
+            passphrase_input,
+            ..
+        } => {
+            if field == 0 {
+                *path_input = value;
+            } else {
+                *passphrase_input = value;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_form_tab_switch(state: &mut State) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::ExportConfig { active_field, .. }
+        | SettingsMode::ImportConfig { active_field, .. } => {
+            *active_field = if *active_field == 0 { 1 } else { 0 };
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_protection_option_select(state: &mut State, option: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection {
+        selected_option, ..
+    } = &mut state.main_page.content_panel.settings.mode
+    {
+        *selected_option = option;
+    }
+}
+
+fn handle_settings_protection_start_input(state: &mut State) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { active_field, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *active_field = 1;
+    }
+}
+
+fn handle_settings_protection_field_update(state: &mut State, field: usize, value: String) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection {
+        passphrase_input,
+        confirm_input,
+        ..
+    } = &mut state.main_page.content_panel.settings.mode
+    {
+        if field == 1 {
+            *passphrase_input = value;
+        } else {
+            *confirm_input = value;
+        }
+    }
+}
+
+fn handle_settings_protection_tab_switch(state: &mut State, next_field: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { active_field, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *active_field = next_field;
+    }
+}
+
+fn handle_settings_submit_edit(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    value: &str,
+) {
+    use main_page::content::SettingsMode;
+    let idx = state.main_page.content_panel.settings.selected_index;
+    let result = match idx {
+        0 => settings_actions::update_friendly_name(config, profile, value),
+        1 => settings_actions::update_mediator_did(config, profile, value),
+        2 => settings_actions::update_org_did(config, profile, value),
+        _ => Ok(()),
+    };
+    match result {
+        Ok(()) => {
+            let setting_name = match idx {
+                0 => "Friendly name",
+                1 => "Mediator DID",
+                2 => "Organization DID",
+                _ => "Setting",
+            };
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some("Setting saved".to_string());
+            state.main_page.sync_from_config(config);
+            state.main_page.log(format!("{} updated", setting_name));
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
+            state.main_page.log(format!("Failed to save setting: {e}"));
+        }
+    }
+}
+
+fn handle_settings_export_config(config: &Config, state: &mut State, path: &str, passphrase: &str) {
+    use main_page::content::SettingsMode;
+    match settings_actions::export_config(config, path, passphrase) {
+        Ok(()) => {
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Config exported to {}", path));
+            state.main_page.log(format!("Config exported to {}", path));
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Export failed: {e}"));
+            state.main_page.log(format!("Config export failed: {e}"));
+        }
+    }
+}
+
+fn handle_settings_import_config(state: &mut State, path: &str, passphrase: &str) {
+    use main_page::content::SettingsMode;
+    match settings_actions::import_config(path, passphrase) {
+        Ok(msg) => {
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message = Some(msg.clone());
+            state.main_page.log(msg);
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Import failed: {e}"));
+            state.main_page.log(format!("Config import failed: {e}"));
+        }
+    }
+}
+
+fn handle_settings_change_protection(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode = SettingsMode::ChangeProtection {
+        selected_option: 0,
+        passphrase_input: String::new(),
+        confirm_input: String::new(),
+        active_field: 0,
+    };
+}
+
+fn handle_settings_set_passphrase(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    passphrase: &str,
+) {
+    use main_page::content::SettingsMode;
+    match settings_actions::set_passphrase(config, profile, passphrase) {
+        Ok(()) => {
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some("Passphrase protection enabled".to_string());
+            state.main_page.sync_from_config(config);
+            state.main_page.log("Passphrase protection enabled");
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to set passphrase: {e}"));
+        }
+    }
+}
+
+fn handle_settings_remove_passphrase(config: &mut Box<Config>, state: &mut State, profile: &str) {
+    use main_page::content::SettingsMode;
+    match settings_actions::remove_passphrase(config, profile) {
+        Ok(()) => {
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some("Protection reverted to keyring only".to_string());
+            state.main_page.sync_from_config(config);
+            state.main_page.log("Protection reverted to keyring only");
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to remove passphrase: {e}"));
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_management(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode =
+        SettingsMode::TokenManagement { selected_index: 0 };
+    match openvtc::openpgp_card::get_cards() {
+        Ok(cards) => {
+            state.main_page.content_panel.settings.token.detected_count = cards.len();
+            state
+                .main_page
+                .content_panel
+                .settings
+                .token
+                .messages
+                .clear();
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.token.detected_count = 0;
+            state.main_page.content_panel.settings.token.messages =
+                vec![format!("Error detecting tokens: {e}")];
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_detect(state: &mut State) {
+    match openvtc::openpgp_card::get_cards() {
+        Ok(cards) => {
+            state.main_page.content_panel.settings.token.detected_count = cards.len();
+            state.main_page.content_panel.settings.token.messages =
+                vec![format!("{} token(s) detected", cards.len())];
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.token.detected_count = 0;
+            state.main_page.content_panel.settings.token.messages = vec![format!("Error: {e}")];
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_factory_reset(state: &mut State) {
+    match openvtc::openpgp_card::get_cards() {
+        Ok(cards) if !cards.is_empty() => {
+            match openvtc::openpgp_card::factory_reset(cards[0].clone()) {
+                Ok(()) => {
+                    state.main_page.content_panel.settings.token.messages =
+                        vec!["Factory reset completed successfully.".to_string()];
+                    state.main_page.content_panel.settings.token.reset_completed = true;
+                }
+                Err(e) => {
+                    state.main_page.content_panel.settings.token.messages =
+                        vec![format!("Factory reset failed: {e}")];
+                }
+            }
+        }
+        Ok(_) => {
+            state.main_page.content_panel.settings.token.messages =
+                vec!["No tokens detected. Insert a token first.".to_string()];
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.token.messages = vec![format!("Error: {e}")];
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_back(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode = SettingsMode::View;
+    state
+        .main_page
+        .content_panel
+        .settings
+        .token
+        .messages
+        .clear();
+    state.main_page.content_panel.settings.token.reset_completed = false;
 }
