@@ -15,6 +15,8 @@ pub struct ContentPanelState {
     pub credentials: CredentialsState,
     /// Settings panel state
     pub settings: SettingsState,
+    /// Logs panel state
+    pub logs: LogsState,
 }
 
 // ****************************************************************************
@@ -215,6 +217,18 @@ pub struct VrcSummary {
     pub valid_from: String,
     /// Formatted valid_until date (if set)
     pub valid_until: Option<String>,
+}
+
+// ****************************************************************************
+// Logs State
+// ****************************************************************************
+
+/// State for the logs panel.
+#[derive(Clone, Debug, Default)]
+pub struct LogsState {
+    /// Currently selected log entry index (0 = newest).
+    /// Managed locally by the UI component, not stored in State.
+    pub selected_index: usize,
 }
 
 // ****************************************************************************

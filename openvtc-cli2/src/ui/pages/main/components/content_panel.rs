@@ -34,6 +34,8 @@ impl ContentPanelState {
         rect: Rect,
         menu: &MenuPanelState,
         connection: &ConnectionState,
+        activity_log: &std::collections::VecDeque<String>,
+        logs_selected: usize,
     ) {
         let content_block = if self.selected {
             Block::bordered()
@@ -60,6 +62,12 @@ impl ContentPanelState {
             p.render(self, connection)
         } else {
             match menu.selected_menu {
+                MainMenu::Logs => {
+                    use super::logs_panel;
+                    let mut logs_state = self.logs.clone();
+                    logs_state.selected_index = logs_selected;
+                    logs_panel::render(&logs_state, activity_log)
+                }
                 MainMenu::Help => render_status_help(
                     &self.settings,
                     &self.inbox,

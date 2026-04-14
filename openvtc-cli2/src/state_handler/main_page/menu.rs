@@ -28,6 +28,7 @@ pub enum MainMenu {
     Relationships,
     Credentials,
     Settings,
+    Logs,
     Help,
     Quit,
 }
@@ -39,7 +40,8 @@ impl Display for MainMenu {
             MainMenu::Relationships => write!(f, "My Relationships"),
             MainMenu::Credentials => write!(f, "My Credentials"),
             MainMenu::Settings => write!(f, "Settings"),
-            MainMenu::Help => write!(f, "Help"),
+            MainMenu::Logs => write!(f, "Logs"),
+            MainMenu::Help => write!(f, "Help / Status"),
             MainMenu::Quit => write!(f, "Quit"),
         }
     }
@@ -53,7 +55,8 @@ impl MainMenu {
             MainMenu::Relationships => MainMenu::Inbox,
             MainMenu::Credentials => MainMenu::Relationships,
             MainMenu::Settings => MainMenu::Credentials,
-            MainMenu::Help => MainMenu::Settings,
+            MainMenu::Logs => MainMenu::Settings,
+            MainMenu::Help => MainMenu::Logs,
             MainMenu::Quit => MainMenu::Help,
         }
     }
@@ -64,7 +67,8 @@ impl MainMenu {
             MainMenu::Inbox => MainMenu::Relationships,
             MainMenu::Relationships => MainMenu::Credentials,
             MainMenu::Credentials => MainMenu::Settings,
-            MainMenu::Settings => MainMenu::Help,
+            MainMenu::Settings => MainMenu::Logs,
+            MainMenu::Logs => MainMenu::Help,
             MainMenu::Help => MainMenu::Quit,
             MainMenu::Quit => MainMenu::Inbox,
         }

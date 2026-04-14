@@ -45,6 +45,8 @@ pub struct MainPage {
     passphrase_buffer: String,
     /// Secure confirm passphrase buffer — never cloned into State
     confirm_buffer: String,
+    /// Logs panel selected index (local to UI, not in State)
+    logs_selected: usize,
 }
 
 struct Props {
@@ -72,6 +74,7 @@ impl Component for MainPage {
             props: Props::from(state),
             passphrase_buffer: String::new(),
             confirm_buffer: String::new(),
+            logs_selected: 0,
         }
         .move_with_state(state)
     }
@@ -256,6 +259,7 @@ impl MainPage {
             MainMenu::Relationships => self.handle_relationships_key(key),
             MainMenu::Credentials => self.handle_credentials_key(key),
             MainMenu::Settings => self.handle_settings_key(key),
+            MainMenu::Logs => self.handle_logs_key(key),
             MainMenu::Help => self.handle_help_key(key),
             _ => false,
         }
@@ -1100,6 +1104,51 @@ impl MainPage {
             }
         }
     }
+    fn handle_logs_key(&mut self, key: KeyEvent) -> bool {
+        let total = self.props.main_page.activity_log.len();
+
+        match key.code {
+            KeyCode::Up if self.logs_selected > 0 => {
+                self.logs_selected -= 1;
+                true
+            }
+            KeyCode::Down if self.logs_selected + 1 < total => {
+                self.logs_selected += 1;
+                true
+            }
+            KeyCode::Char('c') if total > 0 => {
+                // Copy selected log entry to clipboard
+                let entries: Vec<&String> =
+                    self.props.main_page.activity_log.iter().rev().collect();
+                if let Some(entry) = entries.get(self.logs_selected) {
+                    copy_to_clipboard(entry, "Log entry", &self.action_tx);
+                }
+                true
+            }
+            KeyCode::Char('a') if total > 0 => {
+                // Copy all log entries to clipboard
+                let all_text: String = self
+                    .props
+                    .main_page
+                    .activity_log
+                    .iter()
+                    .rev()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                copy_to_clipboard(&all_text, "All log entries", &self.action_tx);
+                true
+            }
+            KeyCode::Esc => {
+                let _ = self
+                    .action_tx
+                    .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn handle_help_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Char('1') => {
@@ -1257,6 +1306,8 @@ impl ComponentRender<()> for MainPage {
             middle[1],
             &self.props.main_page.menu_panel,
             &self.props.connection,
+            &self.props.main_page.activity_log,
+            self.logs_selected,
         );
 
         // Activity log panel
