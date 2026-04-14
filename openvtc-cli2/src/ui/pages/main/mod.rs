@@ -439,6 +439,18 @@ impl MainPage {
                             .send(Action::Relationship(RelationshipAction::FocusField(next)));
                         true
                     }
+                    KeyCode::Up if active_field > 0 => {
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::FocusField(active_field - 1),
+                        ));
+                        true
+                    }
+                    KeyCode::Down if active_field < 3 => {
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::FocusField(active_field + 1),
+                        ));
+                        true
+                    }
                     KeyCode::Char(' ') if active_field == 3 => {
                         // Toggle the generate_r_did boolean
                         let _ = self
@@ -783,7 +795,7 @@ impl MainPage {
                             .send(Action::Settings(SettingsAction::CancelEdit));
                         true
                     }
-                    KeyCode::Tab => {
+                    KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
                         let _ = self
                             .action_tx
                             .send(Action::Settings(SettingsAction::FormTabSwitch));
@@ -885,6 +897,18 @@ impl MainPage {
                         let _ = self
                             .action_tx
                             .send(Action::Settings(SettingsAction::ProtectionTabSwitch(next)));
+                        true
+                    }
+                    KeyCode::Up if active == 2 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::ProtectionTabSwitch(1)));
+                        true
+                    }
+                    KeyCode::Down if active == 1 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::ProtectionTabSwitch(2)));
                         true
                     }
                     KeyCode::Enter if active == 2 => {
@@ -990,7 +1014,7 @@ impl MainPage {
                             .send(Action::Settings(SettingsAction::CancelEdit));
                         true
                     }
-                    KeyCode::Tab => {
+                    KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
                         let _ = self
                             .action_tx
                             .send(Action::Settings(SettingsAction::FormTabSwitch));
@@ -1302,7 +1326,11 @@ impl ComponentRender<()> for MainPage {
         // right = actual content
 
         // Main Menu
-        self.props.main_page.menu_panel.render(frame, middle[0]);
+        let inbox_task_count = self.props.main_page.content_panel.inbox.tasks.len();
+        self.props
+            .main_page
+            .menu_panel
+            .render(frame, middle[0], inbox_task_count);
         self.props.main_page.content_panel.render(
             frame,
             middle[1],
