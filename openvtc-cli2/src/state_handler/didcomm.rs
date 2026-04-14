@@ -6,7 +6,7 @@
 
 use affinidi_messaging_didcomm_service::{
     DIDCommService, DIDCommServiceConfig, DIDCommServiceError, ListenerConfig, ListenerEvent,
-    RestartPolicy, RetryConfig, Router, handler_fn, trust_ping_handler,
+    RestartPolicy, RetryConfig, Router, handler_fn,
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::didcomm::Message;
@@ -25,6 +25,10 @@ pub enum DIDCommEvent {
         #[allow(dead_code)]
         from: Option<String>,
     },
+    /// A trust-ping was received and auto-responded to.
+    TrustPingReceived { from: Option<String> },
+    /// A trust-pong response was received.
+    TrustPongReceived { from: Option<String> },
 }
 
 /// Build the DIDComm message router.
@@ -48,13 +52,36 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
     });
 
     Router::new()
-        // Trust ping auto-response (built-in pong generation)
+        // Trust ping — auto-respond with pong AND notify state handler
         .route(
             affinidi_messaging_didcomm_service::TRUST_PING_TYPE,
-            handler_fn(trust_ping_handler),
+            handler_fn({
+                let tx = event_tx.clone();
+                move |ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
+                    let tx = tx.clone();
+                    async move {
+                        let from = msg.from.clone();
+                        // Generate pong response (same logic as built-in handler)
+                        let response = if ctx.sender_did.is_some() {
+                            Some(
+                                affinidi_messaging_didcomm_service::DIDCommResponse::new(
+                                    affinidi_messaging_didcomm_service::TRUST_PONG_TYPE,
+                                    serde_json::Value::Null,
+                                )
+                                .thid(msg.id),
+                            )
+                        } else {
+                            None
+                        };
+                        // Notify state handler
+                        let _ = tx.send(DIDCommEvent::TrustPingReceived { from });
+                        Ok(response)
+                    }
+                }
+            }),
         )
         .expect("valid route")
-        // Trust pong — forward to state handler for latency tracking
+        // Trust pong — notify state handler for logging and task removal
         .route(
             affinidi_messaging_didcomm_service::TRUST_PONG_TYPE,
             handler_fn({
@@ -62,10 +89,14 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
                 move |_ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
                     let tx = tx.clone();
                     async move {
+                        let from = msg.from.clone();
+                        // Forward the pong as InboundMessage for task removal
                         let _ = tx.send(DIDCommEvent::InboundMessage {
-                            from: msg.from.clone(),
+                            from: from.clone(),
                             message: Box::new(msg),
                         });
+                        // Also send specific pong event for logging
+                        let _ = tx.send(DIDCommEvent::TrustPongReceived { from });
                         Ok(None)
                     }
                 }

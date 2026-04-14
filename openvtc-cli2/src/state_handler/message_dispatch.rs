@@ -70,7 +70,14 @@ pub async fn process_inbound_message(
         }
     };
 
-    debug!(msg_type = %msg_type.friendly_name(), from = %from_did, "processing inbound message");
+    let thid_display = message.thid.as_deref().unwrap_or("none");
+    debug!(
+        msg_type = %msg_type.friendly_name(),
+        from = %from_did,
+        thid = %thid_display,
+        id = %message.id,
+        "processing inbound message"
+    );
 
     match msg_type {
         // =====================================================================

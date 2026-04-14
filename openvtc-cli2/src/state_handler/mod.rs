@@ -677,6 +677,20 @@ impl StateHandler {
                                 }
                             }
                         }
+                        didcomm::DIDCommEvent::TrustPingReceived { from } => {
+                            let sender = from.as_deref().unwrap_or("unknown");
+                            state.main_page.log(format!(
+                                "Trust-ping received from {} — pong sent",
+                                truncate_did(sender)
+                            ));
+                        }
+                        didcomm::DIDCommEvent::TrustPongReceived { from } => {
+                            let sender = from.as_deref().unwrap_or("unknown");
+                            state.main_page.log(format!(
+                                "Trust-pong received from {} ✓",
+                                truncate_did(sender)
+                            ));
+                        }
                     }
                 },
                 // Lifecycle log messages from the DIDCommService
@@ -1055,7 +1069,9 @@ async fn handle_relationship_ping(
                 state.main_page.log(format!("Failed to save config: {e}"));
             }
             state.main_page.sync_from_config(config);
-            state.main_page.log("Trust ping sent");
+            state
+                .main_page
+                .log(format!("Trust-ping sent to {}", truncate_did(remote_p_did)));
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =
