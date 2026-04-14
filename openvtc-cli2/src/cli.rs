@@ -33,8 +33,8 @@ pub fn get_user_pin() -> SecretString {
         .interact()
         .unwrap();
     if user_pin.is_empty() {
-        SecretString::new("123456".to_string())
+        SecretString::new("123456".to_string().into())
     } else {
-        SecretString::new(user_pin)
+        SecretString::new(user_pin.into())
     }
 }

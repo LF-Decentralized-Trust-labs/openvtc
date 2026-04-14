@@ -13,9 +13,10 @@ use byteorder::{BigEndian, ByteOrder};
 use openpgp_card::ocard::KeyType;
 use openpgp_card_rpgp::CardSlot;
 use pgp::{
+    composed::PlainSessionKey,
     crypto::public_key::PublicKeyAlgorithm,
     ser::Serialize,
-    types::{EskType, PkeskBytes},
+    types::{DecryptionKey, EncryptionKey, EskType, Password, PkeskBytes},
 };
 use rand::{Rng, rngs::OsRng};
 use secrecy::SecretString;
@@ -126,9 +127,16 @@ where
         PkeskBytes::try_from_reader(&PublicKeyAlgorithm::ECDH, 6, raw_br).map_err(|e| {
             OpenVTCError::Decrypt(format!("Couldn't convert public-key ESK. Reason: {e}"))
         })?;
-    let (decrypted_esk, _) = cs
-        .decrypt(&pk_esk)
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't decrypt data, reason: {e}")))?;
+    let plain_session_key = cs
+        .decrypt(&Password::empty(), &pk_esk, EskType::V6)
+        .map_err(|e| OpenVTCError::Token(format!("Couldn't decrypt data, reason: {e}")))?
+        .map_err(|e| OpenVTCError::Token(format!("Session key decryption failed: {e}")))?;
+
+    let decrypted_esk = match &plain_session_key {
+        PlainSessionKey::V6 { key } => key.as_ref(),
+        PlainSessionKey::V3_4 { key, .. } => key.as_ref(),
+        PlainSessionKey::V5 { key } => key.as_ref(),
+    };
 
     if decrypted_esk.len() != 32 {
         warn!(

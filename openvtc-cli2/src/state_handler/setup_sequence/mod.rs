@@ -7,7 +7,7 @@ use ::openpgp_card::{Card, state::Open};
 use affinidi_tdk::did_common::Document;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use openvtc::config::PersonaDIDKeys;
-use secrecy::SecretVec;
+use secrecy::SecretBox;
 use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
@@ -140,7 +140,7 @@ pub enum ConfigProtection {
     PlainText,
     Token(String),
     /// Is a SHA256 digest of the input passcode
-    Passcode(Arc<SecretVec<u8>>),
+    Passcode(Arc<SecretBox<Vec<u8>>>),
 }
 
 impl std::fmt::Debug for ConfigProtection {

@@ -5,10 +5,10 @@
 
 use crate::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED, setup::PersonaDIDKeys};
 use anyhow::{Context, Result};
-use chrono::Utc;
 use console::{Term, style};
 use dialoguer::{Confirm, Input, Password, theme::ColorfulTheme};
 use ed25519_dalek_bip32::VerifyingKey;
+use pgp::types::Timestamp;
 use pgp::{
     composed::{ArmorOptions, SignedKeyDetails, SignedSecretKey, SignedSecretSubKey},
     crypto::{self, ed25519::Mode, public_key::PublicKeyAlgorithm},
@@ -78,7 +78,7 @@ pub fn ask_export_persona_did_keys(
             );
             return;
         };
-        SecretString::new(passphrase)
+        SecretString::new(passphrase.into())
     };
 
     let user_id = if let Some(user_id) = user_id {
@@ -142,7 +142,7 @@ pub fn export_persona_did_keys(
     passphrase: SecretString,
     wizard: bool,
 ) -> Result<SignedSecretKey> {
-    let password = types::Password::from(passphrase.expose_secret().as_str());
+    let password = types::Password::from(passphrase.expose_secret());
     let mut rng = rand::rngs::OsRng;
 
     if wizard {
@@ -155,7 +155,7 @@ pub fn export_persona_did_keys(
         PacketHeader::new_fixed(Tag::PublicKey, 51),
         KeyVersion::V4,
         PublicKeyAlgorithm::EdDSALegacy,
-        Utc::now(),
+        Timestamp::now(),
         None,
         PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
             key: VerifyingKey::from_bytes(
@@ -191,11 +191,11 @@ pub fn export_persona_did_keys(
     kf.set_certify(true);
     config.hashed_subpackets = vec![
         Subpacket::regular(SubpacketData::IssuerFingerprint(signing_key.fingerprint()))?,
-        Subpacket::critical(SubpacketData::SignatureCreationTime(Utc::now()))?,
+        Subpacket::critical(SubpacketData::SignatureCreationTime(Timestamp::now()))?,
         Subpacket::critical(SubpacketData::KeyFlags(kf))?,
     ];
-    config.unhashed_subpackets = vec![Subpacket::regular(SubpacketData::Issuer(
-        signing_key.key_id(),
+    config.unhashed_subpackets = vec![Subpacket::regular(SubpacketData::IssuerKeyId(
+        signing_key.legacy_key_id(),
     ))?];
 
     let user_id = UserId::from_str(types::PacketHeaderVersion::New, user_id)?;
@@ -230,7 +230,7 @@ pub fn export_persona_did_keys(
         PacketHeader::new_fixed(Tag::PublicSubkey, 51),
         KeyVersion::V4,
         PublicKeyAlgorithm::EdDSALegacy,
-        Utc::now(),
+        Timestamp::now(),
         None,
         PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
             key: VerifyingKey::from_bytes(
@@ -284,7 +284,7 @@ pub fn export_persona_did_keys(
         PacketHeader::new_fixed(Tag::PublicSubkey, 56),
         KeyVersion::V4,
         PublicKeyAlgorithm::ECDH,
-        Utc::now(),
+        Timestamp::now(),
         None,
         PublicParams::ECDH(EcdhPublicParams::Curve25519 {
             p: x25519_dalek::PublicKey::from(

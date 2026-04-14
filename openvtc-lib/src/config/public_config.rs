@@ -7,7 +7,7 @@ use crate::{
     errors::OpenVTCError,
     logs::Logs,
 };
-use secrecy::SecretVec;
+use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -98,7 +98,7 @@ impl PublicConfig {
         &self,
         profile: &str,
         private: &ProtectedConfig,
-        private_seed: &SecretVec<u8>,
+        private_seed: &SecretBox<Vec<u8>>,
     ) -> Result<(), OpenVTCError> {
         let cfg_path = get_config_path(profile)?;
         let path = Path::new(&cfg_path);

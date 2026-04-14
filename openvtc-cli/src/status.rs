@@ -175,9 +175,9 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 }
             };
             let user_pin = if user_pin.is_empty() {
-                SecretString::new("123456".to_string())
+                SecretString::new("123456".to_string().into())
             } else {
-                SecretString::new(user_pin)
+                SecretString::new(user_pin.into())
             };
 
             (user_pin, None)
@@ -204,7 +204,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                     }
                 };
             (
-                SecretString::new(String::new()),
+                SecretString::new(String::new().into()),
                 match UnlockCode::from_string(&passphrase) {
                     Ok(uc) => Some(uc),
                     Err(e) => {
@@ -218,7 +218,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 },
             )
         }
-        ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
+        ConfigProtectionType::Plaintext => (SecretString::new(String::new().into()), None),
     };
 
     let config = match Config::load_step2(

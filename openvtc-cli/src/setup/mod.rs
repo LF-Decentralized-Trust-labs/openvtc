@@ -99,9 +99,9 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
             .interact()
             .context("Failed to read admin PIN")?;
         let admin_pin = if admin_pin.is_empty() {
-            SecretString::new("12345678".to_string())
+            SecretString::new("12345678".to_string().into())
         } else {
-            SecretString::new(admin_pin)
+            SecretString::new(admin_pin.into())
         };
         setup_hardware_token(term, &admin_pin, &p_did_keys)?
     };
@@ -183,7 +183,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
     let mut config = Config {
         key_backend: KeyBackend::Bip32 {
             root: get_bip32_root(mnemonic.to_entropy().as_slice())?,
-            seed: SecretString::new(BASE64_URL_SAFE_NO_PAD.encode(mnemonic.to_entropy())),
+            seed: SecretString::new(BASE64_URL_SAFE_NO_PAD.encode(mnemonic.to_entropy()).into()),
         },
         public: PublicConfig {
             protection,
@@ -220,7 +220,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
         #[cfg(feature = "openpgp-card")]
         token_admin_pin: None,
         #[cfg(feature = "openpgp-card")]
-        token_user_pin: SecretString::new(String::new()),
+        token_user_pin: SecretString::new(String::new().into()),
         protection_method: ProtectionMethod::default(),
         unlock_code,
         atm_profiles: HashMap::new(),

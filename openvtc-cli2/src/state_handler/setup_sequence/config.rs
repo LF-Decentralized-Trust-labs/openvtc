@@ -259,9 +259,9 @@ impl ConfigExtension for Config {
         let encryption_seed =
             ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
         let key_backend = KeyBackend::Vta {
-            credential_bundle: SecretString::new(credential_raw),
+            credential_bundle: SecretString::new(credential_raw.into()),
             credential_did: bundle.did.clone(),
-            credential_private_key: SecretString::new(bundle.private_key_multibase.clone()),
+            credential_private_key: SecretString::new(bundle.private_key_multibase.clone().into()),
             vta_did: bundle.vta_did.clone(),
             vta_url: bundle.vta_url.clone().unwrap_or_default(),
             encryption_seed,
@@ -302,7 +302,7 @@ impl ConfigExtension for Config {
             #[cfg(feature = "openpgp-card")]
             token_admin_pin: None,
             #[cfg(feature = "openpgp-card")]
-            token_user_pin: SecretString::new(String::new()),
+            token_user_pin: SecretString::new(String::new().into()),
             protection_method: ProtectionMethod::default(),
             unlock_code,
             atm_profiles: HashMap::new(),

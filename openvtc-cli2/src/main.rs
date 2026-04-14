@@ -337,7 +337,7 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
     let user_pin = if matches!(&public_config.protection, ConfigProtectionType::Token(_)) {
         get_user_pin()
     } else {
-        SecretString::from_str("123456").unwrap()
+        SecretString::new("123456".to_string().into())
     };
 
     Ok(DeferredLoad {
