@@ -106,21 +106,21 @@ impl MainPageState {
                         if let Some(ref name) = request.name {
                             sanitize_display(name, 40)
                         } else {
-                            shorten_did(from)
+                            shorten_did(from, 60)
                         }
                     }
-                    TaskType::RelationshipRequestOutbound { to } => shorten_did(to),
-                    TaskType::TrustPing { to, .. } => shorten_did(to),
+                    TaskType::RelationshipRequestOutbound { to } => shorten_did(to, 60),
+                    TaskType::TrustPing { to, .. } => shorten_did(to, 60),
                     TaskType::VRCRequestInbound { relationship, .. } => {
                         if let Ok(lock) = relationship.lock() {
-                            shorten_did(&lock.remote_p_did)
+                            shorten_did(&lock.remote_p_did, 60)
                         } else {
                             String::new()
                         }
                     }
                     TaskType::VRCRequestOutbound { relationship } => {
                         if let Ok(lock) = relationship.lock() {
-                            shorten_did(&lock.remote_p_did)
+                            shorten_did(&lock.remote_p_did, 60)
                         } else {
                             String::new()
                         }
@@ -284,14 +284,17 @@ pub fn sanitize_display(input: &str, max_len: usize) -> String {
         .collect()
 }
 
-/// Shortens a DID for display (first 20 chars + "...").
+/// Shortens a DID for display, fitting within `max_width` characters.
+/// Shows the full DID if it fits, otherwise truncates with "...".
 #[must_use]
-fn shorten_did(did: &str) -> String {
+fn shorten_did(did: &str, max_width: usize) -> String {
     let sanitized = sanitize_display(did, 256);
-    if sanitized.len() > 24 {
-        format!("{}...", &sanitized[..20])
-    } else {
+    if sanitized.len() <= max_width {
         sanitized
+    } else if max_width > 3 {
+        format!("{}...", &sanitized[..max_width - 3])
+    } else {
+        sanitized[..max_width].to_string()
     }
 }
 
@@ -377,16 +380,23 @@ mod tests {
     #[test]
     fn test_shorten_did_short_input() {
         let short = "did:test:abc";
-        let result = shorten_did(short);
-        assert_eq!(result, short); // not shortened
+        let result = shorten_did(short, 60);
+        assert_eq!(result, short); // fits within 60 chars
     }
 
     #[test]
     fn test_shorten_did_long_input() {
         let long = "did:test:abcdefghijklmnopqrstuvwxyz";
-        let result = shorten_did(long);
+        let result = shorten_did(long, 20);
         assert!(result.ends_with("..."));
-        assert!(result.len() < long.len());
+        assert!(result.len() <= 20);
+    }
+
+    #[test]
+    fn test_shorten_did_exact_fit() {
+        let did = "did:test:exactly30charslongXXX";
+        let result = shorten_did(did, 30);
+        assert_eq!(result.len(), did.len()); // exactly fits
     }
 
     // --- MainPageState::log ---
