@@ -174,6 +174,7 @@ fn create_message_request(
         json!(RelationshipRequestBody {
             reason: reason.map(|r| r.to_string()),
             did: our_did.to_string(),
+            name: None, // CLI doesn't pass friendly name yet; caller can add it
         }),
     )
     .from(from.to_string())

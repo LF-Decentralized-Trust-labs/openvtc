@@ -95,7 +95,18 @@ pub async fn send_relationship_request(
     };
 
     // Build the relationship request message
-    let msg = create_request_message(&config.public.persona_did, respondent_did, reason, &our_did)?;
+    let friendly_name = if config.public.friendly_name.is_empty() {
+        None
+    } else {
+        Some(config.public.friendly_name.as_str())
+    };
+    let msg = create_request_message(
+        &config.public.persona_did,
+        respondent_did,
+        reason,
+        &our_did,
+        friendly_name,
+    )?;
     let msg_id = Arc::new(msg.id.clone());
 
     super::didcomm::send_message(
@@ -309,6 +320,7 @@ fn create_request_message(
     to: &str,
     reason: Option<&str>,
     our_did: &str,
+    friendly_name: Option<&str>,
 ) -> Result<Message> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -320,6 +332,7 @@ fn create_request_message(
         json!(RelationshipRequestBody {
             reason: reason.map(|r| r.to_string()),
             did: our_did.to_string(),
+            name: friendly_name.map(|n| n.to_string()),
         }),
     )
     .from(from.to_string())

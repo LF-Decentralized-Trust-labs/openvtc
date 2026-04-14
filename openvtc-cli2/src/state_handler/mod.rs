@@ -765,11 +765,13 @@ fn handle_inbox_open_detail(state: &mut State, index: usize) {
                 from_did,
                 their_did,
                 reason,
+                name,
             } => Some(ActiveTaskView::RelationshipRequestInbound {
                 task_id: task.id.clone(),
                 from_did: from_did.clone(),
                 their_did: their_did.clone(),
                 reason: reason.clone(),
+                name: name.clone(),
             }),
             TaskKind::VRCRequestInbound { reason } => Some(ActiveTaskView::VRCRequestInbound {
                 task_id: task.id.clone(),

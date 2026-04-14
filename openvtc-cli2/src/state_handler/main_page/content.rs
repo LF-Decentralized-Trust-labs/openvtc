@@ -62,6 +62,8 @@ pub enum TaskKind {
         from_did: String,
         their_did: String,
         reason: Option<String>,
+        /// Friendly name of the requester (if provided)
+        name: Option<String>,
     },
     /// Outbound relationship request awaiting response
     RelationshipRequestOutbound,
@@ -85,6 +87,7 @@ pub enum ActiveTaskView {
         from_did: String,
         their_did: String,
         reason: Option<String>,
+        name: Option<String>,
     },
     VRCRequestInbound {
         task_id: String,

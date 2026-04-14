@@ -61,6 +61,7 @@ impl MainPageState {
                             from_did: sanitize_display(from, 256),
                             their_did: sanitize_display(&request.did, 256),
                             reason: request.reason.as_deref().map(|r| sanitize_display(r, 256)),
+                            name: request.name.as_deref().map(|n| sanitize_display(n, 256)),
                         }
                     }
                     TaskType::RelationshipRequestOutbound { .. } => {
@@ -88,7 +89,13 @@ impl MainPageState {
                     _ => TaskKind::Informational("Unknown".to_string()),
                 };
                 let remote_did = match &task.type_ {
-                    TaskType::RelationshipRequestInbound { from, .. } => shorten_did(from),
+                    TaskType::RelationshipRequestInbound { from, request, .. } => {
+                        if let Some(ref name) = request.name {
+                            sanitize_display(name, 40)
+                        } else {
+                            shorten_did(from)
+                        }
+                    }
                     TaskType::RelationshipRequestOutbound { to } => shorten_did(to),
                     TaskType::TrustPing { to, .. } => shorten_did(to),
                     _ => String::new(),

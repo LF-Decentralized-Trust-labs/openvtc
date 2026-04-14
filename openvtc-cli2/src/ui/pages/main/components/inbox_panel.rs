@@ -138,6 +138,7 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             from_did,
             their_did,
             reason,
+            name,
         } => {
             lines.push(
                 Line::from("Inbound Relationship Request")
@@ -145,6 +146,12 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
                     .bold(),
             );
             lines.push(Line::from(""));
+            if let Some(name) = name {
+                lines.push(Line::from(vec![
+                    Span::styled("Name:  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                    Span::styled(name.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                ]));
+            }
             lines.push(Line::from(vec![
                 Span::styled("From:  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
                 Span::styled(from_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),

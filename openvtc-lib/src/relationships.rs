@@ -411,9 +411,15 @@ impl Relationships {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelationshipRequestBody {
     /// Optional human-readable reason for the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// The DID the requester wants to use for this relationship.
     pub did: String,
+    /// Optional human-readable name of the requester (e.g., "Alice").
+    /// Allows the recipient to see who is requesting the relationship
+    /// without needing to resolve the DID first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// DIDComm message body sent to the initiator when a relationship request is rejected.
