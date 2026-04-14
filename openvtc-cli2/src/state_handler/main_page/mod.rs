@@ -58,16 +58,16 @@ impl MainPageState {
                 let kind = match &task.type_ {
                     TaskType::RelationshipRequestInbound { from, request, .. } => {
                         TaskKind::RelationshipRequestInbound {
-                            from_did: from.to_string(),
-                            their_did: request.did.clone(),
-                            reason: request.reason.clone(),
+                            from_did: sanitize_display(from, 256),
+                            their_did: sanitize_display(&request.did, 256),
+                            reason: request.reason.as_deref().map(|r| sanitize_display(r, 256)),
                         }
                     }
                     TaskType::RelationshipRequestOutbound { .. } => {
                         TaskKind::RelationshipRequestOutbound
                     }
                     TaskType::VRCRequestInbound { request, .. } => TaskKind::VRCRequestInbound {
-                        reason: request.reason.clone(),
+                        reason: request.reason.as_deref().map(|r| sanitize_display(r, 256)),
                     },
                     TaskType::VRCRequestOutbound { .. } => TaskKind::VRCRequestOutbound,
                     TaskType::VRCIssued { .. } => TaskKind::VRCIssued,
@@ -97,7 +97,7 @@ impl MainPageState {
                     id: task.id.to_string(),
                     type_display: task.type_.to_string(),
                     kind,
-                    remote_did,
+                    remote_did: sanitize_display(&remote_did, 256),
                     created: task.created.format("%Y-%m-%d %H:%M").to_string(),
                 })
             })
@@ -132,11 +132,11 @@ impl MainPageState {
                     .get(remote_p_did)
                     .map_or(0, |m| m.len());
                 Some(RelationshipSummary {
-                    remote_p_did: remote_p_did.to_string(),
-                    alias,
+                    remote_p_did: sanitize_display(remote_p_did, 256),
+                    alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
                     state: rel.state.to_string(),
                     our_did: rel.our_did.to_string(),
-                    remote_did: rel.remote_did.to_string(),
+                    remote_did: sanitize_display(&rel.remote_did, 256),
                     created: rel.created.format("%Y-%m-%d %H:%M").to_string(),
                     vrc_sent_count: vrc_sent,
                     vrc_received_count: vrc_received,
@@ -182,10 +182,10 @@ fn collect_vrcs(vrcs: &openvtc::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
             for (vrc_id, vrc) in vrc_map {
                 result.push(VrcSummary {
                     vrc_id: vrc_id.to_string(),
-                    remote_p_did: remote_p_did.to_string(),
-                    alias: alias.clone(),
-                    issuer: vrc.issuer().to_string(),
-                    subject: vrc.subject().to_string(),
+                    remote_p_did: sanitize_display(remote_p_did, 256),
+                    alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
+                    issuer: sanitize_display(vrc.issuer(), 256),
+                    subject: sanitize_display(vrc.subject(), 256),
                     valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                     valid_until: vrc.valid_until().map(|d| d.format("%Y-%m-%d").to_string()),
                 });
@@ -195,12 +195,40 @@ fn collect_vrcs(vrcs: &openvtc::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
     result
 }
 
+/// Sanitize a string from an untrusted source for safe terminal display.
+/// Strips ANSI escape codes and control characters, truncates to max_len.
+pub fn sanitize_display(input: &str, max_len: usize) -> String {
+    let sanitized: String = input
+        .chars()
+        .filter(|c| !c.is_control() || *c == ' ')
+        .take(max_len)
+        .collect();
+    // Strip ANSI escape sequences (ESC [ ... letter pattern)
+    let mut result = String::with_capacity(sanitized.len());
+    let mut in_escape = false;
+    for c in sanitized.chars() {
+        if c == '\x1b' {
+            in_escape = true;
+            continue;
+        }
+        if in_escape {
+            if c.is_ascii_alphabetic() {
+                in_escape = false;
+            }
+            continue;
+        }
+        result.push(c);
+    }
+    result
+}
+
 /// Shortens a DID for display (first 20 chars + "...").
 fn shorten_did(did: &str) -> String {
-    if did.len() > 24 {
-        format!("{}...", &did[..20])
+    let sanitized = sanitize_display(did, 256);
+    if sanitized.len() > 24 {
+        format!("{}...", &sanitized[..20])
     } else {
-        did.to_string()
+        sanitized
     }
 }
 

@@ -19,6 +19,15 @@ use serde_json::json;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+/// Maximum allowed message body size in bytes (1 MB).
+const MAX_MESSAGE_BODY_SIZE: usize = 1_048_576;
+
+/// Maximum number of tasks allowed before rejecting new inbound messages.
+const MAX_TASKS: usize = 10_000;
+
+/// Maximum number of relationships allowed before rejecting new requests.
+const MAX_RELATIONSHIPS: usize = 5_000;
+
 /// Process an inbound DIDComm message.
 ///
 /// Auto-processes messages that don't need human input (pong, accept, finalize, reject).
@@ -39,6 +48,18 @@ pub async fn process_inbound_message(
         }
     };
 
+    // Validate message body size to prevent DoS via oversized payloads
+    let body_size = serde_json::to_string(&message.body)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    if body_size > MAX_MESSAGE_BODY_SIZE {
+        warn!(
+            size = body_size,
+            "rejecting oversized message body ({} bytes)", body_size
+        );
+        return Ok(false);
+    }
+
     let msg_type = match MessageType::try_from(message) {
         Ok(t) => t,
         Err(_) => {
@@ -56,6 +77,18 @@ pub async fn process_inbound_message(
         MessageType::RelationshipRequestRejected => {
             let task_id = require_thid(message)?;
             let body: RelationshipRejectBody = serde_json::from_value(message.body.clone())?;
+
+            // Verify sender has a relationship with us
+            if config.private.relationships.get(&from_did).is_none()
+                && config
+                    .private
+                    .relationships
+                    .find_by_remote_did(&from_did)
+                    .is_none()
+            {
+                warn!(from = %from_did, "reject from unknown party — ignoring");
+                return Ok(false);
+            }
 
             // Remove the relationship and task
             let _ = config.private.relationships.remove_by_task_id(
@@ -157,6 +190,18 @@ pub async fn process_inbound_message(
             let task_id = require_thid(message)?;
             let body: VRCRequestReject = serde_json::from_value(message.body.clone())?;
 
+            // Verify sender has a relationship with us
+            if config.private.relationships.get(&from_did).is_none()
+                && config
+                    .private
+                    .relationships
+                    .find_by_remote_did(&from_did)
+                    .is_none()
+            {
+                warn!(from = %from_did, "VRC reject from unknown party — ignoring");
+                return Ok(false);
+            }
+
             config.private.tasks.remove(&task_id);
             config.public.logs.insert(
                 LogFamily::Task,
@@ -184,6 +229,25 @@ pub async fn process_inbound_message(
                     .cloned()
                     .unwrap_or_default(),
             );
+
+            // Prevent task ID collision/hijacking
+            if config.private.tasks.get_by_id(&task_id).is_some() {
+                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
+                return Ok(false);
+            }
+
+            if config.private.tasks.tasks.len() >= MAX_TASKS {
+                warn!(
+                    "task limit reached ({}) — rejecting inbound message",
+                    MAX_TASKS
+                );
+                return Ok(false);
+            }
+
+            if config.private.relationships.relationships.len() >= MAX_RELATIONSHIPS {
+                warn!("relationship limit reached — rejecting request");
+                return Ok(false);
+            }
 
             config.private.tasks.new_task(
                 &task_id,
@@ -214,6 +278,20 @@ pub async fn process_inbound_message(
                     anyhow::anyhow!("VRC request from ({}) but no relationship found", from_did)
                 })?;
 
+            // Prevent task ID collision/hijacking
+            if config.private.tasks.get_by_id(&task_id).is_some() {
+                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
+                return Ok(false);
+            }
+
+            if config.private.tasks.tasks.len() >= MAX_TASKS {
+                warn!(
+                    "task limit reached ({}) — rejecting inbound message",
+                    MAX_TASKS
+                );
+                return Ok(false);
+            }
+
             config.private.tasks.new_task(
                 &task_id,
                 TaskType::VRCRequestInbound {
@@ -233,6 +311,20 @@ pub async fn process_inbound_message(
         MessageType::VRCIssued => {
             let vrc: dtg_credentials::DTGCredential = serde_json::from_value(message.body.clone())?;
             let task_id = Arc::new(message.thid.clone().unwrap_or_else(|| message.id.clone()));
+
+            // Prevent task ID collision/hijacking
+            if config.private.tasks.get_by_id(&task_id).is_some() {
+                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
+                return Ok(false);
+            }
+
+            if config.private.tasks.tasks.len() >= MAX_TASKS {
+                warn!(
+                    "task limit reached ({}) — rejecting inbound message",
+                    MAX_TASKS
+                );
+                return Ok(false);
+            }
 
             config
                 .private
@@ -259,6 +351,20 @@ pub async fn process_inbound_message(
                     .cloned()
                     .unwrap_or_default(),
             );
+
+            // Prevent task ID collision/hijacking
+            if config.private.tasks.get_by_id(&task_id).is_some() {
+                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
+                return Ok(false);
+            }
+
+            if config.private.tasks.tasks.len() >= MAX_TASKS {
+                warn!(
+                    "task limit reached ({}) — rejecting inbound message",
+                    MAX_TASKS
+                );
+                return Ok(false);
+            }
 
             // Find the relationship for this ping
             if let Some(relationship) = config.private.relationships.find_by_remote_did(&from_did) {
