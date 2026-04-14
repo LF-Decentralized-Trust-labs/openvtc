@@ -1,6 +1,6 @@
 use crate::{
     state_handler::{
-        actions::Action,
+        actions::{Action, CredentialAction, InboxAction, RelationshipAction, SettingsAction},
         main_page::{
             MainPageState, MainPanel,
             content::{ActiveTaskView, TaskKind},
@@ -176,39 +176,47 @@ impl MainPage {
 
             return match key.code {
                 KeyCode::Esc => {
-                    let _ = self.action_tx.send(Action::InboxBack);
+                    let _ = self.action_tx.send(Action::Inbox(InboxAction::Back));
                     true
                 }
                 KeyCode::Char('a') => {
                     if is_rel_inbound {
                         let _ = self
                             .action_tx
-                            .send(Action::InboxAcceptRelationship { task_id });
+                            .send(Action::Inbox(InboxAction::AcceptRelationship { task_id }));
                     } else if is_vrc_issued {
-                        let _ = self.action_tx.send(Action::InboxAcceptVrc { task_id });
+                        let _ = self
+                            .action_tx
+                            .send(Action::Inbox(InboxAction::AcceptVrc { task_id }));
                     } else if is_vrc_request_inbound {
                         let _ = self
                             .action_tx
-                            .send(Action::InboxAcceptVrcRequest { task_id });
+                            .send(Action::Inbox(InboxAction::AcceptVrcRequest { task_id }));
                     }
                     true
                 }
                 KeyCode::Char('r') => {
                     if is_rel_inbound {
-                        let _ = self.action_tx.send(Action::InboxRejectRelationship {
-                            task_id,
-                            reason: None,
-                        });
+                        let _ =
+                            self.action_tx
+                                .send(Action::Inbox(InboxAction::RejectRelationship {
+                                    task_id,
+                                    reason: None,
+                                }));
                     } else if is_vrc_request_inbound {
-                        let _ = self.action_tx.send(Action::InboxRejectVrcRequest {
-                            task_id,
-                            reason: None,
-                        });
+                        let _ = self
+                            .action_tx
+                            .send(Action::Inbox(InboxAction::RejectVrcRequest {
+                                task_id,
+                                reason: None,
+                            }));
                     }
                     true
                 }
                 KeyCode::Char('d') => {
-                    let _ = self.action_tx.send(Action::InboxDismissTask { task_id });
+                    let _ = self
+                        .action_tx
+                        .send(Action::Inbox(InboxAction::DismissTask { task_id }));
                     true
                 }
                 _ => false,
@@ -221,11 +229,15 @@ impl MainPage {
 
         match key.code {
             KeyCode::Up if selected > 0 => {
-                let _ = self.action_tx.send(Action::InboxSelectTask(selected - 1));
+                let _ = self
+                    .action_tx
+                    .send(Action::Inbox(InboxAction::SelectTask(selected - 1)));
                 true
             }
             KeyCode::Down if selected + 1 < task_count => {
-                let _ = self.action_tx.send(Action::InboxSelectTask(selected + 1));
+                let _ = self
+                    .action_tx
+                    .send(Action::Inbox(InboxAction::SelectTask(selected + 1)));
                 true
             }
             KeyCode::Enter if selected < task_count => {
@@ -257,17 +269,21 @@ impl MainPage {
                 };
                 // For tasks with detail views, send the open-detail action
                 if view.is_some() {
-                    let _ = self.action_tx.send(Action::InboxOpenDetail(selected));
+                    let _ = self
+                        .action_tx
+                        .send(Action::Inbox(InboxAction::OpenDetail(selected)));
                 }
                 true
             }
             KeyCode::Char('d') if selected < task_count => {
                 let task_id = inbox.tasks[selected].id.clone();
-                let _ = self.action_tx.send(Action::InboxDismissTask { task_id });
+                let _ = self
+                    .action_tx
+                    .send(Action::Inbox(InboxAction::DismissTask { task_id }));
                 true
             }
             KeyCode::Char('c') if task_count > 0 => {
-                let _ = self.action_tx.send(Action::InboxClearAll);
+                let _ = self.action_tx.send(Action::Inbox(InboxAction::ClearAll));
                 true
             }
             KeyCode::Esc => {
@@ -298,21 +314,27 @@ impl MainPage {
                 let generate_r_did = *generate_r_did;
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = self.action_tx.send(Action::RelationshipCancelNewRequest);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Relationship(RelationshipAction::CancelNewRequest));
                         true
                     }
                     KeyCode::Tab => {
                         // Cycle through fields 0->1->2->3->0
                         let next = (active_field + 1) % 4;
-                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
-                            field: next,
-                            value: String::new(), // just switching field, no value change
-                        });
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::InputUpdate {
+                                field: next,
+                                value: String::new(), // just switching field, no value change
+                            },
+                        ));
                         true
                     }
                     KeyCode::Char(' ') if active_field == 3 => {
                         // Toggle the generate_r_did boolean
-                        let _ = self.action_tx.send(Action::RelationshipToggleRDid);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Relationship(RelationshipAction::ToggleRDid));
                         true
                     }
                     KeyCode::Enter if active_field == 3 => {
@@ -324,12 +346,14 @@ impl MainPage {
                         } else {
                             Some(reason_input.clone())
                         };
-                        let _ = self.action_tx.send(Action::RelationshipSubmitRequest {
-                            did,
-                            alias,
-                            reason,
-                            generate_r_did,
-                        });
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::SubmitRequest {
+                                did,
+                                alias,
+                                reason,
+                                generate_r_did,
+                            },
+                        ));
                         true
                     }
                     KeyCode::Backspace if active_field < 3 => {
@@ -339,10 +363,12 @@ impl MainPage {
                             _ => reason_input.clone(),
                         };
                         current.pop();
-                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
-                            field: active_field,
-                            value: current,
-                        });
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::InputUpdate {
+                                field: active_field,
+                                value: current,
+                            },
+                        ));
                         true
                     }
                     KeyCode::Char(c) if active_field < 3 => {
@@ -352,10 +378,12 @@ impl MainPage {
                             _ => reason_input.clone(),
                         };
                         current.push(c);
-                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
-                            field: active_field,
-                            value: current,
-                        });
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::InputUpdate {
+                                field: active_field,
+                                value: current,
+                            },
+                        ));
                         true
                     }
                     _ => false,
@@ -365,22 +393,28 @@ impl MainPage {
                 let index = *index;
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = self.action_tx.send(Action::RelationshipBack);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Relationship(RelationshipAction::Back));
                         true
                     }
                     KeyCode::Char('p') => {
                         if let Some(rel) = rels.relationships.get(index) {
-                            let _ = self.action_tx.send(Action::RelationshipPing {
-                                remote_p_did: rel.remote_p_did.clone(),
-                            });
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::Ping {
+                                    remote_p_did: rel.remote_p_did.clone(),
+                                },
+                            ));
                         }
                         true
                     }
                     KeyCode::Char('d') => {
                         if let Some(rel) = rels.relationships.get(index) {
-                            let _ = self.action_tx.send(Action::RelationshipRemove {
-                                remote_p_did: rel.remote_p_did.clone(),
-                            });
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::Remove {
+                                    remote_p_did: rel.remote_p_did.clone(),
+                                },
+                            ));
                         }
                         true
                     }
@@ -393,25 +427,31 @@ impl MainPage {
 
                 match key.code {
                     KeyCode::Up if selected > 0 => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::RelationshipSelect(selected - 1));
+                        let _ =
+                            self.action_tx
+                                .send(Action::Relationship(RelationshipAction::Select(
+                                    selected - 1,
+                                )));
                         true
                     }
                     KeyCode::Down if selected + 1 < count => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::RelationshipSelect(selected + 1));
+                        let _ =
+                            self.action_tx
+                                .send(Action::Relationship(RelationshipAction::Select(
+                                    selected + 1,
+                                )));
                         true
                     }
                     KeyCode::Enter if selected < count => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::RelationshipOpenDetail(selected));
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::OpenDetail(selected),
+                        ));
                         true
                     }
                     KeyCode::Char('n') => {
-                        let _ = self.action_tx.send(Action::RelationshipStartNewRequest);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Relationship(RelationshipAction::StartNewRequest));
                         true
                     }
                     KeyCode::Esc => {
@@ -439,20 +479,22 @@ impl MainPage {
                 let rel_idx = *relationship_index;
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = self.action_tx.send(Action::CredentialCancelNewRequest);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::CancelNewRequest));
                         true
                     }
                     KeyCode::Up if rel_idx > 0 => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::CredentialSelectRelationship(rel_idx - 1));
+                        let _ = self.action_tx.send(Action::Credential(
+                            CredentialAction::SelectRelationship(rel_idx - 1),
+                        ));
                         true
                     }
                     KeyCode::Down => {
                         // Bound check happens in state handler
-                        let _ = self
-                            .action_tx
-                            .send(Action::CredentialSelectRelationship(rel_idx + 1));
+                        let _ = self.action_tx.send(Action::Credential(
+                            CredentialAction::SelectRelationship(rel_idx + 1),
+                        ));
                         true
                     }
                     KeyCode::Enter => {
@@ -467,27 +509,33 @@ impl MainPage {
                             .filter(|r| r.state == "Established")
                             .collect();
                         if let Some(rel) = established.get(rel_idx) {
-                            let _ = self.action_tx.send(Action::CredentialSubmitRequest {
-                                relationship_p_did: rel.remote_p_did.clone(),
-                                reason: if reason_input.trim().is_empty() {
-                                    None
-                                } else {
-                                    Some(reason_input.clone())
+                            let _ = self.action_tx.send(Action::Credential(
+                                CredentialAction::SubmitRequest {
+                                    relationship_p_did: rel.remote_p_did.clone(),
+                                    reason: if reason_input.trim().is_empty() {
+                                        None
+                                    } else {
+                                        Some(reason_input.clone())
+                                    },
                                 },
-                            });
+                            ));
                         }
                         true
                     }
                     KeyCode::Backspace => {
                         let mut r = reason_input.clone();
                         r.pop();
-                        let _ = self.action_tx.send(Action::CredentialReasonUpdate(r));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::ReasonUpdate(r)));
                         true
                     }
                     KeyCode::Char(c) => {
                         let mut r = reason_input.clone();
                         r.push(c);
-                        let _ = self.action_tx.send(Action::CredentialReasonUpdate(r));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::ReasonUpdate(r)));
                         true
                     }
                     _ => false,
@@ -497,7 +545,9 @@ impl MainPage {
                 let detail_index = *index;
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = self.action_tx.send(Action::CredentialBack);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::Back));
                         true
                     }
                     KeyCode::Char('d') => {
@@ -506,9 +556,11 @@ impl MainPage {
                             CredentialTab::Issued => &creds.issued,
                         };
                         if let Some(vrc) = active_list.get(detail_index) {
-                            let _ = self.action_tx.send(Action::CredentialRemove {
-                                vrc_id: vrc.vrc_id.clone(),
-                            });
+                            let _ =
+                                self.action_tx
+                                    .send(Action::Credential(CredentialAction::Remove {
+                                        vrc_id: vrc.vrc_id.clone(),
+                                    }));
                         }
                         true
                     }
@@ -524,23 +576,33 @@ impl MainPage {
 
                 match key.code {
                     KeyCode::Tab => {
-                        let _ = self.action_tx.send(Action::CredentialSwitchTab);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::SwitchTab));
                         true
                     }
                     KeyCode::Up if selected > 0 => {
-                        let _ = self.action_tx.send(Action::CredentialSelect(selected - 1));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::Select(selected - 1)));
                         true
                     }
                     KeyCode::Down if selected + 1 < active_list_len => {
-                        let _ = self.action_tx.send(Action::CredentialSelect(selected + 1));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::Select(selected + 1)));
                         true
                     }
                     KeyCode::Enter if selected < active_list_len => {
-                        let _ = self.action_tx.send(Action::CredentialOpenDetail(selected));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::OpenDetail(selected)));
                         true
                     }
                     KeyCode::Char('n') => {
-                        let _ = self.action_tx.send(Action::CredentialStartNewRequest);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Credential(CredentialAction::StartNewRequest));
                         true
                     }
                     KeyCode::Esc => {
@@ -566,25 +628,33 @@ impl MainPage {
                 let current = input.clone();
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::CancelEdit));
                         true
                     }
                     KeyCode::Enter => {
                         let _ = self
                             .action_tx
-                            .send(Action::SettingsSubmitEdit { value: current });
+                            .send(Action::Settings(SettingsAction::SubmitEdit {
+                                value: current,
+                            }));
                         true
                     }
                     KeyCode::Backspace => {
                         let mut v = current;
                         v.pop();
-                        let _ = self.action_tx.send(Action::SettingsFieldUpdate(v));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::FieldUpdate(v)));
                         true
                     }
                     KeyCode::Char(c) => {
                         let mut v = current;
                         v.push(c);
-                        let _ = self.action_tx.send(Action::SettingsFieldUpdate(v));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::FieldUpdate(v)));
                         true
                     }
                     _ => false,
@@ -599,34 +669,42 @@ impl MainPage {
                 match key.code {
                     KeyCode::Esc => {
                         self.passphrase_buffer.clear();
-                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::CancelEdit));
                         true
                     }
                     KeyCode::Tab => {
-                        let _ = self.action_tx.send(Action::SettingsFormTabSwitch);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::FormTabSwitch));
                         true
                     }
                     KeyCode::Enter if active == 1 => {
                         let passphrase = std::mem::take(&mut self.passphrase_buffer);
-                        let _ = self.action_tx.send(Action::SettingsExportConfig {
-                            path: path_input.clone(),
-                            passphrase,
-                        });
+                        let _ =
+                            self.action_tx
+                                .send(Action::Settings(SettingsAction::ExportConfig {
+                                    path: path_input.clone(),
+                                    passphrase,
+                                }));
                         true
                     }
                     KeyCode::Backspace => {
                         if active == 0 {
                             let mut current = path_input.clone();
                             current.pop();
-                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                                field: 0,
-                                value: current,
-                            });
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::FormFieldUpdate {
+                                    field: 0,
+                                    value: current,
+                                },
+                            ));
                         } else {
                             self.passphrase_buffer.pop();
-                            let _ = self
-                                .action_tx
-                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
+                            ));
                         }
                         true
                     }
@@ -634,15 +712,17 @@ impl MainPage {
                         if active == 0 {
                             let mut current = path_input.clone();
                             current.push(c);
-                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                                field: 0,
-                                value: current,
-                            });
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::FormFieldUpdate {
+                                    field: 0,
+                                    value: current,
+                                },
+                            ));
                         } else {
                             self.passphrase_buffer.push(c);
-                            let _ = self
-                                .action_tx
-                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
+                            ));
                         }
                         true
                     }
@@ -660,28 +740,34 @@ impl MainPage {
                     KeyCode::Esc => {
                         self.passphrase_buffer.clear();
                         self.confirm_buffer.clear();
-                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::CancelEdit));
                         true
                     }
                     KeyCode::Up if active == 0 && sel > 0 => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::SettingsProtectionOptionSelect(sel - 1));
+                        let _ = self.action_tx.send(Action::Settings(
+                            SettingsAction::ProtectionOptionSelect(sel - 1),
+                        ));
                         true
                     }
                     KeyCode::Down if active == 0 && sel < 1 => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::SettingsProtectionOptionSelect(sel + 1));
+                        let _ = self.action_tx.send(Action::Settings(
+                            SettingsAction::ProtectionOptionSelect(sel + 1),
+                        ));
                         true
                     }
                     KeyCode::Enter if active == 0 => {
                         if sel == 0 {
                             // Switch to passphrase input
-                            let _ = self.action_tx.send(Action::SettingsProtectionStartInput);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::ProtectionStartInput));
                         } else {
                             // Remove passphrase
-                            let _ = self.action_tx.send(Action::SettingsRemovePassphrase);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::RemovePassphrase));
                         }
                         true
                     }
@@ -689,7 +775,7 @@ impl MainPage {
                         let next = if active == 1 { 2 } else { 1 };
                         let _ = self
                             .action_tx
-                            .send(Action::SettingsProtectionTabSwitch(next));
+                            .send(Action::Settings(SettingsAction::ProtectionTabSwitch(next)));
                         true
                     }
                     KeyCode::Enter if active == 2 => {
@@ -699,22 +785,24 @@ impl MainPage {
                         {
                             let passphrase = std::mem::take(&mut self.passphrase_buffer);
                             self.confirm_buffer.clear();
-                            let _ = self
-                                .action_tx
-                                .send(Action::SettingsSetPassphrase { passphrase });
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::SetPassphrase { passphrase },
+                            ));
                         }
                         true
                     }
                     KeyCode::Backspace if active >= 1 => {
                         if active == 1 {
                             self.passphrase_buffer.pop();
-                            let _ = self.action_tx.send(Action::SettingsProtectionPassphraseLen(
-                                self.passphrase_buffer.len(),
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::ProtectionPassphraseLen(
+                                    self.passphrase_buffer.len(),
+                                ),
                             ));
                         } else {
                             self.confirm_buffer.pop();
-                            let _ = self.action_tx.send(Action::SettingsProtectionConfirmLen(
-                                self.confirm_buffer.len(),
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::ProtectionConfirmLen(self.confirm_buffer.len()),
                             ));
                         }
                         true
@@ -722,13 +810,15 @@ impl MainPage {
                     KeyCode::Char(c) if active >= 1 => {
                         if active == 1 {
                             self.passphrase_buffer.push(c);
-                            let _ = self.action_tx.send(Action::SettingsProtectionPassphraseLen(
-                                self.passphrase_buffer.len(),
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::ProtectionPassphraseLen(
+                                    self.passphrase_buffer.len(),
+                                ),
                             ));
                         } else {
                             self.confirm_buffer.push(c);
-                            let _ = self.action_tx.send(Action::SettingsProtectionConfirmLen(
-                                self.confirm_buffer.len(),
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::ProtectionConfirmLen(self.confirm_buffer.len()),
                             ));
                         }
                         true
@@ -741,24 +831,34 @@ impl MainPage {
                 let sel = *selected_index;
                 match key.code {
                     KeyCode::Esc => {
-                        let _ = self.action_tx.send(Action::SettingsTokenBack);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::TokenBack));
                         true
                     }
                     KeyCode::Up if sel > 0 => {
-                        let _ = self.action_tx.send(Action::SettingsSelect(sel - 1));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::Select(sel - 1)));
                         true
                     }
                     KeyCode::Down if sel < 1 => {
-                        let _ = self.action_tx.send(Action::SettingsSelect(sel + 1));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::Select(sel + 1)));
                         true
                     }
                     KeyCode::Enter => {
                         match sel {
                             0 => {
-                                let _ = self.action_tx.send(Action::SettingsTokenDetect);
+                                let _ = self
+                                    .action_tx
+                                    .send(Action::Settings(SettingsAction::TokenDetect));
                             }
                             1 => {
-                                let _ = self.action_tx.send(Action::SettingsTokenFactoryReset);
+                                let _ = self
+                                    .action_tx
+                                    .send(Action::Settings(SettingsAction::TokenFactoryReset));
                             }
                             _ => {}
                         }
@@ -776,34 +876,42 @@ impl MainPage {
                 match key.code {
                     KeyCode::Esc => {
                         self.passphrase_buffer.clear();
-                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::CancelEdit));
                         true
                     }
                     KeyCode::Tab => {
-                        let _ = self.action_tx.send(Action::SettingsFormTabSwitch);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::FormTabSwitch));
                         true
                     }
                     KeyCode::Enter if active == 1 => {
                         let passphrase = std::mem::take(&mut self.passphrase_buffer);
-                        let _ = self.action_tx.send(Action::SettingsImportConfig {
-                            path: path_input.clone(),
-                            passphrase,
-                        });
+                        let _ =
+                            self.action_tx
+                                .send(Action::Settings(SettingsAction::ImportConfig {
+                                    path: path_input.clone(),
+                                    passphrase,
+                                }));
                         true
                     }
                     KeyCode::Backspace => {
                         if active == 0 {
                             let mut current = path_input.clone();
                             current.pop();
-                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                                field: 0,
-                                value: current,
-                            });
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::FormFieldUpdate {
+                                    field: 0,
+                                    value: current,
+                                },
+                            ));
                         } else {
                             self.passphrase_buffer.pop();
-                            let _ = self
-                                .action_tx
-                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
+                            ));
                         }
                         true
                     }
@@ -811,15 +919,17 @@ impl MainPage {
                         if active == 0 {
                             let mut current = path_input.clone();
                             current.push(c);
-                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                                field: 0,
-                                value: current,
-                            });
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::FormFieldUpdate {
+                                    field: 0,
+                                    value: current,
+                                },
+                            ));
                         } else {
                             self.passphrase_buffer.push(c);
-                            let _ = self
-                                .action_tx
-                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
+                            ));
                         }
                         true
                     }
@@ -836,29 +946,43 @@ impl MainPage {
 
                 match key.code {
                     KeyCode::Up if selected > 0 => {
-                        let _ = self.action_tx.send(Action::SettingsSelect(selected - 1));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::Select(selected - 1)));
                         true
                     }
                     KeyCode::Down if selected < max_index => {
-                        let _ = self.action_tx.send(Action::SettingsSelect(selected + 1));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::Select(selected + 1)));
                         true
                     }
                     KeyCode::Enter => {
                         if selected <= 2 {
-                            let _ = self.action_tx.send(Action::SettingsStartEdit);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::StartEdit));
                         } else if selected == 4 {
                             // Change protection
-                            let _ = self.action_tx.send(Action::SettingsChangeProtection);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::ChangeProtection));
                         } else if selected == 5 {
                             // Export
-                            let _ = self.action_tx.send(Action::SettingsStartEdit);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::StartEdit));
                         } else if selected == 6 {
                             // Import
-                            let _ = self.action_tx.send(Action::SettingsStartEdit);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::StartEdit));
                         }
                         #[cfg(feature = "openpgp-card")]
                         if selected == 7 {
-                            let _ = self.action_tx.send(Action::SettingsTokenManagement);
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::TokenManagement));
                         }
                         true
                     }

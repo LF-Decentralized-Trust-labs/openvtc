@@ -18,8 +18,140 @@ use crate::{
     ui::pages::setup_flow::{SetupFlow, did_keys_export_inputs::DIDKeysExportInputs},
 };
 
-// Some variants (e.g. ContactAdd, ContactRemove) are defined for the handler
-// but not yet wired to UI construction; others are gated behind cfg features.
+// ============================================================================
+// Domain sub-enums
+// ============================================================================
+
+#[allow(dead_code)]
+pub enum InboxAction {
+    SelectTask(usize),
+    OpenDetail(usize),
+    AcceptRelationship {
+        task_id: String,
+    },
+    RejectRelationship {
+        task_id: String,
+        reason: Option<String>,
+    },
+    AcceptVrc {
+        task_id: String,
+    },
+    AcceptVrcRequest {
+        task_id: String,
+    },
+    RejectVrcRequest {
+        task_id: String,
+        reason: Option<String>,
+    },
+    DismissTask {
+        task_id: String,
+    },
+    ClearAll,
+    Back,
+}
+
+#[allow(dead_code)]
+pub enum RelationshipAction {
+    Select(usize),
+    OpenDetail(usize),
+    StartNewRequest,
+    SubmitRequest {
+        did: String,
+        alias: String,
+        reason: Option<String>,
+        generate_r_did: bool,
+    },
+    CancelNewRequest,
+    Ping {
+        remote_p_did: String,
+    },
+    Remove {
+        remote_p_did: String,
+    },
+    Back,
+    InputUpdate {
+        field: usize,
+        value: String,
+    },
+    ToggleRDid,
+}
+
+#[allow(dead_code)]
+pub enum CredentialAction {
+    SwitchTab,
+    Select(usize),
+    OpenDetail(usize),
+    Back,
+    StartNewRequest,
+    SelectRelationship(usize),
+    SubmitRequest {
+        relationship_p_did: String,
+        reason: Option<String>,
+    },
+    CancelNewRequest,
+    ReasonUpdate(String),
+    Remove {
+        vrc_id: String,
+    },
+}
+
+#[allow(dead_code)]
+pub enum ContactAction {
+    Add { did: String, alias: Option<String> },
+    Remove { did: String },
+}
+
+#[allow(dead_code)]
+pub enum SettingsAction {
+    Select(usize),
+    StartEdit,
+    FieldUpdate(String),
+    FormFieldUpdate {
+        field: usize,
+        value: String,
+    },
+    FormTabSwitch,
+    ProtectionOptionSelect(usize),
+    ProtectionStartInput,
+    ProtectionPassphraseLen(usize),
+    ProtectionConfirmLen(usize),
+    ProtectionTabSwitch(usize),
+    PassphraseLen(usize),
+    SubmitEdit {
+        value: String,
+    },
+    CancelEdit,
+    ExportConfig {
+        path: String,
+        passphrase: String,
+    },
+    ImportConfig {
+        path: String,
+        passphrase: String,
+    },
+    ChangeProtection,
+    SetPassphrase {
+        passphrase: String,
+    },
+    RemovePassphrase,
+    ReconnectMediator,
+    #[cfg(feature = "openpgp-card")]
+    TokenManagement,
+    #[cfg(feature = "openpgp-card")]
+    TokenDetect,
+    #[cfg(feature = "openpgp-card")]
+    TokenFactoryReset,
+    #[cfg(feature = "openpgp-card")]
+    TokenBack,
+}
+
+// ============================================================================
+// Top-level Action enum
+// ============================================================================
+
+// Some variants (e.g. ContactAction::Add, ContactAction::Remove) are defined
+// for the handler but not yet wired to UI construction; others are gated behind
+// cfg features.
 #[allow(dead_code)]
 pub enum Action {
     Exit,
@@ -36,6 +168,13 @@ pub enum Action {
 
     /// Active Panel switched to
     MainPanelSwitch(MainPanel),
+
+    // Domain actions (grouped into sub-enums)
+    Inbox(InboxAction),
+    Relationship(RelationshipAction),
+    Credential(CredentialAction),
+    Contact(ContactAction),
+    Settings(SettingsAction),
 
     // ************************************************************************
     // SETUP Pages
@@ -113,227 +252,4 @@ pub enum Action {
 
     /// Final setup step completed, sends the whole setup flow
     SetupCompleted(Box<SetupFlow>),
-
-    // ************************************************************************
-    // INBOX Actions
-    /// Select a task by index in the inbox list
-    InboxSelectTask(usize),
-
-    /// Open the detail view for a task by index
-    InboxOpenDetail(usize),
-
-    /// Accept an inbound relationship request
-    InboxAcceptRelationship {
-        task_id: String,
-    },
-
-    /// Reject an inbound relationship request
-    InboxRejectRelationship {
-        task_id: String,
-        reason: Option<String>,
-    },
-
-    /// Accept a received VRC (store it)
-    InboxAcceptVrc {
-        task_id: String,
-    },
-
-    /// Accept an inbound VRC request (issue a VRC back to the requester)
-    InboxAcceptVrcRequest {
-        task_id: String,
-    },
-
-    /// Reject an inbound VRC request
-    InboxRejectVrcRequest {
-        task_id: String,
-        reason: Option<String>,
-    },
-
-    /// Dismiss/remove a task from the inbox
-    InboxDismissTask {
-        task_id: String,
-    },
-
-    /// Clear all tasks from the inbox
-    InboxClearAll,
-
-    /// Return from task detail to the inbox list
-    InboxBack,
-
-    // ************************************************************************
-    // RELATIONSHIP Actions
-    /// Select a relationship by index
-    RelationshipSelect(usize),
-
-    /// Open the detail view for a relationship by index
-    RelationshipOpenDetail(usize),
-
-    /// Open the new-request form
-    RelationshipStartNewRequest,
-
-    /// Submit a new relationship request
-    RelationshipSubmitRequest {
-        did: String,
-        alias: String,
-        reason: Option<String>,
-        generate_r_did: bool,
-    },
-
-    /// Cancel the new-request form
-    RelationshipCancelNewRequest,
-
-    /// Send a trust-ping to a relationship
-    RelationshipPing {
-        remote_p_did: String,
-    },
-
-    /// Remove a relationship
-    RelationshipRemove {
-        remote_p_did: String,
-    },
-
-    /// Return from detail view to the list
-    RelationshipBack,
-
-    /// Update a text input field in the new-request form (field index, new value)
-    RelationshipInputUpdate {
-        field: usize,
-        value: String,
-    },
-
-    // ************************************************************************
-    // CREDENTIAL Actions
-    /// Switch between Received/Issued tabs
-    CredentialSwitchTab,
-
-    /// Select a credential by index
-    CredentialSelect(usize),
-
-    /// Open the detail view for a credential by index
-    CredentialOpenDetail(usize),
-
-    /// Return from detail or new-request to list
-    CredentialBack,
-
-    /// Start the new VRC request flow (pick a relationship)
-    CredentialStartNewRequest,
-
-    /// Select a relationship for the VRC request (index into established relationships)
-    CredentialSelectRelationship(usize),
-
-    /// Submit the VRC request
-    CredentialSubmitRequest {
-        relationship_p_did: String,
-        reason: Option<String>,
-    },
-
-    /// Cancel the new VRC request
-    CredentialCancelNewRequest,
-
-    /// Update reason input in the new-request form
-    CredentialReasonUpdate(String),
-
-    /// Remove a VRC by ID
-    CredentialRemove {
-        vrc_id: String,
-    },
-
-    // ************************************************************************
-    // CONTACT Actions
-    /// Add a contact by DID with an optional alias
-    ContactAdd {
-        did: String,
-        alias: Option<String>,
-    },
-
-    /// Remove a contact by DID
-    ContactRemove {
-        did: String,
-    },
-
-    // ************************************************************************
-    // SETTINGS Actions
-    /// Select a settings item by index
-    SettingsSelect(usize),
-
-    /// Start editing the selected field
-    SettingsStartEdit,
-
-    /// Submit the edited value
-    SettingsSubmitEdit {
-        value: String,
-    },
-
-    /// Cancel editing
-    SettingsCancelEdit,
-
-    /// Update a text field during inline editing (name, mediator, org DID)
-    SettingsFieldUpdate(String),
-
-    /// Update export/import form fields
-    SettingsFormFieldUpdate {
-        field: usize,
-        value: String,
-    },
-    /// Switch field in export/import form
-    SettingsFormTabSwitch,
-
-    /// Change protection: select option (0=set passphrase, 1=remove)
-    SettingsProtectionOptionSelect(usize),
-    /// Change protection: switch to passphrase input mode
-    SettingsProtectionStartInput,
-    /// Change protection: update passphrase display length (actual value held in UI)
-    SettingsProtectionPassphraseLen(usize),
-    /// Change protection: update confirm display length (actual value held in UI)
-    SettingsProtectionConfirmLen(usize),
-    /// Change protection: switch between passphrase/confirm fields
-    SettingsProtectionTabSwitch(usize),
-
-    /// Update passphrase display length for export/import forms (actual value held in UI)
-    SettingsPassphraseLen(usize),
-
-    /// Toggle R-DID in relationship form
-    RelationshipToggleRDid,
-
-    /// Export config to file
-    SettingsExportConfig {
-        path: String,
-        passphrase: String,
-    },
-
-    /// Import config from file (requires restart)
-    SettingsImportConfig {
-        path: String,
-        passphrase: String,
-    },
-
-    /// Open the change protection sub-screen
-    SettingsChangeProtection,
-
-    /// Set a passphrase for config protection
-    SettingsSetPassphrase {
-        passphrase: String,
-    },
-
-    /// Remove passphrase protection (revert to keyring only)
-    SettingsRemovePassphrase,
-
-    /// Reconnect to the mediator (e.g., after mediator DID change)
-    SettingsReconnectMediator,
-
-    /// Open the token management sub-screen in settings
-    #[cfg(feature = "openpgp-card")]
-    SettingsTokenManagement,
-
-    /// Detect connected hardware tokens
-    #[cfg(feature = "openpgp-card")]
-    SettingsTokenDetect,
-
-    /// Factory reset a detected token
-    #[cfg(feature = "openpgp-card")]
-    SettingsTokenFactoryReset,
-
-    /// Return from token management to settings view
-    #[cfg(feature = "openpgp-card")]
-    SettingsTokenBack,
 }

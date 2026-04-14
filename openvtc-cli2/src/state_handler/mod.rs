@@ -3,7 +3,10 @@ use std::borrow::Cow;
 use crate::{
     Interrupted, Terminator,
     state_handler::{
-        actions::Action,
+        actions::{
+            Action, ContactAction, CredentialAction, InboxAction, RelationshipAction,
+            SettingsAction,
+        },
         main_page::MainPanel,
         state::{ActivePage, State},
     },
@@ -365,139 +368,201 @@ impl StateHandler {
                             }
                         }
                     },
-                    Action::InboxSelectTask(index) => {
-                        handle_inbox_select(&mut state, index);
+                    Action::Inbox(ia) => match ia {
+                        InboxAction::SelectTask(index) => {
+                            handle_inbox_select(&mut state, index);
+                        },
+                        InboxAction::OpenDetail(index) => {
+                            handle_inbox_open_detail(&mut state, index);
+                        },
+                        InboxAction::Back => {
+                            state.main_page.content_panel.inbox.active_task = None;
+                        },
+                        InboxAction::AcceptRelationship { task_id } => {
+                            handle_inbox_accept_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
+                        },
+                        InboxAction::RejectRelationship { task_id, reason } => {
+                            handle_inbox_reject_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
+                        },
+                        InboxAction::AcceptVrc { task_id } => {
+                            handle_inbox_accept_vrc(&mut config, &mut state, &self.profile, &task_id);
+                        },
+                        InboxAction::AcceptVrcRequest { task_id } => {
+                            handle_inbox_accept_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
+                        },
+                        InboxAction::RejectVrcRequest { task_id, reason } => {
+                            handle_inbox_reject_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
+                        },
+                        InboxAction::DismissTask { task_id } => {
+                            handle_inbox_dismiss_task(&mut config, &mut state, &self.profile, &task_id);
+                        },
+                        InboxAction::ClearAll => {
+                            handle_inbox_clear_all(&mut config, &mut state, &self.profile);
+                        },
                     },
-                    Action::InboxOpenDetail(index) => {
-                        handle_inbox_open_detail(&mut state, index);
+                    Action::Relationship(ra) => match ra {
+                        RelationshipAction::Select(index) => {
+                            state.main_page.content_panel.relationships.selected_index = index;
+                        },
+                        RelationshipAction::OpenDetail(index) => {
+                            handle_relationship_open_detail(&mut state, index);
+                        },
+                        RelationshipAction::StartNewRequest => {
+                            handle_relationship_start_new_request(&mut state);
+                        },
+                        RelationshipAction::CancelNewRequest | RelationshipAction::Back => {
+                            handle_relationship_cancel_or_back(&mut state);
+                        },
+                        RelationshipAction::InputUpdate { field, value } => {
+                            handle_relationship_input_update(&mut state, field, value);
+                        },
+                        RelationshipAction::ToggleRDid => {
+                            handle_relationship_toggle_r_did(&mut state);
+                        },
+                        RelationshipAction::SubmitRequest { did, alias, reason, generate_r_did } => {
+                            handle_relationship_submit(&mut config, &tdk, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
+                        },
+                        RelationshipAction::Ping { remote_p_did } => {
+                            handle_relationship_ping(&mut config, &tdk, &mut state, &self.profile, &remote_p_did).await;
+                        },
+                        RelationshipAction::Remove { remote_p_did } => {
+                            handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
+                        },
                     },
-                    Action::InboxBack => {
-                        state.main_page.content_panel.inbox.active_task = None;
+                    Action::Credential(ca) => match ca {
+                        CredentialAction::SwitchTab => {
+                            handle_credential_switch_tab(&mut state);
+                        },
+                        CredentialAction::Select(index) => {
+                            state.main_page.content_panel.credentials.selected_index = index;
+                        },
+                        CredentialAction::OpenDetail(index) => {
+                            handle_credential_open_detail(&mut state, index);
+                        },
+                        CredentialAction::Back | CredentialAction::CancelNewRequest => {
+                            handle_credential_back(&mut state);
+                        },
+                        CredentialAction::StartNewRequest => {
+                            handle_credential_start_new_request(&mut state);
+                        },
+                        CredentialAction::SelectRelationship(index) => {
+                            handle_credential_select_relationship(&mut state, index);
+                        },
+                        CredentialAction::ReasonUpdate(value) => {
+                            handle_credential_reason_update(&mut state, value);
+                        },
+                        CredentialAction::SubmitRequest { relationship_p_did, reason } => {
+                            handle_credential_submit_request(&mut config, &tdk, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
+                        },
+                        CredentialAction::Remove { vrc_id } => {
+                            handle_credential_remove(&mut config, &mut state, &self.profile, &vrc_id);
+                        },
                     },
-                    Action::InboxAcceptRelationship { task_id } => {
-                        handle_inbox_accept_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
+                    Action::Contact(ca) => match ca {
+                        ContactAction::Add { did, alias } => {
+                            handle_contact_add(&mut config, &mut state, &self.profile, &did, alias.as_deref());
+                        },
+                        ContactAction::Remove { did } => {
+                            handle_contact_remove(&mut config, &mut state, &self.profile, &did);
+                        },
                     },
-                    Action::InboxRejectRelationship { task_id, reason } => {
-                        handle_inbox_reject_relationship(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
-                    },
-                    Action::InboxAcceptVrc { task_id } => {
-                        handle_inbox_accept_vrc(&mut config, &mut state, &self.profile, &task_id);
-                    },
-                    Action::InboxAcceptVrcRequest { task_id } => {
-                        handle_inbox_accept_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id).await;
-                    },
-                    Action::InboxRejectVrcRequest { task_id, reason } => {
-                        handle_inbox_reject_vrc_request(&mut config, &tdk, &mut state, &self.profile, &task_id, reason.as_deref()).await;
-                    },
-                    Action::InboxDismissTask { task_id } => {
-                        handle_inbox_dismiss_task(&mut config, &mut state, &self.profile, &task_id);
-                    },
-                    Action::InboxClearAll => {
-                        handle_inbox_clear_all(&mut config, &mut state, &self.profile);
-                    },
-                    // Relationship actions
-                    Action::RelationshipSelect(index) => {
-                        state.main_page.content_panel.relationships.selected_index = index;
-                    },
-                    Action::RelationshipOpenDetail(index) => {
-                        handle_relationship_open_detail(&mut state, index);
-                    },
-                    Action::RelationshipStartNewRequest => {
-                        handle_relationship_start_new_request(&mut state);
-                    },
-                    Action::RelationshipCancelNewRequest | Action::RelationshipBack => {
-                        handle_relationship_cancel_or_back(&mut state);
-                    },
-                    Action::RelationshipInputUpdate { field, value } => {
-                        handle_relationship_input_update(&mut state, field, value);
-                    },
-                    Action::RelationshipToggleRDid => {
-                        handle_relationship_toggle_r_did(&mut state);
-                    },
-                    Action::RelationshipSubmitRequest { did, alias, reason, generate_r_did } => {
-                        handle_relationship_submit(&mut config, &tdk, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
-                    },
-                    Action::RelationshipPing { remote_p_did } => {
-                        handle_relationship_ping(&mut config, &tdk, &mut state, &self.profile, &remote_p_did).await;
-                    },
-                    Action::RelationshipRemove { remote_p_did } => {
-                        handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
-                    },
-                    // Credential actions
-                    Action::CredentialSwitchTab => {
-                        handle_credential_switch_tab(&mut state);
-                    },
-                    Action::CredentialSelect(index) => {
-                        state.main_page.content_panel.credentials.selected_index = index;
-                    },
-                    Action::CredentialOpenDetail(index) => {
-                        handle_credential_open_detail(&mut state, index);
-                    },
-                    Action::CredentialBack | Action::CredentialCancelNewRequest => {
-                        handle_credential_back(&mut state);
-                    },
-                    Action::CredentialStartNewRequest => {
-                        handle_credential_start_new_request(&mut state);
-                    },
-                    Action::CredentialSelectRelationship(index) => {
-                        handle_credential_select_relationship(&mut state, index);
-                    },
-                    Action::CredentialReasonUpdate(value) => {
-                        handle_credential_reason_update(&mut state, value);
-                    },
-                    Action::CredentialSubmitRequest { relationship_p_did, reason } => {
-                        handle_credential_submit_request(&mut config, &tdk, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
-                    },
-                    Action::CredentialRemove { vrc_id } => {
-                        handle_credential_remove(&mut config, &mut state, &self.profile, &vrc_id);
-                    },
-                    // Contact actions
-                    Action::ContactAdd { did, alias } => {
-                        handle_contact_add(&mut config, &mut state, &self.profile, &did, alias.as_deref());
-                    },
-                    Action::ContactRemove { did } => {
-                        handle_contact_remove(&mut config, &mut state, &self.profile, &did);
-                    },
-                    // Settings actions
-                    Action::SettingsSelect(index) => {
-                        handle_settings_select(&mut state, index);
-                    },
-                    Action::SettingsStartEdit => {
-                        handle_settings_start_edit(&mut state);
-                    },
-                    Action::SettingsCancelEdit => {
-                        state.main_page.content_panel.settings.mode = main_page::content::SettingsMode::View;
-                    },
-                    Action::SettingsFieldUpdate(value) => {
-                        handle_settings_field_update(&mut state, value);
-                    },
-                    Action::SettingsFormFieldUpdate { field, value } => {
-                        handle_settings_form_field_update(&mut state, field, value);
-                    },
-                    Action::SettingsFormTabSwitch => {
-                        handle_settings_form_tab_switch(&mut state);
-                    },
-                    Action::SettingsProtectionOptionSelect(option) => {
-                        handle_settings_protection_option_select(&mut state, option);
-                    },
-                    Action::SettingsProtectionStartInput => {
-                        handle_settings_protection_start_input(&mut state);
-                    },
-                    Action::SettingsProtectionPassphraseLen(len) => {
-                        handle_settings_protection_passphrase_len(&mut state, len);
-                    },
-                    Action::SettingsProtectionConfirmLen(len) => {
-                        handle_settings_protection_confirm_len(&mut state, len);
-                    },
-                    Action::SettingsProtectionTabSwitch(next_field) => {
-                        handle_settings_protection_tab_switch(&mut state, next_field);
-                    },
-                    Action::SettingsPassphraseLen(len) => {
-                        handle_settings_passphrase_len(&mut state, len);
-                    },
-                    Action::SettingsSubmitEdit { value } => {
-                        let needs_reconnect = handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
-                        if needs_reconnect {
+                    Action::Settings(sa) => match sa {
+                        SettingsAction::Select(index) => {
+                            handle_settings_select(&mut state, index);
+                        },
+                        SettingsAction::StartEdit => {
+                            handle_settings_start_edit(&mut state);
+                        },
+                        SettingsAction::CancelEdit => {
+                            state.main_page.content_panel.settings.mode = main_page::content::SettingsMode::View;
+                        },
+                        SettingsAction::FieldUpdate(value) => {
+                            handle_settings_field_update(&mut state, value);
+                        },
+                        SettingsAction::FormFieldUpdate { field, value } => {
+                            handle_settings_form_field_update(&mut state, field, value);
+                        },
+                        SettingsAction::FormTabSwitch => {
+                            handle_settings_form_tab_switch(&mut state);
+                        },
+                        SettingsAction::ProtectionOptionSelect(option) => {
+                            handle_settings_protection_option_select(&mut state, option);
+                        },
+                        SettingsAction::ProtectionStartInput => {
+                            handle_settings_protection_start_input(&mut state);
+                        },
+                        SettingsAction::ProtectionPassphraseLen(len) => {
+                            handle_settings_protection_passphrase_len(&mut state, len);
+                        },
+                        SettingsAction::ProtectionConfirmLen(len) => {
+                            handle_settings_protection_confirm_len(&mut state, len);
+                        },
+                        SettingsAction::ProtectionTabSwitch(next_field) => {
+                            handle_settings_protection_tab_switch(&mut state, next_field);
+                        },
+                        SettingsAction::PassphraseLen(len) => {
+                            handle_settings_passphrase_len(&mut state, len);
+                        },
+                        SettingsAction::SubmitEdit { value } => {
+                            let needs_reconnect = handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
+                            if needs_reconnect {
+                                // Abort the existing DIDComm loop if one is running
+                                if let Some(handle) = msg_task_handle.take() {
+                                    handle.abort();
+                                    state.connection.messaging_active = false;
+                                }
+                                state.connection.status = state::MediatorStatus::Connecting;
+                                state.main_page.log("Reconnecting to mediator...");
+
+                                let shared_state = tdk.get_shared_state();
+                                let persona_did = config.public.persona_did.to_string();
+                                let mediator_did = config.public.mediator_did.clone();
+                                let tx = conn_result_tx.clone();
+                                tokio::spawn(async move {
+                                    let result = messaging::init_and_validate(
+                                        shared_state,
+                                        persona_did,
+                                        mediator_did,
+                                    )
+                                    .await;
+                                    if let Err(e) = tx.send(result).await {
+                                        debug!("Failed to send reconnection result: {e}");
+                                    }
+                                });
+                            }
+                        },
+                        SettingsAction::ExportConfig { path, passphrase } => {
+                            handle_settings_export_config(&mut config, &mut state, &self.profile, &path, &passphrase);
+                        },
+                        SettingsAction::ImportConfig { path, passphrase } => {
+                            handle_settings_import_config(&mut config, &mut state, &self.profile, &path, &passphrase);
+                        },
+                        SettingsAction::ChangeProtection => {
+                            handle_settings_change_protection(&mut state);
+                        },
+                        SettingsAction::SetPassphrase { passphrase } => {
+                            handle_settings_set_passphrase(&mut config, &mut state, &self.profile, &passphrase);
+                        },
+                        SettingsAction::RemovePassphrase => {
+                            handle_settings_remove_passphrase(&mut config, &mut state, &self.profile);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenManagement => {
+                            handle_settings_token_management(&mut state);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenDetect => {
+                            handle_settings_token_detect(&mut state);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenFactoryReset => {
+                            handle_settings_token_factory_reset(&mut state);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenBack => {
+                            handle_settings_token_back(&mut state);
+                        },
+                        SettingsAction::ReconnectMediator => {
                             // Abort the existing DIDComm loop if one is running
                             if let Some(handle) = msg_task_handle.take() {
                                 handle.abort();
@@ -521,63 +586,7 @@ impl StateHandler {
                                     debug!("Failed to send reconnection result: {e}");
                                 }
                             });
-                        }
-                    },
-                    Action::SettingsExportConfig { path, passphrase } => {
-                        handle_settings_export_config(&mut config, &mut state, &self.profile, &path, &passphrase);
-                    },
-                    Action::SettingsImportConfig { path, passphrase } => {
-                        handle_settings_import_config(&mut config, &mut state, &self.profile, &path, &passphrase);
-                    },
-                    Action::SettingsChangeProtection => {
-                        handle_settings_change_protection(&mut state);
-                    },
-                    Action::SettingsSetPassphrase { passphrase } => {
-                        handle_settings_set_passphrase(&mut config, &mut state, &self.profile, &passphrase);
-                    },
-                    Action::SettingsRemovePassphrase => {
-                        handle_settings_remove_passphrase(&mut config, &mut state, &self.profile);
-                    },
-                    #[cfg(feature = "openpgp-card")]
-                    Action::SettingsTokenManagement => {
-                        handle_settings_token_management(&mut state);
-                    },
-                    #[cfg(feature = "openpgp-card")]
-                    Action::SettingsTokenDetect => {
-                        handle_settings_token_detect(&mut state);
-                    },
-                    #[cfg(feature = "openpgp-card")]
-                    Action::SettingsTokenFactoryReset => {
-                        handle_settings_token_factory_reset(&mut state);
-                    },
-                    #[cfg(feature = "openpgp-card")]
-                    Action::SettingsTokenBack => {
-                        handle_settings_token_back(&mut state);
-                    },
-                    Action::SettingsReconnectMediator => {
-                        // Abort the existing DIDComm loop if one is running
-                        if let Some(handle) = msg_task_handle.take() {
-                            handle.abort();
-                            state.connection.messaging_active = false;
-                        }
-                        state.connection.status = state::MediatorStatus::Connecting;
-                        state.main_page.log("Reconnecting to mediator...");
-
-                        let shared_state = tdk.get_shared_state();
-                        let persona_did = config.public.persona_did.to_string();
-                        let mediator_did = config.public.mediator_did.clone();
-                        let tx = conn_result_tx.clone();
-                        tokio::spawn(async move {
-                            let result = messaging::init_and_validate(
-                                shared_state,
-                                persona_did,
-                                mediator_did,
-                            )
-                            .await;
-                            if let Err(e) = tx.send(result).await {
-                                debug!("Failed to send reconnection result: {e}");
-                            }
-                        });
+                        },
                     },
                     _ => {}
                 },
