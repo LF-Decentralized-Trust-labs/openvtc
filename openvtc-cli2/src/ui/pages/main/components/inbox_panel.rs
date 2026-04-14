@@ -1,5 +1,6 @@
+use super::panel::Panel;
 use crate::state_handler::{
-    main_page::content::{ActiveTaskView, InboxState, TaskKind},
+    main_page::content::{ActiveTaskView, ContentPanelState, InboxState, TaskKind},
     state::{ConnectionState, MediatorStatus},
 };
 use openvtc::colors::{
@@ -10,6 +11,19 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Inbox content panel.
+pub struct InboxPanel;
+
+impl Panel for InboxPanel {
+    fn render(
+        &self,
+        state: &ContentPanelState,
+        connection: &ConnectionState,
+    ) -> Vec<Line<'static>> {
+        render(&state.inbox, connection)
+    }
+}
 
 /// Render the inbox panel content.
 pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'static>> {

@@ -18,7 +18,13 @@ use ratatui::{
     widgets::{Block, BorderType, Paragraph},
 };
 
-use super::{credentials_panel, inbox_panel, relationships_panel, settings_panel};
+use super::{
+    credentials_panel::CredentialsPanel,
+    inbox_panel::InboxPanel,
+    panel::Panel,
+    relationships_panel::RelationshipsPanel,
+    settings_panel::SettingsPanel,
+};
 
 // ****************************************************************************
 // Render the Content panel
@@ -45,26 +51,34 @@ impl ContentPanelState {
                 .title("Content")
         };
 
-        let lines = match menu.selected_menu {
-            MainMenu::Inbox => inbox_panel::render(&self.inbox, connection),
-            MainMenu::Relationships => relationships_panel::render(&self.relationships),
-            MainMenu::Credentials => {
-                credentials_panel::render(&self.credentials, &self.relationships)
-            }
-            MainMenu::Settings => settings_panel::render(&self.settings),
-            MainMenu::Help => render_status_help(
-                &self.settings,
-                &self.inbox,
-                &self.relationships,
-                &self.credentials,
-                connection,
-            ),
-            MainMenu::Quit => {
-                vec![
-                    Line::from(""),
-                    Line::from("Press <Enter> to quit the application")
-                        .fg(COLOR_WARNING_ACCESSIBLE_RED),
-                ]
+        let panel: Option<Box<dyn Panel>> = match menu.selected_menu {
+            MainMenu::Inbox => Some(Box::new(InboxPanel)),
+            MainMenu::Relationships => Some(Box::new(RelationshipsPanel)),
+            MainMenu::Credentials => Some(Box::new(CredentialsPanel)),
+            MainMenu::Settings => Some(Box::new(SettingsPanel)),
+            _ => None,
+        };
+
+        let lines = if let Some(p) = panel {
+            p.render(self, connection)
+        } else {
+            match menu.selected_menu {
+                MainMenu::Help => render_status_help(
+                    &self.settings,
+                    &self.inbox,
+                    &self.relationships,
+                    &self.credentials,
+                    connection,
+                ),
+                MainMenu::Quit => {
+                    vec![
+                        Line::from(""),
+                        Line::from("Press <Enter> to quit the application")
+                            .fg(COLOR_WARNING_ACCESSIBLE_RED),
+                    ]
+                }
+                // Covered by the Panel trait above; included for exhaustiveness.
+                _ => vec![],
             }
         };
 

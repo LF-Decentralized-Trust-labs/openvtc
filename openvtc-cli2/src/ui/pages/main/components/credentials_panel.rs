@@ -1,5 +1,9 @@
-use crate::state_handler::main_page::content::{
-    CredentialTab, CredentialsMode, CredentialsState, RelationshipsState,
+use super::panel::Panel;
+use crate::state_handler::{
+    main_page::content::{
+        ContentPanelState, CredentialTab, CredentialsMode, CredentialsState, RelationshipsState,
+    },
+    state::ConnectionState,
 };
 use openvtc::colors::{
     COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
@@ -9,6 +13,19 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Credentials content panel.
+pub struct CredentialsPanel;
+
+impl Panel for CredentialsPanel {
+    fn render(
+        &self,
+        state: &ContentPanelState,
+        _connection: &ConnectionState,
+    ) -> Vec<Line<'static>> {
+        render(&state.credentials, &state.relationships)
+    }
+}
 
 /// Render the credentials panel content.
 pub fn render(

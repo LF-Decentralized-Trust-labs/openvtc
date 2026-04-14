@@ -1,4 +1,8 @@
-use crate::state_handler::main_page::content::{SettingsMode, SettingsState};
+use super::panel::Panel;
+use crate::state_handler::{
+    main_page::content::{ContentPanelState, SettingsMode, SettingsState},
+    state::ConnectionState,
+};
 use openvtc::colors::{
     COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
 };
@@ -6,6 +10,19 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Settings content panel.
+pub struct SettingsPanel;
+
+impl Panel for SettingsPanel {
+    fn render(
+        &self,
+        state: &ContentPanelState,
+        _connection: &ConnectionState,
+    ) -> Vec<Line<'static>> {
+        render(&state.settings)
+    }
+}
 
 /// Render the settings panel content.
 pub fn render(state: &SettingsState) -> Vec<Line<'static>> {

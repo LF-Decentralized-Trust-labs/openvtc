@@ -1,4 +1,8 @@
-use crate::state_handler::main_page::content::{RelationshipsMode, RelationshipsState};
+use super::panel::Panel;
+use crate::state_handler::{
+    main_page::content::{ContentPanelState, RelationshipsMode, RelationshipsState},
+    state::ConnectionState,
+};
 use openvtc::colors::{
     COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
     COLOR_WARNING_ACCESSIBLE_RED,
@@ -7,6 +11,19 @@ use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Relationships content panel.
+pub struct RelationshipsPanel;
+
+impl Panel for RelationshipsPanel {
+    fn render(
+        &self,
+        state: &ContentPanelState,
+        _connection: &ConnectionState,
+    ) -> Vec<Line<'static>> {
+        render(&state.relationships)
+    }
+}
 
 /// Render the relationships panel content.
 pub fn render(state: &RelationshipsState) -> Vec<Line<'static>> {
