@@ -370,8 +370,25 @@ impl StateHandler {
         }
         let _ = self.state_tx.send(state.clone());
 
-        // Track when a trust-ping was sent to measure round-trip latency
-        let mut ping_sent_at: Option<std::time::Instant> = None;
+        // Track when a trust-ping was sent to measure round-trip latency.
+        // `true` = manual ping (log to activity), `false` = keepalive (silent).
+        let mut ping_sent_at: Option<(std::time::Instant, bool)> = None;
+
+        // Periodic keepalive ping to monitor mediator connectivity (every 60s)
+        let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        keepalive_interval.tick().await; // consume the immediate first tick
+
+        // Send initial ping to get first latency reading
+        if state.connection.messaging_active
+            && let Ok(ping_msg) =
+                build_trust_ping(&config.public.persona_did, &config.public.mediator_did)
+            && didcomm_service
+                .send_message("persona", ping_msg, &config.public.mediator_did)
+                .await
+                .is_ok()
+        {
+            ping_sent_at = Some((std::time::Instant::now(), false));
+        }
 
         let result = loop {
             tokio::select! {
@@ -473,7 +490,7 @@ impl StateHandler {
                         },
                         RelationshipAction::Ping { remote_p_did } => {
                             handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
-                            ping_sent_at = Some(std::time::Instant::now());
+                            ping_sent_at = Some((std::time::Instant::now(), true));
                         },
                         RelationshipAction::Remove { remote_p_did } => {
                             handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
@@ -709,16 +726,21 @@ impl StateHandler {
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
                             let sender = from.as_deref().unwrap_or("unknown");
-                            let latency = ping_sent_at
-                                .take()
-                                .map(|t| t.elapsed().as_millis());
-                            if let Some(ms) = latency {
-                                state.main_page.log(format!(
-                                    "Trust-pong received from {} ✓ ({}ms)",
-                                    truncate_did(sender),
-                                    ms
-                                ));
+                            let ping_info = ping_sent_at.take();
+                            if let Some((sent_at, is_manual)) = ping_info {
+                                let ms = sent_at.elapsed().as_millis();
+                                // Update connection status with latest latency
+                                state.connection.status =
+                                    state::MediatorStatus::Connected { latency_ms: ms };
                                 state.connection.last_ping_latency_ms = Some(ms);
+                                // Only log manual pings (user-initiated), not keepalives
+                                if is_manual {
+                                    state.main_page.log(format!(
+                                        "Trust-pong received from {} ✓ ({}ms)",
+                                        truncate_did(sender),
+                                        ms
+                                    ));
+                                }
                             } else {
                                 state.main_page.log(format!(
                                     "Trust-pong received from {} ✓",
@@ -731,6 +753,31 @@ impl StateHandler {
                 // Lifecycle log messages from the DIDCommService
                 Some(log_msg) = lifecycle_log_rx.recv() => {
                     state.main_page.log(log_msg);
+                },
+                // Periodic keepalive ping for connectivity monitoring
+                _ = keepalive_interval.tick() => {
+                    if state.connection.messaging_active
+                        && let Ok(ping_msg) = build_trust_ping(
+                            &config.public.persona_did,
+                            &config.public.mediator_did,
+                        )
+                    {
+                        match didcomm_service
+                            .send_message("persona", ping_msg, &config.public.mediator_did)
+                            .await
+                        {
+                            Ok(()) => {
+                                ping_sent_at = Some((std::time::Instant::now(), false));
+                            }
+                            Err(e) => {
+                                state.connection.status = state::MediatorStatus::Failed(
+                                    format!("keepalive failed: {e}"),
+                                );
+                                state.connection.messaging_active = false;
+                                state.main_page.log(format!("Keepalive ping failed: {e}"));
+                            }
+                        }
+                    }
                 },
                 // Catch and handle interrupt signal to gracefully shutdown
                 Ok(interrupted) = interrupt_rx.recv() => {
@@ -1724,4 +1771,25 @@ fn handle_settings_token_back(state: &mut State) {
         .messages
         .clear();
     state.main_page.content_panel.settings.token.reset_completed = false;
+}
+
+/// Build a DIDComm trust-ping message.
+fn build_trust_ping(from: &str, to: &str) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
+    let message = affinidi_tdk::didcomm::Message::build(
+        uuid::Uuid::new_v4().to_string(),
+        "https://didcomm.org/trust-ping/2.0/ping".to_string(),
+        serde_json::json!({"response_requested": true}),
+    )
+    .from(from.to_string())
+    .to(to.to_string())
+    .created_time(now)
+    .expires_time(60 * 5) // 5 minutes
+    .finalize();
+
+    Ok(message)
 }
