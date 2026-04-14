@@ -45,9 +45,17 @@ pub enum DIDCommEvent {
 pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
     let openvtc_handler = handler_fn({
         let tx = event_tx.clone();
-        move |_ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
+        move |ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
             let tx = tx.clone();
             async move {
+                tracing::info!(
+                    listener = %ctx.listener_id,
+                    msg_type = %msg.typ,
+                    from = ?msg.from,
+                    to = ?msg.to,
+                    thid = ?msg.thid,
+                    "inbound OpenVTC message received"
+                );
                 let _ = tx.send(DIDCommEvent::InboundMessage {
                     from: msg.from.clone(),
                     message: Box::new(msg),
@@ -252,6 +260,14 @@ pub async fn send_message(
     to_did: &str,
 ) -> Result<(), DIDCommServiceError> {
     let listener_id = listener_id_for_did(from_did, &config.public.persona_did);
+    tracing::info!(
+        listener = %listener_id,
+        msg_type = %message.typ,
+        from = %from_did,
+        to = %to_did,
+        thid = ?message.thid,
+        "sending DIDComm message"
+    );
     service
         .send_message_with_retry(
             &listener_id,
