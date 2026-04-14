@@ -228,12 +228,29 @@ pub struct SettingsState {
     pub org_did: String,
     /// Persona DID (read-only display)
     pub persona_did: String,
+    /// How the config is protected (Token/Encrypted/Plaintext)
+    pub protection_type: String,
     /// Currently selected setting index
     pub selected_index: usize,
     /// Current panel mode
     pub mode: SettingsMode,
     /// Transient status message
     pub status_message: Option<String>,
+    /// Hardware token management state
+    #[cfg(feature = "openpgp-card")]
+    pub token: TokenManagementState,
+}
+
+/// Hardware token management state.
+#[cfg(feature = "openpgp-card")]
+#[derive(Clone, Debug, Default)]
+pub struct TokenManagementState {
+    /// Number of detected tokens
+    pub detected_count: usize,
+    /// Status messages from token operations
+    pub messages: Vec<String>,
+    /// Whether a factory reset was completed
+    pub reset_completed: bool,
 }
 
 /// Display modes for the settings panel.
@@ -254,4 +271,7 @@ pub enum SettingsMode {
         passphrase_input: String,
         active_field: usize,
     },
+    /// Token management sub-screen
+    #[cfg(feature = "openpgp-card")]
+    TokenManagement { selected_index: usize },
 }

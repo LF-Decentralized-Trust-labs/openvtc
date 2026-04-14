@@ -236,4 +236,20 @@ pub enum Action {
         path: String,
         passphrase: String,
     },
+
+    /// Open the token management sub-screen in settings
+    #[cfg(feature = "openpgp-card")]
+    SettingsTokenManagement,
+
+    /// Detect connected hardware tokens
+    #[cfg(feature = "openpgp-card")]
+    SettingsTokenDetect,
+
+    /// Factory reset a detected token
+    #[cfg(feature = "openpgp-card")]
+    SettingsTokenFactoryReset,
+
+    /// Return from token management to settings view
+    #[cfg(feature = "openpgp-card")]
+    SettingsTokenBack,
 }

@@ -631,7 +631,20 @@ impl StateHandler {
                     },
                     // Settings actions
                     Action::SettingsSelect(index) => {
-                        state.main_page.content_panel.settings.selected_index = index;
+                        use main_page::content::SettingsMode;
+                        // If in TokenManagement mode, update the token sub-index
+                        #[cfg(feature = "openpgp-card")]
+                        if let SettingsMode::TokenManagement { selected_index } =
+                            &mut state.main_page.content_panel.settings.mode
+                        {
+                            *selected_index = index;
+                        } else {
+                            state.main_page.content_panel.settings.selected_index = index;
+                        }
+                        #[cfg(not(feature = "openpgp-card"))]
+                        {
+                            state.main_page.content_panel.settings.selected_index = index;
+                        }
                     },
                     Action::SettingsStartEdit => {
                         use main_page::content::SettingsMode;
@@ -647,7 +660,7 @@ impl StateHandler {
                             2 => SettingsMode::EditOrgDid {
                                 input: s.org_did.clone(),
                             },
-                            4 => SettingsMode::ExportConfig {
+                            5 => SettingsMode::ExportConfig {
                                 path_input: "openvtc-export.enc".to_string(),
                                 passphrase_input: String::new(),
                                 active_field: 0,
@@ -687,6 +700,8 @@ impl StateHandler {
                                 }
                             }
                             SettingsMode::View => {}
+                            #[cfg(feature = "openpgp-card")]
+                            SettingsMode::TokenManagement { .. } => {}
                         }
                     },
                     Action::SettingsSubmitEdit { value } => {
@@ -725,6 +740,80 @@ impl StateHandler {
                                     Some(format!("Export failed: {e}"));
                             }
                         }
+                    },
+                    #[cfg(feature = "openpgp-card")]
+                    Action::SettingsTokenManagement => {
+                        use main_page::content::SettingsMode;
+                        state.main_page.content_panel.settings.mode =
+                            SettingsMode::TokenManagement { selected_index: 0 };
+                        // Auto-detect tokens on entry
+                        match openvtc::openpgp_card::get_cards() {
+                            Ok(cards) => {
+                                state.main_page.content_panel.settings.token.detected_count =
+                                    cards.len();
+                                state.main_page.content_panel.settings.token.messages.clear();
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.token.detected_count = 0;
+                                state.main_page.content_panel.settings.token.messages =
+                                    vec![format!("Error detecting tokens: {e}")];
+                            }
+                        }
+                    },
+                    #[cfg(feature = "openpgp-card")]
+                    Action::SettingsTokenDetect => {
+                        match openvtc::openpgp_card::get_cards() {
+                            Ok(cards) => {
+                                state.main_page.content_panel.settings.token.detected_count =
+                                    cards.len();
+                                state.main_page.content_panel.settings.token.messages =
+                                    vec![format!("{} token(s) detected", cards.len())];
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.token.detected_count = 0;
+                                state.main_page.content_panel.settings.token.messages =
+                                    vec![format!("Error: {e}")];
+                            }
+                        }
+                    },
+                    #[cfg(feature = "openpgp-card")]
+                    Action::SettingsTokenFactoryReset => {
+                        match openvtc::openpgp_card::get_cards() {
+                            Ok(cards) if !cards.is_empty() => {
+                                // Reset the first detected card
+                                match openvtc::openpgp_card::factory_reset(cards[0].clone()) {
+                                    Ok(()) => {
+                                        state.main_page.content_panel.settings.token.messages =
+                                            vec!["Factory reset completed successfully.".to_string()];
+                                        state
+                                            .main_page
+                                            .content_panel
+                                            .settings
+                                            .token
+                                            .reset_completed = true;
+                                    }
+                                    Err(e) => {
+                                        state.main_page.content_panel.settings.token.messages =
+                                            vec![format!("Factory reset failed: {e}")];
+                                    }
+                                }
+                            }
+                            Ok(_) => {
+                                state.main_page.content_panel.settings.token.messages =
+                                    vec!["No tokens detected. Insert a token first.".to_string()];
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.token.messages =
+                                    vec![format!("Error: {e}")];
+                            }
+                        }
+                    },
+                    #[cfg(feature = "openpgp-card")]
+                    Action::SettingsTokenBack => {
+                        use main_page::content::SettingsMode;
+                        state.main_page.content_panel.settings.mode = SettingsMode::View;
+                        state.main_page.content_panel.settings.token.messages.clear();
+                        state.main_page.content_panel.settings.token.reset_completed = false;
                     },
                     _ => {}
                 },

@@ -612,10 +612,44 @@ impl MainPage {
                     _ => false,
                 }
             }
+            #[cfg(feature = "openpgp-card")]
+            SettingsMode::TokenManagement { selected_index } => {
+                let sel = *selected_index;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::SettingsTokenBack);
+                        true
+                    }
+                    KeyCode::Up if sel > 0 => {
+                        let _ = self.action_tx.send(Action::SettingsSelect(sel - 1));
+                        true
+                    }
+                    KeyCode::Down if sel < 1 => {
+                        let _ = self.action_tx.send(Action::SettingsSelect(sel + 1));
+                        true
+                    }
+                    KeyCode::Enter => {
+                        match sel {
+                            0 => {
+                                let _ = self.action_tx.send(Action::SettingsTokenDetect);
+                            }
+                            1 => {
+                                let _ = self.action_tx.send(Action::SettingsTokenFactoryReset);
+                            }
+                            _ => {}
+                        }
+                        true
+                    }
+                    _ => false,
+                }
+            }
             SettingsMode::View => {
                 let selected = settings.selected_index;
-                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=export
-                let max_index = 4;
+                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=protection(ro), 5=export, 6=token
+                #[cfg(feature = "openpgp-card")]
+                let max_index = 6;
+                #[cfg(not(feature = "openpgp-card"))]
+                let max_index = 5;
 
                 match key.code {
                     KeyCode::Up if selected > 0 => {
@@ -627,9 +661,15 @@ impl MainPage {
                         true
                     }
                     KeyCode::Enter => {
-                        // Only editable fields (0-2) and export (4)
-                        if selected <= 2 || selected == 4 {
+                        if selected <= 2 {
                             let _ = self.action_tx.send(Action::SettingsStartEdit);
+                        } else if selected == 5 {
+                            // Export
+                            let _ = self.action_tx.send(Action::SettingsStartEdit);
+                        }
+                        #[cfg(feature = "openpgp-card")]
+                        if selected == 6 {
+                            let _ = self.action_tx.send(Action::SettingsTokenManagement);
                         }
                         true
                     }

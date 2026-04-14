@@ -1,5 +1,7 @@
 use crate::state_handler::main_page::content::{SettingsMode, SettingsState};
-use openvtc::colors::{COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
+use openvtc::colors::{
+    COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+};
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
@@ -16,6 +18,10 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
             passphrase_input,
             active_field,
         } => render_export_form(path_input, passphrase_input, *active_field),
+        #[cfg(feature = "openpgp-card")]
+        SettingsMode::TokenManagement { selected_index } => {
+            render_token_management(state, *selected_index)
+        }
         SettingsMode::View => render_view(state),
     }
 }
@@ -69,7 +75,21 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
 
     lines.push(Line::from(""));
 
-    let export_selected = state.selected_index == 4;
+    // Protection type display (index 4)
+    let prot_selected = state.selected_index == 4;
+    let prot_style = if prot_selected {
+        Style::new().fg(COLOR_SUCCESS).bold()
+    } else {
+        Style::new().fg(COLOR_TEXT_DEFAULT)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(if prot_selected { "▸ " } else { "  " }, prot_style),
+        Span::styled("Protection: ", prot_style),
+        Span::styled(state.protection_type.clone(), Style::new().fg(COLOR_ORANGE)),
+    ]));
+
+    // Export option (index 5)
+    let export_selected = state.selected_index == 5;
     let export_style = if export_selected {
         Style::new().fg(COLOR_SUCCESS).bold()
     } else {
@@ -80,8 +100,78 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
         Span::styled("Export Config", export_style),
     ]));
 
+    // Token management option (index 6, only with openpgp-card)
+    #[cfg(feature = "openpgp-card")]
+    {
+        let token_selected = state.selected_index == 6;
+        let token_style = if token_selected {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_TEXT_DEFAULT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(if token_selected { "▸ " } else { "  " }, token_style),
+            Span::styled("Hardware Token Management", token_style),
+        ]));
+    }
+
     lines.push(Line::from(""));
     lines.push(Line::from("↑/↓ navigate  Enter: edit/open").fg(COLOR_DARK_GRAY));
+
+    lines
+}
+
+#[cfg(feature = "openpgp-card")]
+fn render_token_management(state: &SettingsState, selected_index: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from("")];
+    lines.push(
+        Line::from("Hardware Token Management")
+            .fg(COLOR_SUCCESS)
+            .bold(),
+    );
+    lines.push(Line::from(""));
+
+    // Token status
+    let detected = state.token.detected_count;
+    if detected > 0 {
+        lines.push(Line::from(format!("  Tokens detected: {}", detected)).fg(COLOR_SUCCESS));
+    } else {
+        lines.push(Line::from("  No tokens detected").fg(COLOR_ORANGE));
+    }
+    lines.push(Line::from(""));
+
+    // Action items
+    let actions = ["Detect Tokens", "Factory Reset"];
+
+    for (i, label) in actions.iter().enumerate() {
+        let is_selected = i == selected_index;
+        let prefix = if is_selected { "▸ " } else { "  " };
+        let style = if is_selected {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_TEXT_DEFAULT)
+        };
+        lines.push(Line::from(vec![Span::styled(
+            format!("{}{}", prefix, label),
+            style,
+        )]));
+    }
+
+    // Messages from token operations
+    if !state.token.messages.is_empty() {
+        lines.push(Line::from(""));
+        for msg in &state.token.messages {
+            lines.push(Line::from(format!("  {}", msg)).fg(COLOR_TEXT_DEFAULT));
+        }
+    }
+
+    if state.token.reset_completed {
+        lines.push(Line::from(""));
+        lines.push(Line::from("  Factory reset completed.").fg(COLOR_SUCCESS));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("↑/↓ navigate  Enter: execute  Esc: back").fg(COLOR_DARK_GRAY));
 
     lines
 }
