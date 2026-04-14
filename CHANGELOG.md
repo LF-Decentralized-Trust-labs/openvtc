@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-04-14
+
+### Security
+
+- Upgraded `pgp` 0.18 &rarr; 0.19, resolving 3 Dependabot alerts: parser crash on crafted RSA secret key packets (CVE-2026-21895), crash from deeply nested messages, and integrity protection not always checked on encrypted data
+
+### Added
+
+- Hardware token touch prompt overlay in `openvtc-cli2` — a centered popup now appears when a YubiKey (or other OpenPGP card) requires physical touch confirmation, and auto-dismisses when the touch completes
+- Progress feedback during VTA credential validation in `openvtc-cli2` setup wizard
+- Unit tests for `MessageType` and `KeyPurpose` in `openvtc-lib`
+- GitHub Discussions guidance in `CONTRIBUTING.md`
+
+### Changed
+
+- Upgraded `secrecy` 0.8 &rarr; 0.10 (`SecretVec<u8>` replaced with `SecretBox<Vec<u8>>`, `SecretString::new()` API updated)
+- Upgraded `openpgp-card` 0.5 &rarr; 0.6 and `openpgp-card-rpgp` 0.6 &rarr; 0.7
+- Migrated pgp 0.19 API changes: `EncryptionKey`/`DecryptionKey` traits, `SubpacketData::IssuerKeyId`, `Timestamp` types
+
+### Removed
+
+- Stale `openvtc-cli2/did.jsonl` test artifact
+
 ## [0.1.4] - 2026-04-12
 
 ### Breaking Changes

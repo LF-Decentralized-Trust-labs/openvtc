@@ -4387,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -4430,7 +4430,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -4475,7 +4475,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc-cli2"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -4527,7 +4527,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc-service"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "affinidi-tdk",
  "anyhow",
@@ -5654,7 +5654,7 @@ dependencies = [
 
 [[package]]
 name = "robotic-maintainers"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "affinidi-tdk",
  "anyhow",
