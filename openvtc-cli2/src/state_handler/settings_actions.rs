@@ -90,3 +90,63 @@ pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()
     info!(path = %path, "config exported");
     Ok(())
 }
+
+/// Import a config from file. Currently only validates and advises restart.
+pub fn import_config(path: &str, _passphrase: &str) -> Result<String> {
+    // Validate the file exists
+    if !std::path::Path::new(path).exists() {
+        anyhow::bail!("File not found: {}", path);
+    }
+    // Full implementation would load ExportedConfig, decrypt, and replace
+    Ok(format!(
+        "Import from {} would require app restart — use openvtc setup import",
+        path
+    ))
+}
+
+/// Add a contact by DID with an optional alias (synchronous, no DID resolution).
+pub fn add_contact(
+    config: &mut Config,
+    profile: &str,
+    did: &str,
+    alias: Option<&str>,
+) -> Result<()> {
+    use openvtc::config::protected_config::Contact;
+    use std::sync::Arc;
+
+    let contact_did = Arc::new(did.to_string());
+    let alias_str = alias.map(|a| a.to_string());
+    let contact = Arc::new(Contact {
+        did: contact_did.clone(),
+        alias: alias_str.clone(),
+    });
+
+    config
+        .private
+        .contacts
+        .contacts
+        .insert(contact_did, contact.clone());
+
+    if let Some(a) = &alias_str {
+        config.private.contacts.aliases.insert(a.clone(), contact);
+    }
+
+    config.public.logs.insert(
+        LogFamily::Config,
+        format!("Contact added: {} alias({})", did, alias.unwrap_or("N/A")),
+    );
+    save_config(config, profile)?;
+    info!(did = %did, "contact added");
+    Ok(())
+}
+
+/// Remove a contact by DID.
+pub fn remove_contact(config: &mut Config, profile: &str, did: &str) -> Result<()> {
+    config
+        .private
+        .contacts
+        .remove_contact(&mut config.public.logs, did);
+    save_config(config, profile)?;
+    info!(did = %did, "contact removed");
+    Ok(())
+}

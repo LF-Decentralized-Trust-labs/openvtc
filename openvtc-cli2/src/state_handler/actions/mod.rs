@@ -228,6 +228,19 @@ pub enum Action {
     },
 
     // ************************************************************************
+    // CONTACT Actions
+    /// Add a contact by DID with an optional alias
+    ContactAdd {
+        did: String,
+        alias: Option<String>,
+    },
+
+    /// Remove a contact by DID
+    ContactRemove {
+        did: String,
+    },
+
+    // ************************************************************************
     // SETTINGS Actions
     /// Select a settings item by index
     SettingsSelect(usize),
@@ -248,6 +261,12 @@ pub enum Action {
 
     /// Export config to file
     SettingsExportConfig {
+        path: String,
+        passphrase: String,
+    },
+
+    /// Import config from file (requires restart)
+    SettingsImportConfig {
         path: String,
         passphrase: String,
     },

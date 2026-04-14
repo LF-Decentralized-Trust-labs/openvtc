@@ -685,6 +685,31 @@ impl StateHandler {
                         state.main_page.sync_from_config(&config);
                         state.main_page.log("VRC removed");
                     },
+                    // Contact actions
+                    Action::ContactAdd { did, alias } => {
+                        let profile = self.profile.clone();
+                        match settings_actions::add_contact(&mut config, &profile, &did, alias.as_deref()) {
+                            Ok(()) => {
+                                state.main_page.sync_from_config(&config);
+                                state.main_page.log(format!("Contact added: {}", did));
+                            }
+                            Err(e) => {
+                                state.main_page.log(format!("Failed to add contact: {e}"));
+                            }
+                        }
+                    },
+                    Action::ContactRemove { did } => {
+                        let profile = self.profile.clone();
+                        match settings_actions::remove_contact(&mut config, &profile, &did) {
+                            Ok(()) => {
+                                state.main_page.sync_from_config(&config);
+                                state.main_page.log(format!("Contact removed: {}", did));
+                            }
+                            Err(e) => {
+                                state.main_page.log(format!("Failed to remove contact: {e}"));
+                            }
+                        }
+                    },
                     // Settings actions
                     Action::SettingsSelect(index) => {
                         use main_page::content::SettingsMode;
@@ -721,6 +746,11 @@ impl StateHandler {
                                 passphrase_input: String::new(),
                                 active_field: 0,
                             },
+                            6 => SettingsMode::ImportConfig {
+                                path_input: "openvtc-export.enc".to_string(),
+                                passphrase_input: String::new(),
+                                active_field: 0,
+                            },
                             _ => SettingsMode::View,
                         };
                     },
@@ -737,6 +767,11 @@ impl StateHandler {
                                 *input = value;
                             }
                             SettingsMode::ExportConfig {
+                                path_input,
+                                passphrase_input,
+                                active_field,
+                            }
+                            | SettingsMode::ImportConfig {
                                 path_input,
                                 passphrase_input,
                                 active_field,
@@ -830,6 +865,22 @@ impl StateHandler {
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Export failed: {e}"));
                                 state.main_page.log(format!("Config export failed: {e}"));
+                            }
+                        }
+                    },
+                    Action::SettingsImportConfig { path, passphrase } => {
+                        use main_page::content::SettingsMode;
+                        match settings_actions::import_config(&path, &passphrase) {
+                            Ok(msg) => {
+                                state.main_page.content_panel.settings.mode = SettingsMode::View;
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(msg.clone());
+                                state.main_page.log(msg);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(format!("Import failed: {e}"));
+                                state.main_page.log(format!("Config import failed: {e}"));
                             }
                         }
                     },

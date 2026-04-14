@@ -273,6 +273,12 @@ pub enum SettingsMode {
         passphrase_input: String,
         active_field: usize,
     },
+    /// Import config form (path + passphrase)
+    ImportConfig {
+        path_input: String,
+        passphrase_input: String,
+        active_field: usize,
+    },
     /// Changing protection level (set/remove passphrase)
     ChangeProtection {
         /// 0 = Set passphrase, 1 = Remove passphrase (keyring only)

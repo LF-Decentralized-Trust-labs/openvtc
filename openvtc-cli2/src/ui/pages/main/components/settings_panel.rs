@@ -17,7 +17,12 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
             path_input,
             passphrase_input,
             active_field,
-        } => render_export_form(path_input, passphrase_input, *active_field),
+        } => render_export_form("Export Config", path_input, passphrase_input, *active_field),
+        SettingsMode::ImportConfig {
+            path_input,
+            passphrase_input,
+            active_field,
+        } => render_export_form("Import Config", path_input, passphrase_input, *active_field),
         SettingsMode::ChangeProtection {
             selected_option,
             passphrase_input,
@@ -119,10 +124,22 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
         Span::styled("Export Config", export_style),
     ]));
 
-    // Token management option (index 6, only with openpgp-card)
+    // Import option (index 6)
+    let import_selected = state.selected_index == 6;
+    let import_style = if import_selected {
+        Style::new().fg(COLOR_SUCCESS).bold()
+    } else {
+        Style::new().fg(COLOR_TEXT_DEFAULT)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(if import_selected { "▸ " } else { "  " }, import_style),
+        Span::styled("Import Config", import_style),
+    ]));
+
+    // Token management option (index 7, only with openpgp-card)
     #[cfg(feature = "openpgp-card")]
     {
-        let token_selected = state.selected_index == 6;
+        let token_selected = state.selected_index == 7;
         let token_style = if token_selected {
             Style::new().fg(COLOR_SUCCESS).bold()
         } else {
@@ -213,15 +230,16 @@ fn render_edit(label: &str, input: &str) -> Vec<Line<'static>> {
     ]
 }
 
-/// Render the export config form with path and passphrase fields.
+/// Render a config form (export or import) with path and passphrase fields.
 fn render_export_form(
+    title: &str,
     path_input: &str,
     passphrase_input: &str,
     active_field: usize,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from(""),
-        Line::from("Export Config").fg(COLOR_SUCCESS).bold(),
+        Line::from(title.to_string()).fg(COLOR_SUCCESS).bold(),
         Line::from(""),
     ];
 

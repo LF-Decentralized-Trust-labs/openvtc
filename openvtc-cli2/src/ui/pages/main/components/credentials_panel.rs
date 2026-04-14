@@ -75,11 +75,17 @@ fn render_list(state: &CredentialsState) -> Vec<Line<'static>> {
                 .unwrap_or(&vrc.remote_p_did)
                 .to_string();
 
+            let date_display = if let Some(until) = &vrc.valid_until {
+                format!("{} → {}", vrc.valid_from, until)
+            } else {
+                vrc.valid_from.clone()
+            };
+
             lines.push(Line::from(vec![
                 Span::styled(prefix, style),
                 Span::styled(display_name, style),
                 Span::styled("  ", Style::default()),
-                Span::styled(vrc.valid_from.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+                Span::styled(date_display, Style::new().fg(COLOR_DARK_GRAY)),
             ]));
         }
     }

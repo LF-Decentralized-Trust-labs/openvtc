@@ -760,13 +760,66 @@ impl MainPage {
                     _ => false,
                 }
             }
+            SettingsMode::ImportConfig {
+                path_input,
+                passphrase_input,
+                active_field,
+            } => {
+                let active = *active_field;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        true
+                    }
+                    KeyCode::Tab => {
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(
+                            if active == 0 { "\t1" } else { "\t0" }.to_string(),
+                        ));
+                        true
+                    }
+                    KeyCode::Enter if active == 1 => {
+                        let _ = self.action_tx.send(Action::SettingsImportConfig {
+                            path: path_input.clone(),
+                            passphrase: passphrase_input.clone(),
+                        });
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut current = if active == 0 {
+                            path_input.clone()
+                        } else {
+                            passphrase_input.clone()
+                        };
+                        current.pop();
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
+                            "\x00{}{}",
+                            active, current
+                        )));
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut current = if active == 0 {
+                            path_input.clone()
+                        } else {
+                            passphrase_input.clone()
+                        };
+                        current.push(c);
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
+                            "\x00{}{}",
+                            active, current
+                        )));
+                        true
+                    }
+                    _ => false,
+                }
+            }
             SettingsMode::View => {
                 let selected = settings.selected_index;
-                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=protection(ro), 5=export, 6=token
+                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=protection, 5=export, 6=import, 7=token
                 #[cfg(feature = "openpgp-card")]
-                let max_index = 6;
+                let max_index = 7;
                 #[cfg(not(feature = "openpgp-card"))]
-                let max_index = 5;
+                let max_index = 6;
 
                 match key.code {
                     KeyCode::Up if selected > 0 => {
@@ -786,9 +839,12 @@ impl MainPage {
                         } else if selected == 5 {
                             // Export
                             let _ = self.action_tx.send(Action::SettingsStartEdit);
+                        } else if selected == 6 {
+                            // Import
+                            let _ = self.action_tx.send(Action::SettingsStartEdit);
                         }
                         #[cfg(feature = "openpgp-card")]
-                        if selected == 6 {
+                        if selected == 7 {
                             let _ = self.action_tx.send(Action::SettingsTokenManagement);
                         }
                         true
