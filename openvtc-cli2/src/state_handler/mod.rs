@@ -18,6 +18,7 @@ use tracing::debug;
 
 pub mod actions;
 pub mod main_page;
+mod message_dispatch;
 pub mod messaging;
 mod setup_did_actions;
 pub mod setup_sequence;
@@ -76,7 +77,7 @@ impl StateHandler {
         let mut state = State::default();
 
         let starting_mode = std::mem::replace(&mut self.starting_mode, StartingMode::NotSet);
-        let (tdk, config) = match starting_mode {
+        let (tdk, mut config) = match starting_mode {
             StartingMode::MainPage(config, tdk) => {
                 state.active_page = ActivePage::Main;
                 state.main_page.menu_panel.selected = true;
@@ -263,8 +264,8 @@ impl StateHandler {
                 crate::apply_env_overrides(&mut config);
 
                 let config = Box::new(config);
-                // Update state with full config
-                state.main_page.config = (&config).into();
+                // Sync all display state from the loaded config
+                state.main_page.sync_from_config(&config);
 
                 (tdk, config)
             }
@@ -376,7 +377,23 @@ impl StateHandler {
                                 }
                             }
                         }
-                        messaging::MessagingEvent::InboundMessage { .. } => {}
+                        messaging::MessagingEvent::InboundMessage { message } => {
+                            match message_dispatch::process_inbound_message(
+                                &mut config,
+                                &tdk,
+                                &message,
+                            )
+                            .await
+                            {
+                                Ok(true) => {
+                                    state.main_page.sync_from_config(&config);
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    debug!("message dispatch error: {e}");
+                                }
+                            }
+                        }
                     }
                 },
                 // Catch and handle interrupt signal to gracefully shutdown

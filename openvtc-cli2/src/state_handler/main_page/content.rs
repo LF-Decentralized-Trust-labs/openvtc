@@ -2,8 +2,255 @@
 // Content Panel State
 // ****************************************************************************
 
+/// Top-level state for the content panel (right side of main page).
 #[derive(Clone, Debug, Default)]
 pub struct ContentPanelState {
-    // Is this content panel selected?
+    /// Is this content panel currently focused?
     pub selected: bool,
+    /// Inbox/tasks panel state
+    pub inbox: InboxState,
+    /// Relationships panel state
+    pub relationships: RelationshipsState,
+    /// Credentials (VRCs) panel state
+    pub credentials: CredentialsState,
+    /// Settings panel state
+    pub settings: SettingsState,
+}
+
+// ****************************************************************************
+// Inbox State
+// ****************************************************************************
+
+/// State for the inbox/tasks panel.
+#[derive(Clone, Debug, Default)]
+pub struct InboxState {
+    /// Display summaries of all pending tasks
+    pub tasks: Vec<TaskSummary>,
+    /// Currently selected task index in the list
+    pub selected_index: usize,
+    /// When viewing a specific task's details
+    pub active_task: Option<ActiveTaskView>,
+    /// Transient status message (e.g., "Task accepted", "Error: ...")
+    pub status_message: Option<String>,
+}
+
+/// Lightweight display summary of a task (no Arc/Mutex).
+#[derive(Clone, Debug)]
+pub struct TaskSummary {
+    /// Task ID
+    pub id: String,
+    /// Human-friendly type description (e.g., "Relationship Request (Inbound)")
+    pub type_display: String,
+    /// Categorization for UI rendering and action dispatch
+    pub kind: TaskKind,
+    /// Shortened DID of the remote party (if applicable)
+    pub remote_did: String,
+    /// Formatted creation timestamp
+    pub created: String,
+}
+
+/// Categorizes tasks for UI rendering and determining available actions.
+#[derive(Clone, Debug)]
+pub enum TaskKind {
+    /// Inbound relationship request awaiting accept/reject
+    RelationshipRequestInbound {
+        from_did: String,
+        their_did: String,
+        reason: Option<String>,
+    },
+    /// Outbound relationship request awaiting response
+    RelationshipRequestOutbound,
+    /// Inbound VRC request awaiting accept/reject
+    VRCRequestInbound { reason: Option<String> },
+    /// Outbound VRC request awaiting response
+    VRCRequestOutbound,
+    /// A VRC was issued to us, awaiting acceptance
+    VRCIssued,
+    /// Trust ping awaiting pong
+    TrustPing,
+    /// Informational task (accepted, rejected, finalized, etc.)
+    Informational(String),
+}
+
+/// Detailed view of a specific task for the interaction screen.
+#[derive(Clone, Debug)]
+pub enum ActiveTaskView {
+    RelationshipRequestInbound {
+        task_id: String,
+        from_did: String,
+        their_did: String,
+        reason: Option<String>,
+    },
+    VRCRequestInbound {
+        task_id: String,
+        from_did: String,
+        reason: Option<String>,
+    },
+    VRCIssued {
+        task_id: String,
+        issuer: String,
+    },
+}
+
+// ****************************************************************************
+// Relationships State
+// ****************************************************************************
+
+/// State for the relationships panel.
+#[derive(Clone, Debug, Default)]
+pub struct RelationshipsState {
+    /// Display summaries of all relationships
+    pub relationships: Vec<RelationshipSummary>,
+    /// Currently selected index in the list
+    pub selected_index: usize,
+    /// Current panel mode (list, detail, new request form)
+    pub mode: RelationshipsMode,
+    /// Transient status message
+    pub status_message: Option<String>,
+}
+
+/// Display modes for the relationships panel.
+#[derive(Clone, Debug, Default)]
+pub enum RelationshipsMode {
+    /// Browsing the list of relationships
+    #[default]
+    List,
+    /// Viewing details of a specific relationship
+    Detail { index: usize },
+    /// Filling out a new relationship request form
+    NewRequest {
+        did_input: String,
+        alias_input: String,
+        reason_input: String,
+        /// Which form field is currently focused (0=DID, 1=Alias, 2=Reason)
+        active_field: usize,
+    },
+}
+
+/// Lightweight display summary of a relationship.
+#[derive(Clone, Debug)]
+pub struct RelationshipSummary {
+    /// Remote party's persona DID
+    pub remote_p_did: String,
+    /// Contact alias (if set)
+    pub alias: Option<String>,
+    /// Human-readable state (e.g., "Established", "Request Sent")
+    pub state: String,
+    /// Our DID used in this relationship
+    pub our_did: String,
+    /// Remote party's DID for this relationship
+    pub remote_did: String,
+    /// Formatted creation timestamp
+    pub created: String,
+    /// Count of VRCs we issued to this party
+    pub vrc_sent_count: usize,
+    /// Count of VRCs we received from this party
+    pub vrc_received_count: usize,
+}
+
+// ****************************************************************************
+// Credentials State
+// ****************************************************************************
+
+/// State for the credentials (VRCs) panel.
+#[derive(Clone, Debug, Default)]
+pub struct CredentialsState {
+    /// VRCs we received
+    pub received: Vec<VrcSummary>,
+    /// VRCs we issued
+    pub issued: Vec<VrcSummary>,
+    /// Which tab is active
+    pub selected_tab: CredentialTab,
+    /// Currently selected index in the active tab's list
+    pub selected_index: usize,
+    /// Current panel mode
+    pub mode: CredentialsMode,
+    /// Transient status message
+    pub status_message: Option<String>,
+}
+
+/// Which credential tab is active.
+#[derive(Clone, Debug, Default)]
+pub enum CredentialTab {
+    #[default]
+    Received,
+    Issued,
+}
+
+/// Display modes for the credentials panel.
+#[derive(Clone, Debug, Default)]
+pub enum CredentialsMode {
+    /// Browsing the list of credentials
+    #[default]
+    List,
+    /// Viewing details of a specific credential
+    Detail { index: usize },
+    /// Requesting a new VRC: selecting a relationship
+    NewRequest {
+        /// Index into the established relationships list
+        relationship_index: usize,
+        reason_input: String,
+    },
+}
+
+/// Lightweight display summary of a VRC.
+#[derive(Clone, Debug)]
+pub struct VrcSummary {
+    /// VRC identifier (proof value hash)
+    pub vrc_id: String,
+    /// Remote party's persona DID
+    pub remote_p_did: String,
+    /// Contact alias (if set)
+    pub alias: Option<String>,
+    /// Issuer DID
+    pub issuer: String,
+    /// Subject DID
+    pub subject: String,
+    /// Formatted valid_from date
+    pub valid_from: String,
+    /// Formatted valid_until date (if set)
+    pub valid_until: Option<String>,
+}
+
+// ****************************************************************************
+// Settings State
+// ****************************************************************************
+
+/// State for the settings panel.
+#[derive(Clone, Debug, Default)]
+pub struct SettingsState {
+    /// Current friendly name
+    pub friendly_name: String,
+    /// Current mediator DID
+    pub mediator_did: String,
+    /// Current organization DID
+    pub org_did: String,
+    /// Persona DID (read-only display)
+    pub persona_did: String,
+    /// Currently selected setting index
+    pub selected_index: usize,
+    /// Current panel mode
+    pub mode: SettingsMode,
+    /// Transient status message
+    pub status_message: Option<String>,
+}
+
+/// Display modes for the settings panel.
+#[derive(Clone, Debug, Default)]
+pub enum SettingsMode {
+    /// Viewing settings list
+    #[default]
+    View,
+    /// Editing the friendly name
+    EditFriendlyName { input: String },
+    /// Editing the mediator DID
+    EditMediatorDid { input: String },
+    /// Editing the org DID
+    EditOrgDid { input: String },
+    /// Export config form (path + passphrase)
+    ExportConfig {
+        path_input: String,
+        passphrase_input: String,
+        active_field: usize,
+    },
 }

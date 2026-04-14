@@ -25,9 +25,9 @@ pub enum MessagingEvent {
         latency_ms: Option<u128>,
     },
     ConnectionStatus(ConnectionStatus),
+    /// A DIDComm message that needs processing by the state handler.
     InboundMessage {
-        msg_type: String,
-        from: String,
+        message: Box<Message>,
     },
 }
 
@@ -249,8 +249,7 @@ async fn dispatch_message(
         _ => {
             info!(msg_type = %msg_type, from = %from, "inbound message");
             let _ = event_tx.send(MessagingEvent::InboundMessage {
-                msg_type: msg_type.to_string(),
-                from,
+                message: Box::new(msg.clone()),
             });
         }
     }
