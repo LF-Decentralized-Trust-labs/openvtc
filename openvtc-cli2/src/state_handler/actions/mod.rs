@@ -143,6 +143,8 @@ pub enum SettingsAction {
     TokenFactoryReset,
     #[cfg(feature = "openpgp-card")]
     TokenBack,
+    /// Clipboard copy result message for display on the status panel.
+    ClipboardCopied(String),
 }
 
 // ============================================================================

@@ -105,6 +105,12 @@ fn render_status_help(
         Line::from(""),
     ];
 
+    // Show clipboard/status feedback if present
+    if let Some(msg) = &settings.status_message {
+        lines.push(Line::from(format!("  {}", msg)).fg(COLOR_SUCCESS));
+        lines.push(Line::from(""));
+    }
+
     let hint_style = Style::new().fg(COLOR_DARK_GRAY);
 
     // Persona DID (full) with copy hotkey

@@ -1140,7 +1140,8 @@ impl MainPage {
     }
 }
 
-/// Copy text to the system clipboard and log the result.
+/// Copy text to the system clipboard, log the result to the activity log,
+/// and update the status panel message to give the user visual feedback.
 fn copy_to_clipboard(
     text: &str,
     label: &str,
@@ -1149,21 +1150,27 @@ fn copy_to_clipboard(
     match arboard::Clipboard::new() {
         Ok(mut clipboard) => match clipboard.set_text(text) {
             Ok(()) => {
-                // Log via a no-op action that the state handler will pick up as a state update
-                // For now, we can't easily log from here since we don't have state access.
-                // The user sees the hint change or can just paste to verify.
                 tracing::info!(label, "copied to clipboard");
+                // Update the settings status_message so it shows on the Help panel
+                let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(format!(
+                    "✓ {} copied to clipboard",
+                    label
+                ))));
             }
             Err(e) => {
                 tracing::warn!(label, error = %e, "failed to copy to clipboard");
+                let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(format!(
+                    "✗ Copy failed: {e}"
+                ))));
             }
         },
         Err(e) => {
             tracing::warn!(error = %e, "clipboard not available");
+            let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(
+                "✗ Clipboard not available".to_string(),
+            )));
         }
     }
-    // Suppress unused warning — action_tx could be used to send a log action in the future
-    let _ = action_tx;
 }
 
 // ****************************************************************************

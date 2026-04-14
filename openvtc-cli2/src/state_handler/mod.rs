@@ -569,6 +569,10 @@ impl StateHandler {
                         SettingsAction::TokenBack => {
                             handle_settings_token_back(&mut state);
                         },
+                        SettingsAction::ClipboardCopied(msg) => {
+                            state.main_page.content_panel.settings.status_message = Some(msg.clone());
+                            state.main_page.log(msg);
+                        },
                         SettingsAction::ReconnectMediator => {
                             // Abort the existing DIDComm loop if one is running
                             if let Some(handle) = msg_task_handle.take() {
