@@ -25,6 +25,7 @@ use openvtc::{
     relationships::{Relationship, RelationshipRequestBody, RelationshipState},
     tasks::TaskType,
 };
+use secrecy::SecretString;
 use serde_json::json;
 use tracing::info;
 use uuid::Uuid;
@@ -86,27 +87,26 @@ pub async fn send_relationship_request(
     }
 
     // Optionally generate a random relationship DID for privacy
-    let our_did: Arc<String> =
-        if generate_r_did && matches!(config.key_backend, KeyBackend::Bip32 { .. }) {
-            let r_did = Arc::new(
-                create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?,
-            );
-            // Register a listener for the new R-DID
-            let listener_config = super::didcomm::relationship_listener_config(
-                config,
-                tdk,
-                &r_did,
-                respondent_did,
-                &config.public.mediator_did,
-            )
-            .await;
-            if let Err(e) = service.add_listener(listener_config).await {
-                tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
-            }
-            r_did
-        } else {
-            Arc::clone(&config.public.persona_did)
-        };
+    let our_did: Arc<String> = if generate_r_did {
+        let r_did = Arc::new(
+            create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?,
+        );
+        // Register a listener for the new R-DID
+        let listener_config = super::didcomm::relationship_listener_config(
+            config,
+            tdk,
+            &r_did,
+            respondent_did,
+            &config.public.mediator_did,
+        )
+        .await;
+        if let Err(e) = service.add_listener(listener_config).await {
+            tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
+        }
+        r_did
+    } else {
+        Arc::clone(&config.public.persona_did)
+    };
 
     // Build the relationship request message
     let friendly_name = if config.public.friendly_name.is_empty() {
@@ -237,10 +237,44 @@ pub fn remove_relationship(config: &mut Config, remote_p_did: &str) -> Result<()
 
 /// Creates a random did:peer DID representing a relationship DID.
 ///
-/// Derives signing and encryption keys from the BIP32 root using the
-/// relationship path pointer, registers the secrets with the TDK resolver,
-/// and records key metadata in the configuration.
+/// Dispatches to the appropriate backend-specific implementation based on
+/// the configured key backend (BIP32 or VTA).
 pub(crate) async fn create_relationship_did(
+    tdk: &TDK,
+    config: &mut Config,
+    mediator: &str,
+) -> Result<String> {
+    match &config.key_backend {
+        KeyBackend::Bip32 { .. } => create_relationship_did_bip32(tdk, config, mediator).await,
+        KeyBackend::Vta {
+            vta_url,
+            credential_did,
+            credential_private_key,
+            vta_did,
+            ..
+        } => {
+            let vta_url = vta_url.clone();
+            let credential_did = credential_did.clone();
+            let credential_private_key = credential_private_key.clone();
+            let vta_did = vta_did.clone();
+            create_relationship_did_vta(
+                tdk,
+                config,
+                mediator,
+                &vta_url,
+                &credential_did,
+                &credential_private_key,
+                &vta_did,
+            )
+            .await
+        }
+    }
+}
+
+/// BIP32 backend: derives signing and encryption keys from the BIP32 root
+/// using the relationship path pointer, registers the secrets with the TDK
+/// resolver, and records key metadata in the configuration.
+async fn create_relationship_did_bip32(
     tdk: &TDK,
     config: &mut Config,
     mediator: &str,
@@ -275,7 +309,7 @@ pub(crate) async fn create_relationship_did(
 
     let bip32_root = match &config.key_backend {
         KeyBackend::Bip32 { root, .. } => root,
-        _ => bail!("create_relationship_did requires a BIP32 key backend"),
+        _ => bail!("create_relationship_did_bip32 requires a BIP32 key backend"),
     };
 
     let v_key = bip32_root.derive(&v_path.parse::<DerivationPath>()?)?;
@@ -328,6 +362,121 @@ pub(crate) async fn create_relationship_did(
     // The Secret structs (v_secret, e_secret) are now owned by the TDK resolver.
     drop(v_key);
     drop(e_key);
+
+    Ok(r_did)
+}
+
+/// VTA backend: creates signing and encryption keys via the VTA service,
+/// builds a did:peer from the resulting secrets, and registers everything
+/// in the TDK resolver and config.
+async fn create_relationship_did_vta(
+    tdk: &TDK,
+    config: &mut Config,
+    mediator: &str,
+    vta_url: &str,
+    credential_did: &str,
+    credential_private_key: &SecretString,
+    vta_did: &str,
+) -> Result<String> {
+    use secrecy::ExposeSecret;
+    use vta_sdk::client::{CreateKeyRequest, VtaClient};
+    use vta_sdk::keys::KeyType;
+
+    // Authenticate with VTA
+    let token = super::setup_sequence::vta::authenticate(
+        vta_url,
+        credential_did,
+        credential_private_key.expose_secret(),
+        vta_did,
+    )
+    .await?;
+
+    let client = VtaClient::new(vta_url);
+    client.set_token(token.access_token);
+
+    // Create signing key (Ed25519) for verification
+    let sign_resp = client
+        .create_key(CreateKeyRequest {
+            key_type: KeyType::Ed25519,
+            derivation_path: None,
+            key_id: None,
+            mnemonic: None,
+            label: Some("relationship-signing".to_string()),
+            context_id: None,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create signing key: {e}"))?;
+
+    let sign_secret_resp = client
+        .get_key_secret(&sign_resp.key_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get signing key secret: {e}"))?;
+
+    let mut v_secret = vta_sdk::did_key::secret_from_key_response(&sign_secret_resp)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    v_secret.id = v_secret.get_public_keymultibase()?;
+
+    // Create encryption key (X25519)
+    let enc_resp = client
+        .create_key(CreateKeyRequest {
+            key_type: KeyType::X25519,
+            derivation_path: None,
+            key_id: None,
+            mnemonic: None,
+            label: Some("relationship-encryption".to_string()),
+            context_id: None,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create encryption key: {e}"))?;
+
+    let enc_secret_resp = client
+        .get_key_secret(&enc_resp.key_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get encryption key secret: {e}"))?;
+
+    let mut e_secret = vta_sdk::did_key::secret_from_key_response(&enc_secret_resp)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    e_secret.id = e_secret.get_public_keymultibase()?;
+
+    // Build did:peer from secrets
+    let mut keys = vec![
+        (PeerKeyRole::Verification, &mut v_secret),
+        (PeerKeyRole::Encryption, &mut e_secret),
+    ];
+    let r_did = DID::generate_did_peer_from_secrets(&mut keys, Some(mediator.to_string()))
+        .map_err(|e| anyhow::anyhow!("Failed to create relationship DID: {e}"))?;
+
+    // Register key info in config
+    config.key_info.insert(
+        v_secret.id.clone(),
+        KeyInfoConfig {
+            path: KeySourceMaterial::VtaManaged {
+                key_id: sign_resp.key_id,
+            },
+            create_time: Utc::now(),
+            purpose: KeyTypes::RelationshipVerification,
+        },
+    );
+    config.key_info.insert(
+        e_secret.id.clone(),
+        KeyInfoConfig {
+            path: KeySourceMaterial::VtaManaged {
+                key_id: enc_resp.key_id,
+            },
+            create_time: Utc::now(),
+            purpose: KeyTypes::RelationshipEncryption,
+        },
+    );
+
+    // Register secrets in TDK resolver
+    tdk.get_shared_state()
+        .secrets_resolver
+        .insert(v_secret)
+        .await;
+    tdk.get_shared_state()
+        .secrets_resolver
+        .insert(e_secret)
+        .await;
 
     Ok(r_did)
 }

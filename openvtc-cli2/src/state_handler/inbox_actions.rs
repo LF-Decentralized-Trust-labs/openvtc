@@ -13,7 +13,7 @@ use affinidi_tdk::didcomm::Message;
 use anyhow::Result;
 use chrono::Utc;
 use openvtc::{
-    config::{Config, KeyBackend},
+    config::Config,
     logs::LogFamily,
     relationships::{
         Relationship, RelationshipAcceptBody, RelationshipRejectBody, RelationshipState,
@@ -59,7 +59,7 @@ pub async fn accept_relationship_request(
     };
 
     // Optionally generate a random relationship DID for privacy
-    let our_did = if generate_r_did && matches!(config.key_backend, KeyBackend::Bip32 { .. }) {
+    let our_did = if generate_r_did {
         let r_did = Arc::new(
             super::relationship_actions::create_relationship_did(
                 tdk,
