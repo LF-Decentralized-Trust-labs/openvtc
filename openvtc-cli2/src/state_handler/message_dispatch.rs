@@ -123,8 +123,21 @@ pub async fn process_inbound_message(
             let task_id = require_thid(message)?;
             let body: RelationshipAcceptBody = serde_json::from_value(message.body.clone())?;
 
-            // Update relationship state and remote DID, get our_did for sending
-            let our_did = if let Some(relationship) = config.private.relationships.get(&from_did) {
+            // Look up relationship by task_id (thid) — the remote party may respond
+            // from an R-DID different from their persona DID, so we can't match by from_did.
+            let our_did = if let Some(relationship) =
+                config.private.relationships.find_by_task_id(&task_id)
+            {
+                let mut lock = relationship
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+                lock.state = RelationshipState::Established;
+                if lock.remote_did.as_str() != body.did {
+                    lock.remote_did = Arc::new(body.did.clone());
+                }
+                lock.our_did.to_string()
+            } else if let Some(relationship) = config.private.relationships.get(&from_did) {
+                // Fallback: try matching by from_did (persona DID case)
                 let mut lock = relationship
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
@@ -134,7 +147,7 @@ pub async fn process_inbound_message(
                 }
                 lock.our_did.to_string()
             } else {
-                warn!(from = %from_did, "no relationship found for accept message");
+                warn!(from = %from_did, task_id = %task_id, "no relationship found for accept message");
                 return Ok(false);
             };
 
@@ -160,13 +173,20 @@ pub async fn process_inbound_message(
         MessageType::RelationshipRequestFinalize => {
             let task_id = require_thid(message)?;
 
-            if let Some(relationship) = config.private.relationships.get(&from_did) {
+            // Look up by task_id first (handles R-DID case), fall back to from_did
+            let found = config
+                .private
+                .relationships
+                .find_by_task_id(&task_id)
+                .or_else(|| config.private.relationships.get(&from_did));
+
+            if let Some(relationship) = found {
                 let mut lock = relationship
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
                 lock.state = RelationshipState::Established;
             } else {
-                warn!(from = %from_did, "no relationship found for finalize message");
+                warn!(from = %from_did, task_id = %task_id, "no relationship found for finalize message");
                 return Ok(false);
             }
 
