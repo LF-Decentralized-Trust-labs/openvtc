@@ -6,66 +6,70 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-04-14
+## [0.2.0] - 2026-04-15
 
 ### Added
 
-- **Full TUI main menu panels** in `openvtc-cli2` — all 6 panels (Inbox, Relationships, Credentials, Settings, Help/Status, Quit) are now fully functional with live DIDComm updates
-- **Inbox panel** with real-time task processing: auto-handles trust-pongs, relationship finalization, and rejections; queues interactive tasks for user decisions (accept/reject relationship requests, VRC requests, issued VRCs)
-- **Relationships panel** with list/detail/new-request views: create relationship requests with optional R-DID generation for privacy, send trust-pings, remove relationships
-- **Credentials panel** with Received/Issued tabs: view VRC details with validity date ranges, request new VRCs from established relationships, remove VRCs
-- **Settings panel** with inline editing for friendly name, mediator DID, and org DID; config export/import; passphrase protection management (set/remove); hardware token detection and factory reset
-- **Activity log panel** at the bottom of the main screen showing real-time events (messages received, tasks created, config saved, errors)
-- **Status/Help panel** showing persona DID, mediator DID, protection type, relationship/task/VRC counts, connection status, and keyboard shortcuts
-- **R-DID generation** for relationship requests — derives Ed25519/X25519 keys from BIP32 path, creates did:peer with mediator routing for privacy
-- **VRC issuance** from inbox — sign and send VRCs back to requesters using DataIntegrityProof
-- **VRC rejection** from inbox — send rejection messages back to VRC requesters
-- **Contact management** actions (add/remove) accessible from settings
-- **DIDComm message dispatch** — inbound messages are now processed instead of silently dropped
-- **Outbound message queue** for offline resilience — failed outbound messages are queued and automatically retried when mediator connectivity is restored (bounded at 1K messages, 5 retries per message)
-- **Auto-reconnect mediator** — changing mediator DID in settings automatically tears down the old DIDComm WebSocket and establishes a new connection
-- **Config versioning** with stepwise migration framework — `config_version` field enables safe format upgrades between releases
-- **Panel trait** for content panels — unified render interface enabling future per-panel key handling
-- 18 unit tests covering sanitize_display, shorten_did, outbound queue, file path validation, activity log bounds, and panel switching
+- **Full TUI main menu panels** in `openvtc-cli2` — 8 panels: Inbox, Relationships, Credentials, Settings, VTA Service, Logs, Help/Status, Quit
+- **Inbox panel** with real-time task processing: auto-handles trust-pongs, relationship finalization, and rejections; queues interactive tasks; detail views for all task types (inbound/outbound requests, VRCs, pings, informational)
+- **Relationships panel** with list/detail/new-request views, inline alias editing ('e' key), R-DID privacy toggle, trust-ping with RTT latency
+- **Credentials panel** with Received/Issued tabs, raw VRC JSON in detail view, clipboard copy ('c' key), VRC request and removal
+- **Settings panel** with inline editing, config export/import, passphrase protection management, hardware token detection and factory reset
+- **VTA Service panel** showing VTA URL, DID, credential DID, key count, and backend type
+- **Logs panel** with scrollable timestamped activity log, selected entry copy ('c'), copy all ('a')
+- **Activity log panel** at bottom of screen showing real-time timestamped events (`[HH:MM:SS] message`)
+- **Status/Help panel** with DID clipboard copy hotkeys ([1] persona, [2] mediator), visual feedback on copy
+- **R-DID generation** for both BIP32 and VTA backends — VTA path authenticates and creates keys via API; both sender and receiver can use R-DIDs
+- **Dynamic R-DID listeners** — automatically added when creating R-DIDs (sender or receiver), enabling message delivery to relationship-specific DIDs
+- **VRC issuance** from inbox with DataIntegrityProof signing; **VRC rejection** with message back to requester
+- **Friendly name in relationship requests** — sender's name included in request body, auto-set as contact alias on accept, R-DID recommendation shown when sender uses one
+- **DIDComm service integration** (`affinidi-messaging-didcomm-service` 0.2) — replaces manual messaging with Router-based dispatch, automatic reconnection, message pickup, and multi-DID listener support
+- **Periodic keepalive ping** (60s) with live RTT latency in connection status header
+- **Inbox task count badge** on menu item ("Inbox (3)" in red when tasks pending)
+- **Bracketed paste** for all 21 text input fields — paste is instant regardless of string length
+- **Up/Down arrow navigation** in all multi-field forms alongside Tab
+- **Config versioning** with stepwise migration framework
+- **Panel trait** for content panels — unified render interface
+- **Outbound message retry** via `DIDCommService::send_message_with_retry`
+- **Auto-reconnect mediator** on DID change in settings
+- 15 unit tests covering core functions
+- **Contact management** actions (add/remove)
 
 ### Security
 
-- Passphrases for export/import/protection-change no longer stored in cloned State — replaced with length-only fields, actual content kept in UI-local buffers consumed via `mem::take` on submit
-- Token admin PIN wrapped in `Arc<SecretString>` so State clones share a single allocation
-- Inbound message body size validated (1MB limit) before deserialization to prevent DoS
-- Task ID deduplication prevents hijacking via crafted message IDs/thread IDs
-- Sender identity validation on `thid`-referencing messages to prevent unauthorized state mutations
-- Collection size bounds: max 10K tasks, 5K relationships — reject when limits reached
-- All untrusted display text sanitized: ANSI escape codes and control characters stripped, truncated to 256 chars
-- Unlock attempt rate limiting: max 5 attempts with exponential backoff (2s, 4s, 8s delay)
-- Home directory paths redacted from user-facing error messages (replaced with `~`)
-- DIDs truncated in activity log to limit information exposure
-- Export/import file paths validated against path traversal (`..` rejected)
-- Structured audit log entries for config export and import operations
-- Explicit `drop()` on BIP32-derived key material after use (documented limitation: `ed25519-dalek-bip32` lacks `Zeroize` impl)
+- Trust-pings only responded to from mediator DID or established relationships — prevents presence leakage
+- Passphrases removed from cloned State — length-only fields in UI, consumed via `mem::take`
+- Token admin PIN wrapped in `Arc<SecretString>` for shared allocation
+- Inbound message body size validation (1MB limit), task ID deduplication, sender verification
+- Collection bounds (10K tasks, 5K relationships), untrusted display text sanitization
+- Unlock rate limiting (5 attempts, exponential backoff), path redaction, file path validation
+- Key material explicit drop with documented zeroization limitation
+- Structured audit log entries for security-relevant operations
 
 ### Fixed
 
-- **Config persistence** (critical) — inbox, relationship, and credential actions now save config to disk after every mutation, preventing data loss on crash or restart
-- All `.unwrap()`/`.expect()` in fallible contexts replaced with proper error propagation (`?`, `ok_or_else`, `map_err`)
-- Clipboard operations gracefully degrade with warning log instead of panicking (fixes crash on headless/SSH)
-- Bug in `sanitize_display()` where ANSI escape stripping was dead code (control char filter removed ESC byte first)
+- **R-DID message routing** — acceptance, finalize, VRC, and ping messages now use relationship DID instead of persona DID when R-DID exists
+- **Config persistence** — all mutating actions save to disk
+- **Setup → main transition** — `sync_from_config()` now called after setup wizard completes
+- **VRC "From:" blank** — extract remote DID from relationship for VRC tasks
+- **Alias on accept** — sender's name set as contact alias, existing alias-less contacts updated
+- **Backspace to empty** in relationship form fields
+- **Tab after backspace fix** — dedicated `FocusField` action for field switching
+- **DIDComm listener secrets** — pass DID secrets to listeners for mediator authentication
+- All `.unwrap()`/`.expect()` replaced with proper error propagation
+- Clipboard graceful degradation, `sanitize_display` ANSI stripping order
 
 ### Changed
 
-- Grouped flat ~65-variant `Action` enum into domain sub-enums: `InboxAction`, `RelationshipAction`, `CredentialAction`, `ContactAction`, `SettingsAction` — each domain is self-contained
-- Replaced `tokio::sync::mpsc::unbounded_channel` with `tokio::sync::watch` for State updates — UI always sees the latest state, no unbounded queue growth
-- Replaced `0x8000_0000` bit flag encoding with separate typed action variants (`InboxOpenDetail`, `RelationshipOpenDetail`, `CredentialOpenDetail`)
-- Replaced control character encoding (`\x00`-`\x04`) in settings form updates with typed action variants
-- Extracted ~40 action handler functions from the 700+ line match block, reducing each arm to 1-3 lines
-- Replaced `Vec<String>` with `VecDeque<String>` for activity log — O(1) bounded insertion
-- Extracted panel renderers from content_panel.rs (822 lines) into separate files
-- Protection type display now shows human-readable labels ("Keyring Only", "Passphrase Encrypted", "Hardware Token")
-- Added `#[must_use]` to pure functions (`sanitize_display`, `shorten_did`, `truncate_did`, `collect_vrcs`)
-- Added doc comments to `State`, `ActivePage`, `MediatorStatus`, `ConnectionState` types
-- Explicit `Arc::clone()` used instead of `.clone()` on 27 Arc values for clarity
-- `truncate_did()` returns `Cow<str>` to avoid allocation when DID is short enough
-- Simplified `SecretString` allocation chains (removed unnecessary `.to_string()`)
+- **Replaced manual messaging layer** with `affinidi-messaging-didcomm-service` — deleted messaging/mod.rs (~280 lines) and outbound_queue.rs (~90 lines), added didcomm.rs (~260 lines) with Router, listeners, and send_message_with_retry
+- Grouped ~65-variant Action enum into 5 domain sub-enums
+- `tokio::sync::watch` replaces mpsc for State updates
+- Panel trait with per-panel structs implementing unified render interface
+- Dynamic DID display width (`shorten_did(did, max_width)` — 60 chars default, full if fits)
+- `Cow<str>` for zero-alloc DID truncation
+- Explicit `Arc::clone()`, `#[must_use]` on pure functions, doc comments on State types
+- `VecDeque<String>` for O(1) bounded activity log
+- `RelationshipRequestBody.name` protocol field for friendly names
 
 ## [0.1.5] - 2026-04-14
 
