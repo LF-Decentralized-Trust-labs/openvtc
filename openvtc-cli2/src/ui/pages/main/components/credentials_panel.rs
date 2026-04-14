@@ -143,7 +143,7 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
     ]));
 
     lines.push(Line::from(""));
-    lines.push(Line::from("Esc: back").fg(COLOR_DARK_GRAY));
+    lines.push(Line::from("d: remove  Esc: back").fg(COLOR_DARK_GRAY));
 
     lines
 }

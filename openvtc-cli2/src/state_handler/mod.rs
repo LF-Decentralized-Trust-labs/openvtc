@@ -86,6 +86,7 @@ impl StateHandler {
                 state.active_page = ActivePage::Main;
                 state.main_page.menu_panel.selected = true;
                 state.main_page.config = (&config).into();
+                state.main_page.log("Configuration loaded");
 
                 (tdk.to_owned(), config)
             }
@@ -270,6 +271,7 @@ impl StateHandler {
                 let config = Box::new(config);
                 // Sync all display state from the loaded config
                 state.main_page.sync_from_config(&config);
+                state.main_page.log("Configuration loaded");
 
                 (tdk, config)
             }
@@ -386,9 +388,11 @@ impl StateHandler {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message = Some("Relationship request accepted".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("Accepted relationship request");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to accept relationship: {e}"));
                             }
                         }
                     },
@@ -398,9 +402,11 @@ impl StateHandler {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message = Some("Relationship request rejected".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("Rejected relationship request");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to reject relationship: {e}"));
                             }
                         }
                     },
@@ -410,9 +416,11 @@ impl StateHandler {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message = Some("VRC accepted and stored".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("VRC accepted and stored");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to accept VRC: {e}"));
                             }
                         }
                     },
@@ -423,10 +431,28 @@ impl StateHandler {
                                 state.main_page.content_panel.inbox.status_message =
                                     Some("VRC issued and sent".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("VRC issued and sent");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.inbox.status_message =
                                     Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to issue VRC: {e}"));
+                            }
+                        }
+                    },
+                    Action::InboxRejectVrcRequest { task_id, reason } => {
+                        match inbox_actions::reject_vrc_request(&mut config, &tdk, &task_id, reason.as_deref()).await {
+                            Ok(()) => {
+                                state.main_page.content_panel.inbox.active_task = None;
+                                state.main_page.content_panel.inbox.status_message =
+                                    Some("VRC request rejected".to_string());
+                                state.main_page.sync_from_config(&config);
+                                state.main_page.log("Rejected VRC request");
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.inbox.status_message =
+                                    Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to reject VRC request: {e}"));
                             }
                         }
                     },
@@ -434,6 +460,13 @@ impl StateHandler {
                         let _ = inbox_actions::dismiss_task(&mut config, &task_id);
                         state.main_page.content_panel.inbox.active_task = None;
                         state.main_page.sync_from_config(&config);
+                        state.main_page.log("Task dismissed");
+                    },
+                    Action::InboxClearAll => {
+                        let _ = inbox_actions::clear_all_tasks(&mut config);
+                        state.main_page.content_panel.inbox.active_task = None;
+                        state.main_page.sync_from_config(&config);
+                        state.main_page.log("All inbox tasks cleared");
                     },
                     // Relationship actions
                     Action::RelationshipSelect(index) => {
@@ -500,10 +533,12 @@ impl StateHandler {
                                 state.main_page.content_panel.relationships.status_message =
                                     Some(format!("Request sent to {}", did));
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log(format!("Relationship request sent to {}", did));
                             }
                             Err(e) => {
                                 state.main_page.content_panel.relationships.status_message =
                                     Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to send relationship request: {e}"));
                             }
                         }
                     },
@@ -522,10 +557,12 @@ impl StateHandler {
                                 state.main_page.content_panel.relationships.status_message =
                                     Some("Ping sent".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("Trust ping sent");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.relationships.status_message =
                                     Some(format!("Ping failed: {e}"));
+                                state.main_page.log(format!("Ping failed: {e}"));
                             }
                         }
                     },
@@ -537,6 +574,7 @@ impl StateHandler {
                         state.main_page.content_panel.relationships.status_message =
                             Some("Relationship removed".to_string());
                         state.main_page.sync_from_config(&config);
+                        state.main_page.log("Relationship removed");
                     },
                     // Credential actions
                     Action::CredentialSwitchTab => {
@@ -622,12 +660,24 @@ impl StateHandler {
                                 state.main_page.content_panel.credentials.status_message =
                                     Some(format!("VRC request sent to {}", relationship_p_did));
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log(format!("VRC request sent to {}", relationship_p_did));
                             }
                             Err(e) => {
                                 state.main_page.content_panel.credentials.status_message =
                                     Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to send VRC request: {e}"));
                             }
                         }
+                    },
+                    Action::CredentialRemove { vrc_id } => {
+                        use main_page::content::CredentialsMode;
+                        let _ = credential_actions::remove_vrc(&mut config, &vrc_id);
+                        state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+                        state.main_page.content_panel.credentials.selected_index = 0;
+                        state.main_page.content_panel.credentials.status_message =
+                            Some("VRC removed".to_string());
+                        state.main_page.sync_from_config(&config);
+                        state.main_page.log("VRC removed");
                     },
                     // Settings actions
                     Action::SettingsSelect(index) => {
@@ -742,14 +792,22 @@ impl StateHandler {
                         };
                         match result {
                             Ok(()) => {
+                                let setting_name = match idx {
+                                    0 => "Friendly name",
+                                    1 => "Mediator DID",
+                                    2 => "Organization DID",
+                                    _ => "Setting",
+                                };
                                 state.main_page.content_panel.settings.mode = SettingsMode::View;
                                 state.main_page.content_panel.settings.status_message =
                                     Some("Setting saved".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log(format!("{} updated", setting_name));
                             }
                             Err(e) => {
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to save setting: {e}"));
                             }
                         }
                     },
@@ -760,10 +818,12 @@ impl StateHandler {
                                 state.main_page.content_panel.settings.mode = SettingsMode::View;
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Config exported to {}", path));
+                                state.main_page.log(format!("Config exported to {}", path));
                             }
                             Err(e) => {
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Export failed: {e}"));
+                                state.main_page.log(format!("Config export failed: {e}"));
                             }
                         }
                     },
@@ -786,10 +846,12 @@ impl StateHandler {
                                 state.main_page.content_panel.settings.status_message =
                                     Some("Passphrase protection enabled".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("Passphrase protection enabled");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to set passphrase: {e}"));
                             }
                         }
                     },
@@ -802,10 +864,12 @@ impl StateHandler {
                                 state.main_page.content_panel.settings.status_message =
                                     Some("Protection reverted to keyring only".to_string());
                                 state.main_page.sync_from_config(&config);
+                                state.main_page.log("Protection reverted to keyring only");
                             }
                             Err(e) => {
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Error: {e}"));
+                                state.main_page.log(format!("Failed to remove passphrase: {e}"));
                             }
                         }
                     },
@@ -889,6 +953,12 @@ impl StateHandler {
                     state.connection.status = conn_result.status;
                     state.connection.last_ping_latency_ms = conn_result.latency_ms;
 
+                    if let Some(ms) = conn_result.latency_ms {
+                        state.main_page.log(format!("Connected to mediator ({}ms)", ms));
+                    } else {
+                        state.main_page.log("Connected to mediator");
+                    }
+
                     if let (Some(atm), Some(profile)) = (conn_result.atm, conn_result.profile) {
                         let handle = tokio::spawn(messaging::run_didcomm_loop(
                             atm,
@@ -899,6 +969,7 @@ impl StateHandler {
                         ));
                         msg_task_handle = Some(handle);
                         state.connection.messaging_active = true;
+                        state.main_page.log("DIDComm messaging active");
                     }
                 },
                 Some(event) = msg_rx.recv() => {
@@ -919,8 +990,10 @@ impl StateHandler {
                                 messaging::ConnectionStatus::Disconnected => {
                                     state.connection.status = state::MediatorStatus::Unknown;
                                     state.connection.messaging_active = false;
+                                    state.main_page.log("Mediator disconnected");
                                 }
                                 messaging::ConnectionStatus::Error(e) => {
+                                    state.main_page.log(format!("Connection error: {}", &e));
                                     state.connection.status = state::MediatorStatus::Failed(e);
                                 }
                             }
@@ -935,9 +1008,11 @@ impl StateHandler {
                             {
                                 Ok(true) => {
                                     state.main_page.sync_from_config(&config);
+                                    state.main_page.log("Inbound message processed");
                                 }
                                 Ok(false) => {}
                                 Err(e) => {
+                                    state.main_page.log(format!("Message error: {e}"));
                                     debug!("message dispatch error: {e}");
                                 }
                             }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use affinidi_tdk::TDK;
 use anyhow::{Context, Result};
 use openvtc::{config::Config, logs::LogFamily, tasks::TaskType, vrc::VrcRequest};
-use tracing::info;
+use tracing::{debug, info};
 
 /// Send a VRC request to a remote party via an established relationship.
 pub async fn send_vrc_request(
@@ -70,5 +70,20 @@ pub async fn send_vrc_request(
     );
 
     info!(to = %remote_p_did, "VRC request sent");
+    Ok(())
+}
+
+/// Remove a VRC by its ID from both received and issued collections.
+pub fn remove_vrc(config: &mut Config, vrc_id: &str) -> Result<()> {
+    let vrc_id = Arc::new(vrc_id.to_string());
+    config.private.vrcs_received.remove_vrc(&vrc_id);
+    config.private.vrcs_issued.remove_vrc(&vrc_id);
+
+    config
+        .public
+        .logs
+        .insert(LogFamily::Task, format!("Removed VRC ({})", vrc_id));
+
+    debug!(vrc_id = %vrc_id, "VRC removed");
     Ok(())
 }

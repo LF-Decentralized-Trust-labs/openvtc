@@ -11,6 +11,9 @@ pub mod content;
 pub mod menu;
 
 /// Holds all state related info for the main page
+/// Maximum number of activity log entries to keep in the UI.
+const MAX_ACTIVITY_LOG_ENTRIES: usize = 100;
+
 #[derive(Clone, Debug, Default)]
 pub struct MainPageState {
     /// State related to the menu panel
@@ -20,6 +23,19 @@ pub struct MainPageState {
     pub content_panel: ContentPanelState,
 
     pub config: MainMenuConfigState,
+
+    /// Activity log entries shown in the bottom panel (newest last).
+    pub activity_log: Vec<String>,
+}
+
+impl MainPageState {
+    /// Push a new entry to the activity log.
+    pub fn log(&mut self, message: impl Into<String>) {
+        self.activity_log.push(message.into());
+        if self.activity_log.len() > MAX_ACTIVITY_LOG_ENTRIES {
+            self.activity_log.remove(0);
+        }
+    }
 }
 
 impl MainPageState {

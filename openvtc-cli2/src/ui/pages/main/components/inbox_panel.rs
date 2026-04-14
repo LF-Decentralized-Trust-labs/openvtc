@@ -100,7 +100,9 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from("↑/↓ navigate  Enter: view  d: dismiss").fg(COLOR_DARK_GRAY));
+        lines.push(
+            Line::from("↑/↓ navigate  Enter: view  d: dismiss  c: clear all").fg(COLOR_DARK_GRAY),
+        );
     }
 
     lines
@@ -167,7 +169,8 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             ]));
             lines.push(Line::from(""));
             lines.push(
-                Line::from("a: accept (issue VRC)  d: dismiss  Esc: back").fg(COLOR_DARK_GRAY),
+                Line::from("a: accept (issue VRC)  r: reject  d: dismiss  Esc: back")
+                    .fg(COLOR_DARK_GRAY),
             );
         }
         ActiveTaskView::VRCIssued { task_id, issuer } => {

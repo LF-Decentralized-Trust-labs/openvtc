@@ -138,10 +138,19 @@ pub enum Action {
         task_id: String,
     },
 
+    /// Reject an inbound VRC request
+    InboxRejectVrcRequest {
+        task_id: String,
+        reason: Option<String>,
+    },
+
     /// Dismiss/remove a task from the inbox
     InboxDismissTask {
         task_id: String,
     },
+
+    /// Clear all tasks from the inbox
+    InboxClearAll,
 
     /// Return from task detail to the inbox list
     InboxBack,
@@ -211,6 +220,11 @@ pub enum Action {
 
     /// Update reason input in the new-request form
     CredentialReasonUpdate(String),
+
+    /// Remove a VRC by ID
+    CredentialRemove {
+        vrc_id: String,
+    },
 
     // ************************************************************************
     // SETTINGS Actions

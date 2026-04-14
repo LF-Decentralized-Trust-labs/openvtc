@@ -70,6 +70,8 @@ fn render_list(state: &RelationshipsState) -> Vec<Line<'static>> {
                         Style::new().fg(COLOR_ORANGE)
                     },
                 ),
+                Span::styled("  ", Style::default()),
+                Span::styled(rel.created.clone(), Style::new().fg(COLOR_DARK_GRAY)),
             ]));
         }
 

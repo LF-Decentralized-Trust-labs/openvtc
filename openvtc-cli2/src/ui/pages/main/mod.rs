@@ -27,7 +27,7 @@ use ratatui::{
     style::Stylize,
     symbols::merge::MergeStrategy,
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Paragraph},
 };
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -192,6 +192,11 @@ impl MainPage {
                             task_id,
                             reason: None,
                         });
+                    } else if is_vrc_request_inbound {
+                        let _ = self.action_tx.send(Action::InboxRejectVrcRequest {
+                            task_id,
+                            reason: None,
+                        });
                     }
                     true
                 }
@@ -255,6 +260,10 @@ impl MainPage {
             KeyCode::Char('d') if selected < task_count => {
                 let task_id = inbox.tasks[selected].id.clone();
                 let _ = self.action_tx.send(Action::InboxDismissTask { task_id });
+                true
+            }
+            KeyCode::Char('c') if task_count > 0 => {
+                let _ = self.action_tx.send(Action::InboxClearAll);
                 true
             }
             KeyCode::Esc => {
@@ -473,13 +482,28 @@ impl MainPage {
                     _ => false,
                 }
             }
-            CredentialsMode::Detail { .. } => match key.code {
-                KeyCode::Esc => {
-                    let _ = self.action_tx.send(Action::CredentialBack);
-                    true
+            CredentialsMode::Detail { index } => {
+                let detail_index = *index;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::CredentialBack);
+                        true
+                    }
+                    KeyCode::Char('d') => {
+                        let active_list = match creds.selected_tab {
+                            CredentialTab::Received => &creds.received,
+                            CredentialTab::Issued => &creds.issued,
+                        };
+                        if let Some(vrc) = active_list.get(detail_index) {
+                            let _ = self.action_tx.send(Action::CredentialRemove {
+                                vrc_id: vrc.vrc_id.clone(),
+                            });
+                        }
+                        true
+                    }
+                    _ => false,
                 }
-                _ => false,
-            },
+            }
             CredentialsMode::List => {
                 let active_list_len = match creds.selected_tab {
                     CredentialTab::Received => creds.received.len(),
@@ -776,8 +800,8 @@ impl MainPage {
 // ****************************************************************************
 impl ComponentRender<()> for MainPage {
     fn render(&self, frame: &mut Frame, _props: ()) {
-        let [main_top, main_middle, main_bottom] =
-            Layout::vertical([Length(2), Min(0), Length(3)]).areas(frame.area());
+        let [main_top, main_middle, main_log, main_bottom] =
+            Layout::vertical([Length(2), Min(0), Length(8), Length(1)]).areas(frame.area());
 
         let top =
             Layout::horizontal([Percentage(35), Percentage(30), Percentage(35)]).split(main_top);
@@ -860,15 +884,33 @@ impl ComponentRender<()> for MainPage {
             &self.props.connection,
         );
 
-        let bottom_block = Block::new()
-            .borders(Borders::TOP)
+        // Activity log panel
+        let log_block = Block::bordered()
             .merge_borders(MergeStrategy::Fuzzy)
-            .fg(COLOR_BORDER);
+            .fg(COLOR_BORDER)
+            .title(" Activity Log ");
+        let log_inner = log_block.inner(main_log);
+        frame.render_widget(log_block, main_log);
+
+        let log = &self.props.main_page.activity_log;
+        let visible_lines = log_inner.height as usize;
+        let skip = if log.len() > visible_lines {
+            log.len() - visible_lines
+        } else {
+            0
+        };
+        let log_lines: Vec<Line> = log
+            .iter()
+            .skip(skip)
+            .map(|entry| Line::from(entry.clone()).dark_gray())
+            .collect();
+        frame.render_widget(Paragraph::new(log_lines), log_inner);
+
+        // Bottom key hints (single line)
         frame.render_widget(
-            Paragraph::new("<TAB>/<LEFT>/<RIGHT> to change panels, <F10> to quit")
+            Paragraph::new(" <TAB> switch panels  <F10> quit")
                 .dark_gray()
-                .alignment(Alignment::Left)
-                .block(bottom_block),
+                .alignment(Alignment::Left),
             main_bottom,
         );
     }

@@ -285,6 +285,97 @@ pub async fn accept_vrc_request(config: &mut Config, tdk: &TDK, task_id: &str) -
     Ok(())
 }
 
+/// Reject an inbound VRC request.
+///
+/// Sends a rejection message to the requester and removes the task.
+pub async fn reject_vrc_request(
+    config: &mut Config,
+    tdk: &TDK,
+    task_id: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    use openvtc::vrc::VRCRequestReject;
+
+    let task_id = Arc::new(task_id.to_string());
+
+    // Find the task and extract relationship info
+    let relationship = {
+        let task_arc = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?
+            .clone();
+        let task = task_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        match &task.type_ {
+            TaskType::VRCRequestInbound { relationship, .. } => relationship.clone(),
+            _ => anyhow::bail!("task {} is not an inbound VRC request", task_id),
+        }
+    };
+
+    let (our_r_did, their_r_did, their_p_did) = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        (
+            lock.our_did.clone(),
+            lock.remote_did.clone(),
+            lock.remote_p_did.clone(),
+        )
+    };
+
+    // Send rejection message
+    let msg = VRCRequestReject::create_message(
+        &their_r_did,
+        &our_r_did,
+        &task_id,
+        reason.map(|s| s.to_string()),
+    )?;
+
+    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
+    let profile = if our_r_did == config.public.persona_did {
+        &config.persona_did.profile
+    } else {
+        config
+            .atm_profiles
+            .get(&our_r_did)
+            .ok_or_else(|| anyhow::anyhow!("No messaging profile for DID: {}", our_r_did))?
+    };
+
+    openvtc::pack_and_send(
+        atm,
+        profile,
+        &msg,
+        &our_r_did,
+        &their_r_did,
+        &config.public.mediator_did,
+    )
+    .await?;
+
+    // Remove the task
+    config.private.tasks.remove(&task_id);
+
+    config.public.logs.insert(
+        LogFamily::Task,
+        format!(
+            "Rejected VRC request from ({}). Reason: {}",
+            their_p_did,
+            reason.unwrap_or("none")
+        ),
+    );
+    info!(from = %their_p_did, "VRC request rejected");
+    Ok(())
+}
+
+/// Clear all tasks from the inbox.
+pub fn clear_all_tasks(config: &mut Config) -> Result<()> {
+    config.private.tasks.clear();
+    info!("all inbox tasks cleared");
+    Ok(())
+}
+
 /// Dismiss (remove) a task from the inbox without any action.
 pub fn dismiss_task(config: &mut Config, task_id: &str) -> Result<()> {
     let task_id = Arc::new(task_id.to_string());
