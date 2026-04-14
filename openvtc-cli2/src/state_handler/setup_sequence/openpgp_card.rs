@@ -54,8 +54,10 @@ pub fn write_keys_to_card(
     open_card.verify_admin_pin(
         state
             .token_admin_pin
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?
+            .as_ref()
+            .clone(),
     )?;
     let mut card = open_card.to_admin_card(None)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
@@ -226,8 +228,10 @@ pub fn set_signing_touch_policy(
     open_card.verify_admin_pin(
         state
             .token_admin_pin
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?
+            .as_ref()
+            .clone(),
     )?;
     let mut card = open_card.to_admin_card(None)?;
 
@@ -259,8 +263,10 @@ pub fn set_cardholder_name(
     open_card.verify_admin_pin(
         state
             .token_admin_pin
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?
+            .as_ref()
+            .clone(),
     )?;
     let mut card = open_card.to_admin_card(None)?;
 

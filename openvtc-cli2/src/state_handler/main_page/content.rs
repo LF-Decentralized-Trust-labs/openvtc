@@ -267,26 +267,28 @@ pub enum SettingsMode {
     EditMediatorDid { input: String },
     /// Editing the org DID
     EditOrgDid { input: String },
-    /// Export config form (path + passphrase)
+    /// Export config form (path + passphrase length for masked display)
     ExportConfig {
         path_input: String,
-        passphrase_input: String,
+        /// Length of the passphrase (actual value held only in UI component)
+        passphrase_len: usize,
         active_field: usize,
     },
-    /// Import config form (path + passphrase)
+    /// Import config form (path + passphrase length for masked display)
     ImportConfig {
         path_input: String,
-        passphrase_input: String,
+        /// Length of the passphrase (actual value held only in UI component)
+        passphrase_len: usize,
         active_field: usize,
     },
     /// Changing protection level (set/remove passphrase)
     ChangeProtection {
         /// 0 = Set passphrase, 1 = Remove passphrase (keyring only)
         selected_option: usize,
-        /// Passphrase input (for set option)
-        passphrase_input: String,
-        /// Confirm passphrase input
-        confirm_input: String,
+        /// Length of the passphrase (actual value held only in UI component)
+        passphrase_len: usize,
+        /// Length of the confirm passphrase (actual value held only in UI component)
+        confirm_len: usize,
         /// Which field is active (0 = option list, 1 = passphrase, 2 = confirm)
         active_field: usize,
     },

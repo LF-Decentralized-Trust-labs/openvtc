@@ -280,13 +280,15 @@ pub enum Action {
     SettingsProtectionOptionSelect(usize),
     /// Change protection: switch to passphrase input mode
     SettingsProtectionStartInput,
-    /// Change protection: update passphrase field
-    SettingsProtectionFieldUpdate {
-        field: usize,
-        value: String,
-    },
+    /// Change protection: update passphrase display length (actual value held in UI)
+    SettingsProtectionPassphraseLen(usize),
+    /// Change protection: update confirm display length (actual value held in UI)
+    SettingsProtectionConfirmLen(usize),
     /// Change protection: switch between passphrase/confirm fields
     SettingsProtectionTabSwitch(usize),
+
+    /// Update passphrase display length for export/import forms (actual value held in UI)
+    SettingsPassphraseLen(usize),
 
     /// Toggle R-DID in relationship form
     RelationshipToggleRDid,

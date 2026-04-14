@@ -40,6 +40,11 @@ pub struct MainPage {
 
     /// State Mapped MainPage Props
     props: Props,
+
+    /// Secure passphrase buffer — never cloned into State
+    passphrase_buffer: String,
+    /// Secure confirm passphrase buffer — never cloned into State
+    confirm_buffer: String,
 }
 
 struct Props {
@@ -65,6 +70,8 @@ impl Component for MainPage {
             action_tx: action_tx.clone(),
             // set the props
             props: Props::from(state),
+            passphrase_buffer: String::new(),
+            confirm_buffer: String::new(),
         }
         .move_with_state(state)
     }
@@ -585,12 +592,13 @@ impl MainPage {
             }
             SettingsMode::ExportConfig {
                 path_input,
-                passphrase_input,
                 active_field,
+                ..
             } => {
                 let active = *active_field;
                 match key.code {
                     KeyCode::Esc => {
+                        self.passphrase_buffer.clear();
                         let _ = self.action_tx.send(Action::SettingsCancelEdit);
                         true
                     }
@@ -599,36 +607,43 @@ impl MainPage {
                         true
                     }
                     KeyCode::Enter if active == 1 => {
+                        let passphrase = std::mem::take(&mut self.passphrase_buffer);
                         let _ = self.action_tx.send(Action::SettingsExportConfig {
                             path: path_input.clone(),
-                            passphrase: passphrase_input.clone(),
+                            passphrase,
                         });
                         true
                     }
                     KeyCode::Backspace => {
-                        let mut current = if active == 0 {
-                            path_input.clone()
+                        if active == 0 {
+                            let mut current = path_input.clone();
+                            current.pop();
+                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                                field: 0,
+                                value: current,
+                            });
                         } else {
-                            passphrase_input.clone()
-                        };
-                        current.pop();
-                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                            field: active,
-                            value: current,
-                        });
+                            self.passphrase_buffer.pop();
+                            let _ = self
+                                .action_tx
+                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                        }
                         true
                     }
                     KeyCode::Char(c) => {
-                        let mut current = if active == 0 {
-                            path_input.clone()
+                        if active == 0 {
+                            let mut current = path_input.clone();
+                            current.push(c);
+                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                                field: 0,
+                                value: current,
+                            });
                         } else {
-                            passphrase_input.clone()
-                        };
-                        current.push(c);
-                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                            field: active,
-                            value: current,
-                        });
+                            self.passphrase_buffer.push(c);
+                            let _ = self
+                                .action_tx
+                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                        }
                         true
                     }
                     _ => false,
@@ -636,14 +651,15 @@ impl MainPage {
             }
             SettingsMode::ChangeProtection {
                 selected_option,
-                passphrase_input,
-                confirm_input,
                 active_field,
+                ..
             } => {
                 let active = *active_field;
                 let sel = *selected_option;
                 match key.code {
                     KeyCode::Esc => {
+                        self.passphrase_buffer.clear();
+                        self.confirm_buffer.clear();
                         let _ = self.action_tx.send(Action::SettingsCancelEdit);
                         true
                     }
@@ -678,37 +694,43 @@ impl MainPage {
                     }
                     KeyCode::Enter if active == 2 => {
                         // Submit passphrase
-                        if passphrase_input == confirm_input && !passphrase_input.is_empty() {
-                            let _ = self.action_tx.send(Action::SettingsSetPassphrase {
-                                passphrase: passphrase_input.clone(),
-                            });
+                        if self.passphrase_buffer == self.confirm_buffer
+                            && !self.passphrase_buffer.is_empty()
+                        {
+                            let passphrase = std::mem::take(&mut self.passphrase_buffer);
+                            self.confirm_buffer.clear();
+                            let _ = self
+                                .action_tx
+                                .send(Action::SettingsSetPassphrase { passphrase });
                         }
                         true
                     }
                     KeyCode::Backspace if active >= 1 => {
-                        let mut current = if active == 1 {
-                            passphrase_input.clone()
+                        if active == 1 {
+                            self.passphrase_buffer.pop();
+                            let _ = self.action_tx.send(Action::SettingsProtectionPassphraseLen(
+                                self.passphrase_buffer.len(),
+                            ));
                         } else {
-                            confirm_input.clone()
-                        };
-                        current.pop();
-                        let _ = self.action_tx.send(Action::SettingsProtectionFieldUpdate {
-                            field: active,
-                            value: current,
-                        });
+                            self.confirm_buffer.pop();
+                            let _ = self.action_tx.send(Action::SettingsProtectionConfirmLen(
+                                self.confirm_buffer.len(),
+                            ));
+                        }
                         true
                     }
                     KeyCode::Char(c) if active >= 1 => {
-                        let mut current = if active == 1 {
-                            passphrase_input.clone()
+                        if active == 1 {
+                            self.passphrase_buffer.push(c);
+                            let _ = self.action_tx.send(Action::SettingsProtectionPassphraseLen(
+                                self.passphrase_buffer.len(),
+                            ));
                         } else {
-                            confirm_input.clone()
-                        };
-                        current.push(c);
-                        let _ = self.action_tx.send(Action::SettingsProtectionFieldUpdate {
-                            field: active,
-                            value: current,
-                        });
+                            self.confirm_buffer.push(c);
+                            let _ = self.action_tx.send(Action::SettingsProtectionConfirmLen(
+                                self.confirm_buffer.len(),
+                            ));
+                        }
                         true
                     }
                     _ => false,
@@ -747,12 +769,13 @@ impl MainPage {
             }
             SettingsMode::ImportConfig {
                 path_input,
-                passphrase_input,
                 active_field,
+                ..
             } => {
                 let active = *active_field;
                 match key.code {
                     KeyCode::Esc => {
+                        self.passphrase_buffer.clear();
                         let _ = self.action_tx.send(Action::SettingsCancelEdit);
                         true
                     }
@@ -761,36 +784,43 @@ impl MainPage {
                         true
                     }
                     KeyCode::Enter if active == 1 => {
+                        let passphrase = std::mem::take(&mut self.passphrase_buffer);
                         let _ = self.action_tx.send(Action::SettingsImportConfig {
                             path: path_input.clone(),
-                            passphrase: passphrase_input.clone(),
+                            passphrase,
                         });
                         true
                     }
                     KeyCode::Backspace => {
-                        let mut current = if active == 0 {
-                            path_input.clone()
+                        if active == 0 {
+                            let mut current = path_input.clone();
+                            current.pop();
+                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                                field: 0,
+                                value: current,
+                            });
                         } else {
-                            passphrase_input.clone()
-                        };
-                        current.pop();
-                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                            field: active,
-                            value: current,
-                        });
+                            self.passphrase_buffer.pop();
+                            let _ = self
+                                .action_tx
+                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                        }
                         true
                     }
                     KeyCode::Char(c) => {
-                        let mut current = if active == 0 {
-                            path_input.clone()
+                        if active == 0 {
+                            let mut current = path_input.clone();
+                            current.push(c);
+                            let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                                field: 0,
+                                value: current,
+                            });
                         } else {
-                            passphrase_input.clone()
-                        };
-                        current.push(c);
-                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
-                            field: active,
-                            value: current,
-                        });
+                            self.passphrase_buffer.push(c);
+                            let _ = self
+                                .action_tx
+                                .send(Action::SettingsPassphraseLen(self.passphrase_buffer.len()));
+                        }
                         true
                     }
                     _ => false,

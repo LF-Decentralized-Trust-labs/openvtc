@@ -459,11 +459,17 @@ impl StateHandler {
                     Action::SettingsProtectionStartInput => {
                         handle_settings_protection_start_input(&mut state);
                     },
-                    Action::SettingsProtectionFieldUpdate { field, value } => {
-                        handle_settings_protection_field_update(&mut state, field, value);
+                    Action::SettingsProtectionPassphraseLen(len) => {
+                        handle_settings_protection_passphrase_len(&mut state, len);
+                    },
+                    Action::SettingsProtectionConfirmLen(len) => {
+                        handle_settings_protection_confirm_len(&mut state, len);
                     },
                     Action::SettingsProtectionTabSwitch(next_field) => {
                         handle_settings_protection_tab_switch(&mut state, next_field);
+                    },
+                    Action::SettingsPassphraseLen(len) => {
+                        handle_settings_passphrase_len(&mut state, len);
                     },
                     Action::SettingsSubmitEdit { value } => {
                         handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
@@ -1157,12 +1163,12 @@ fn handle_settings_start_edit(state: &mut State) {
         },
         5 => SettingsMode::ExportConfig {
             path_input: "openvtc-export.enc".to_string(),
-            passphrase_input: String::new(),
+            passphrase_len: 0,
             active_field: 0,
         },
         6 => SettingsMode::ImportConfig {
             path_input: "openvtc-export.enc".to_string(),
-            passphrase_input: String::new(),
+            passphrase_len: 0,
             active_field: 0,
         },
         _ => SettingsMode::View,
@@ -1184,21 +1190,23 @@ fn handle_settings_field_update(state: &mut State, value: String) {
 fn handle_settings_form_field_update(state: &mut State, field: usize, value: String) {
     use main_page::content::SettingsMode;
     match &mut state.main_page.content_panel.settings.mode {
-        SettingsMode::ExportConfig {
-            path_input,
-            passphrase_input,
-            ..
-        }
-        | SettingsMode::ImportConfig {
-            path_input,
-            passphrase_input,
-            ..
-        } => {
+        SettingsMode::ExportConfig { path_input, .. }
+        | SettingsMode::ImportConfig { path_input, .. } => {
             if field == 0 {
                 *path_input = value;
-            } else {
-                *passphrase_input = value;
             }
+            // Passphrase updates are handled via SettingsPassphraseLen
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_passphrase_len(state: &mut State, len: usize) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::ExportConfig { passphrase_len, .. }
+        | SettingsMode::ImportConfig { passphrase_len, .. } => {
+            *passphrase_len = len;
         }
         _ => {}
     }
@@ -1234,19 +1242,21 @@ fn handle_settings_protection_start_input(state: &mut State) {
     }
 }
 
-fn handle_settings_protection_field_update(state: &mut State, field: usize, value: String) {
+fn handle_settings_protection_passphrase_len(state: &mut State, len: usize) {
     use main_page::content::SettingsMode;
-    if let SettingsMode::ChangeProtection {
-        passphrase_input,
-        confirm_input,
-        ..
-    } = &mut state.main_page.content_panel.settings.mode
+    if let SettingsMode::ChangeProtection { passphrase_len, .. } =
+        &mut state.main_page.content_panel.settings.mode
     {
-        if field == 1 {
-            *passphrase_input = value;
-        } else {
-            *confirm_input = value;
-        }
+        *passphrase_len = len;
+    }
+}
+
+fn handle_settings_protection_confirm_len(state: &mut State, len: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { confirm_len, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *confirm_len = len;
     }
 }
 
@@ -1331,8 +1341,8 @@ fn handle_settings_change_protection(state: &mut State) {
     use main_page::content::SettingsMode;
     state.main_page.content_panel.settings.mode = SettingsMode::ChangeProtection {
         selected_option: 0,
-        passphrase_input: String::new(),
-        confirm_input: String::new(),
+        passphrase_len: 0,
+        confirm_len: 0,
         active_field: 0,
     };
 }

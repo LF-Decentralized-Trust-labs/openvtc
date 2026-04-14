@@ -15,23 +15,23 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
         SettingsMode::EditOrgDid { input } => render_edit("Org DID", input),
         SettingsMode::ExportConfig {
             path_input,
-            passphrase_input,
+            passphrase_len,
             active_field,
-        } => render_export_form("Export Config", path_input, passphrase_input, *active_field),
+        } => render_export_form("Export Config", path_input, *passphrase_len, *active_field),
         SettingsMode::ImportConfig {
             path_input,
-            passphrase_input,
+            passphrase_len,
             active_field,
-        } => render_export_form("Import Config", path_input, passphrase_input, *active_field),
+        } => render_export_form("Import Config", path_input, *passphrase_len, *active_field),
         SettingsMode::ChangeProtection {
             selected_option,
-            passphrase_input,
-            confirm_input,
+            passphrase_len,
+            confirm_len,
             active_field,
         } => render_change_protection(
             *selected_option,
-            passphrase_input,
-            confirm_input,
+            *passphrase_len,
+            *confirm_len,
             *active_field,
         ),
         #[cfg(feature = "openpgp-card")]
@@ -234,7 +234,7 @@ fn render_edit(label: &str, input: &str) -> Vec<Line<'static>> {
 fn render_export_form(
     title: &str,
     path_input: &str,
-    passphrase_input: &str,
+    passphrase_len: usize,
     active_field: usize,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
@@ -243,34 +243,42 @@ fn render_export_form(
         Line::from(""),
     ];
 
-    let fields = [
-        ("File path:  ", path_input),
-        ("Passphrase: ", passphrase_input),
-    ];
+    // Path field (index 0)
+    let path_active = active_field == 0;
+    let path_style = if path_active {
+        Style::new().fg(COLOR_SUCCESS)
+    } else {
+        Style::new().fg(COLOR_TEXT_DEFAULT)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(if path_active { "▸ " } else { "  " }, path_style),
+        Span::styled("File path:  ", path_style),
+        Span::styled(path_input.to_string(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        Span::styled(
+            if path_active { "▎" } else { "" },
+            Style::new().fg(COLOR_SUCCESS),
+        ),
+    ]));
 
-    for (i, (label, value)) in fields.iter().enumerate() {
-        let is_active = i == active_field;
-        let cursor = if is_active { "▎" } else { "" };
-        let field_style = if is_active {
-            Style::new().fg(COLOR_SUCCESS)
-        } else {
-            Style::new().fg(COLOR_TEXT_DEFAULT)
-        };
-
-        // Mask passphrase
-        let display_value = if i == 1 {
-            "*".repeat(value.len())
-        } else {
-            value.to_string()
-        };
-
-        lines.push(Line::from(vec![
-            Span::styled(if is_active { "▸ " } else { "  " }, field_style),
-            Span::styled(label.to_string(), field_style),
-            Span::styled(display_value, Style::new().fg(COLOR_SOFT_PURPLE)),
-            Span::styled(cursor, Style::new().fg(COLOR_SUCCESS)),
-        ]));
-    }
+    // Passphrase field (index 1) — display masked length only
+    let pass_active = active_field == 1;
+    let pass_style = if pass_active {
+        Style::new().fg(COLOR_SUCCESS)
+    } else {
+        Style::new().fg(COLOR_TEXT_DEFAULT)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(if pass_active { "▸ " } else { "  " }, pass_style),
+        Span::styled("Passphrase: ", pass_style),
+        Span::styled(
+            "*".repeat(passphrase_len),
+            Style::new().fg(COLOR_SOFT_PURPLE),
+        ),
+        Span::styled(
+            if pass_active { "▎" } else { "" },
+            Style::new().fg(COLOR_SUCCESS),
+        ),
+    ]));
 
     lines.push(Line::from(""));
     lines.push(
@@ -283,8 +291,8 @@ fn render_export_form(
 
 fn render_change_protection(
     selected_option: usize,
-    passphrase_input: &str,
-    confirm_input: &str,
+    passphrase_len: usize,
+    confirm_len: usize,
     active_field: usize,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
@@ -313,7 +321,7 @@ fn render_change_protection(
         lines.push(Line::from(""));
         lines.push(Line::from("↑/↓ select  Enter: choose  Esc: cancel").fg(COLOR_DARK_GRAY));
     } else {
-        // Passphrase input mode
+        // Passphrase input mode — display masked lengths only
         lines.push(Line::from(vec![
             Span::styled(
                 if active_field == 1 { "▸ " } else { "  " },
@@ -332,7 +340,7 @@ fn render_change_protection(
                 }),
             ),
             Span::styled(
-                "*".repeat(passphrase_input.len()),
+                "*".repeat(passphrase_len),
                 Style::new().fg(COLOR_SOFT_PURPLE),
             ),
             Span::styled(
@@ -358,22 +366,18 @@ fn render_change_protection(
                     COLOR_TEXT_DEFAULT
                 }),
             ),
-            Span::styled(
-                "*".repeat(confirm_input.len()),
-                Style::new().fg(COLOR_SOFT_PURPLE),
-            ),
+            Span::styled("*".repeat(confirm_len), Style::new().fg(COLOR_SOFT_PURPLE)),
             Span::styled(
                 if active_field == 2 { "▎" } else { "" },
                 Style::new().fg(COLOR_SUCCESS),
             ),
         ]));
 
-        if !passphrase_input.is_empty()
-            && !confirm_input.is_empty()
-            && passphrase_input != confirm_input
-        {
+        if passphrase_len > 0 && confirm_len > 0 && passphrase_len != confirm_len {
             lines.push(Line::from(""));
-            lines.push(Line::from("  Passphrases do not match").fg(COLOR_ORANGE));
+            lines.push(
+                Line::from("  Passphrases may not match (different lengths)").fg(COLOR_ORANGE),
+            );
         }
 
         lines.push(Line::from(""));

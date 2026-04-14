@@ -34,7 +34,7 @@ pub(crate) fn handle_get_tokens(state: &mut State) {
 #[cfg(feature = "openpgp-card")]
 pub(crate) fn handle_set_admin_pin(state: &mut State, token: String, admin_pin: SecretString) {
     state.setup.protection = ConfigProtection::Token(token);
-    state.token_admin_pin = Some(admin_pin);
+    state.token_admin_pin = Some(Arc::new(admin_pin));
     state.setup.active_page = SetupPage::TokenFactoryReset;
 }
 

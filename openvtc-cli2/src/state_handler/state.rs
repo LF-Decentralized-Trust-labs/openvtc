@@ -1,4 +1,7 @@
 #[cfg(feature = "openpgp-card")]
+use std::sync::Arc;
+
+#[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 
 use crate::state_handler::{main_page::MainPageState, setup_sequence::SetupState};
@@ -11,9 +14,9 @@ pub struct State {
     pub setup: SetupState,
     pub connection: ConnectionState,
 
-    /// Hardware Token Admin Pin
+    /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
     #[cfg(feature = "openpgp-card")]
-    pub token_admin_pin: Option<SecretString>,
+    pub token_admin_pin: Option<Arc<SecretString>>,
 
     /// True when the user needs to physically touch their hardware token
     #[cfg(feature = "openpgp-card")]
