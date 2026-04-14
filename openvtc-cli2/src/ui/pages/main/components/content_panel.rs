@@ -20,7 +20,7 @@ use ratatui::{
 
 use super::{
     credentials_panel::CredentialsPanel, inbox_panel::InboxPanel, panel::Panel,
-    relationships_panel::RelationshipsPanel, settings_panel::SettingsPanel,
+    relationships_panel::RelationshipsPanel, settings_panel::SettingsPanel, vta_panel::VtaPanel,
 };
 
 // ****************************************************************************
@@ -55,6 +55,7 @@ impl ContentPanelState {
             MainMenu::Relationships => Some(Box::new(RelationshipsPanel)),
             MainMenu::Credentials => Some(Box::new(CredentialsPanel)),
             MainMenu::Settings => Some(Box::new(SettingsPanel)),
+            MainMenu::Vta => Some(Box::new(VtaPanel)),
             _ => None,
         };
 

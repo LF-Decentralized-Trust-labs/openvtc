@@ -436,8 +436,8 @@ impl StateHandler {
                         InboxAction::Back => {
                             state.main_page.content_panel.inbox.active_task = None;
                         },
-                        InboxAction::AcceptRelationship { task_id } => {
-                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id).await;
+                        InboxAction::AcceptRelationship { task_id, generate_r_did } => {
+                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, generate_r_did).await;
                         },
                         InboxAction::RejectRelationship { task_id, reason } => {
                             handle_inbox_reject_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
@@ -913,8 +913,11 @@ async fn handle_inbox_accept_relationship(
     state: &mut State,
     profile: &str,
     task_id: &str,
+    generate_r_did: bool,
 ) {
-    match inbox_actions::accept_relationship_request(config, tdk, service, task_id).await {
+    match inbox_actions::accept_relationship_request(config, tdk, service, task_id, generate_r_did)
+        .await
+    {
         Ok(()) => inbox_save_and_sync(
             config,
             state,

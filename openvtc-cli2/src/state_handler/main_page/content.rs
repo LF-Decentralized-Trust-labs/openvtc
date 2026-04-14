@@ -15,8 +15,29 @@ pub struct ContentPanelState {
     pub credentials: CredentialsState,
     /// Settings panel state
     pub settings: SettingsState,
+    /// VTA service panel state
+    pub vta: VtaState,
     /// Logs panel state
     pub logs: LogsState,
+}
+
+// ****************************************************************************
+// VTA State
+// ****************************************************************************
+
+/// State for the VTA service information panel.
+#[derive(Clone, Debug, Default)]
+pub struct VtaState {
+    /// VTA service URL
+    pub vta_url: String,
+    /// VTA service DID
+    pub vta_did: String,
+    /// Credential DID used for VTA authentication
+    pub credential_did: String,
+    /// Total number of keys managed
+    pub key_count: usize,
+    /// Whether the VTA key backend is in use
+    pub is_vta_managed: bool,
 }
 
 // ****************************************************************************

@@ -298,11 +298,23 @@ impl MainPage {
                     let _ = self.action_tx.send(Action::Inbox(InboxAction::Back));
                     true
                 }
+                KeyCode::Char('A') if is_rel_inbound => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::Inbox(InboxAction::AcceptRelationship {
+                            task_id,
+                            generate_r_did: true,
+                        }));
+                    true
+                }
                 KeyCode::Char('a') => {
                     if is_rel_inbound {
-                        let _ = self
-                            .action_tx
-                            .send(Action::Inbox(InboxAction::AcceptRelationship { task_id }));
+                        let _ =
+                            self.action_tx
+                                .send(Action::Inbox(InboxAction::AcceptRelationship {
+                                    task_id,
+                                    generate_r_did: false,
+                                }));
                     } else if is_vrc_issued {
                         let _ = self
                             .action_tx

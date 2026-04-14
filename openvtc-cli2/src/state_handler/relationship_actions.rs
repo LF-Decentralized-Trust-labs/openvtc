@@ -86,13 +86,27 @@ pub async fn send_relationship_request(
     }
 
     // Optionally generate a random relationship DID for privacy
-    let our_did: Arc<String> = if generate_r_did
-        && matches!(config.key_backend, KeyBackend::Bip32 { .. })
-    {
-        Arc::new(create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?)
-    } else {
-        Arc::clone(&config.public.persona_did)
-    };
+    let our_did: Arc<String> =
+        if generate_r_did && matches!(config.key_backend, KeyBackend::Bip32 { .. }) {
+            let r_did = Arc::new(
+                create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?,
+            );
+            // Register a listener for the new R-DID
+            let listener_config = super::didcomm::relationship_listener_config(
+                config,
+                tdk,
+                &r_did,
+                respondent_did,
+                &config.public.mediator_did,
+            )
+            .await;
+            if let Err(e) = service.add_listener(listener_config).await {
+                tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
+            }
+            r_did
+        } else {
+            Arc::clone(&config.public.persona_did)
+        };
 
     // Build the relationship request message
     let friendly_name = if config.public.friendly_name.is_empty() {
@@ -226,7 +240,11 @@ pub fn remove_relationship(config: &mut Config, remote_p_did: &str) -> Result<()
 /// Derives signing and encryption keys from the BIP32 root using the
 /// relationship path pointer, registers the secrets with the TDK resolver,
 /// and records key metadata in the configuration.
-async fn create_relationship_did(tdk: &TDK, config: &mut Config, mediator: &str) -> Result<String> {
+pub(crate) async fn create_relationship_did(
+    tdk: &TDK,
+    config: &mut Config,
+    mediator: &str,
+) -> Result<String> {
     // Derive a key path for the verification (signing) key
     let v_path = [
         "m/3'/1'/1'/",

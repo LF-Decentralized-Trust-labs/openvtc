@@ -13,7 +13,7 @@ use affinidi_tdk::didcomm::Message;
 use anyhow::Result;
 use chrono::Utc;
 use openvtc::{
-    config::Config,
+    config::{Config, KeyBackend},
     logs::LogFamily,
     relationships::{
         Relationship, RelationshipAcceptBody, RelationshipRejectBody, RelationshipState,
@@ -26,13 +26,15 @@ use uuid::Uuid;
 
 /// Accept an inbound relationship request.
 ///
-/// Uses the persona DID as the relationship DID (simple default).
-/// Creates the relationship, sends acceptance message, and removes the task.
+/// When `generate_r_did` is true and the key backend is BIP32, a unique
+/// relationship DID (did:peer) is derived for privacy. Otherwise the
+/// persona DID is used directly.
 pub async fn accept_relationship_request(
     config: &mut Config,
     tdk: &TDK,
     service: &DIDCommService,
     task_id: &str,
+    generate_r_did: bool,
 ) -> Result<()> {
     let task_id = Arc::new(task_id.to_string());
 
@@ -56,8 +58,32 @@ pub async fn accept_relationship_request(
         }
     };
 
-    // Use persona DID as our relationship DID (simple default)
-    let our_did = Arc::clone(&config.public.persona_did);
+    // Optionally generate a random relationship DID for privacy
+    let our_did = if generate_r_did && matches!(config.key_backend, KeyBackend::Bip32 { .. }) {
+        let r_did = Arc::new(
+            super::relationship_actions::create_relationship_did(
+                tdk,
+                config,
+                &config.public.mediator_did.clone(),
+            )
+            .await?,
+        );
+        // Register a listener for the new R-DID
+        let listener_config = super::didcomm::relationship_listener_config(
+            config,
+            tdk,
+            &r_did,
+            &from_did,
+            &config.public.mediator_did,
+        )
+        .await;
+        if let Err(e) = service.add_listener(listener_config).await {
+            tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
+        }
+        r_did
+    } else {
+        Arc::clone(&config.public.persona_did)
+    };
 
     // Add contact if not already known
     if config.private.contacts.find_contact(&from_did).is_none() {

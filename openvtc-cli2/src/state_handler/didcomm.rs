@@ -347,7 +347,6 @@ fn truncate_did_id(did: &str) -> &str {
 }
 
 /// Create a `ListenerConfig` for a relationship R-DID.
-#[allow(dead_code)]
 pub async fn relationship_listener_config(
     config: &Config,
     tdk: &affinidi_tdk::TDK,

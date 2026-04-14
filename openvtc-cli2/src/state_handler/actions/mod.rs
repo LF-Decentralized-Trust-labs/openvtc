@@ -28,6 +28,7 @@ pub enum InboxAction {
     OpenDetail(usize),
     AcceptRelationship {
         task_id: String,
+        generate_r_did: bool,
     },
     RejectRelationship {
         task_id: String,

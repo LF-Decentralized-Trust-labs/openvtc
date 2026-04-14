@@ -171,7 +171,10 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
                 Span::styled(task_id.clone(), Style::new().fg(COLOR_DARK_GRAY)),
             ]));
             lines.push(Line::from(""));
-            lines.push(Line::from("a: accept  r: reject  Esc: back").fg(COLOR_DARK_GRAY));
+            lines.push(
+                Line::from("a: accept  A: accept (R-DID)  r: reject  d: dismiss  Esc: back")
+                    .fg(COLOR_DARK_GRAY),
+            );
         }
         ActiveTaskView::VRCRequestInbound {
             task_id,

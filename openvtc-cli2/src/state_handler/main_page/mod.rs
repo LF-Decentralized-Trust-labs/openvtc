@@ -1,7 +1,10 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use openvtc::{config::Config, tasks::TaskType};
+use openvtc::{
+    config::{Config, KeyBackend},
+    tasks::TaskType,
+};
 
 use crate::state_handler::main_page::{
     content::{ContentPanelState, RelationshipSummary, TaskKind, TaskSummary, VrcSummary},
@@ -29,12 +32,14 @@ pub struct MainPageState {
 }
 
 impl MainPageState {
-    /// Push a new entry to the activity log (O(1) bounded insertion).
+    /// Push a timestamped entry to the activity log (O(1) bounded insertion).
     pub fn log(&mut self, message: impl Into<String>) {
         if self.activity_log.len() >= MAX_ACTIVITY_LOG_ENTRIES {
             self.activity_log.pop_front();
         }
-        self.activity_log.push_back(message.into());
+        let timestamp = chrono::Local::now().format("%H:%M:%S");
+        self.activity_log
+            .push_back(format!("[{}] {}", timestamp, message.into()));
     }
 }
 
@@ -176,6 +181,25 @@ impl MainPageState {
         self.content_panel.settings.mediator_did = config.public.mediator_did.clone();
         self.content_panel.settings.org_did = config.public.lk_did.clone();
         self.content_panel.settings.persona_did = config.public.persona_did.to_string();
+        // Sync VTA info
+        match &config.key_backend {
+            KeyBackend::Vta {
+                vta_url,
+                vta_did,
+                credential_did,
+                ..
+            } => {
+                self.content_panel.vta.vta_url = vta_url.clone();
+                self.content_panel.vta.vta_did = vta_did.clone();
+                self.content_panel.vta.credential_did = credential_did.clone();
+                self.content_panel.vta.is_vta_managed = true;
+            }
+            _ => {
+                self.content_panel.vta.is_vta_managed = false;
+            }
+        }
+        self.content_panel.vta.key_count = config.key_info.len();
+
         self.content_panel.settings.protection_type = match &config.public.protection {
             openvtc::config::ConfigProtectionType::Token(id) => {
                 format!(

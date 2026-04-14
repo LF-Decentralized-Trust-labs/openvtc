@@ -9,3 +9,4 @@ pub mod menu_panel;
 pub mod panel;
 pub mod relationships_panel;
 pub mod settings_panel;
+pub mod vta_panel;
