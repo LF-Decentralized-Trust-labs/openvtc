@@ -8,7 +8,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{DisableMouseCapture, Event, EventStream},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event, EventStream},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -80,6 +80,9 @@ impl UiManager {
                     Some(Ok(Event::Key(key)))  => {
                         app_router.handle_key_event(key);
                     },
+                    Some(Ok(Event::Paste(text))) => {
+                        app_router.handle_paste_event(&text);
+                    },
                     None => break Ok(Interrupted::UserInt),
                     _ => (),
                 },
@@ -106,7 +109,12 @@ fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
 
     enable_raw_mode()?;
 
-    execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        DisableMouseCapture,
+        EnableBracketedPaste
+    )?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     terminal.clear()?;
@@ -120,7 +128,8 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
 
     Ok(terminal.show_cursor()?)

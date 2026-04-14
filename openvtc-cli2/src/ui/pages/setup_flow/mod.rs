@@ -224,6 +224,16 @@ impl Component for SetupFlow {
             SetupPage::FinalPage => FinalPage::handle_key_event(self, key),
         }
     }
+
+    fn handle_paste_event(&mut self, text: &str) {
+        // Handle paste as a single operation for the VTA credential input.
+        // Without this, pasting a 500-char base64 credential triggers 500
+        // individual key events, each causing a full render cycle.
+        if matches!(self.props.state.active_page, SetupPage::VtaCredentialPaste) {
+            self.vta_credential.credential_input = tui_input::Input::new(text.trim().to_string());
+            self.vta_credential.warning_msg = None;
+        }
+    }
 }
 
 // ****************************************************************************
