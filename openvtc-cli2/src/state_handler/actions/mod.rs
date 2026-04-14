@@ -76,6 +76,22 @@ pub enum RelationshipAction {
     ToggleRDid,
     /// Switch focus to a specific form field by index
     FocusField(usize),
+    /// Begin editing the alias for a relationship
+    StartEditAlias {
+        index: usize,
+        current_alias: String,
+    },
+    /// Update the alias input text during editing
+    EditAliasUpdate(String),
+    /// Submit the edited alias for a relationship
+    EditAlias {
+        remote_p_did: String,
+        alias: String,
+    },
+    /// Cancel alias editing
+    CancelEditAlias {
+        index: usize,
+    },
 }
 
 #[allow(dead_code)]

@@ -125,6 +125,8 @@ pub enum RelationshipsMode {
     List,
     /// Viewing details of a specific relationship
     Detail { index: usize },
+    /// Editing the alias for an existing relationship
+    EditAlias { index: usize, alias_input: String },
     /// Filling out a new relationship request form
     NewRequest {
         did_input: String,

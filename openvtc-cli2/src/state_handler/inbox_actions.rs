@@ -37,7 +37,7 @@ pub async fn accept_relationship_request(
     let task_id = Arc::new(task_id.to_string());
 
     // Find the task and extract request data
-    let (from_did, their_did) = {
+    let (from_did, their_did, sender_name) = {
         let task_arc = Arc::clone(
             config
                 .private
@@ -50,7 +50,7 @@ pub async fn accept_relationship_request(
             .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         match &task.type_ {
             TaskType::RelationshipRequestInbound { from, request, .. } => {
-                (Arc::clone(from), request.did.clone())
+                (Arc::clone(from), request.did.clone(), request.name.clone())
             }
             _ => anyhow::bail!("task {} is not an inbound relationship request", task_id),
         }
@@ -64,7 +64,13 @@ pub async fn accept_relationship_request(
         config
             .private
             .contacts
-            .add_contact(tdk, &from_did, None, false, &mut config.public.logs)
+            .add_contact(
+                tdk,
+                &from_did,
+                sender_name.clone(),
+                false,
+                &mut config.public.logs,
+            )
             .await?;
     }
 

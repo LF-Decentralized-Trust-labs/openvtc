@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use crate::{
     Interrupted, Terminator,
@@ -472,6 +473,24 @@ impl StateHandler {
                         },
                         RelationshipAction::Remove { remote_p_did } => {
                             handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
+                        },
+                        RelationshipAction::StartEditAlias { index, current_alias } => {
+                            state.main_page.content_panel.relationships.mode =
+                                main_page::content::RelationshipsMode::EditAlias { index, alias_input: current_alias };
+                        },
+                        RelationshipAction::EditAliasUpdate(value) => {
+                            if let main_page::content::RelationshipsMode::EditAlias { ref mut alias_input, .. } =
+                                state.main_page.content_panel.relationships.mode
+                            {
+                                *alias_input = value;
+                            }
+                        },
+                        RelationshipAction::EditAlias { remote_p_did, alias } => {
+                            handle_relationship_edit_alias(&mut config, &mut state, &self.profile, &remote_p_did, &alias);
+                        },
+                        RelationshipAction::CancelEditAlias { index } => {
+                            state.main_page.content_panel.relationships.mode =
+                                main_page::content::RelationshipsMode::Detail { index };
                         },
                     },
                     Action::Credential(ca) => match ca {
@@ -1097,6 +1116,69 @@ fn handle_relationship_remove(
     }
     state.main_page.sync_from_config(config);
     state.main_page.log("Relationship removed");
+}
+
+fn handle_relationship_edit_alias(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+    alias: &str,
+) {
+    use main_page::content::RelationshipsMode;
+    use openvtc::config::protected_config::Contact;
+
+    // Remove old contact entry (clears old alias mapping too)
+    config
+        .private
+        .contacts
+        .remove_contact(&mut config.public.logs, remote_p_did);
+
+    // Re-add with the new alias
+    let alias_opt = if alias.trim().is_empty() {
+        None
+    } else {
+        Some(alias.trim().to_string())
+    };
+    let contact_did = Arc::new(remote_p_did.to_string());
+    let contact = Arc::new(Contact {
+        did: contact_did.clone(),
+        alias: alias_opt.clone(),
+    });
+    config
+        .private
+        .contacts
+        .contacts
+        .insert(contact_did, contact.clone());
+    if let Some(ref a) = alias_opt {
+        config.private.contacts.aliases.insert(a.clone(), contact);
+    }
+
+    config.public.logs.insert(
+        openvtc::logs::LogFamily::Config,
+        format!(
+            "Alias updated for {}: {}",
+            remote_p_did,
+            alias_opt.as_deref().unwrap_or("(removed)")
+        ),
+    );
+
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    // Return to detail view — find the index for this remote_p_did
+    let index = state
+        .main_page
+        .content_panel
+        .relationships
+        .relationships
+        .iter()
+        .position(|r| r.remote_p_did == remote_p_did)
+        .unwrap_or(0);
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail { index };
+    state.main_page.content_panel.relationships.status_message = Some("Alias updated".to_string());
+    state.main_page.log("Alias updated");
 }
 
 // ============================================================

@@ -28,6 +28,9 @@ impl Panel for RelationshipsPanel {
 /// Render the relationships panel content.
 pub fn render(state: &RelationshipsState) -> Vec<Line<'static>> {
     match &state.mode {
+        RelationshipsMode::EditAlias { index, alias_input } => {
+            render_edit_alias(state, *index, alias_input)
+        }
         RelationshipsMode::Detail { index } => render_detail(state, *index),
         RelationshipsMode::NewRequest {
             did_input,
@@ -166,7 +169,37 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
     ]));
 
     lines.push(Line::from(""));
-    lines.push(Line::from("p: ping  d: remove  Esc: back").fg(COLOR_DARK_GRAY));
+    lines.push(Line::from("e: edit alias  p: ping  d: remove  Esc: back").fg(COLOR_DARK_GRAY));
+
+    lines
+}
+
+fn render_edit_alias(
+    state: &RelationshipsState,
+    index: usize,
+    alias_input: &str,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from("")];
+
+    let Some(rel) = state.relationships.get(index) else {
+        lines.push(Line::from("Relationship not found").fg(COLOR_WARNING_ACCESSIBLE_RED));
+        return lines;
+    };
+
+    lines.push(Line::from("Edit Alias").fg(COLOR_SUCCESS).bold());
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("Remote P-DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+        Span::styled(rel.remote_p_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("▸ Alias: ", Style::new().fg(COLOR_SUCCESS)),
+        Span::styled(alias_input.to_string(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        Span::styled("▎", Style::new().fg(COLOR_SUCCESS)),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from("Enter: save  Esc: cancel").fg(COLOR_DARK_GRAY));
 
     lines
 }

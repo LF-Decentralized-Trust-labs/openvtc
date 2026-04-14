@@ -153,6 +153,15 @@ impl Component for MainPage {
 
         match menu {
             MainMenu::Relationships => {
+                if let RelationshipsMode::EditAlias { alias_input, .. } =
+                    &self.props.main_page.content_panel.relationships.mode
+                {
+                    let updated = format!("{}{}", alias_input, trimmed);
+                    let _ = self.action_tx.send(Action::Relationship(
+                        RelationshipAction::EditAliasUpdate(updated),
+                    ));
+                    return;
+                }
                 if let RelationshipsMode::NewRequest {
                     did_input,
                     alias_input,
@@ -519,6 +528,18 @@ impl MainPage {
                             .send(Action::Relationship(RelationshipAction::Back));
                         true
                     }
+                    KeyCode::Char('e') => {
+                        if let Some(rel) = rels.relationships.get(index) {
+                            let current = rel.alias.clone().unwrap_or_default();
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::StartEditAlias {
+                                    index,
+                                    current_alias: current,
+                                },
+                            ));
+                        }
+                        true
+                    }
                     KeyCode::Char('p') => {
                         if let Some(rel) = rels.relationships.get(index) {
                             let _ = self.action_tx.send(Action::Relationship(
@@ -537,6 +558,45 @@ impl MainPage {
                                 },
                             ));
                         }
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            RelationshipsMode::EditAlias { index, alias_input } => {
+                let index = *index;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::CancelEditAlias { index },
+                        ));
+                        true
+                    }
+                    KeyCode::Enter => {
+                        if let Some(rel) = rels.relationships.get(index) {
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::EditAlias {
+                                    remote_p_did: rel.remote_p_did.clone(),
+                                    alias: alias_input.clone(),
+                                },
+                            ));
+                        }
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut current = alias_input.clone();
+                        current.pop();
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::EditAliasUpdate(current),
+                        ));
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut current = alias_input.clone();
+                        current.push(c);
+                        let _ = self.action_tx.send(Action::Relationship(
+                            RelationshipAction::EditAliasUpdate(current),
+                        ));
                         true
                     }
                     _ => false,

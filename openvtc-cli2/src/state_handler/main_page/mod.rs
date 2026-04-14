@@ -98,6 +98,21 @@ impl MainPageState {
                     }
                     TaskType::RelationshipRequestOutbound { to } => shorten_did(to),
                     TaskType::TrustPing { to, .. } => shorten_did(to),
+                    TaskType::VRCRequestInbound { relationship, .. } => {
+                        if let Ok(lock) = relationship.lock() {
+                            shorten_did(&lock.remote_p_did)
+                        } else {
+                            String::new()
+                        }
+                    }
+                    TaskType::VRCRequestOutbound { relationship } => {
+                        if let Ok(lock) = relationship.lock() {
+                            shorten_did(&lock.remote_p_did)
+                        } else {
+                            String::new()
+                        }
+                    }
+                    TaskType::VRCIssued { vrc } => sanitize_display(vrc.issuer(), 40),
                     _ => String::new(),
                 };
                 Some(TaskSummary {
