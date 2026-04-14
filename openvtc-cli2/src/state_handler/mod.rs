@@ -23,6 +23,7 @@ pub mod main_page;
 mod message_dispatch;
 pub mod messaging;
 mod relationship_actions;
+mod settings_actions;
 mod setup_did_actions;
 pub mod setup_sequence;
 mod setup_token_actions;
@@ -611,6 +612,103 @@ impl StateHandler {
                             Err(e) => {
                                 state.main_page.content_panel.credentials.status_message =
                                     Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    // Settings actions
+                    Action::SettingsSelect(index) => {
+                        state.main_page.content_panel.settings.selected_index = index;
+                    },
+                    Action::SettingsStartEdit => {
+                        use main_page::content::SettingsMode;
+                        let idx = state.main_page.content_panel.settings.selected_index;
+                        let s = &state.main_page.content_panel.settings;
+                        state.main_page.content_panel.settings.mode = match idx {
+                            0 => SettingsMode::EditFriendlyName {
+                                input: s.friendly_name.clone(),
+                            },
+                            1 => SettingsMode::EditMediatorDid {
+                                input: s.mediator_did.clone(),
+                            },
+                            2 => SettingsMode::EditOrgDid {
+                                input: s.org_did.clone(),
+                            },
+                            4 => SettingsMode::ExportConfig {
+                                path_input: "openvtc-export.enc".to_string(),
+                                passphrase_input: String::new(),
+                                active_field: 0,
+                            },
+                            _ => SettingsMode::View,
+                        };
+                    },
+                    Action::SettingsCancelEdit => {
+                        use main_page::content::SettingsMode;
+                        state.main_page.content_panel.settings.mode = SettingsMode::View;
+                    },
+                    Action::SettingsEditUpdate(value) => {
+                        use main_page::content::SettingsMode;
+                        match &mut state.main_page.content_panel.settings.mode {
+                            SettingsMode::EditFriendlyName { input }
+                            | SettingsMode::EditMediatorDid { input }
+                            | SettingsMode::EditOrgDid { input } => {
+                                *input = value;
+                            }
+                            SettingsMode::ExportConfig {
+                                path_input,
+                                passphrase_input,
+                                active_field,
+                            } => {
+                                if value.starts_with('\t') {
+                                    // Tab field switch
+                                    *active_field = if value == "\t1" { 1 } else { 0 };
+                                } else if value.starts_with('\0') && value.len() >= 2 {
+                                    // Field-specific update: \0{field}{content}
+                                    let field = value.as_bytes()[1] - b'0';
+                                    let content = &value[2..];
+                                    if field == 0 {
+                                        *path_input = content.to_string();
+                                    } else {
+                                        *passphrase_input = content.to_string();
+                                    }
+                                }
+                            }
+                            SettingsMode::View => {}
+                        }
+                    },
+                    Action::SettingsSubmitEdit { value } => {
+                        use main_page::content::SettingsMode;
+                        let idx = state.main_page.content_panel.settings.selected_index;
+                        let profile = self.profile.clone();
+                        let result = match idx {
+                            0 => settings_actions::update_friendly_name(&mut config, &profile, &value),
+                            1 => settings_actions::update_mediator_did(&mut config, &profile, &value),
+                            2 => settings_actions::update_org_did(&mut config, &profile, &value),
+                            _ => Ok(()),
+                        };
+                        match result {
+                            Ok(()) => {
+                                state.main_page.content_panel.settings.mode = SettingsMode::View;
+                                state.main_page.content_panel.settings.status_message =
+                                    Some("Setting saved".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    Action::SettingsExportConfig { path, passphrase } => {
+                        use main_page::content::SettingsMode;
+                        match settings_actions::export_config(&config, &path, &passphrase) {
+                            Ok(()) => {
+                                state.main_page.content_panel.settings.mode = SettingsMode::View;
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(format!("Config exported to {}", path));
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(format!("Export failed: {e}"));
                             }
                         }
                     },

@@ -143,6 +143,7 @@ impl MainPage {
             MainMenu::Inbox => self.handle_inbox_key(key),
             MainMenu::Relationships => self.handle_relationships_key(key),
             MainMenu::Credentials => self.handle_credentials_key(key),
+            MainMenu::Settings => self.handle_settings_key(key),
             _ => false,
         }
     }
@@ -501,6 +502,129 @@ impl MainPage {
                     }
                     KeyCode::Char('n') => {
                         let _ = self.action_tx.send(Action::CredentialStartNewRequest);
+                        true
+                    }
+                    KeyCode::Esc => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
+    fn handle_settings_key(&mut self, key: KeyEvent) -> bool {
+        use crate::state_handler::main_page::content::SettingsMode;
+
+        let settings = &self.props.main_page.content_panel.settings;
+
+        match &settings.mode {
+            SettingsMode::EditFriendlyName { input }
+            | SettingsMode::EditMediatorDid { input }
+            | SettingsMode::EditOrgDid { input } => {
+                let current = input.clone();
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        true
+                    }
+                    KeyCode::Enter => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::SettingsSubmitEdit { value: current });
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut v = current;
+                        v.pop();
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(v));
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut v = current;
+                        v.push(c);
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(v));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            SettingsMode::ExportConfig {
+                path_input,
+                passphrase_input,
+                active_field,
+            } => {
+                let active = *active_field;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        true
+                    }
+                    KeyCode::Tab => {
+                        // Toggle between path (0) and passphrase (1)
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(
+                            if active == 0 { "\t1" } else { "\t0" }.to_string(),
+                        ));
+                        true
+                    }
+                    KeyCode::Enter if active == 1 => {
+                        let _ = self.action_tx.send(Action::SettingsExportConfig {
+                            path: path_input.clone(),
+                            passphrase: passphrase_input.clone(),
+                        });
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut current = if active == 0 {
+                            path_input.clone()
+                        } else {
+                            passphrase_input.clone()
+                        };
+                        current.pop();
+                        // Prefix with field indicator
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
+                            "\x00{}{}",
+                            active, current
+                        )));
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut current = if active == 0 {
+                            path_input.clone()
+                        } else {
+                            passphrase_input.clone()
+                        };
+                        current.push(c);
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
+                            "\x00{}{}",
+                            active, current
+                        )));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            SettingsMode::View => {
+                let selected = settings.selected_index;
+                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=export
+                let max_index = 4;
+
+                match key.code {
+                    KeyCode::Up if selected > 0 => {
+                        let _ = self.action_tx.send(Action::SettingsSelect(selected - 1));
+                        true
+                    }
+                    KeyCode::Down if selected < max_index => {
+                        let _ = self.action_tx.send(Action::SettingsSelect(selected + 1));
+                        true
+                    }
+                    KeyCode::Enter => {
+                        // Only editable fields (0-2) and export (4)
+                        if selected <= 2 || selected == 4 {
+                            let _ = self.action_tx.send(Action::SettingsStartEdit);
+                        }
                         true
                     }
                     KeyCode::Esc => {

@@ -206,4 +206,29 @@ pub enum Action {
 
     /// Update reason input in the new-request form
     CredentialReasonUpdate(String),
+
+    // ************************************************************************
+    // SETTINGS Actions
+    /// Select a settings item by index
+    SettingsSelect(usize),
+
+    /// Start editing the selected field
+    SettingsStartEdit,
+
+    /// Submit the edited value
+    SettingsSubmitEdit {
+        value: String,
+    },
+
+    /// Cancel editing
+    SettingsCancelEdit,
+
+    /// Update the text input during editing
+    SettingsEditUpdate(String),
+
+    /// Export config to file
+    SettingsExportConfig {
+        path: String,
+        passphrase: String,
+    },
 }

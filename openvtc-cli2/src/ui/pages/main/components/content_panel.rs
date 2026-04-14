@@ -534,9 +534,27 @@ impl ContentPanelState {
     }
 
     // ========================================================================
-    // Settings rendering (placeholder for Phase 5)
+    // Settings rendering
     // ========================================================================
     fn render_settings(&self) -> Vec<Line<'static>> {
+        use crate::state_handler::main_page::content::SettingsMode;
+
+        match &self.settings.mode {
+            SettingsMode::EditFriendlyName { input } => {
+                render_settings_edit("Friendly Name", input)
+            }
+            SettingsMode::EditMediatorDid { input } => render_settings_edit("Mediator DID", input),
+            SettingsMode::EditOrgDid { input } => render_settings_edit("Org DID", input),
+            SettingsMode::ExportConfig {
+                path_input,
+                passphrase_input,
+                active_field,
+            } => render_export_form(path_input, passphrase_input, *active_field),
+            SettingsMode::View => self.render_settings_view(),
+        }
+    }
+
+    fn render_settings_view(&self) -> Vec<Line<'static>> {
         let settings = [
             ("Friendly Name", &self.settings.friendly_name, true),
             ("Mediator DID", &self.settings.mediator_did, true),
@@ -545,6 +563,11 @@ impl ContentPanelState {
         ];
 
         let mut lines = vec![Line::from("")];
+
+        if let Some(msg) = &self.settings.status_message {
+            lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
+            lines.push(Line::from(""));
+        }
 
         for (i, (label, value, editable)) in settings.iter().enumerate() {
             let is_selected = i == self.settings.selected_index;
@@ -580,29 +603,19 @@ impl ContentPanelState {
 
         lines.push(Line::from(""));
 
-        // Export/Import options
         let export_selected = self.settings.selected_index == 4;
+        let export_style = if export_selected {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_TEXT_DEFAULT)
+        };
         lines.push(Line::from(vec![
-            Span::styled(
-                if export_selected { "▸ " } else { "  " },
-                if export_selected {
-                    Style::new().fg(COLOR_SUCCESS).bold()
-                } else {
-                    Style::new().fg(COLOR_TEXT_DEFAULT)
-                },
-            ),
-            Span::styled(
-                "Export Config",
-                if export_selected {
-                    Style::new().fg(COLOR_SUCCESS).bold()
-                } else {
-                    Style::new().fg(COLOR_TEXT_DEFAULT)
-                },
-            ),
+            Span::styled(if export_selected { "▸ " } else { "  " }, export_style),
+            Span::styled("Export Config", export_style),
         ]));
 
         lines.push(Line::from(""));
-        lines.push(Line::from("↑/↓ navigate  Enter: edit").fg(COLOR_DARK_GRAY));
+        lines.push(Line::from("↑/↓ navigate  Enter: edit/open").fg(COLOR_DARK_GRAY));
 
         lines
     }
@@ -735,6 +748,74 @@ fn render_relationship_form(
     lines.push(Line::from(""));
     lines.push(
         Line::from("Tab: next field  Enter (on Reason): submit  Esc: cancel").fg(COLOR_DARK_GRAY),
+    );
+
+    lines
+}
+
+/// Render inline edit for a settings field.
+fn render_settings_edit(label: &str, input: &str) -> Vec<Line<'static>> {
+    vec![
+        Line::from(""),
+        Line::from(format!("Editing: {}", label))
+            .fg(COLOR_SUCCESS)
+            .bold(),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  ", Style::default()),
+            Span::styled(input.to_string(), Style::new().fg(COLOR_SOFT_PURPLE)),
+            Span::styled("▎", Style::new().fg(COLOR_SUCCESS)),
+        ]),
+        Line::from(""),
+        Line::from("Enter: save  Esc: cancel").fg(COLOR_DARK_GRAY),
+    ]
+}
+
+/// Render the export config form with path and passphrase fields.
+fn render_export_form(
+    path_input: &str,
+    passphrase_input: &str,
+    active_field: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from("Export Config").fg(COLOR_SUCCESS).bold(),
+        Line::from(""),
+    ];
+
+    let fields = [
+        ("File path:  ", path_input),
+        ("Passphrase: ", passphrase_input),
+    ];
+
+    for (i, (label, value)) in fields.iter().enumerate() {
+        let is_active = i == active_field;
+        let cursor = if is_active { "▎" } else { "" };
+        let field_style = if is_active {
+            Style::new().fg(COLOR_SUCCESS)
+        } else {
+            Style::new().fg(COLOR_TEXT_DEFAULT)
+        };
+
+        // Mask passphrase
+        let display_value = if i == 1 {
+            "*".repeat(value.len())
+        } else {
+            value.to_string()
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(if is_active { "▸ " } else { "  " }, field_style),
+            Span::styled(label.to_string(), field_style),
+            Span::styled(display_value, Style::new().fg(COLOR_SOFT_PURPLE)),
+            Span::styled(cursor, Style::new().fg(COLOR_SUCCESS)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(
+        Line::from("Tab: switch field  Enter (on passphrase): export  Esc: cancel")
+            .fg(COLOR_DARK_GRAY),
     );
 
     lines
