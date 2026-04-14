@@ -13,22 +13,22 @@ use crate::{
     ui::{
         component::{Component, ComponentRender},
         pages::setup_flow::{
-            config_import::ConfigImport,
-            did_keys_export_ask::DIDKeysExportAsk, did_keys_export_inputs::DIDKeysExportInputs,
-            did_keys_export_show::DIDKeysExportShow, did_keys_show::DIDKeysShow,
-            final_page::FinalPage, mediator_ask::MediatorAsk, mediator_custom::MediatorCustom,
-            start_ask::StartAskPanel, unlock_code_ask::UnlockCodeAsk,
-            unlock_code_set::UnlockCodeSet, unlock_code_warn::UnlockCodeWarn, username::UserName,
+            config_import::ConfigImport, did_keys_export_ask::DIDKeysExportAsk,
+            did_keys_export_inputs::DIDKeysExportInputs, did_keys_export_show::DIDKeysExportShow,
+            did_keys_show::DIDKeysShow, final_page::FinalPage, mediator_ask::MediatorAsk,
+            mediator_custom::MediatorCustom, start_ask::StartAskPanel,
+            unlock_code_ask::UnlockCodeAsk, unlock_code_set::UnlockCodeSet,
+            unlock_code_warn::UnlockCodeWarn, username::UserName,
             vta_authenticate::VtaAuthenticate, vta_credential::VtaCredentialPaste,
-            vta_keys_fetch::VtaKeysFetch,
-            webvh_address::WebvhAddress,
-            webvh_server_progress::WebvhServerProgress,
-            webvh_server_select::WebvhServerSelect,
+            vta_keys_fetch::VtaKeysFetch, webvh_address::WebvhAddress,
+            webvh_server_progress::WebvhServerProgress, webvh_server_select::WebvhServerSelect,
         },
     },
 };
 use crossterm::event::{KeyEvent, KeyEventKind};
-use openvtc::colors::{COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
+use openvtc::colors::{
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
@@ -40,13 +40,13 @@ use tokio::sync::mpsc::UnboundedSender;
 
 pub mod config_import;
 pub mod did_keys_export_ask;
-pub mod navigation;
 pub mod did_keys_export_inputs;
 pub mod did_keys_export_show;
 pub mod did_keys_show;
 pub mod final_page;
 pub mod mediator_ask;
 pub mod mediator_custom;
+pub mod navigation;
 pub mod start_ask;
 pub mod unlock_code_ask;
 pub mod unlock_code_set;
@@ -137,8 +137,8 @@ impl Component for SetupFlow {
             start_ask: StartAskPanel::default(),
             config_import: ConfigImport::default(),
             vta_credential: VtaCredentialPaste::default(),
-            vta_authenticate: VtaAuthenticate::default(),
-            vta_keys_fetch: VtaKeysFetch::default(),
+            vta_authenticate: VtaAuthenticate,
+            vta_keys_fetch: VtaKeysFetch,
             did_keys_show: DIDKeysShow::default(),
             did_keys_export_ask: DIDKeysExportAsk::default(),
             did_keys_export_inputs: DIDKeysExportInputs::default(),
@@ -162,7 +162,7 @@ impl Component for SetupFlow {
             mediator_custom: MediatorCustom::default(),
             username: UserName::default(),
             webvh_server_select: WebvhServerSelect::default(),
-            webvh_server_progress: WebvhServerProgress::default(),
+            webvh_server_progress: WebvhServerProgress,
             webvh_address: WebvhAddress::default(),
             final_page: FinalPage::default(),
 
@@ -234,12 +234,8 @@ impl ComponentRender<()> for SetupFlow {
         match self.props.state.active_page {
             SetupPage::StartAsk => self.start_ask.render(&self.props.state, frame),
             SetupPage::ConfigImport => self.config_import.render(&self.props.state, frame),
-            SetupPage::VtaCredentialPaste => {
-                self.vta_credential.render(&self.props.state, frame)
-            }
-            SetupPage::VtaAuthenticate => {
-                self.vta_authenticate.render(&self.props.state, frame)
-            }
+            SetupPage::VtaCredentialPaste => self.vta_credential.render(&self.props.state, frame),
+            SetupPage::VtaAuthenticate => self.vta_authenticate.render(&self.props.state, frame),
             SetupPage::VtaKeysFetch => self.vta_keys_fetch.render(&self.props.state, frame),
             SetupPage::DIDKeysShow => self.did_keys_show.render(&self.props.state, frame),
             SetupPage::DidKeysExportAsk => {
@@ -341,9 +337,21 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
 
     // Step labels for each flow
     let steps: Vec<&str> = if use_server {
-        vec!["Get Started", "DID & Keys", "Profile Security", "Display Name", "Setup Complete"]
+        vec![
+            "Get Started",
+            "DID & Keys",
+            "Profile Security",
+            "Display Name",
+            "Setup Complete",
+        ]
     } else {
-        vec!["Get Started", "Key Management", "Profile Security", "Digital Identity", "Setup Complete"]
+        vec![
+            "Get Started",
+            "Key Management",
+            "Profile Security",
+            "Digital Identity",
+            "Setup Complete",
+        ]
     };
 
     // Determine current step index (0-based)

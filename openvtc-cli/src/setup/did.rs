@@ -16,7 +16,12 @@ use affinidi_tdk::{
 use anyhow::{Context, Result};
 use console::style;
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
-use didwebvh_rs::{DIDWebVHState, parameters::Parameters, url::WebVHURL};
+use didwebvh_rs::{
+    create::{CreateDIDConfig, create_did},
+    log_entry::LogEntryMethods,
+    parameters::Parameters,
+    url::WebVHURL,
+};
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 use openvtc::config::PersonaDIDKeys;
 use serde_json::{Value, json};
@@ -58,7 +63,7 @@ pub async fn did_setup(
             .with_prompt("Use pre-existing DID?")
             .default(true)
             .interact()
-            .unwrap()
+            .context("Failed to read DID prompt")?
         {
             println!(
                 "{}",
@@ -70,7 +75,7 @@ pub async fn did_setup(
                 let did_id: String = Input::with_theme(&ColorfulTheme::default())
                     .with_prompt("Enter existing DID")
                     .interact()
-                    .unwrap();
+                    .context("Failed to read DID input")?;
 
                 // Try to resolve the DID
                 let tdk = TDK::new(
@@ -102,7 +107,7 @@ pub async fn did_setup(
                             .with_prompt("Would you like to try a different DID?")
                             .default(true)
                             .interact()
-                            .unwrap()
+                            .context("Failed to read retry prompt")?
                         {
                             continue;
                         } else {
@@ -143,7 +148,7 @@ pub async fn did_setup(
             }
         })
         .interact()
-        .unwrap();
+        .context("Failed to read URL input")?;
 
     let did_url = WebVHURL::parse_url(&Url::parse(&raw_url)?)?;
 
@@ -232,7 +237,11 @@ pub async fn did_setup(
 
     // Create the WebVH Parameters
     let update_key = bip32_root
-        .derive(&"m/2'/1'/0'".parse::<DerivationPath>().unwrap())
+        .derive(
+            &"m/2'/1'/0'"
+                .parse::<DerivationPath>()
+                .context("Failed to parse update key derivation path")?,
+        )
         .context("Failed to create an Ed25519 signing key.")?;
     let mut update_secret = Secret::generate_ed25519(None, Some(update_key.signing_key.as_bytes()));
     update_secret.id = [
@@ -244,7 +253,11 @@ pub async fn did_setup(
     .concat();
 
     let next_update_key = bip32_root
-        .derive(&"m/2'/1'/1'".parse::<DerivationPath>().unwrap())
+        .derive(
+            &"m/2'/1'/1'"
+                .parse::<DerivationPath>()
+                .context("Failed to parse next update key derivation path")?,
+        )
         .context("Failed to create an Ed25519 signing key.")?;
     let next_update_secret =
         Secret::generate_ed25519(None, Some(next_update_key.signing_key.as_bytes()));
@@ -256,20 +269,21 @@ pub async fn did_setup(
         .with_portable(true)
         .build();
 
-    // Create the WebVH DID
-    let mut didwebvh = DIDWebVHState::default();
-    let log_entry = didwebvh.create_log_entry(
-        None,
-        &serde_json::to_value(&did_document)?,
-        &parameters,
-        &update_secret,
-    )?;
+    // Create the WebVH DID using the high-level create_did API
+    let config = CreateDIDConfig::builder()
+        .address(&raw_url)
+        .authorization_key(update_secret)
+        .did_document(serde_json::to_value(&did_document)?)
+        .parameters(parameters)
+        .build()?;
+
+    let result = create_did(config).await?;
 
     println!(
         "{}",
         style("WebVH Log Entry successfully created.").color256(CLI_BLUE)
     );
-    let did_id = log_entry.get_state().get("id").unwrap().as_str().unwrap();
+    let did_id = result.did();
 
     println!(
         "{} {}",
@@ -278,7 +292,7 @@ pub async fn did_setup(
     );
 
     // save to disk
-    log_entry.log_entry.save_to_file("did.jsonl")?;
+    result.log_entry().save_to_file("did.jsonl")?;
     println!(
         "{} {}",
         style("DID document saved:").color256(CLI_BLUE),
@@ -309,7 +323,8 @@ pub async fn did_setup(
     Ok(DIDConfig {
         did: Arc::new(did_id.to_string()),
         document: serde_json::from_value(
-            log_entry
+            result
+                .log_entry()
                 .get_did_document()
                 .context("Couldn't get initial DID document state.")?,
         )

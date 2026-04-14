@@ -21,6 +21,7 @@ use pgp::{
     types::{KeyDetails, PlainSecretParams, SecretParams},
 };
 use regex::Regex;
+use std::time::SystemTime;
 use zeroize::Zeroize;
 
 /// Holds imported PGP Keys
@@ -45,7 +46,13 @@ impl PGPKeys {
     /// Confirms via the terminal if a valid imported key should be used for a specific purpose
     pub fn confirm_key_use(&mut self, key: KeyInfo, purpose: KeyPurpose) {
         // Change the expiry of the key if needed?
-        let key = modify_key_expiry(&key, &purpose);
+        let Ok(key) = modify_key_expiry(&key, &purpose) else {
+            println!(
+                "{}",
+                style("Failed to modify key expiry, using original key").color256(CLI_ORANGE)
+            );
+            return;
+        };
 
         match purpose {
             KeyPurpose::Signing => {
@@ -105,9 +112,10 @@ impl PGPKeys {
         show_key_purpose(signature.key_flags());
         // Print some key info
         print!("{} ", style("Created time:").color256(CLI_BLUE));
-        let created = if let Some(created) = signature.created() {
-            print!("{}", style(created).color256(CLI_GREEN));
-            created.to_owned()
+        let created: DateTime<Utc> = if let Some(created) = signature.created() {
+            let dt: DateTime<Utc> = SystemTime::from(created).into();
+            print!("{}", style(dt).color256(CLI_GREEN));
+            dt
         } else {
             println!("{}", style("N/A").color256(CLI_ORANGE));
             println!("{}", style("WARNING: A key must have a creation time, as it is missing we assume new creation time of now").color256(CLI_ORANGE));
@@ -115,11 +123,11 @@ impl PGPKeys {
         };
 
         print!(" {} ", style("Expires?:").color256(CLI_BLUE));
-        print!(
-            "{}",
-            style(get_expiry_date(&created, signature.key_expiration_time()))
-        );
-        if let Some(expiry) = signature.key_expiration_time() {
+        let expiry_td = signature
+            .key_expiration_time()
+            .map(|d| TimeDelta::seconds(i64::from(d.as_secs())));
+        print!("{}", style(get_expiry_date(&created, expiry_td.as_ref())));
+        if let Some(expiry) = &expiry_td {
             print!("{}", style(created + *expiry).color256(CLI_GREEN));
         } else {
             print!("{}", style("Never").color256(CLI_GREEN));
@@ -130,12 +138,19 @@ impl PGPKeys {
             return;
         };
 
+        let Ok(private_keymultibase) = secret.get_private_keymultibase() else {
+            println!(
+                "{}",
+                style("Failed to encode private key as multibase").color256(CLI_RED)
+            );
+            return;
+        };
         let ki = KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: secret.get_private_keymultibase().unwrap(),
+                seed: private_keymultibase,
             },
             secret,
-            expiry: signature.key_expiration_time().map(|e| e.to_owned()),
+            expiry: expiry_td,
             created,
         };
 
@@ -344,17 +359,21 @@ fn extract_primary_key_details(primary_key: &SignedSecretKey) -> Result<(KeyFlag
 
     // Print some key info
     print!("{} ", style("Created time:").color256(CLI_BLUE));
-    let created = if let Some(created) = signature.created() {
-        print!("{}", style(created).color256(CLI_GREEN));
-        created.to_owned()
+    let created: DateTime<Utc> = if let Some(created) = signature.created() {
+        let dt: DateTime<Utc> = SystemTime::from(created).into();
+        print!("{}", style(dt).color256(CLI_GREEN));
+        dt
     } else {
         print!("{}", style("N/A").color256(CLI_ORANGE));
         println!("\n{}", style("WARNING: Something strange has occurred. You have a key with an expiry but no creation date. This is an invalid state.").color256(CLI_RED));
         Utc::now()
     };
 
+    let expiry_td = signature
+        .key_expiration_time()
+        .map(|d| TimeDelta::seconds(i64::from(d.as_secs())));
     print!(" {} ", style("Expires?:").color256(CLI_BLUE));
-    if let Some(expiry) = signature.key_expiration_time() {
+    if let Some(expiry) = &expiry_td {
         print!("{}", style(created + *expiry).color256(CLI_GREEN));
     } else {
         print!("{}", style("Never").color256(CLI_GREEN));
@@ -370,10 +389,12 @@ fn extract_primary_key_details(primary_key: &SignedSecretKey) -> Result<(KeyFlag
         signature.key_flags(),
         KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: secret.get_private_keymultibase().unwrap(),
+                seed: secret
+                    .get_private_keymultibase()
+                    .context("Failed to encode primary key as multibase")?,
             },
             secret,
-            expiry: signature.key_expiration_time().map(|e| e.to_owned()),
+            expiry: expiry_td,
             created,
         },
     ))
@@ -527,7 +548,7 @@ fn get_expiry_date(created: &DateTime<Utc>, expiry: Option<&TimeDelta>) -> Style
     }
 }
 
-fn modify_key_expiry(key: &KeyInfo, purpose: &KeyPurpose) -> KeyInfo {
+fn modify_key_expiry(key: &KeyInfo, purpose: &KeyPurpose) -> Result<KeyInfo> {
     if Confirm::with_theme(&ColorfulTheme::default())
         .with_prompt(format!(
             "Do you want to change the current expiry ({}) for the {} key?",
@@ -536,7 +557,7 @@ fn modify_key_expiry(key: &KeyInfo, purpose: &KeyPurpose) -> KeyInfo {
         ))
         .default(false)
         .interact()
-        .unwrap()
+        .context("Failed to read expiry change prompt")?
     {
         let re = Regex::new(
             r"(?x)
@@ -547,7 +568,7 @@ fn modify_key_expiry(key: &KeyInfo, purpose: &KeyPurpose) -> KeyInfo {
             (?P<day>\d{2})   # the day
             ",
         )
-        .unwrap();
+        .context("Failed to compile date regex")?;
 
         // Change the Expiry option
         let new_expiry: String = Input::with_theme(&ColorfulTheme::default())
@@ -584,32 +605,34 @@ fn modify_key_expiry(key: &KeyInfo, purpose: &KeyPurpose) -> KeyInfo {
                 }
             })
             .interact()
-            .unwrap();
+            .context("Failed to read expiry date")?;
 
         if new_expiry.is_empty() {
-            KeyInfo {
+            Ok(KeyInfo {
                 expiry: None,
                 ..key.clone()
-            }
+            })
         } else {
-            let caps = re.captures(&new_expiry).unwrap();
-            let date = Utc
-                .with_ymd_and_hms(
-                    str::parse(&caps["year"]).unwrap(),
-                    str::parse(&caps["month"]).unwrap(),
-                    str::parse(&caps["day"]).unwrap(),
-                    23,
-                    59,
-                    59,
-                )
-                .unwrap();
+            let caps = re
+                .captures(&new_expiry)
+                .context("Failed to parse expiry date")?;
+            let MappedLocalTime::Single(date) = Utc.with_ymd_and_hms(
+                str::parse(&caps["year"]).context("Invalid year")?,
+                str::parse(&caps["month"]).context("Invalid month")?,
+                str::parse(&caps["day"]).context("Invalid day")?,
+                23,
+                59,
+                59,
+            ) else {
+                anyhow::bail!("Invalid date");
+            };
 
-            KeyInfo {
+            Ok(KeyInfo {
                 expiry: Some(date - key.created),
                 ..key.clone()
-            }
+            })
         }
     } else {
-        key.clone()
+        Ok(key.clone())
     }
 }

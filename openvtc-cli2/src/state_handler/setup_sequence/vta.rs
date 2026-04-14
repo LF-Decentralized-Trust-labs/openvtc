@@ -5,10 +5,7 @@ use affinidi_tdk::did_common::Document;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use anyhow::Result;
 use chrono::Utc;
-use openvtc::config::{
-    KeyInfo, PersonaDIDKeys,
-    secured_config::KeySourceMaterial,
-};
+use openvtc::config::{KeyInfo, PersonaDIDKeys, secured_config::KeySourceMaterial};
 use vta_sdk::{
     client::{CreateDidWebvhRequest, CreateKeyRequest, VtaClient},
     credentials::CredentialBundle,
@@ -38,7 +35,10 @@ pub async fn authenticate(
 /// Create persona keys via VTA service
 /// Creates 3 keys: Ed25519 signing, Ed25519 auth, X25519 encryption
 /// Returns PersonaDIDKeys with VtaManaged source
-pub async fn create_persona_keys(client: &VtaClient, context_id: Option<&str>) -> Result<PersonaDIDKeys> {
+pub async fn create_persona_keys(
+    client: &VtaClient,
+    context_id: Option<&str>,
+) -> Result<PersonaDIDKeys> {
     let created = Utc::now();
 
     // Signing key (Ed25519)
@@ -143,7 +143,10 @@ pub async fn create_persona_keys(client: &VtaClient, context_id: Option<&str>) -
 
 /// Create WebVH update keys via VTA service
 /// Returns (update_secret, next_update_secret)
-pub async fn create_update_keys(client: &VtaClient, context_id: Option<&str>) -> Result<(Secret, Secret)> {
+pub async fn create_update_keys(
+    client: &VtaClient,
+    context_id: Option<&str>,
+) -> Result<(Secret, Secret)> {
     // Update key (Ed25519)
     let update_resp = client
         .create_key(CreateKeyRequest {
@@ -214,13 +217,19 @@ pub async fn create_did_via_server(
     // which the TDK resolver requires. A relative fragment like "#public-didcomm" is rejected.
     let req = CreateDidWebvhRequest {
         context_id: context_id.to_string(),
-        server_id: server_id.to_string(),
+        server_id: Some(server_id.to_string()),
+        url: None,
         path,
         label: None,
         portable: true,
         add_mediator_service: true,
         additional_services: None,
         pre_rotation_count: 1,
+        did_document: None,
+        did_log: None,
+        set_primary: false,
+        signing_key_id: None,
+        ka_key_id: None,
     };
 
     let result = client
@@ -229,7 +238,7 @@ pub async fn create_did_via_server(
         .map_err(|e| anyhow::anyhow!("Failed to create DID via WebVH server: {e}"))?;
 
     let did = result.did.clone();
-    let mnemonic = result.mnemonic.clone();
+    let mnemonic = result.mnemonic.clone().unwrap_or_default();
 
     // Fetch signing key secret (#key-0 = Ed25519)
     let sign_secret_resp = client

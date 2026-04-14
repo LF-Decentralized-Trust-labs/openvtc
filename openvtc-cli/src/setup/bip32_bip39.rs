@@ -8,6 +8,7 @@ use bip39::Mnemonic;
 use console::style;
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 use rand::RngCore;
+use rand::rngs::OsRng;
 use zeroize::Zeroize;
 
 // ****************************************************************************
@@ -57,32 +58,27 @@ pub fn mnemonic_from_recovery_phrase() -> Result<Mnemonic> {
 }
 
 /// Generates a new BIP39 Mnemonic that is used as a seed and recovery phrase
-pub fn generate_bip39_mnemonic() -> Mnemonic {
+pub fn generate_bip39_mnemonic() -> Result<Mnemonic> {
     // Create 256 bits of entropy
     let mut entropy = [0u8; 32];
-    let mut rng = rand::thread_rng();
-    rng.fill_bytes(&mut entropy);
+    OsRng.fill_bytes(&mut entropy);
 
-    match Mnemonic::from_entropy(&entropy) {
-        Ok(mnemonic) => {
-            entropy.zeroize(); // Clear entropy from memory
+    let mnemonic =
+        Mnemonic::from_entropy(&entropy).context("Failed to create BIP39 mnemonic from entropy")?;
 
-            println!(
-                "\n{} {}",
-                style("BIP39 Recovery Phrase").color256(CLI_BLUE),
-                style("(Please store in a safe space):")
-                    .color256(CLI_RED)
-                    .blink()
-            );
-            println!(
-                "{}",
-                style(mnemonic.words().collect::<Vec<&str>>().join(" ")).color256(CLI_ORANGE)
-            );
-            println!();
-            mnemonic
-        }
-        Err(e) => {
-            panic!("Error creating BIP39 mnemonic from entropy: {e}");
-        }
-    }
+    entropy.zeroize(); // Clear entropy from memory
+
+    println!(
+        "\n{} {}",
+        style("BIP39 Recovery Phrase").color256(CLI_BLUE),
+        style("(Please store in a safe space):")
+            .color256(CLI_RED)
+            .blink()
+    );
+    println!(
+        "{}",
+        style(mnemonic.words().collect::<Vec<&str>>().join(" ")).color256(CLI_ORANGE)
+    );
+    println!();
+    Ok(mnemonic)
 }

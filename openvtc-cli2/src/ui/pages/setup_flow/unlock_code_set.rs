@@ -12,18 +12,16 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
-use secrecy::SecretVec;
+use secrecy::SecretBox;
 use sha2::{Digest, Sha256};
 use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
-    state_handler::{
-        actions::Action,
-        setup_sequence::SetupState,
-    },
+    state_handler::{actions::Action, setup_sequence::SetupState},
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -43,9 +41,9 @@ impl UnlockCodeSet {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let passphrase_hash = Arc::new(SecretVec::new(
+                let passphrase_hash = Arc::new(SecretBox::new(Box::new(
                     Sha256::digest(state.unlock_code_set.passphrase.value()).to_vec(),
-                ));
+                )));
                 let result = navigate(
                     SetupEvent::UnlockCodeSet { passphrase_hash },
                     &state.props.state,

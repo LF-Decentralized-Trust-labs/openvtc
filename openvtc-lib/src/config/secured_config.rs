@@ -20,12 +20,11 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use keyring::Entry;
 use rand::rngs::OsRng;
-use rand::{SeedableRng, rngs::StdRng};
 use secrecy::ExposeSecret;
-use sha2::Sha256;
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use tracing::{error, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -126,11 +125,16 @@ impl SecuredConfigFormat {
             SecuredConfigFormat::PasswordEncrypted { data } => {
                 // Password Encrypted format
                 if let Some(unlock) = unlock {
-                    unlock_code_decrypt(
-                        unlock.0.expose_secret().first_chunk::<32>().unwrap(),
-                        &BASE64_URL_SAFE_NO_PAD.decode(data)?,
-                    )
-                    .map_err(|e| {
+                    let decoded = BASE64_URL_SAFE_NO_PAD.decode(data)?;
+                    let key = unlock
+                        .0
+                        .expose_secret()
+                        .first_chunk::<32>()
+                        .ok_or_else(|| {
+                            OpenVTCError::Decrypt("Unlock code is not 32 bytes".to_string())
+                        })?;
+
+                    unlock_code_decrypt(key, &decoded).map_err(|e| {
                         OpenVTCError::Decrypt(format!(
                             "Couldn't decrypt password encrypted SecuredConfig. Reason: {e}"
                         ))
@@ -247,7 +251,9 @@ impl SecuredConfig {
         } else if let Some(unlock) = unlock {
             SecuredConfigFormat::PasswordEncrypted {
                 data: BASE64_URL_SAFE_NO_PAD.encode(unlock_code_encrypt(
-                    unlock.first_chunk::<32>().unwrap(),
+                    unlock.first_chunk::<32>().ok_or_else(|| {
+                        OpenVTCError::Encrypt("Unlock code is not 32 bytes".to_string())
+                    })?,
                     &input,
                 )?),
             }
@@ -391,43 +397,24 @@ pub fn unlock_code_encrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
 
 /// Decrypts data using AES-256-GCM with HKDF-derived key.
 ///
-/// Accepts both the new format (`[nonce | ciphertext]`) and the legacy
-/// deterministic format for backward compatibility. Existing configs
-/// encrypted with the old format will be transparently decrypted and
-/// re-encrypted with the secure format on the next save.
+/// Expected input format: `[12-byte nonce | ciphertext + auth tag]`
 pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
-    // Try new format first: first 12 bytes are the random nonce
-    if input.len() > NONCE_SIZE {
-        let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
-        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
-        let cipher = derive_key(unlock, nonce_bytes)?;
-
-        if let Ok(decrypted) = cipher.decrypt(nonce, ciphertext) {
-            return Ok(decrypted);
-        }
+    if input.len() <= NONCE_SIZE {
+        return Err(OpenVTCError::Decrypt(
+            "Ciphertext too short (missing nonce)".to_string(),
+        ));
     }
 
-    // Fall back to legacy deterministic format
-    legacy_unlock_code_decrypt(unlock, input)
-}
+    let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
+    let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+    let cipher = derive_key(unlock, nonce_bytes)?;
 
-/// Legacy decryption using the old deterministic PRNG-based key/nonce derivation.
-/// Retained only for backward compatibility with existing encrypted configs.
-fn legacy_unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
-    let mut rng = StdRng::from_seed(*unlock);
-    let key = Aes256Gcm::generate_key(&mut rng);
-    let nonce = Aes256Gcm::generate_nonce(&mut rng);
-    let cipher = Aes256Gcm::new(&key);
-
-    match cipher.decrypt(&nonce, input) {
-        Ok(decrypted) => Ok(decrypted),
-        Err(e) => {
-            error!("Couldn't decrypt data. Likely due to incorrect unlock code! Reason: {e}");
-            Err(OpenVTCError::Decrypt(format!(
-                "Couldn't decrypt data, likely due to incorrect unlock code! Reason: {e}"
-            )))
-        }
-    }
+    cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        error!("Couldn't decrypt data. Likely due to incorrect unlock code! Reason: {e}");
+        OpenVTCError::Decrypt(format!(
+            "Couldn't decrypt data, likely due to incorrect unlock code! Reason: {e}"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -437,11 +424,10 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let unlock = [42u8; 32];
-        let plaintext = b"sensitive data here";
-
+        let plaintext = b"hello world - this is sensitive config data";
         let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        assert_ne!(encrypted, plaintext);
         let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
-
         assert_eq!(decrypted, plaintext);
     }
 
@@ -460,8 +446,7 @@ mod tests {
     fn test_decrypt_wrong_key_fails() {
         let unlock = [42u8; 32];
         let wrong_unlock = [99u8; 32];
-        let plaintext = b"secret";
-
+        let plaintext = b"secret data";
         let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
         assert!(unlock_code_decrypt(&wrong_unlock, &encrypted).is_err());
     }
@@ -478,28 +463,25 @@ mod tests {
     fn test_encrypt_large_data() {
         let unlock = [42u8; 32];
         let plaintext = vec![0xABu8; 10_000];
-
         let encrypted = unlock_code_encrypt(&unlock, &plaintext).unwrap();
         let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
-
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
-    fn test_legacy_format_backward_compatibility() {
-        // Encrypt with the legacy deterministic method
+    fn test_decrypt_too_short_input_fails() {
         let unlock = [42u8; 32];
-        let plaintext = b"legacy data";
+        // Input shorter than nonce size should fail
+        assert!(unlock_code_decrypt(&unlock, &[0u8; 5]).is_err());
+        assert!(unlock_code_decrypt(&unlock, &[]).is_err());
+    }
 
-        let mut rng = StdRng::from_seed(unlock);
-        let key = Aes256Gcm::generate_key(&mut rng);
-        let nonce = Aes256Gcm::generate_nonce(&mut rng);
-        let cipher = Aes256Gcm::new(&key);
-        let legacy_ciphertext = cipher.encrypt(&nonce, plaintext.as_slice()).unwrap();
-
-        // New decrypt should handle legacy format via fallback
-        let decrypted = unlock_code_decrypt(&unlock, &legacy_ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
+    #[test]
+    fn test_different_unlocks_produce_different_ciphertext() {
+        let plaintext = b"same data";
+        let encrypted1 = unlock_code_encrypt(&[1u8; 32], plaintext).unwrap();
+        let encrypted2 = unlock_code_encrypt(&[2u8; 32], plaintext).unwrap();
+        assert_ne!(encrypted1, encrypted2);
     }
 
     #[test]
@@ -515,13 +497,23 @@ mod tests {
     #[test]
     fn test_decrypt_corrupted_data_fails() {
         let unlock = [42u8; 32];
-        let plaintext = b"test data";
-
+        let plaintext = b"important data";
         let mut encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
-        // Corrupt a byte in the ciphertext (after the nonce)
-        let last = encrypted.len() - 1;
-        encrypted[last] ^= 0xFF;
-
+        if let Some(byte) = encrypted.last_mut() {
+            *byte ^= 0xFF;
+        }
         assert!(unlock_code_decrypt(&unlock, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_key_source_material_zeroize() {
+        let mut source = KeySourceMaterial::Imported {
+            seed: "z6MkTestSeed123456789".to_string(),
+        };
+        source.zeroize();
+        match &source {
+            KeySourceMaterial::Imported { seed } => assert!(seed.is_empty()),
+            _ => panic!("expected Imported variant"),
+        }
     }
 }

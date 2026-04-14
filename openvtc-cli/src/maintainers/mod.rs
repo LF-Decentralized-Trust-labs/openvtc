@@ -4,12 +4,8 @@ use std::{
 };
 
 use crate::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED};
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-    messaging::protocols::Protocols,
-};
-use anyhow::{Result, bail};
+use affinidi_tdk::{TDK, didcomm::Message};
+use anyhow::{Result, anyhow, bail};
 use clap::ArgMatches;
 use console::style;
 use openvtc::{MessageType, config::Config, maintainers::Maintainer};
@@ -39,40 +35,23 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
         create_message_maintainers_list(&config.public.persona_did, &config.public.lk_did)?;
     let msg_id = Arc::new(message.id.clone());
 
-    // Pack the message
-    let (message, _) = message
-        .pack_encrypted(
-            &config.public.lk_did,
-            Some(&config.public.persona_did),
-            Some(&config.public.persona_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
     // Enable streaming for the Profile account
-    let atm = tdk.atm.clone().unwrap();
-    let protocols = Protocols::new();
+    let atm = tdk
+        .atm
+        .clone()
+        .ok_or_else(|| anyhow!("ATM not initialized"))?;
 
-    protocols
-        .message_pickup
-        .toggle_live_delivery(&atm, &config.persona_did.profile, true)
+    atm.message_pickup()
+        .toggle_live_delivery(&config.persona_did.profile, true)
         .await?;
 
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         &config.persona_did.profile,
-        false,
         &message,
-        None,
-        &config.public.mediator_did,
+        &config.public.persona_did,
         &config.public.lk_did,
-        None,
-        None,
-        false,
+        &config.public.mediator_did,
     )
     .await?;
 
@@ -81,10 +60,9 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
         style("Requesting list of known Maintainers").color256(CLI_GREEN)
     );
 
-    match protocols
-        .message_pickup
+    match atm
+        .message_pickup()
         .live_stream_get(
-            &atm,
             &config.persona_did.profile,
             &msg_id,
             Duration::from_secs(10),
@@ -131,7 +109,14 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
             return Ok(());
         }
         Err(e) => {
-            println!("{}{}", style(":ERROR: An error occurred while waiting for a response from kernel.org Reason: ").color256(CLI_RED), style(e).color256(CLI_ORANGE));
+            println!(
+                "{}{}",
+                style(
+                    "ERROR: An error occurred while waiting for a response from kernel.org Reason: "
+                )
+                .color256(CLI_RED),
+                style(e).color256(CLI_ORANGE)
+            );
             bail!("Couldn't retrieve maintainer list")
         }
     }
@@ -143,11 +128,11 @@ async fn get_maintainers_list(tdk: &TDK, config: &Config) -> Result<()> {
 fn create_message_maintainers_list(from: &str, to: &str) -> Result<Message> {
     let now = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| anyhow!("System clock error: {e}"))?
         .as_secs();
 
     let message = Message::build(
-        Uuid::new_v4().into(),
+        Uuid::new_v4().to_string(),
         "https://kernel.org/maintainers/1.0/list".to_string(),
         json!({}),
     )

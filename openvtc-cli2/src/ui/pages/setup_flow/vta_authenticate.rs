@@ -20,8 +20,9 @@ use crate::{
         setup_sequence::{Completion, MessageType, SetupState},
     },
     ui::pages::setup_flow::{
-        SetupFlow, render_setup_header,
+        SetupFlow,
         navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
     },
 };
 
@@ -133,10 +134,7 @@ impl VtaAuthenticate {
                 };
                 lines.push(Line::from(vec![
                     Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
-                    Span::styled(
-                        action_text,
-                        Style::new().fg(COLOR_TEXT_DEFAULT),
-                    ),
+                    Span::styled(action_text, Style::new().fg(COLOR_TEXT_DEFAULT)),
                 ]));
             }
             Completion::CompletedFail => {
@@ -154,10 +152,7 @@ impl VtaAuthenticate {
             }
         }
 
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }),
-            content,
-        );
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content);
 
         let bottom_line = Line::from(vec![
             Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),

@@ -5,26 +5,18 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{CLI_ORANGE, CLI_PURPLE, CLI_RED};
-use affinidi_tdk::{
-    TDK,
-    didcomm::{Message, PackEncryptedOptions},
-    messaging::protocols::Protocols,
-};
-use anyhow::{Result, bail};
+use affinidi_tdk::{TDK, didcomm::Message};
+use anyhow::{Context, Result, bail};
 use console::style;
 use openvtc::{config::Config, logs::LogFamily, relationships::Relationship};
 
 /// Pings the mediator to check connectivity
 /// uses the persona-DID as the TDK/ATM Profile
 pub async fn ping_mediator(tdk: &mut TDK, config: &Config) -> Result<()> {
-    let atm = tdk.atm.clone().unwrap();
+    let atm = tdk.atm.clone().context("ATM not initialized")?;
 
-    let protocols = Protocols::new();
-
-    protocols
-        .trust_ping
+    atm.trust_ping()
         .send_ping(
-            &atm,
             &config.persona_did.profile,
             &config.public.mediator_did,
             true,
@@ -51,7 +43,7 @@ pub async fn handle_inbound_ping(
     {
         relationship.clone()
     } else {
-        println!("{}", style(format!("WARN: A ping message from ({}) was receieved, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
+        println!("{}", style(format!("WARN: A ping message from ({}) was received, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
         bail!("Invalid Ping received");
     };
 
@@ -69,27 +61,11 @@ pub async fn handle_inbound_ping(
         && rr
     {
         // Response requested, send PONG
-        let atm = tdk.atm.clone().unwrap();
-        let protocols = Protocols::new();
+        let atm = tdk.atm.clone().context("ATM not initialized")?;
 
-        let pong_msg = protocols
-            .trust_ping
+        let pong_msg = atm
+            .trust_ping()
             .generate_pong_message(msg, Some(to.as_str()))?;
-
-        // Pack the message
-        let (pong_msg, _) = pong_msg
-            .pack_encrypted(
-                from,
-                Some(to),
-                Some(to),
-                tdk.did_resolver(),
-                &tdk.get_shared_state().secrets_resolver,
-                &PackEncryptedOptions {
-                    forward: false,
-                    ..Default::default()
-                },
-            )
-            .await?;
 
         let profile = if to == &config.public.persona_did {
             &config.persona_did.profile
@@ -104,16 +80,13 @@ pub async fn handle_inbound_ping(
             bail!("Missing Messaging Profile");
         };
 
-        atm.forward_and_send_message(
+        openvtc::pack_and_send(
+            &atm,
             profile,
-            false,
             &pong_msg,
-            None,
-            &config.public.mediator_did,
+            to,
             from,
-            None,
-            None,
-            false,
+            &config.public.mediator_did,
         )
         .await?;
 
@@ -139,7 +112,7 @@ pub fn handle_inbound_pong(
     {
         relationship.clone()
     } else {
-        println!("{}", style(format!("WARN: A ping response message from ({}) was receieved, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
+        println!("{}", style(format!("WARN: A ping response message from ({}) was received, but there is not an established relationship for this DID!", from)).color256(CLI_ORANGE));
         bail!("Invalid Ping response received");
     };
 

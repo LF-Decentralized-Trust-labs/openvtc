@@ -4,7 +4,7 @@
 
 use crate::errors::OpenVTCError;
 use card_backend_pcsc::PcscBackend;
-use openpgp_card::{state::Open, Card};
+use openpgp_card::{Card, state::Open};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -18,11 +18,11 @@ pub fn get_cards() -> Result<Vec<Arc<Mutex<Card<Open>>>>, OpenVTCError> {
     for backend in PcscBackend::cards(None)
         .map_err(|e| OpenVTCError::Token(format!("Couldn't get list of tokens. Reason: {e}")))?
     {
-        let card = Card::<Open>::new(
-            backend
-                .map_err(|e| OpenVTCError::Token(format!("Couldn't get card backend. Reason: {e}")))?,
-        )
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't open card. Reason: {e}")))?;
+        let card =
+            Card::<Open>::new(backend.map_err(|e| {
+                OpenVTCError::Token(format!("Couldn't get card backend. Reason: {e}"))
+            })?)
+            .map_err(|e| OpenVTCError::Token(format!("Couldn't open card. Reason: {e}")))?;
         cards.push(Arc::new(Mutex::new(card)));
     }
 
@@ -41,10 +41,12 @@ pub fn open_card(token_id: &str) -> Result<Card<Open>, OpenVTCError> {
 
 /// Performs a factory reset on the card, erasing all keys and data
 pub fn factory_reset(card: Arc<Mutex<Card<Open>>>) -> Result<(), OpenVTCError> {
-    let mut lock = card.try_lock().unwrap();
-    let mut card = lock
-        .transaction()
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't get transaction for factory reset: {e}")))?;
+    let mut lock = card
+        .try_lock()
+        .map_err(|e| OpenVTCError::Token(format!("Couldn't lock card for factory reset: {e}")))?;
+    let mut card = lock.transaction().map_err(|e| {
+        OpenVTCError::Token(format!("Couldn't get transaction for factory reset: {e}"))
+    })?;
     card.factory_reset()
         .map_err(|e| OpenVTCError::Token(format!("Factory reset failed: {e}")))?;
 

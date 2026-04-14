@@ -14,6 +14,10 @@ pub struct State {
     /// Hardware Token Admin Pin
     #[cfg(feature = "openpgp-card")]
     pub token_admin_pin: Option<SecretString>,
+
+    /// True when the user needs to physically touch their hardware token
+    #[cfg(feature = "openpgp-card")]
+    pub token_touch_pending: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -37,6 +41,8 @@ pub enum MediatorStatus {
     Unknown,
     Initializing(String),
     Connecting,
-    Connected { latency_ms: u128 },
+    Connected {
+        latency_ms: u128,
+    },
     Failed(String),
 }

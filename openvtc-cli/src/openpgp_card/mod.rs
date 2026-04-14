@@ -3,22 +3,23 @@
 */
 
 use crate::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED};
-use affinidi_tdk::secrets_resolver::multicodec::{MultiEncodedBuf, ED25519_PUB, X25519_PUB};
-use anyhow::Result;
+use affinidi_tdk::secrets_resolver::multicodec::{ED25519_PUB, MultiEncodedBuf, X25519_PUB};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use console::{style, Term};
-use openvtc::KeyPurpose;
+use console::{Term, style};
 use openpgp_card::{
+    Card,
     ocard::{
+        KeyType,
         algorithm::{self, AlgorithmAttributes},
         crypto::PublicKeyMaterial,
         data::{Features, Fingerprint, KeyGenerationTime, KeySet, KeyStatus, TouchPolicy},
-        KeyType,
     },
     state::{Open, Transaction},
-    Card,
 };
+use openvtc::KeyPurpose;
 use secrecy::SecretString;
+use std::time::SystemTime;
 use std::{fmt, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -137,7 +138,7 @@ pub fn print_cards(cards: &mut [Arc<Mutex<Card<Open>>>]) -> Result<()> {
     }
 
     for card in cards.iter_mut() {
-        let mut card_lock = card.try_lock().unwrap();
+        let mut card_lock = card.try_lock().context("Failed to lock card")?;
         let mut open_card = card_lock.transaction()?;
         let app_identifier = open_card.application_identifier()?;
         print!(
@@ -199,7 +200,8 @@ pub fn get_key_info(
     match key_type {
         KeyType::Signing => {
             if let Some(kgt) = kgt.signature() {
-                key_info.creation_time = Some(format!("{}", DateTime::<Utc>::from(kgt)));
+                key_info.creation_time =
+                    Some(format!("{}", DateTime::<Utc>::from(SystemTime::from(kgt))));
             }
             key_info.status = ki.map(|ki| ki.sig_status());
             key_info.signature_count = Some(card.digital_signature_count()?);
@@ -209,7 +211,8 @@ pub fn get_key_info(
         }
         KeyType::Authentication => {
             if let Some(kgt) = kgt.authentication() {
-                key_info.creation_time = Some(format!("{}", DateTime::<Utc>::from(kgt)));
+                key_info.creation_time =
+                    Some(format!("{}", DateTime::<Utc>::from(SystemTime::from(kgt))));
             }
             key_info.status = ki.map(|ki| ki.aut_status());
             if let Some(fp) = fps.authentication() {
@@ -218,7 +221,8 @@ pub fn get_key_info(
         }
         KeyType::Decryption => {
             if let Some(kgt) = kgt.decryption() {
-                key_info.creation_time = Some(format!("{}", DateTime::<Utc>::from(kgt)));
+                key_info.creation_time =
+                    Some(format!("{}", DateTime::<Utc>::from(SystemTime::from(kgt))));
             }
             key_info.status = ki.map(|ki| ki.dec_status());
             if let Some(fp) = fps.decryption() {
@@ -415,7 +419,7 @@ pub fn factory_reset(term: &Term, card: &mut Arc<Mutex<Card<Open>>>) -> Result<(
     print!("{}", style("Factory resetting card...").color256(CLI_BLUE));
     term.hide_cursor()?;
     term.flush()?;
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card.try_lock().context("Failed to lock card")?;
     let mut card = lock.transaction()?;
     card.factory_reset()?;
     term.show_cursor()?;
@@ -429,7 +433,7 @@ pub fn set_signing_touch_policy(
     card: &mut Arc<Mutex<Card<Open>>>,
     admin_pin: &SecretString,
 ) -> Result<()> {
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card.try_lock().context("Failed to lock card")?;
     let mut open_card = lock.transaction()?;
     open_card.verify_admin_pin(admin_pin.clone())?;
     let mut card = open_card.to_admin_card(None)?;
@@ -456,7 +460,7 @@ pub fn set_cardholder_name(
     admin_pin: &SecretString,
     name: &str,
 ) -> Result<()> {
-    let mut lock = card.try_lock().unwrap();
+    let mut lock = card.try_lock().context("Failed to lock card")?;
     let mut open_card = lock.transaction()?;
     open_card.verify_admin_pin(admin_pin.clone())?;
     let mut card = open_card.to_admin_card(None)?;

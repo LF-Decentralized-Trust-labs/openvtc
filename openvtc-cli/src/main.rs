@@ -4,7 +4,7 @@
 
 use crate::{
     cli::cli,
-    config::ConfigExtension,
+    config::{ConfigExtension, save_config},
     contacts::ContactsExtension,
     interactions::vrc::vrcs_entry,
     log::LogsExtension,
@@ -89,11 +89,11 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                 .with_prompt("Please enter Token User PIN <blank = default>")
                 .allow_empty_password(true)
                 .interact()
-                .unwrap();
+                .context("Failed to read Token User PIN")?;
             let user_pin = if user_pin.is_empty() {
-                SecretString::new("123456".to_string())
+                SecretString::new("123456".to_string().into())
             } else {
-                SecretString::new(user_pin)
+                SecretString::new(user_pin.into())
             };
 
             (user_pin, None)
@@ -107,14 +107,14 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap()
+                        .context("Failed to read unlock passphrase")?
                 };
             (
-                SecretString::new(String::new()),
-                Some(UnlockCode::from_string(&passphrase)),
+                SecretString::new(String::new().into()),
+                Some(UnlockCode::from_string(&passphrase)?),
             )
         }
-        ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
+        ConfigProtectionType::Plaintext => (SecretString::new(String::new().into()), None),
     };
 
     let config = match Config::load_step2(
@@ -135,9 +135,9 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
             println!(
                 "{}{}",
                 style("ERROR: ").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
+                style(&e).color256(CLI_ORANGE)
             );
-            panic!("Exiting...");
+            bail!("Failed to load configuration: {e}");
         }
     };
 
@@ -328,7 +328,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
             if let Some(args) = args.subcommand_matches("import") {
                 let passphrase = args.get_one::<String>("passphrase");
                 return Config::import(
-                    passphrase.map(|s| SecretString::new(s.to_string())),
+                    passphrase.map(|s| SecretString::new(s.to_string().into())),
                     args.get_one::<String>("file")
                         .expect("No file specified!")
                         .as_ref(),
@@ -360,20 +360,22 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                         term,
                         &config.get_persona_keys(&tdk).await?,
                         user_id.map(|s| s.as_str()),
-                        passphrase.map(|s| SecretString::new(s.to_string())),
+                        passphrase.map(|s| SecretString::new(s.to_string().into())),
                         false, // Not running in wizard mode
                     );
                 }
                 Some(("settings", sub_args)) => {
                     // Export settings
                     let passphrase = sub_args.get_one::<String>("passphrase");
-                    config.export(
-                        passphrase.map(|s| SecretString::new(s.to_string())),
+                    if let Err(e) = config.export(
+                        passphrase.map(|s| SecretString::new(s.to_string().into())),
                         sub_args
                             .get_one::<String>("file")
                             .expect("Code error - file should has a default!")
                             .as_str(),
-                    );
+                    ) {
+                        eprintln!("ERROR: Export failed: {e}");
+                    }
                 }
                 _ => {
                     println!(
@@ -403,13 +405,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                 .await?
             {
                 // Need to save config
-                config.save(
-                    profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| {
-                        eprintln!("Touch confirmation needed for decryption");
-                    },
-                )?;
+                save_config(&mut config, profile)?;
             }
         }
         Some(("relationships", args)) => {
@@ -447,7 +443,7 @@ pub fn get_unlock_code() -> Result<[u8; 32]> {
         .with_prompt("Please enter your openvtc unlock code")
         .allow_empty_password(true)
         .interact()
-        .unwrap_or_default();
+        .map_err(|e| anyhow::anyhow!("Failed to read unlock code: {e}"))?;
 
     Ok(sha2::Sha256::digest(unlock_code.as_bytes()).into())
 }
