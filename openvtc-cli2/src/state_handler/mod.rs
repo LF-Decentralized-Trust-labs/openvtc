@@ -15,7 +15,7 @@ use openvtc::logs::LogFamily;
 use secrecy::SecretString;
 use tokio::sync::{
     broadcast,
-    mpsc::{self, UnboundedReceiver, UnboundedSender},
+    mpsc::{self, UnboundedReceiver},
 };
 use tracing::debug;
 
@@ -61,7 +61,7 @@ pub enum StartingMode {
 }
 
 pub struct StateHandler {
-    state_tx: UnboundedSender<State>,
+    state_tx: tokio::sync::watch::Sender<State>,
     profile: String,
     starting_mode: StartingMode,
 }
@@ -72,8 +72,11 @@ pub(crate) enum SetupWizardExit {
 }
 
 impl StateHandler {
-    pub fn new(profile: &str, starting_mode: StartingMode) -> (Self, UnboundedReceiver<State>) {
-        let (state_tx, state_rx) = mpsc::unbounded_channel::<State>();
+    pub fn new(
+        profile: &str,
+        starting_mode: StartingMode,
+    ) -> (Self, tokio::sync::watch::Receiver<State>) {
+        let (state_tx, state_rx) = tokio::sync::watch::channel(State::default());
 
         (
             StateHandler {
@@ -143,7 +146,7 @@ impl StateHandler {
                     did: deferred.public_config.persona_did.clone(),
                 };
                 state.connection.status = state::MediatorStatus::Initializing("Starting...".into());
-                self.state_tx.send(state.clone())?;
+                let _ = self.state_tx.send(state.clone());
 
                 // Spawn TDK init + config load as a background task with progress reporting
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<String>();
@@ -182,7 +185,8 @@ impl StateHandler {
                             shared_state: std::sync::Arc<
                                 std::sync::Mutex<crate::state_handler::state::State>,
                             >,
-                            state_tx: mpsc::UnboundedSender<crate::state_handler::state::State>,
+                            state_tx:
+                                tokio::sync::watch::Sender<crate::state_handler::state::State>,
                         }
                         impl TokenInteractions for TokenNotifier {
                             fn touch_notify(&self) {
@@ -227,7 +231,7 @@ impl StateHandler {
                         Some(msg) = progress_rx.recv() => {
                             state.connection.status =
                                 state::MediatorStatus::Initializing(msg);
-                            self.state_tx.send(state.clone())?;
+                            let _ = self.state_tx.send(state.clone());
                         }
                         result = &mut load_handle => {
                             match result {
@@ -235,7 +239,7 @@ impl StateHandler {
                                 Ok(Err(e)) => {
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
-                                    self.state_tx.send(state.clone())?;
+                                    let _ = self.state_tx.send(state.clone());
                                     return self
                                         .run_degraded_loop(
                                             &mut action_rx,
@@ -250,7 +254,7 @@ impl StateHandler {
                                         state::MediatorStatus::Failed(
                                             format!("Internal error: {join_err}"),
                                         );
-                                    self.state_tx.send(state.clone())?;
+                                    let _ = self.state_tx.send(state.clone());
                                     return self
                                         .run_degraded_loop(
                                             &mut action_rx,
@@ -299,7 +303,7 @@ impl StateHandler {
 
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
-        self.state_tx.send(state.clone())?;
+        let _ = self.state_tx.send(state.clone());
 
         // Spawn DIDComm init + validation as a background task
         let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
@@ -598,7 +602,7 @@ impl StateHandler {
                     break interrupted;
                 }
             }
-            self.state_tx.send(state.clone())?;
+            let _ = self.state_tx.send(state.clone());
         };
 
         // Wait for messaging task to finish shutdown
@@ -653,7 +657,7 @@ impl StateHandler {
                     return Ok(interrupted);
                 }
             }
-            self.state_tx.send(state.clone())?;
+            let _ = self.state_tx.send(state.clone());
         }
     }
 }

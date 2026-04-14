@@ -14,7 +14,7 @@ use pgp::{
     },
 };
 use secrecy::{ExposeSecret, SecretString};
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 use x25519_dalek::StaticSecret;
 
 use crate::state_handler::state::State;
@@ -28,7 +28,7 @@ use crate::state_handler::state::State;
 /// - passphrase: Passphrase to protect the exported keys
 pub fn export_persona_did_keys(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     user_id: &str,
     passphrase: SecretString,
 ) -> Result<SignedSecretKey> {
@@ -45,7 +45,7 @@ pub fn export_persona_did_keys(
         .did_keys_export
         .messages
         .push("Converting Signing key...".to_string());
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     let sk_pk = PublicKey::new_with_header(
         PacketHeader::new_fixed(Tag::PublicKey, 51),
@@ -117,7 +117,7 @@ pub fn export_persona_did_keys(
         .did_keys_export
         .messages
         .push("Converting Authentication key...".to_string());
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
     let ak_pk = PublicSubkey::new_with_header(
         PacketHeader::new_fixed(Tag::PublicSubkey, 51),
         KeyVersion::V4,
@@ -165,7 +165,7 @@ pub fn export_persona_did_keys(
         .did_keys_export
         .messages
         .push("Converting Decryption key...".to_string());
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
     let dk_pk = PublicSubkey::new_with_header(
         PacketHeader::new_fixed(Tag::PublicSubkey, 56),
         KeyVersion::V4,
@@ -221,7 +221,7 @@ pub fn export_persona_did_keys(
         .did_keys_export
         .messages
         .push("Securing exported keys...".to_string());
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
     signing_key.set_password(rng, &password)?;
     if let Some(last_entry) = state.setup.did_keys_export.messages.last_mut() {
         *last_entry = "✓ Keys Secured and exported".to_string();

@@ -14,10 +14,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use std::io::{self, Stdout};
-use tokio::sync::{
-    broadcast,
-    mpsc::{self, UnboundedReceiver},
-};
+use tokio::sync::{broadcast, mpsc, mpsc::UnboundedReceiver, watch};
 use tokio_stream::StreamExt;
 
 pub mod component;
@@ -53,7 +50,7 @@ impl UiManager {
 
     pub async fn main_loop(
         self,
-        mut state_rx: UnboundedReceiver<State>,
+        mut state_rx: watch::Receiver<State>,
         mut interrupt_rx: broadcast::Receiver<Interrupted>,
     ) -> Result<Interrupted> {
         let mut terminal = setup_terminal()?;
@@ -63,15 +60,8 @@ impl UiManager {
 
         // consume the first state to initialize the ui app
         let mut app_router = {
-            match state_rx.recv().await {
-                Some(state) => AppRouter::new(&state, self.action_tx.clone()),
-                _ => {
-                    let _ = restore_terminal(&mut terminal);
-                    return Err(anyhow::anyhow!(
-                        "could not get the initial application state"
-                    ));
-                }
-            }
+            let state = state_rx.borrow_and_update().clone();
+            AppRouter::new(&state, self.action_tx.clone())
         };
 
         let result: anyhow::Result<Interrupted> = loop {
@@ -94,7 +84,8 @@ impl UiManager {
                     _ => (),
                 },
                 // Handle state updates
-                Some(state) = state_rx.recv() => {
+                Ok(()) = state_rx.changed() => {
+                    let state = state_rx.borrow_and_update().clone();
                     app_router = app_router.move_with_state(&state);
                 },
                 // Catch and handle interrupt signal to gracefully shutdown

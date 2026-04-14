@@ -22,7 +22,7 @@ use std::{
     fs,
     sync::Arc,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 use crate::{
     state_handler::{
@@ -42,7 +42,7 @@ pub trait ConfigExtension {
     /// profile: Profile name to import the configuration into
     fn import(
         state: &mut State,
-        state_tx: &UnboundedSender<State>,
+        state_tx: &watch::Sender<State>,
         import_unlock_passphrase: &SecretString,
         new_unlock_passphrase: &SecretString,
         file: &str,
@@ -63,7 +63,7 @@ impl ConfigExtension for Config {
     /// Import previously exported configuration settings from an encrypted file
     fn import(
         state: &mut State,
-        state_tx: &UnboundedSender<State>,
+        state_tx: &watch::Sender<State>,
         import_unlock_passphrase: &SecretString,
         new_unlock_passphrase: &SecretString,
         file: &str,

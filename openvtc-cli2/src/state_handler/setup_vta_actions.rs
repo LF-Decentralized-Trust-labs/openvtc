@@ -2,12 +2,12 @@ use crate::state_handler::{
     setup_sequence::{Completion, MessageType, SetupPage},
     state::State,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 /// Handle the `VtaSubmitCredential` action: decode credential bundle, authenticate, discover context & servers.
 pub(crate) async fn handle_vta_submit_credential(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     credential_input: String,
 ) -> anyhow::Result<()> {
     use crate::state_handler::setup_sequence::vta;
@@ -24,7 +24,7 @@ pub(crate) async fn handle_vta_submit_credential(
             state.setup.vta.messages.push(MessageType::Info(
                 "Resolving VTA service endpoint...".to_string(),
             ));
-            state_tx.send(state.clone())?;
+            let _ = state_tx.send(state.clone());
 
             // Resolve VTA URL from DID document's #vta service endpoint,
             // falling back to bundle URL if resolution fails
@@ -38,7 +38,7 @@ pub(crate) async fn handle_vta_submit_credential(
             state.setup.vta.messages.push(MessageType::Info(
                 "Resolving mediator endpoint...".to_string(),
             ));
-            state_tx.send(state.clone())?;
+            let _ = state_tx.send(state.clone());
             if let Ok(Some(mediator_did)) =
                 vta_sdk::session::resolve_mediator_did(&bundle.vta_did).await
             {
@@ -55,7 +55,7 @@ pub(crate) async fn handle_vta_submit_credential(
                 .vta
                 .messages
                 .push(MessageType::Info("Authenticating with VTA...".to_string()));
-            state_tx.send(state.clone())?;
+            let _ = state_tx.send(state.clone());
 
             // Auto-trigger authentication inline
             match vta::authenticate(
@@ -101,7 +101,7 @@ pub(crate) async fn handle_vta_submit_credential(
 /// Returns `true` if the caller should `continue` (skip the rest of the loop iteration).
 pub(crate) async fn handle_vta_authenticate(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
 ) -> anyhow::Result<bool> {
     use crate::state_handler::setup_sequence::vta;
 
@@ -113,7 +113,7 @@ pub(crate) async fn handle_vta_authenticate(
         .vta
         .messages
         .push(MessageType::Info("Authenticating with VTA...".to_string()));
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     let credential_raw = match state.setup.vta.credential_bundle_raw.clone() {
         Some(raw) => raw,
@@ -177,7 +177,7 @@ pub(crate) async fn handle_vta_authenticate(
 /// Returns `true` if the caller should `continue`.
 pub(crate) async fn handle_vta_create_keys(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
 ) -> anyhow::Result<bool> {
     use crate::state_handler::setup_sequence::vta;
     use vta_sdk::client::VtaClient;
@@ -188,7 +188,7 @@ pub(crate) async fn handle_vta_create_keys(
     state.setup.vta.messages.push(MessageType::Info(
         "Creating persona keys via VTA...".to_string(),
     ));
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     let access_token = match state.setup.vta.access_token.clone() {
         Some(t) => t,
@@ -211,13 +211,13 @@ pub(crate) async fn handle_vta_create_keys(
             state.setup.vta.messages.push(MessageType::Info(
                 "Persona keys created successfully.".to_string(),
             ));
-            state_tx.send(state.clone())?;
+            let _ = state_tx.send(state.clone());
 
             // Create WebVH update keys
             state.setup.vta.messages.push(MessageType::Info(
                 "Creating WebVH update keys...".to_string(),
             ));
-            state_tx.send(state.clone())?;
+            let _ = state_tx.send(state.clone());
 
             match vta::create_update_keys(&client, context_id).await {
                 Ok((update_secret, next_update_secret)) => {
