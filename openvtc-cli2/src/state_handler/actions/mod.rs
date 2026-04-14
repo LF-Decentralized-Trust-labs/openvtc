@@ -177,4 +177,33 @@ pub enum Action {
         field: usize,
         value: String,
     },
+
+    // ************************************************************************
+    // CREDENTIAL Actions
+    /// Switch between Received/Issued tabs
+    CredentialSwitchTab,
+
+    /// Select a credential by index (high-bit = open detail)
+    CredentialSelect(usize),
+
+    /// Return from detail or new-request to list
+    CredentialBack,
+
+    /// Start the new VRC request flow (pick a relationship)
+    CredentialStartNewRequest,
+
+    /// Select a relationship for the VRC request (index into established relationships)
+    CredentialSelectRelationship(usize),
+
+    /// Submit the VRC request
+    CredentialSubmitRequest {
+        relationship_p_did: String,
+        reason: Option<String>,
+    },
+
+    /// Cancel the new VRC request
+    CredentialCancelNewRequest,
+
+    /// Update reason input in the new-request form
+    CredentialReasonUpdate(String),
 }

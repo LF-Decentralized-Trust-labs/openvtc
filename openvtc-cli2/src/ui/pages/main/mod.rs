@@ -142,6 +142,7 @@ impl MainPage {
         match menu {
             MainMenu::Inbox => self.handle_inbox_key(key),
             MainMenu::Relationships => self.handle_relationships_key(key),
+            MainMenu::Credentials => self.handle_credentials_key(key),
             _ => false,
         }
     }
@@ -384,6 +385,122 @@ impl MainPage {
                     }
                     KeyCode::Char('n') => {
                         let _ = self.action_tx.send(Action::RelationshipStartNewRequest);
+                        true
+                    }
+                    KeyCode::Esc => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+        }
+    }
+
+    fn handle_credentials_key(&mut self, key: KeyEvent) -> bool {
+        use crate::state_handler::main_page::content::{CredentialTab, CredentialsMode};
+
+        let creds = &self.props.main_page.content_panel.credentials;
+
+        match &creds.mode {
+            CredentialsMode::NewRequest {
+                relationship_index,
+                reason_input,
+            } => {
+                let rel_idx = *relationship_index;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::CredentialCancelNewRequest);
+                        true
+                    }
+                    KeyCode::Up if rel_idx > 0 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::CredentialSelectRelationship(rel_idx - 1));
+                        true
+                    }
+                    KeyCode::Down => {
+                        // Bound check happens in state handler
+                        let _ = self
+                            .action_tx
+                            .send(Action::CredentialSelectRelationship(rel_idx + 1));
+                        true
+                    }
+                    KeyCode::Enter => {
+                        // Get the established relationships from the relationships panel state
+                        let established: Vec<_> = self
+                            .props
+                            .main_page
+                            .content_panel
+                            .relationships
+                            .relationships
+                            .iter()
+                            .filter(|r| r.state == "Established")
+                            .collect();
+                        if let Some(rel) = established.get(rel_idx) {
+                            let _ = self.action_tx.send(Action::CredentialSubmitRequest {
+                                relationship_p_did: rel.remote_p_did.clone(),
+                                reason: if reason_input.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(reason_input.clone())
+                                },
+                            });
+                        }
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut r = reason_input.clone();
+                        r.pop();
+                        let _ = self.action_tx.send(Action::CredentialReasonUpdate(r));
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut r = reason_input.clone();
+                        r.push(c);
+                        let _ = self.action_tx.send(Action::CredentialReasonUpdate(r));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            CredentialsMode::Detail { .. } => match key.code {
+                KeyCode::Esc => {
+                    let _ = self.action_tx.send(Action::CredentialBack);
+                    true
+                }
+                _ => false,
+            },
+            CredentialsMode::List => {
+                let active_list_len = match creds.selected_tab {
+                    CredentialTab::Received => creds.received.len(),
+                    CredentialTab::Issued => creds.issued.len(),
+                };
+                let selected = creds.selected_index;
+
+                match key.code {
+                    KeyCode::Tab => {
+                        let _ = self.action_tx.send(Action::CredentialSwitchTab);
+                        true
+                    }
+                    KeyCode::Up if selected > 0 => {
+                        let _ = self.action_tx.send(Action::CredentialSelect(selected - 1));
+                        true
+                    }
+                    KeyCode::Down if selected + 1 < active_list_len => {
+                        let _ = self.action_tx.send(Action::CredentialSelect(selected + 1));
+                        true
+                    }
+                    KeyCode::Enter if selected < active_list_len => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::CredentialSelect(selected | 0x8000_0000));
+                        true
+                    }
+                    KeyCode::Char('n') => {
+                        let _ = self.action_tx.send(Action::CredentialStartNewRequest);
                         true
                     }
                     KeyCode::Esc => {

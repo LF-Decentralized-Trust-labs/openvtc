@@ -17,6 +17,7 @@ use tokio::sync::{
 use tracing::debug;
 
 pub mod actions;
+mod credential_actions;
 mod inbox_actions;
 pub mod main_page;
 mod message_dispatch;
@@ -521,6 +522,97 @@ impl StateHandler {
                         state.main_page.content_panel.relationships.status_message =
                             Some("Relationship removed".to_string());
                         state.main_page.sync_from_config(&config);
+                    },
+                    // Credential actions
+                    Action::CredentialSwitchTab => {
+                        use main_page::content::CredentialTab;
+                        state.main_page.content_panel.credentials.selected_tab =
+                            match state.main_page.content_panel.credentials.selected_tab {
+                                CredentialTab::Received => CredentialTab::Issued,
+                                CredentialTab::Issued => CredentialTab::Received,
+                            };
+                        state.main_page.content_panel.credentials.selected_index = 0;
+                    },
+                    Action::CredentialSelect(index) => {
+                        use main_page::content::CredentialsMode;
+                        if index & 0x8000_0000 != 0 {
+                            let real = index & 0x7FFF_FFFF;
+                            state.main_page.content_panel.credentials.selected_index = real;
+                            state.main_page.content_panel.credentials.mode =
+                                CredentialsMode::Detail { index: real };
+                        } else {
+                            state.main_page.content_panel.credentials.selected_index = index;
+                        }
+                    },
+                    Action::CredentialBack | Action::CredentialCancelNewRequest => {
+                        use main_page::content::CredentialsMode;
+                        state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+                        state.main_page.content_panel.credentials.selected_index = 0;
+                    },
+                    Action::CredentialStartNewRequest => {
+                        use main_page::content::CredentialsMode;
+                        state.main_page.content_panel.credentials.mode =
+                            CredentialsMode::NewRequest {
+                                relationship_index: 0,
+                                reason_input: String::new(),
+                            };
+                    },
+                    Action::CredentialSelectRelationship(index) => {
+                        use main_page::content::CredentialsMode;
+                        if let CredentialsMode::NewRequest {
+                            ref mut relationship_index,
+                            ..
+                        } = state.main_page.content_panel.credentials.mode
+                        {
+                            // Bound check against established relationships count
+                            let established_count = state
+                                .main_page
+                                .content_panel
+                                .relationships
+                                .relationships
+                                .iter()
+                                .filter(|r| r.state == "Established")
+                                .count();
+                            if index < established_count {
+                                *relationship_index = index;
+                            }
+                        }
+                    },
+                    Action::CredentialReasonUpdate(value) => {
+                        use main_page::content::CredentialsMode;
+                        if let CredentialsMode::NewRequest {
+                            ref mut reason_input,
+                            ..
+                        } = state.main_page.content_panel.credentials.mode
+                        {
+                            *reason_input = value;
+                        }
+                    },
+                    Action::CredentialSubmitRequest {
+                        relationship_p_did,
+                        reason,
+                    } => {
+                        use main_page::content::CredentialsMode;
+                        match credential_actions::send_vrc_request(
+                            &mut config,
+                            &tdk,
+                            &relationship_p_did,
+                            reason.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                state.main_page.content_panel.credentials.mode =
+                                    CredentialsMode::List;
+                                state.main_page.content_panel.credentials.status_message =
+                                    Some(format!("VRC request sent to {}", relationship_p_did));
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.credentials.status_message =
+                                    Some(format!("Error: {e}"));
+                            }
+                        }
                     },
                     _ => {}
                 },

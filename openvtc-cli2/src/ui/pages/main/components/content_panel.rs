@@ -321,27 +321,43 @@ impl ContentPanelState {
     }
 
     // ========================================================================
-    // Credentials rendering (placeholder for Phase 4)
+    // Credentials rendering
     // ========================================================================
     fn render_credentials(&self) -> Vec<Line<'static>> {
+        use crate::state_handler::main_page::content::CredentialsMode;
+
+        match &self.credentials.mode {
+            CredentialsMode::Detail { index } => self.render_credential_detail(*index),
+            CredentialsMode::NewRequest {
+                relationship_index,
+                reason_input,
+            } => self.render_credential_new_request(*relationship_index, reason_input),
+            CredentialsMode::List => self.render_credential_list(),
+        }
+    }
+
+    fn render_credential_list(&self) -> Vec<Line<'static>> {
+        use crate::state_handler::main_page::content::CredentialTab;
+
         let mut lines = vec![Line::from("")];
 
+        if let Some(msg) = &self.credentials.status_message {
+            lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
+            lines.push(Line::from(""));
+        }
+
         let active_list = match self.credentials.selected_tab {
-            crate::state_handler::main_page::content::CredentialTab::Received => {
-                &self.credentials.received
-            }
-            crate::state_handler::main_page::content::CredentialTab::Issued => {
-                &self.credentials.issued
-            }
+            CredentialTab::Received => &self.credentials.received,
+            CredentialTab::Issued => &self.credentials.issued,
         };
 
         // Tab bar
         let (recv_style, issued_style) = match self.credentials.selected_tab {
-            crate::state_handler::main_page::content::CredentialTab::Received => (
+            CredentialTab::Received => (
                 Style::new().fg(COLOR_SUCCESS).bold(),
                 Style::new().fg(COLOR_DARK_GRAY),
             ),
-            crate::state_handler::main_page::content::CredentialTab::Issued => (
+            CredentialTab::Issued => (
                 Style::new().fg(COLOR_DARK_GRAY),
                 Style::new().fg(COLOR_SUCCESS).bold(),
             ),
@@ -372,11 +388,15 @@ impl ContentPanelState {
                     Style::new().fg(COLOR_TEXT_DEFAULT)
                 };
 
-                let display_name = vrc.alias.as_deref().unwrap_or(&vrc.remote_p_did);
+                let display_name = vrc
+                    .alias
+                    .as_deref()
+                    .unwrap_or(&vrc.remote_p_did)
+                    .to_string();
 
                 lines.push(Line::from(vec![
                     Span::styled(prefix, style),
-                    Span::styled(display_name.to_string(), style),
+                    Span::styled(display_name, style),
                     Span::styled("  ", Style::default()),
                     Span::styled(vrc.valid_from.clone(), Style::new().fg(COLOR_DARK_GRAY)),
                 ]));
@@ -384,7 +404,131 @@ impl ContentPanelState {
         }
 
         lines.push(Line::from(""));
-        lines.push(Line::from("Tab: switch tab  ↑/↓ navigate  n: request VRC").fg(COLOR_DARK_GRAY));
+        lines.push(
+            Line::from("Tab: switch tab  ↑/↓ navigate  Enter: details  n: request VRC")
+                .fg(COLOR_DARK_GRAY),
+        );
+
+        lines
+    }
+
+    fn render_credential_detail(&self, index: usize) -> Vec<Line<'static>> {
+        use crate::state_handler::main_page::content::CredentialTab;
+
+        let mut lines = vec![Line::from("")];
+
+        let active_list = match self.credentials.selected_tab {
+            CredentialTab::Received => &self.credentials.received,
+            CredentialTab::Issued => &self.credentials.issued,
+        };
+
+        let Some(vrc) = active_list.get(index) else {
+            lines.push(Line::from("Credential not found").fg(COLOR_WARNING_ACCESSIBLE_RED));
+            return lines;
+        };
+
+        lines.push(Line::from("Credential Details").fg(COLOR_SUCCESS).bold());
+        lines.push(Line::from(""));
+
+        if let Some(alias) = &vrc.alias {
+            lines.push(Line::from(vec![
+                Span::styled("Contact:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled(alias.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("Remote DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(vrc.remote_p_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Issuer:     ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(vrc.issuer.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Subject:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(vrc.subject.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Valid from: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(vrc.valid_from.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+        ]));
+        if let Some(until) = &vrc.valid_until {
+            lines.push(Line::from(vec![
+                Span::styled("Valid until: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled(until.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ]));
+        }
+        lines.push(Line::from(vec![
+            Span::styled("VRC ID:     ", Style::new().fg(COLOR_DARK_GRAY)),
+            Span::styled(vrc.vrc_id.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+        ]));
+
+        lines.push(Line::from(""));
+        lines.push(Line::from("Esc: back").fg(COLOR_DARK_GRAY));
+
+        lines
+    }
+
+    fn render_credential_new_request(
+        &self,
+        relationship_index: usize,
+        reason_input: &str,
+    ) -> Vec<Line<'static>> {
+        let mut lines = vec![Line::from("")];
+        lines.push(
+            Line::from("Request VRC — Select Relationship")
+                .fg(COLOR_SUCCESS)
+                .bold(),
+        );
+        lines.push(Line::from(""));
+
+        let established: Vec<_> = self
+            .relationships
+            .relationships
+            .iter()
+            .filter(|r| r.state == "Established")
+            .collect();
+
+        if established.is_empty() {
+            lines.push(
+                Line::from("No established relationships available.")
+                    .fg(COLOR_WARNING_ACCESSIBLE_RED),
+            );
+            lines.push(Line::from(""));
+            lines.push(Line::from("Esc: back").fg(COLOR_DARK_GRAY));
+            return lines;
+        }
+
+        for (i, rel) in established.iter().enumerate() {
+            let is_selected = i == relationship_index;
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let style = if is_selected {
+                Style::new().fg(COLOR_SUCCESS).bold()
+            } else {
+                Style::new().fg(COLOR_TEXT_DEFAULT)
+            };
+
+            let display_name = rel
+                .alias
+                .as_deref()
+                .unwrap_or(&rel.remote_p_did)
+                .to_string();
+
+            lines.push(Line::from(vec![
+                Span::styled(prefix, style),
+                Span::styled(display_name, style),
+            ]));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Reason: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(reason_input.to_string(), Style::new().fg(COLOR_SOFT_PURPLE)),
+            Span::styled("▎", Style::new().fg(COLOR_SUCCESS)),
+        ]));
+
+        lines.push(Line::from(""));
+        lines.push(Line::from("↑/↓ select  Enter: send request  Esc: cancel").fg(COLOR_DARK_GRAY));
 
         lines
     }
