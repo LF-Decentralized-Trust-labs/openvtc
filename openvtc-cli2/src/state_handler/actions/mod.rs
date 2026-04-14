@@ -133,6 +133,11 @@ pub enum Action {
         task_id: String,
     },
 
+    /// Accept an inbound VRC request (issue a VRC back to the requester)
+    InboxAcceptVrcRequest {
+        task_id: String,
+    },
+
     /// Dismiss/remove a task from the inbox
     InboxDismissTask {
         task_id: String,

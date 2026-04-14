@@ -51,6 +51,7 @@ pub struct TaskSummary {
 
 /// Categorizes tasks for UI rendering and determining available actions.
 #[derive(Clone, Debug)]
+#[allow(dead_code)]
 pub enum TaskKind {
     /// Inbound relationship request awaiting accept/reject
     RelationshipRequestInbound {

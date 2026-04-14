@@ -164,6 +164,8 @@ impl MainPage {
                 ActiveTaskView::RelationshipRequestInbound { .. }
             );
             let is_vrc_issued = matches!(active_task, ActiveTaskView::VRCIssued { .. });
+            let is_vrc_request_inbound =
+                matches!(active_task, ActiveTaskView::VRCRequestInbound { .. });
 
             return match key.code {
                 KeyCode::Esc => {
@@ -177,6 +179,10 @@ impl MainPage {
                             .send(Action::InboxAcceptRelationship { task_id });
                     } else if is_vrc_issued {
                         let _ = self.action_tx.send(Action::InboxAcceptVrc { task_id });
+                    } else if is_vrc_request_inbound {
+                        let _ = self
+                            .action_tx
+                            .send(Action::InboxAcceptVrcRequest { task_id });
                     }
                     true
                 }

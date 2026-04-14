@@ -416,6 +416,20 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::InboxAcceptVrcRequest { task_id } => {
+                        match inbox_actions::accept_vrc_request(&mut config, &tdk, &task_id).await {
+                            Ok(()) => {
+                                state.main_page.content_panel.inbox.active_task = None;
+                                state.main_page.content_panel.inbox.status_message =
+                                    Some("VRC issued and sent".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.inbox.status_message =
+                                    Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
                     Action::InboxDismissTask { task_id } => {
                         let _ = inbox_actions::dismiss_task(&mut config, &task_id);
                         state.main_page.content_panel.inbox.active_task = None;

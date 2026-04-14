@@ -191,6 +191,100 @@ pub fn accept_vrc(config: &mut Config, task_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Accept an inbound VRC request — create, sign, and send a VRC back to the requester.
+///
+/// Uses current timestamp as valid_from and no valid_until (simplest default).
+pub async fn accept_vrc_request(config: &mut Config, tdk: &TDK, task_id: &str) -> Result<()> {
+    use affinidi_data_integrity::DataIntegrityProof;
+    use dtg_credentials::DTGCredential;
+    use openvtc::vrc::DtgCredentialMessage;
+
+    let task_id = Arc::new(task_id.to_string());
+
+    // Find the task and extract relationship info
+    let relationship = {
+        let task_arc = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?
+            .clone();
+        let task = task_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        match &task.type_ {
+            TaskType::VRCRequestInbound { relationship, .. } => relationship.clone(),
+            _ => anyhow::bail!("task {} is not an inbound VRC request", task_id),
+        }
+    };
+
+    let (our_r_did, their_p_did, their_r_did) = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        (
+            lock.our_did.clone(),
+            lock.remote_p_did.clone(),
+            lock.remote_did.clone(),
+        )
+    };
+
+    // Create VRC with current timestamp
+    let valid_from = Utc::now();
+    let mut vrc = DTGCredential::new_vrc(
+        config.public.persona_did.to_string(),
+        their_r_did.to_string(),
+        valid_from,
+        None, // no valid_until
+    );
+
+    // Sign the VRC with our persona signing key
+    let persona_keys = config.get_persona_keys(tdk).await?;
+    let proof =
+        DataIntegrityProof::sign_jcs_data(&vrc, None, &persona_keys.signing.secret, None).await?;
+    vrc.credential_mut().proof = Some(proof);
+
+    // Send VRC back to the requester
+    let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
+    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
+
+    let profile = if our_r_did == config.public.persona_did {
+        &config.persona_did.profile
+    } else {
+        config
+            .atm_profiles
+            .get(&our_r_did)
+            .ok_or_else(|| anyhow::anyhow!("No messaging profile for DID: {}", our_r_did))?
+    };
+
+    openvtc::pack_and_send(
+        atm,
+        profile,
+        &msg,
+        &our_r_did,
+        &their_r_did,
+        &config.public.mediator_did,
+    )
+    .await?;
+
+    // Store in issued VRCs
+    config
+        .private
+        .vrcs_issued
+        .insert(&their_p_did, Arc::new(vrc))?;
+
+    // Remove the task
+    config.private.tasks.remove(&task_id);
+
+    config.public.logs.insert(
+        LogFamily::Task,
+        format!("Issued VRC to ({}) Task ID ({})", their_p_did, task_id),
+    );
+
+    info!(to = %their_p_did, "VRC issued and sent");
+    Ok(())
+}
+
 /// Dismiss (remove) a task from the inbox without any action.
 pub fn dismiss_task(config: &mut Config, task_id: &str) -> Result<()> {
     let task_id = Arc::new(task_id.to_string());
