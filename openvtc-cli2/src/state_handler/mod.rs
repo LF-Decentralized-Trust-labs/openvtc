@@ -9,12 +9,22 @@ use crate::{
 use affinidi_tdk::{TDK, common::config::TDKConfig};
 use anyhow::Result;
 use openvtc::config::{Config, UnlockCode, public_config::PublicConfig};
+use openvtc::logs::LogFamily;
 use secrecy::SecretString;
 use tokio::sync::{
     broadcast,
     mpsc::{self, UnboundedReceiver, UnboundedSender},
 };
 use tracing::debug;
+
+/// Truncate a DID string for display in activity log messages.
+fn truncate_did(did: &str) -> String {
+    if did.len() > 30 {
+        format!("{}...", &did[..27])
+    } else {
+        did.to_string()
+    }
+}
 
 pub mod actions;
 mod credential_actions;
@@ -475,10 +485,10 @@ impl StateHandler {
                         handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
                     },
                     Action::SettingsExportConfig { path, passphrase } => {
-                        handle_settings_export_config(&config, &mut state, &path, &passphrase);
+                        handle_settings_export_config(&mut config, &mut state, &self.profile, &path, &passphrase);
                     },
                     Action::SettingsImportConfig { path, passphrase } => {
-                        handle_settings_import_config(&mut state, &path, &passphrase);
+                        handle_settings_import_config(&mut config, &mut state, &self.profile, &path, &passphrase);
                     },
                     Action::SettingsChangeProtection => {
                         handle_settings_change_protection(&mut state);
@@ -912,14 +922,15 @@ async fn handle_relationship_submit(
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
             state.main_page.content_panel.relationships.status_message =
-                Some(format!("Request sent to {}", did));
+                Some(format!("Request sent to {}", truncate_did(did)));
             if let Err(e) = settings_actions::save_config(config, profile) {
                 state.main_page.log(format!("Failed to save config: {e}"));
             }
             state.main_page.sync_from_config(config);
-            state
-                .main_page
-                .log(format!("Relationship request sent to {}", did));
+            state.main_page.log(format!(
+                "Relationship request sent to {}",
+                truncate_did(did)
+            ));
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =
@@ -1054,15 +1065,18 @@ async fn handle_credential_submit_request(
     match credential_actions::send_vrc_request(config, tdk, relationship_p_did, reason).await {
         Ok(()) => {
             state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-            state.main_page.content_panel.credentials.status_message =
-                Some(format!("VRC request sent to {}", relationship_p_did));
+            state.main_page.content_panel.credentials.status_message = Some(format!(
+                "VRC request sent to {}",
+                truncate_did(relationship_p_did)
+            ));
             if let Err(e) = settings_actions::save_config(config, profile) {
                 state.main_page.log(format!("Failed to save config: {e}"));
             }
             state.main_page.sync_from_config(config);
-            state
-                .main_page
-                .log(format!("VRC request sent to {}", relationship_p_did));
+            state.main_page.log(format!(
+                "VRC request sent to {}",
+                truncate_did(relationship_p_did)
+            ));
         }
         Err(e) => {
             state.main_page.content_panel.credentials.status_message = Some(format!("Error: {e}"));
@@ -1105,7 +1119,9 @@ fn handle_contact_add(
     match settings_actions::add_contact(config, profile, did, alias) {
         Ok(()) => {
             state.main_page.sync_from_config(config);
-            state.main_page.log(format!("Contact added: {}", did));
+            state
+                .main_page
+                .log(format!("Contact added: {}", truncate_did(did)));
         }
         Err(e) => {
             state.main_page.log(format!("Failed to add contact: {e}"));
@@ -1117,7 +1133,9 @@ fn handle_contact_remove(config: &mut Box<Config>, state: &mut State, profile: &
     match settings_actions::remove_contact(config, profile, did) {
         Ok(()) => {
             state.main_page.sync_from_config(config);
-            state.main_page.log(format!("Contact removed: {}", did));
+            state
+                .main_page
+                .log(format!("Contact removed: {}", truncate_did(did)));
         }
         Err(e) => {
             state
@@ -1304,10 +1322,21 @@ fn handle_settings_submit_edit(
     }
 }
 
-fn handle_settings_export_config(config: &Config, state: &mut State, path: &str, passphrase: &str) {
+fn handle_settings_export_config(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    path: &str,
+    passphrase: &str,
+) {
     use main_page::content::SettingsMode;
     match settings_actions::export_config(config, path, passphrase) {
         Ok(()) => {
+            config
+                .public
+                .logs
+                .insert(LogFamily::Config, format!("Config exported to {}", path));
+            let _ = settings_actions::save_config(config, profile);
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             state.main_page.content_panel.settings.status_message =
                 Some(format!("Config exported to {}", path));
@@ -1321,10 +1350,21 @@ fn handle_settings_export_config(config: &Config, state: &mut State, path: &str,
     }
 }
 
-fn handle_settings_import_config(state: &mut State, path: &str, passphrase: &str) {
+fn handle_settings_import_config(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    path: &str,
+    passphrase: &str,
+) {
     use main_page::content::SettingsMode;
     match settings_actions::import_config(path, passphrase) {
         Ok(msg) => {
+            config
+                .public
+                .logs
+                .insert(LogFamily::Config, format!("Config imported from {}", path));
+            let _ = settings_actions::save_config(config, profile);
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             state.main_page.content_panel.settings.status_message = Some(msg.clone());
             state.main_page.log(msg);

@@ -303,6 +303,13 @@ async fn create_relationship_did(tdk: &TDK, config: &mut Config, mediator: &str)
         .insert(e_secret)
         .await;
 
+    // NOTE: v_key and e_key contain BIP32-derived signing key bytes on the stack.
+    // ed25519-dalek-bip32 does not implement Zeroize, so these bytes may persist
+    // in memory after this function returns. This is a known limitation.
+    // The Secret structs (v_secret, e_secret) are now owned by the TDK resolver.
+    drop(v_key);
+    drop(e_key);
+
     Ok(r_did)
 }
 

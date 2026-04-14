@@ -83,8 +83,20 @@ pub fn remove_passphrase(config: &mut Config, profile: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a file path for export/import operations.
+fn validate_file_path(path: &str) -> Result<()> {
+    if path.trim().is_empty() {
+        anyhow::bail!("File path cannot be empty");
+    }
+    if path.contains("..") {
+        anyhow::bail!("Path traversal (..) is not allowed");
+    }
+    Ok(())
+}
+
 /// Export the config to a file, encrypted with the given passphrase.
 pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()> {
+    validate_file_path(path)?;
     let secret = SecretString::new(passphrase.to_string().into());
     config.export(Some(secret), path)?;
     info!(path = %path, "config exported");
@@ -93,6 +105,7 @@ pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()
 
 /// Import a config from file. Currently only validates and advises restart.
 pub fn import_config(path: &str, _passphrase: &str) -> Result<String> {
+    validate_file_path(path)?;
     // Validate the file exists
     if !std::path::Path::new(path).exists() {
         anyhow::bail!("File not found: {}", path);

@@ -22,6 +22,18 @@ mod cli;
 mod state_handler;
 mod ui;
 
+/// Redact file system paths from error messages for user display.
+fn redact_paths(msg: &str) -> String {
+    let home = dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !home.is_empty() {
+        msg.replace(&home, "~")
+    } else {
+        msg.to_string()
+    }
+}
+
 /// Checks if another instance of openvtc is running for the same profile
 /// will return an error if a duplicate instance is found
 /// otherwise, creates a lock file to prvent other instances from running
@@ -194,7 +206,7 @@ async fn main() -> Result<()> {
                 eprintln!(
                     "{} {}",
                     style("ERROR: Couldn't load configuration! Reason:").color256(CLI_RED),
-                    style(e).color256(CLI_ORANGE)
+                    style(redact_paths(&e.to_string())).color256(CLI_ORANGE)
                 );
                 bail!("Configuration Error");
             }
@@ -221,7 +233,10 @@ async fn main() -> Result<()> {
             Interrupted::UserInt => println!("exited per user request"),
             Interrupted::OsSigInt => println!("exited because of an os sig int"),
             Interrupted::SystemError(reason) => {
-                println!("exited because of a system error: {reason}")
+                println!(
+                    "exited because of a system error: {}",
+                    redact_paths(&reason)
+                )
             }
         },
         _ => {
@@ -310,6 +325,9 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 }
 
+/// Maximum number of interactive unlock attempts before aborting.
+const MAX_UNLOCK_ATTEMPTS: usize = 5;
+
 /// Fast, synchronous load — only does local config read + terminal prompts.
 /// Network-heavy work (TDK init, DID resolution, VTA auth) is deferred to the state handler.
 fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
@@ -321,13 +339,38 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
             if let Some(passphrase) = cli().get_matches().get_one::<String>("unlock-code") {
                 Some(UnlockCode::from_string(passphrase)?)
             } else {
-                Some(UnlockCode::from_string(
-                    &Password::with_theme(&ColorfulTheme::default())
+                let mut result = None;
+                for attempt in 1..=MAX_UNLOCK_ATTEMPTS {
+                    // After 3 failed attempts, add exponential backoff delay
+                    if attempt > 3 {
+                        let delay = std::time::Duration::from_secs(1 << (attempt - 3).min(3));
+                        std::thread::sleep(delay);
+                    }
+                    let input = Password::with_theme(&ColorfulTheme::default())
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap(),
-                )?)
+                        .unwrap();
+                    match UnlockCode::from_string(&input) {
+                        Ok(code) => {
+                            result = Some(code);
+                            break;
+                        }
+                        Err(e) => {
+                            let remaining = MAX_UNLOCK_ATTEMPTS - attempt;
+                            if remaining == 0 {
+                                eprintln!("Too many failed unlock attempts. Aborting.");
+                                return Err(e);
+                            }
+                            eprintln!(
+                                "WARNING: Failed unlock attempt. {} attempt{} remaining.",
+                                remaining,
+                                if remaining == 1 { "" } else { "s" }
+                            );
+                        }
+                    }
+                }
+                result.map(Some).unwrap_or(None)
             }
         }
         ConfigProtectionType::Plaintext => None,
