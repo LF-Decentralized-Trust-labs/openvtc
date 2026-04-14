@@ -12,7 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
-use secrecy::SecretVec;
+use secrecy::SecretBox;
 use sha2::{Digest, Sha256};
 use tui_input::{Input, backend::crossterm::EventHandler};
 
@@ -41,9 +41,9 @@ impl UnlockCodeSet {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let passphrase_hash = Arc::new(SecretVec::new(
+                let passphrase_hash = Arc::new(SecretBox::new(Box::new(
                     Sha256::digest(state.unlock_code_set.passphrase.value()).to_vec(),
-                ));
+                )));
                 let result = navigate(
                     SetupEvent::UnlockCodeSet { passphrase_hash },
                     &state.props.state,

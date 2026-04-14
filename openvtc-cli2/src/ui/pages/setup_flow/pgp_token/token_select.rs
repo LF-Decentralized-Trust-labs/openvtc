@@ -65,9 +65,16 @@ impl TokenSelect {
                 if state.token_select.ask_admin_pin {
                     // Get Admin PIN from input
                     let admin_pin = if state.token_select.token_admin_pin.value().is_empty() {
-                        SecretString::new("12345678".to_string())
+                        SecretString::new("12345678".to_string().into())
                     } else {
-                        SecretString::new(state.token_select.token_admin_pin.value().to_string())
+                        SecretString::new(
+                            state
+                                .token_select
+                                .token_admin_pin
+                                .value()
+                                .to_string()
+                                .into(),
+                        )
                     };
                     let token = if let Some(token) = &state.token_select.selected_token {
                         // Need to get ADMIN Pin from the user

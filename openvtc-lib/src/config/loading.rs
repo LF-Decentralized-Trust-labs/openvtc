@@ -11,7 +11,7 @@ use crate::{
 use affinidi_tdk::{TDK, messaging::profiles::ATMProfile};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::ExtendedSigningKey;
-use secrecy::{ExposeSecret, SecretString, SecretVec};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::HashMap;
 use tracing::{info, warn};
 use vta_sdk::credentials::CredentialBundle;
@@ -95,7 +95,7 @@ impl Config {
             })?;
             KeyBackend::Bip32 {
                 root: bip32_root,
-                seed: SecretString::new(bip32_seed.clone()),
+                seed: SecretString::new(bip32_seed.clone().into()),
             }
         } else if let Some(ref credential_bundle) = sc.credential_bundle {
             // VTA-managed config
@@ -105,9 +105,11 @@ impl Config {
             let encryption_seed =
                 ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
             KeyBackend::Vta {
-                credential_bundle: SecretString::new(credential_bundle.clone()),
+                credential_bundle: SecretString::new(credential_bundle.clone().into()),
                 credential_did: bundle.did.clone(),
-                credential_private_key: SecretString::new(bundle.private_key_multibase.clone()),
+                credential_private_key: SecretString::new(
+                    bundle.private_key_multibase.clone().into(),
+                ),
                 vta_did: sc.vta_did.clone().unwrap_or_default(),
                 vta_url: sc.vta_url.clone().unwrap_or_default(),
                 encryption_seed,
@@ -123,7 +125,7 @@ impl Config {
             KeyBackend::Bip32 { root, .. } => ProtectedConfig::get_seed(root, "m/0'/0'/0'")?,
             KeyBackend::Vta {
                 encryption_seed, ..
-            } => SecretVec::new(encryption_seed.expose_secret().to_vec()),
+            } => SecretBox::new(Box::new(encryption_seed.expose_secret().to_vec())),
         };
 
         // Unencrypt the private config data, with migration from legacy seed

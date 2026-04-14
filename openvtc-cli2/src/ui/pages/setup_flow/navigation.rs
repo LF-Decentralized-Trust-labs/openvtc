@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use secrecy::SecretVec;
+use secrecy::SecretBox;
 
 use super::SetupFlow;
 use crate::state_handler::{
@@ -62,7 +62,7 @@ pub enum SetupEvent {
     WantUnlockCode,
     SkipUnlockCode,
     UnlockCodeSet {
-        passphrase_hash: Arc<SecretVec<u8>>,
+        passphrase_hash: Arc<SecretBox<Vec<u8>>>,
     },
     ReturnToSetCode,
     AcceptNoCodeRisk,

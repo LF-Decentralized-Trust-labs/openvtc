@@ -35,7 +35,7 @@ pub(crate) async fn handle_export_did_keys(
             &mut state_clone,
             &state_tx_clone,
             export_inputs.username.value(),
-            SecretString::new(export_inputs.passphrase.value().to_string()),
+            SecretString::new(export_inputs.passphrase.value().to_string().into()),
         ) {
             Ok(export) => {
                 state_clone.setup.did_keys_export.exported =

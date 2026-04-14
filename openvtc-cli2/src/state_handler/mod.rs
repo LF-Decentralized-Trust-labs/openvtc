@@ -129,6 +129,13 @@ impl StateHandler {
                 // Spawn TDK init + config load as a background task with progress reporting
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<String>();
 
+                // Prepare shared state for TokenNotifier so it can push UI updates
+                #[cfg(feature = "openpgp-card")]
+                let notifier_state_tx = self.state_tx.clone();
+                #[cfg(feature = "openpgp-card")]
+                let notifier_shared_state =
+                    std::sync::Arc::new(std::sync::Mutex::new(state.clone()));
+
                 let mut load_handle = tokio::spawn(async move {
                     let on_progress = |msg: &str| {
                         if let Err(e) = progress_tx.send(msg.to_string()) {
@@ -152,12 +159,30 @@ impl StateHandler {
                     let token_notifier = {
                         use openvtc::config::TokenInteractions;
 
-                        struct TokenNotifier;
-                        impl TokenInteractions for TokenNotifier {
-                            fn touch_notify(&self) {}
-                            fn touch_completed(&self) {}
+                        struct TokenNotifier {
+                            shared_state: std::sync::Arc<
+                                std::sync::Mutex<crate::state_handler::state::State>,
+                            >,
+                            state_tx: mpsc::UnboundedSender<crate::state_handler::state::State>,
                         }
-                        TokenNotifier
+                        impl TokenInteractions for TokenNotifier {
+                            fn touch_notify(&self) {
+                                if let Ok(mut s) = self.shared_state.lock() {
+                                    s.token_touch_pending = true;
+                                    let _ = self.state_tx.send(s.clone());
+                                }
+                            }
+                            fn touch_completed(&self) {
+                                if let Ok(mut s) = self.shared_state.lock() {
+                                    s.token_touch_pending = false;
+                                    let _ = self.state_tx.send(s.clone());
+                                }
+                            }
+                        }
+                        TokenNotifier {
+                            shared_state: notifier_shared_state,
+                            state_tx: notifier_state_tx,
+                        }
                     };
 
                     let config = Config::load_step2(

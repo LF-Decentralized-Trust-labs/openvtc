@@ -91,9 +91,9 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                 .interact()
                 .context("Failed to read Token User PIN")?;
             let user_pin = if user_pin.is_empty() {
-                SecretString::new("123456".to_string())
+                SecretString::new("123456".to_string().into())
             } else {
-                SecretString::new(user_pin)
+                SecretString::new(user_pin.into())
             };
 
             (user_pin, None)
@@ -110,11 +110,11 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                         .context("Failed to read unlock passphrase")?
                 };
             (
-                SecretString::new(String::new()),
+                SecretString::new(String::new().into()),
                 Some(UnlockCode::from_string(&passphrase)?),
             )
         }
-        ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
+        ConfigProtectionType::Plaintext => (SecretString::new(String::new().into()), None),
     };
 
     let config = match Config::load_step2(
@@ -328,7 +328,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
             if let Some(args) = args.subcommand_matches("import") {
                 let passphrase = args.get_one::<String>("passphrase");
                 return Config::import(
-                    passphrase.map(|s| SecretString::new(s.to_string())),
+                    passphrase.map(|s| SecretString::new(s.to_string().into())),
                     args.get_one::<String>("file")
                         .expect("No file specified!")
                         .as_ref(),
@@ -360,7 +360,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                         term,
                         &config.get_persona_keys(&tdk).await?,
                         user_id.map(|s| s.as_str()),
-                        passphrase.map(|s| SecretString::new(s.to_string())),
+                        passphrase.map(|s| SecretString::new(s.to_string().into())),
                         false, // Not running in wizard mode
                     );
                 }
@@ -368,7 +368,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                     // Export settings
                     let passphrase = sub_args.get_one::<String>("passphrase");
                     if let Err(e) = config.export(
-                        passphrase.map(|s| SecretString::new(s.to_string())),
+                        passphrase.map(|s| SecretString::new(s.to_string().into())),
                         sub_args
                             .get_one::<String>("file")
                             .expect("Code error - file should has a default!")
