@@ -163,3 +163,36 @@ pub fn remove_contact(config: &mut Config, profile: &str, did: &str) -> Result<(
     info!(did = %did, "contact removed");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_file_path_rejects_empty() {
+        assert!(validate_file_path("").is_err());
+        assert!(validate_file_path("   ").is_err());
+    }
+
+    #[test]
+    fn test_validate_file_path_rejects_traversal() {
+        assert!(validate_file_path("../../etc/passwd").is_err());
+        assert!(validate_file_path("foo/../bar").is_err());
+    }
+
+    #[test]
+    fn test_validate_file_path_accepts_normal() {
+        assert!(validate_file_path("export.enc").is_ok());
+        assert!(validate_file_path("/home/user/backup.enc").is_ok());
+    }
+
+    #[test]
+    fn test_validate_file_path_accepts_dot_slash() {
+        assert!(validate_file_path("./local-file.dat").is_ok());
+    }
+
+    #[test]
+    fn test_validate_file_path_rejects_hidden_traversal() {
+        assert!(validate_file_path("/tmp/safe/../../../etc/shadow").is_err());
+    }
+}

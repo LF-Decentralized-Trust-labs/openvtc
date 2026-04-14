@@ -198,17 +198,15 @@ fn collect_vrcs(vrcs: &openvtc::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
 
 /// Sanitize a string from an untrusted source for safe terminal display.
 /// Strips ANSI escape codes and control characters, truncates to max_len.
+///
+/// ANSI escape sequences are stripped first so that the bracket-parameter
+/// remnants (e.g. `[31m`) are not left behind when the ESC byte is removed.
 #[must_use]
 pub fn sanitize_display(input: &str, max_len: usize) -> String {
-    let sanitized: String = input
-        .chars()
-        .filter(|c| !c.is_control() || *c == ' ')
-        .take(max_len)
-        .collect();
-    // Strip ANSI escape sequences (ESC [ ... letter pattern)
-    let mut result = String::with_capacity(sanitized.len());
+    // Pass 1: strip ANSI escape sequences (ESC [ ... letter pattern)
+    let mut stripped = String::with_capacity(input.len());
     let mut in_escape = false;
-    for c in sanitized.chars() {
+    for c in input.chars() {
         if c == '\x1b' {
             in_escape = true;
             continue;
@@ -219,9 +217,14 @@ pub fn sanitize_display(input: &str, max_len: usize) -> String {
             }
             continue;
         }
-        result.push(c);
+        stripped.push(c);
     }
-    result
+    // Pass 2: remove remaining control characters (keep spaces), then truncate
+    stripped
+        .chars()
+        .filter(|c| !c.is_control() || *c == ' ')
+        .take(max_len)
+        .collect()
 }
 
 /// Shortens a DID for display (first 20 chars + "...").
@@ -275,5 +278,80 @@ impl MainPanel {
             MainPanel::MainMenu => MainPanel::ContentPanel,
             MainPanel::ContentPanel => MainPanel::MainMenu,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- sanitize_display ---
+
+    #[test]
+    fn test_sanitize_display_strips_control_chars() {
+        assert_eq!(sanitize_display("hello\x00world", 256), "helloworld");
+        assert_eq!(sanitize_display("hello\nworld", 256), "helloworld");
+    }
+
+    #[test]
+    fn test_sanitize_display_strips_ansi_escapes() {
+        assert_eq!(sanitize_display("\x1b[31mred\x1b[0m", 256), "red");
+    }
+
+    #[test]
+    fn test_sanitize_display_truncates() {
+        let long = "a".repeat(300);
+        let result = sanitize_display(&long, 10);
+        assert_eq!(result.len(), 10);
+    }
+
+    #[test]
+    fn test_sanitize_display_preserves_spaces() {
+        assert_eq!(sanitize_display("hello world", 256), "hello world");
+    }
+
+    #[test]
+    fn test_sanitize_display_empty_input() {
+        assert_eq!(sanitize_display("", 256), "");
+    }
+
+    // --- shorten_did ---
+
+    #[test]
+    fn test_shorten_did_short_input() {
+        let short = "did:test:abc";
+        let result = shorten_did(short);
+        assert_eq!(result, short); // not shortened
+    }
+
+    #[test]
+    fn test_shorten_did_long_input() {
+        let long = "did:test:abcdefghijklmnopqrstuvwxyz";
+        let result = shorten_did(long);
+        assert!(result.ends_with("..."));
+        assert!(result.len() < long.len());
+    }
+
+    // --- MainPageState::log ---
+
+    #[test]
+    fn test_activity_log_bounded() {
+        let mut state = MainPageState::default();
+        for i in 0..MAX_ACTIVITY_LOG_ENTRIES + 10 {
+            state.log(format!("entry-{}", i));
+        }
+        assert_eq!(state.activity_log.len(), MAX_ACTIVITY_LOG_ENTRIES);
+        // Oldest entries should have been dropped
+        assert!(state.activity_log.front().unwrap().contains("entry-10"));
+    }
+
+    // --- MainPanel::switch ---
+
+    #[test]
+    fn test_main_panel_switch() {
+        let panel = MainPanel::MainMenu;
+        assert!(matches!(panel.switch(), MainPanel::ContentPanel));
+        let panel = MainPanel::ContentPanel;
+        assert!(matches!(panel.switch(), MainPanel::MainMenu));
     }
 }

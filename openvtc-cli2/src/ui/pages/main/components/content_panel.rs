@@ -19,11 +19,8 @@ use ratatui::{
 };
 
 use super::{
-    credentials_panel::CredentialsPanel,
-    inbox_panel::InboxPanel,
-    panel::Panel,
-    relationships_panel::RelationshipsPanel,
-    settings_panel::SettingsPanel,
+    credentials_panel::CredentialsPanel, inbox_panel::InboxPanel, panel::Panel,
+    relationships_panel::RelationshipsPanel, settings_panel::SettingsPanel,
 };
 
 // ****************************************************************************

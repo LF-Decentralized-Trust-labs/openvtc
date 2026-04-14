@@ -80,3 +80,67 @@ impl OutboundQueue {
         self.pending.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use affinidi_tdk::didcomm::Message;
+    use chrono::Utc;
+
+    fn test_message() -> PendingMessage {
+        PendingMessage {
+            message: Message::build(
+                "test-id".to_string(),
+                "test-type".to_string(),
+                serde_json::json!({}),
+            )
+            .finalize(),
+            from: "did:test:from".into(),
+            to: "did:test:to".into(),
+            mediator: "did:test:mediator".into(),
+            retry_count: 0,
+            created: Utc::now(),
+            description: "test message".into(),
+        }
+    }
+
+    #[test]
+    fn test_enqueue_and_len() {
+        let mut queue = OutboundQueue::default();
+        assert!(queue.is_empty());
+        queue.enqueue(test_message());
+        assert_eq!(queue.len(), 1);
+        assert!(!queue.is_empty());
+    }
+
+    #[test]
+    fn test_drain_increments_retry() {
+        let mut queue = OutboundQueue::default();
+        queue.enqueue(test_message());
+        let drained = queue.drain_for_retry();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].retry_count, 1);
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_max_retries_drops_message() {
+        let mut queue = OutboundQueue::default();
+        let mut msg = test_message();
+        msg.retry_count = MAX_RETRIES; // already at max
+        queue.enqueue(msg);
+        let drained = queue.drain_for_retry();
+        assert!(drained.is_empty()); // dropped after max retries
+    }
+
+    #[test]
+    fn test_queue_size_limit() {
+        let mut queue = OutboundQueue::default();
+        for i in 0..MAX_QUEUE_SIZE + 5 {
+            let mut msg = test_message();
+            msg.description = format!("msg-{}", i);
+            queue.enqueue(msg);
+        }
+        assert_eq!(queue.len(), MAX_QUEUE_SIZE);
+    }
+}

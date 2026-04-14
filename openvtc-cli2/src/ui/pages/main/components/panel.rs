@@ -9,9 +9,6 @@ use ratatui::text::Line;
 /// Panels are stateless renderers that derive display from [`ContentPanelState`].
 pub trait Panel {
     /// Render the panel content as a list of styled lines.
-    fn render(
-        &self,
-        state: &ContentPanelState,
-        connection: &ConnectionState,
-    ) -> Vec<Line<'static>>;
+    fn render(&self, state: &ContentPanelState, connection: &ConnectionState)
+    -> Vec<Line<'static>>;
 }
