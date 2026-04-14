@@ -89,7 +89,7 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
 
             let kind_indicator = match &task.kind {
                 TaskKind::RelationshipRequestInbound { .. } => "⬇ REL ",
-                TaskKind::RelationshipRequestOutbound => "⬆ REL ",
+                TaskKind::RelationshipRequestOutbound { .. } => "⬆ REL ",
                 TaskKind::VRCRequestInbound { .. } => "⬇ VRC ",
                 TaskKind::VRCRequestOutbound => "⬆ VRC ",
                 TaskKind::VRCIssued => "📄 VRC ",
@@ -153,13 +153,30 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
                 ]));
             }
             lines.push(Line::from(vec![
-                Span::styled("From:  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled("From:      ", Style::new().fg(COLOR_TEXT_DEFAULT)),
                 Span::styled(from_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
             ]));
+            let uses_r_did = from_did != their_did;
             lines.push(Line::from(vec![
-                Span::styled("DID:   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled("Their DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
                 Span::styled(their_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                if uses_r_did {
+                    Span::styled("  (R-DID)", Style::new().fg(COLOR_ORANGE))
+                } else {
+                    Span::styled("", Style::default())
+                },
             ]));
+            if uses_r_did {
+                lines.push(Line::from(""));
+                lines.push(
+                    Line::from("  ⚠ Sender is using a relationship DID for privacy.")
+                        .fg(COLOR_ORANGE),
+                );
+                lines.push(
+                    Line::from("    Use A (Shift+A) to accept with your own R-DID.")
+                        .fg(COLOR_ORANGE),
+                );
+            }
             if let Some(reason) = reason {
                 lines.push(Line::from(vec![
                     Span::styled("Reason: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
@@ -216,6 +233,83 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             ]));
             lines.push(Line::from(""));
             lines.push(Line::from("a: accept (store)  d: dismiss  Esc: back").fg(COLOR_DARK_GRAY));
+        }
+        ActiveTaskView::RelationshipRequestOutbound {
+            task_id,
+            to_did,
+            our_did,
+            state,
+        } => {
+            let label = Style::new().fg(COLOR_TEXT_DEFAULT);
+            let value = Style::new().fg(COLOR_SOFT_PURPLE);
+            let dim = Style::new().fg(COLOR_DARK_GRAY);
+            lines.push(
+                Line::from("Outbound Relationship Request")
+                    .fg(COLOR_SUCCESS)
+                    .bold(),
+            );
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("To:       ", label),
+                Span::styled(to_did.clone(), value),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Our DID:  ", label),
+                Span::styled(our_did.clone(), value),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Status:   ", label),
+                Span::styled(state.clone(), Style::new().fg(COLOR_ORANGE)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Task:     ", dim),
+                Span::styled(task_id.clone(), dim),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from("d: dismiss  Esc: back").fg(COLOR_DARK_GRAY));
+        }
+        ActiveTaskView::VRCRequestOutbound {
+            task_id,
+            remote_did,
+        } => {
+            let label = Style::new().fg(COLOR_TEXT_DEFAULT);
+            let value = Style::new().fg(COLOR_SOFT_PURPLE);
+            let dim = Style::new().fg(COLOR_DARK_GRAY);
+            lines.push(Line::from("Outbound VRC Request").fg(COLOR_SUCCESS).bold());
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("To:    ", label),
+                Span::styled(remote_did.clone(), value),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Task:  ", dim),
+                Span::styled(task_id.clone(), dim),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from("d: dismiss  Esc: back").fg(COLOR_DARK_GRAY));
+        }
+        ActiveTaskView::Info {
+            task_id,
+            type_display,
+            remote_did,
+        } => {
+            let label = Style::new().fg(COLOR_TEXT_DEFAULT);
+            let value = Style::new().fg(COLOR_SOFT_PURPLE);
+            let dim = Style::new().fg(COLOR_DARK_GRAY);
+            lines.push(Line::from(type_display.clone()).fg(COLOR_SUCCESS).bold());
+            lines.push(Line::from(""));
+            if !remote_did.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("DID:   ", label),
+                    Span::styled(remote_did.clone(), value),
+                ]));
+            }
+            lines.push(Line::from(vec![
+                Span::styled("Task:  ", dim),
+                Span::styled(task_id.clone(), dim),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from("d: dismiss  Esc: back").fg(COLOR_DARK_GRAY));
         }
     }
 

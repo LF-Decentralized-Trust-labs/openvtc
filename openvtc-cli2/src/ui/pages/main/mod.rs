@@ -283,7 +283,10 @@ impl MainPage {
             let task_id = match active_task {
                 ActiveTaskView::RelationshipRequestInbound { task_id, .. }
                 | ActiveTaskView::VRCRequestInbound { task_id, .. }
-                | ActiveTaskView::VRCIssued { task_id, .. } => task_id.clone(),
+                | ActiveTaskView::VRCIssued { task_id, .. }
+                | ActiveTaskView::RelationshipRequestOutbound { task_id, .. }
+                | ActiveTaskView::VRCRequestOutbound { task_id, .. }
+                | ActiveTaskView::Info { task_id, .. } => task_id.clone(),
             };
             let is_rel_inbound = matches!(
                 active_task,

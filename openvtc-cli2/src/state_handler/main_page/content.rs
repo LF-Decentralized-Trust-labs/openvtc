@@ -87,7 +87,7 @@ pub enum TaskKind {
         name: Option<String>,
     },
     /// Outbound relationship request awaiting response
-    RelationshipRequestOutbound,
+    RelationshipRequestOutbound { our_did: String },
     /// Inbound VRC request awaiting accept/reject
     VRCRequestInbound { reason: Option<String> },
     /// Outbound VRC request awaiting response
@@ -110,14 +110,32 @@ pub enum ActiveTaskView {
         reason: Option<String>,
         name: Option<String>,
     },
+    /// Outbound relationship request — waiting for response
+    RelationshipRequestOutbound {
+        task_id: String,
+        to_did: String,
+        our_did: String,
+        state: String,
+    },
     VRCRequestInbound {
         task_id: String,
         from_did: String,
         reason: Option<String>,
     },
+    /// Outbound VRC request — waiting for response
+    VRCRequestOutbound {
+        task_id: String,
+        remote_did: String,
+    },
     VRCIssued {
         task_id: String,
         issuer: String,
+    },
+    /// Generic info task (ping, pong, informational)
+    Info {
+        task_id: String,
+        type_display: String,
+        remote_did: String,
     },
 }
 

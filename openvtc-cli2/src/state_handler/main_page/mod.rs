@@ -69,8 +69,16 @@ impl MainPageState {
                             name: request.name.as_deref().map(|n| sanitize_display(n, 256)),
                         }
                     }
-                    TaskType::RelationshipRequestOutbound { .. } => {
-                        TaskKind::RelationshipRequestOutbound
+                    TaskType::RelationshipRequestOutbound { to } => {
+                        let our_did = config
+                            .private
+                            .relationships
+                            .relationships
+                            .get(to)
+                            .and_then(|rel_arc| rel_arc.lock().ok())
+                            .map(|rel| rel.our_did.to_string())
+                            .unwrap_or_default();
+                        TaskKind::RelationshipRequestOutbound { our_did }
                     }
                     TaskType::VRCRequestInbound { request, .. } => TaskKind::VRCRequestInbound {
                         reason: request.reason.as_deref().map(|r| sanitize_display(r, 256)),

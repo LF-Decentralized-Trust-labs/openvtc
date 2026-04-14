@@ -878,7 +878,23 @@ fn handle_inbox_open_detail(state: &mut State, index: usize) {
                 task_id: task.id.clone(),
                 issuer: task.remote_did.clone(),
             }),
-            _ => None,
+            TaskKind::RelationshipRequestOutbound { our_did } => {
+                Some(ActiveTaskView::RelationshipRequestOutbound {
+                    task_id: task.id.clone(),
+                    to_did: task.remote_did.clone(),
+                    our_did: our_did.clone(),
+                    state: "Request Sent".to_string(),
+                })
+            }
+            TaskKind::VRCRequestOutbound => Some(ActiveTaskView::VRCRequestOutbound {
+                task_id: task.id.clone(),
+                remote_did: task.remote_did.clone(),
+            }),
+            TaskKind::TrustPing | TaskKind::Informational(_) => Some(ActiveTaskView::Info {
+                task_id: task.id.clone(),
+                type_display: task.type_display.clone(),
+                remote_did: task.remote_did.clone(),
+            }),
         };
         state.main_page.content_panel.inbox.active_task = view;
     }
