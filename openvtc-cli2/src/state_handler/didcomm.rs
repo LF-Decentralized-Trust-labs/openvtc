@@ -25,8 +25,14 @@ pub enum DIDCommEvent {
         #[allow(dead_code)]
         from: Option<String>,
     },
-    /// A trust-ping was received and auto-responded to.
-    TrustPingReceived { from: Option<String> },
+    /// A trust-ping was received — state handler decides whether to respond.
+    TrustPingReceived {
+        from: Option<String>,
+        /// The listener that received the ping (needed to send pong back).
+        listener_id: String,
+        /// The original message ID (needed for pong thid).
+        message_id: String,
+    },
     /// A trust-pong response was received.
     TrustPongReceived { from: Option<String> },
 }
@@ -52,30 +58,24 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
     });
 
     Router::new()
-        // Trust ping — auto-respond with pong AND notify state handler
+        // Trust ping — forward to state handler for relationship verification
+        // before responding. Only respond to pings from established relationships.
         .route(
             affinidi_messaging_didcomm_service::TRUST_PING_TYPE,
             handler_fn({
                 let tx = event_tx.clone();
                 move |ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
                     let tx = tx.clone();
+                    let listener_id = ctx.listener_id.clone();
                     async move {
-                        let from = msg.from.clone();
-                        // Generate pong response (same logic as built-in handler)
-                        let response = if ctx.sender_did.is_some() {
-                            Some(
-                                affinidi_messaging_didcomm_service::DIDCommResponse::new(
-                                    affinidi_messaging_didcomm_service::TRUST_PONG_TYPE,
-                                    serde_json::Value::Null,
-                                )
-                                .thid(msg.id),
-                            )
-                        } else {
-                            None
-                        };
-                        // Notify state handler
-                        let _ = tx.send(DIDCommEvent::TrustPingReceived { from });
-                        Ok(response)
+                        let _ = tx.send(DIDCommEvent::TrustPingReceived {
+                            from: msg.from.clone(),
+                            listener_id,
+                            message_id: msg.id.clone(),
+                        });
+                        // Do NOT auto-respond — state handler will send pong
+                        // only after verifying the sender has a relationship.
+                        Ok(None)
                     }
                 }
             }),

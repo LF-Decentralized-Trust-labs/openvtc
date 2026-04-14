@@ -717,12 +717,46 @@ impl StateHandler {
                                 }
                             }
                         }
-                        didcomm::DIDCommEvent::TrustPingReceived { from } => {
+                        didcomm::DIDCommEvent::TrustPingReceived { from, listener_id, message_id } => {
                             let sender = from.as_deref().unwrap_or("unknown");
-                            state.main_page.log(format!(
-                                "Trust-ping received from {} — pong sent",
-                                truncate_did(sender)
-                            ));
+                            let sender_arc = std::sync::Arc::new(sender.to_string());
+
+                            // Only respond to pings from the mediator or established relationships
+                            let is_mediator = sender == config.public.mediator_did;
+                            let has_relationship = config
+                                .private
+                                .relationships
+                                .find_by_remote_did(&sender_arc)
+                                .map(|r| {
+                                    r.lock()
+                                        .map(|l| l.state == openvtc::relationships::RelationshipState::Established)
+                                        .unwrap_or(false)
+                                })
+                                .unwrap_or(false);
+
+                            if is_mediator || has_relationship {
+                                // Send pong to verified sender
+                                if let Some(ref from_did) = from
+                                    && let Ok(pong_msg) =
+                                        build_trust_pong(from_did, &message_id)
+                                    && let Err(e) = didcomm_service
+                                        .send_message(&listener_id, pong_msg, from_did)
+                                        .await
+                                {
+                                    state
+                                        .main_page
+                                        .log(format!("Failed to send pong: {e}"));
+                                }
+                                state.main_page.log(format!(
+                                    "Trust-ping from {} — pong sent",
+                                    truncate_did(sender)
+                                ));
+                            } else {
+                                state.main_page.log(format!(
+                                    "Trust-ping from {} — ignored (no relationship)",
+                                    truncate_did(sender)
+                                ));
+                            }
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
                             let sender = from.as_deref().unwrap_or("unknown");
@@ -1808,6 +1842,29 @@ fn build_trust_ping(from: &str, to: &str) -> Result<affinidi_tdk::didcomm::Messa
     .to(to.to_string())
     .created_time(now)
     .expires_time(60 * 5) // 5 minutes
+    .finalize();
+
+    Ok(message)
+}
+
+/// Build a trust-pong response message.
+fn build_trust_pong(
+    to: &str,
+    ping_id: &str,
+) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
+    let message = affinidi_tdk::didcomm::Message::build(
+        uuid::Uuid::new_v4().to_string(),
+        "https://didcomm.org/trust-ping/2.0/ping-response".to_string(),
+        serde_json::Value::Null,
+    )
+    .to(to.to_string())
+    .thid(ping_id.to_string())
+    .created_time(now)
     .finalize();
 
     Ok(message)

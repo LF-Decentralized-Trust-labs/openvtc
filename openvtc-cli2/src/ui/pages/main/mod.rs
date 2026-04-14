@@ -1,11 +1,7 @@
 use crate::{
     state_handler::{
         actions::{Action, CredentialAction, InboxAction, RelationshipAction, SettingsAction},
-        main_page::{
-            MainPageState, MainPanel,
-            content::{ActiveTaskView, TaskKind},
-            menu::MainMenu,
-        },
+        main_page::{MainPageState, MainPanel, content::ActiveTaskView, menu::MainMenu},
         state::{ConnectionState, MediatorStatus, State},
     },
     ui::{
@@ -375,40 +371,10 @@ impl MainPage {
                 true
             }
             KeyCode::Enter if selected < task_count => {
-                // Build the detail view from the selected task
-                let task = &inbox.tasks[selected];
-                let view = match &task.kind {
-                    TaskKind::RelationshipRequestInbound {
-                        from_did,
-                        their_did,
-                        reason,
-                        name,
-                    } => Some(ActiveTaskView::RelationshipRequestInbound {
-                        task_id: task.id.clone(),
-                        from_did: from_did.clone(),
-                        their_did: their_did.clone(),
-                        reason: reason.clone(),
-                        name: name.clone(),
-                    }),
-                    TaskKind::VRCRequestInbound { reason } => {
-                        Some(ActiveTaskView::VRCRequestInbound {
-                            task_id: task.id.clone(),
-                            from_did: task.remote_did.clone(),
-                            reason: reason.clone(),
-                        })
-                    }
-                    TaskKind::VRCIssued => Some(ActiveTaskView::VRCIssued {
-                        task_id: task.id.clone(),
-                        issuer: task.remote_did.clone(),
-                    }),
-                    _ => None,
-                };
-                // For tasks with detail views, send the open-detail action
-                if view.is_some() {
-                    let _ = self
-                        .action_tx
-                        .send(Action::Inbox(InboxAction::OpenDetail(selected)));
-                }
+                // All task types have detail views — let the state handler build it
+                let _ = self
+                    .action_tx
+                    .send(Action::Inbox(InboxAction::OpenDetail(selected)));
                 true
             }
             KeyCode::Char('d') if selected < task_count => {
