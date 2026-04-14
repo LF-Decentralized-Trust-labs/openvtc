@@ -74,6 +74,8 @@ pub enum RelationshipAction {
         value: String,
     },
     ToggleRDid,
+    /// Switch focus to a specific form field by index
+    FocusField(usize),
 }
 
 #[allow(dead_code)]

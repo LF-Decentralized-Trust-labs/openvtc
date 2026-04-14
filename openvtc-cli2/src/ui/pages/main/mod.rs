@@ -428,12 +428,9 @@ impl MainPage {
                     KeyCode::Tab => {
                         // Cycle through fields 0->1->2->3->0
                         let next = (active_field + 1) % 4;
-                        let _ = self.action_tx.send(Action::Relationship(
-                            RelationshipAction::InputUpdate {
-                                field: next,
-                                value: String::new(), // just switching field, no value change
-                            },
-                        ));
+                        let _ = self
+                            .action_tx
+                            .send(Action::Relationship(RelationshipAction::FocusField(next)));
                         true
                     }
                     KeyCode::Char(' ') if active_field == 3 => {

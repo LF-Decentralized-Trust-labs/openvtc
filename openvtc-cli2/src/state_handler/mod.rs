@@ -426,6 +426,14 @@ impl StateHandler {
                         RelationshipAction::ToggleRDid => {
                             handle_relationship_toggle_r_did(&mut state);
                         },
+                        RelationshipAction::FocusField(field) => {
+                            use main_page::content::RelationshipsMode;
+                            if let RelationshipsMode::NewRequest { active_field, .. } =
+                                &mut state.main_page.content_panel.relationships.mode
+                            {
+                                *active_field = field;
+                            }
+                        },
                         RelationshipAction::SubmitRequest { did, alias, reason, generate_r_did } => {
                             handle_relationship_submit(&mut config, &tdk, &mut state, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
                         },
