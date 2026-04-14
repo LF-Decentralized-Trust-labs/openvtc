@@ -138,6 +138,18 @@ impl MainPageState {
         self.content_panel.settings.mediator_did = config.public.mediator_did.clone();
         self.content_panel.settings.org_did = config.public.lk_did.clone();
         self.content_panel.settings.persona_did = config.public.persona_did.to_string();
+        self.content_panel.settings.protection_type = match &config.public.protection {
+            openvtc::config::ConfigProtectionType::Token(id) => {
+                format!(
+                    "Hardware Token ({})",
+                    if id.len() > 20 { &id[..20] } else { id }
+                )
+            }
+            openvtc::config::ConfigProtectionType::Encrypted => "Passphrase Encrypted".to_string(),
+            openvtc::config::ConfigProtectionType::Plaintext => {
+                "Keyring Only (no additional encryption)".to_string()
+            }
+        };
     }
 }
 

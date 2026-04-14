@@ -271,6 +271,17 @@ pub enum SettingsMode {
         passphrase_input: String,
         active_field: usize,
     },
+    /// Changing protection level (set/remove passphrase)
+    ChangeProtection {
+        /// 0 = Set passphrase, 1 = Remove passphrase (keyring only)
+        selected_option: usize,
+        /// Passphrase input (for set option)
+        passphrase_input: String,
+        /// Confirm passphrase input
+        confirm_input: String,
+        /// Which field is active (0 = option list, 1 = passphrase, 2 = confirm)
+        active_field: usize,
+    },
     /// Token management sub-screen
     #[cfg(feature = "openpgp-card")]
     TokenManagement { selected_index: usize },

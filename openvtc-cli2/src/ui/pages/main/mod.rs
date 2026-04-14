@@ -612,6 +612,88 @@ impl MainPage {
                     _ => false,
                 }
             }
+            SettingsMode::ChangeProtection {
+                selected_option,
+                passphrase_input,
+                confirm_input,
+                active_field,
+            } => {
+                let active = *active_field;
+                let sel = *selected_option;
+                match key.code {
+                    KeyCode::Esc => {
+                        let _ = self.action_tx.send(Action::SettingsCancelEdit);
+                        true
+                    }
+                    KeyCode::Up if active == 0 && sel > 0 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::SettingsEditUpdate(format!("\x01{}", sel - 1)));
+                        true
+                    }
+                    KeyCode::Down if active == 0 && sel < 1 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::SettingsEditUpdate(format!("\x01{}", sel + 1)));
+                        true
+                    }
+                    KeyCode::Enter if active == 0 => {
+                        if sel == 0 {
+                            // Switch to passphrase input
+                            let _ = self
+                                .action_tx
+                                .send(Action::SettingsEditUpdate("\x02".to_string()));
+                        } else {
+                            // Remove passphrase
+                            let _ = self.action_tx.send(Action::SettingsRemovePassphrase);
+                        }
+                        true
+                    }
+                    KeyCode::Tab if active >= 1 => {
+                        let next = if active == 1 { 2 } else { 1 };
+                        let _ = self
+                            .action_tx
+                            .send(Action::SettingsEditUpdate(format!("\x03{}", next)));
+                        true
+                    }
+                    KeyCode::Enter if active == 2 => {
+                        // Submit passphrase
+                        if passphrase_input == confirm_input && !passphrase_input.is_empty() {
+                            let _ = self.action_tx.send(Action::SettingsSetPassphrase {
+                                passphrase: passphrase_input.clone(),
+                            });
+                        }
+                        true
+                    }
+                    KeyCode::Backspace if active >= 1 => {
+                        let mut current = if active == 1 {
+                            passphrase_input.clone()
+                        } else {
+                            confirm_input.clone()
+                        };
+                        current.pop();
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
+                            "\x04{}{}",
+                            active, current
+                        )));
+                        true
+                    }
+                    KeyCode::Char(c) if active >= 1 => {
+                        let mut current = if active == 1 {
+                            passphrase_input.clone()
+                        } else {
+                            confirm_input.clone()
+                        };
+                        current.push(c);
+                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
+                            "\x04{}{}",
+                            active, current
+                        )));
+                        true
+                    }
+                    _ => false,
+                }
+            }
             #[cfg(feature = "openpgp-card")]
             SettingsMode::TokenManagement { selected_index } => {
                 let sel = *selected_index;
@@ -663,6 +745,9 @@ impl MainPage {
                     KeyCode::Enter => {
                         if selected <= 2 {
                             let _ = self.action_tx.send(Action::SettingsStartEdit);
+                        } else if selected == 4 {
+                            // Change protection
+                            let _ = self.action_tx.send(Action::SettingsChangeProtection);
                         } else if selected == 5 {
                             // Export
                             let _ = self.action_tx.send(Action::SettingsStartEdit);

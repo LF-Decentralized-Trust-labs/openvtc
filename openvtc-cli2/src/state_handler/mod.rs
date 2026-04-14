@@ -699,6 +699,32 @@ impl StateHandler {
                                     }
                                 }
                             }
+                            SettingsMode::ChangeProtection {
+                                selected_option,
+                                passphrase_input,
+                                confirm_input,
+                                active_field,
+                            } => {
+                                if value.starts_with('\x01') && value.len() == 2 {
+                                    // Option selection update
+                                    *selected_option = (value.as_bytes()[1] - b'0') as usize;
+                                } else if value == "\x02" {
+                                    // Switch to passphrase input
+                                    *active_field = 1;
+                                } else if value.starts_with('\x03') && value.len() == 2 {
+                                    // Switch active field (Tab)
+                                    *active_field = (value.as_bytes()[1] - b'0') as usize;
+                                } else if value.starts_with('\x04') && value.len() >= 2 {
+                                    // Field-specific text update
+                                    let field = (value.as_bytes()[1] - b'0') as usize;
+                                    let content = &value[2..];
+                                    if field == 1 {
+                                        *passphrase_input = content.to_string();
+                                    } else {
+                                        *confirm_input = content.to_string();
+                                    }
+                                }
+                            }
                             SettingsMode::View => {}
                             #[cfg(feature = "openpgp-card")]
                             SettingsMode::TokenManagement { .. } => {}
@@ -738,6 +764,48 @@ impl StateHandler {
                             Err(e) => {
                                 state.main_page.content_panel.settings.status_message =
                                     Some(format!("Export failed: {e}"));
+                            }
+                        }
+                    },
+                    Action::SettingsChangeProtection => {
+                        use main_page::content::SettingsMode;
+                        state.main_page.content_panel.settings.mode =
+                            SettingsMode::ChangeProtection {
+                                selected_option: 0,
+                                passphrase_input: String::new(),
+                                confirm_input: String::new(),
+                                active_field: 0,
+                            };
+                    },
+                    Action::SettingsSetPassphrase { passphrase } => {
+                        use main_page::content::SettingsMode;
+                        let profile = self.profile.clone();
+                        match settings_actions::set_passphrase(&mut config, &profile, &passphrase) {
+                            Ok(()) => {
+                                state.main_page.content_panel.settings.mode = SettingsMode::View;
+                                state.main_page.content_panel.settings.status_message =
+                                    Some("Passphrase protection enabled".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    Action::SettingsRemovePassphrase => {
+                        use main_page::content::SettingsMode;
+                        let profile = self.profile.clone();
+                        match settings_actions::remove_passphrase(&mut config, &profile) {
+                            Ok(()) => {
+                                state.main_page.content_panel.settings.mode = SettingsMode::View;
+                                state.main_page.content_panel.settings.status_message =
+                                    Some("Protection reverted to keyring only".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.settings.status_message =
+                                    Some(format!("Error: {e}"));
                             }
                         }
                     },

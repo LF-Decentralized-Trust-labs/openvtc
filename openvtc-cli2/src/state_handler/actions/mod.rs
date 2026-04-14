@@ -237,6 +237,17 @@ pub enum Action {
         passphrase: String,
     },
 
+    /// Open the change protection sub-screen
+    SettingsChangeProtection,
+
+    /// Set a passphrase for config protection
+    SettingsSetPassphrase {
+        passphrase: String,
+    },
+
+    /// Remove passphrase protection (revert to keyring only)
+    SettingsRemovePassphrase,
+
     /// Open the token management sub-screen in settings
     #[cfg(feature = "openpgp-card")]
     SettingsTokenManagement,

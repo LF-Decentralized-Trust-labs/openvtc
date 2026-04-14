@@ -18,6 +18,17 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
             passphrase_input,
             active_field,
         } => render_export_form(path_input, passphrase_input, *active_field),
+        SettingsMode::ChangeProtection {
+            selected_option,
+            passphrase_input,
+            confirm_input,
+            active_field,
+        } => render_change_protection(
+            *selected_option,
+            passphrase_input,
+            confirm_input,
+            *active_field,
+        ),
         #[cfg(feature = "openpgp-card")]
         SettingsMode::TokenManagement { selected_index } => {
             render_token_management(state, *selected_index)
@@ -86,6 +97,14 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
         Span::styled(if prot_selected { "▸ " } else { "  " }, prot_style),
         Span::styled("Protection: ", prot_style),
         Span::styled(state.protection_type.clone(), Style::new().fg(COLOR_ORANGE)),
+        Span::styled(
+            if prot_selected {
+                " [Enter to change]"
+            } else {
+                ""
+            },
+            Style::new().fg(COLOR_DARK_GRAY),
+        ),
     ]));
 
     // Export option (index 5)
@@ -240,6 +259,111 @@ fn render_export_form(
         Line::from("Tab: switch field  Enter (on passphrase): export  Esc: cancel")
             .fg(COLOR_DARK_GRAY),
     );
+
+    lines
+}
+
+fn render_change_protection(
+    selected_option: usize,
+    passphrase_input: &str,
+    confirm_input: &str,
+    active_field: usize,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from("")];
+    lines.push(
+        Line::from("Change Config Protection")
+            .fg(COLOR_SUCCESS)
+            .bold(),
+    );
+    lines.push(Line::from(""));
+
+    if active_field == 0 {
+        // Option selection mode
+        let options = ["Set Passphrase", "Remove Passphrase (keyring only)"];
+        for (i, label) in options.iter().enumerate() {
+            let is_selected = i == selected_option;
+            let style = if is_selected {
+                Style::new().fg(COLOR_SUCCESS).bold()
+            } else {
+                Style::new().fg(COLOR_TEXT_DEFAULT)
+            };
+            lines.push(Line::from(vec![Span::styled(
+                format!("{}{}", if is_selected { "▸ " } else { "  " }, label),
+                style,
+            )]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from("↑/↓ select  Enter: choose  Esc: cancel").fg(COLOR_DARK_GRAY));
+    } else {
+        // Passphrase input mode
+        lines.push(Line::from(vec![
+            Span::styled(
+                if active_field == 1 { "▸ " } else { "  " },
+                Style::new().fg(if active_field == 1 {
+                    COLOR_SUCCESS
+                } else {
+                    COLOR_TEXT_DEFAULT
+                }),
+            ),
+            Span::styled(
+                "Passphrase: ",
+                Style::new().fg(if active_field == 1 {
+                    COLOR_SUCCESS
+                } else {
+                    COLOR_TEXT_DEFAULT
+                }),
+            ),
+            Span::styled(
+                "*".repeat(passphrase_input.len()),
+                Style::new().fg(COLOR_SOFT_PURPLE),
+            ),
+            Span::styled(
+                if active_field == 1 { "▎" } else { "" },
+                Style::new().fg(COLOR_SUCCESS),
+            ),
+        ]));
+
+        lines.push(Line::from(vec![
+            Span::styled(
+                if active_field == 2 { "▸ " } else { "  " },
+                Style::new().fg(if active_field == 2 {
+                    COLOR_SUCCESS
+                } else {
+                    COLOR_TEXT_DEFAULT
+                }),
+            ),
+            Span::styled(
+                "Confirm:    ",
+                Style::new().fg(if active_field == 2 {
+                    COLOR_SUCCESS
+                } else {
+                    COLOR_TEXT_DEFAULT
+                }),
+            ),
+            Span::styled(
+                "*".repeat(confirm_input.len()),
+                Style::new().fg(COLOR_SOFT_PURPLE),
+            ),
+            Span::styled(
+                if active_field == 2 { "▎" } else { "" },
+                Style::new().fg(COLOR_SUCCESS),
+            ),
+        ]));
+
+        if !passphrase_input.is_empty()
+            && !confirm_input.is_empty()
+            && passphrase_input != confirm_input
+        {
+            lines.push(Line::from(""));
+            lines.push(Line::from("  Passphrases do not match").fg(COLOR_ORANGE));
+        }
+
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from("Tab: next field  Enter (on confirm): save  Esc: cancel")
+                .fg(COLOR_DARK_GRAY),
+        );
+    }
 
     lines
 }

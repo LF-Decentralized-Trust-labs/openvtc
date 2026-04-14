@@ -51,6 +51,38 @@ pub fn update_org_did(config: &mut Config, profile: &str, did: &str) -> Result<(
     Ok(())
 }
 
+/// Set a passphrase to encrypt the config in the keyring.
+pub fn set_passphrase(config: &mut Config, profile: &str, passphrase: &str) -> Result<()> {
+    use openvtc::config::{ConfigProtectionType, derive_passphrase_key, validate_passphrase};
+
+    validate_passphrase(passphrase)?;
+    let key = derive_passphrase_key(passphrase.as_bytes(), b"openvtc-unlock-code-v1")?;
+    config.unlock_code = Some(key.to_vec());
+    config.public.protection = ConfigProtectionType::Encrypted;
+    config.public.logs.insert(
+        LogFamily::Config,
+        "Config protection changed to passphrase encrypted".to_string(),
+    );
+    save_config(config, profile)?;
+    info!("config protection set to passphrase encrypted");
+    Ok(())
+}
+
+/// Remove passphrase protection, reverting to keyring-only.
+pub fn remove_passphrase(config: &mut Config, profile: &str) -> Result<()> {
+    use openvtc::config::ConfigProtectionType;
+
+    config.unlock_code = None;
+    config.public.protection = ConfigProtectionType::Plaintext;
+    config.public.logs.insert(
+        LogFamily::Config,
+        "Config protection changed to keyring only (no additional encryption)".to_string(),
+    );
+    save_config(config, profile)?;
+    info!("config protection reverted to keyring only");
+    Ok(())
+}
+
 /// Export the config to a file, encrypted with the given passphrase.
 pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()> {
     let secret = SecretString::new(passphrase.to_string().into());
