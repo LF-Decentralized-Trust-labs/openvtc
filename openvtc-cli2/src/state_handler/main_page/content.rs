@@ -212,6 +212,8 @@ pub struct VrcSummary {
     pub vrc_id: String,
     /// Remote party's persona DID
     pub remote_p_did: String,
+    /// Pretty-printed JSON of the raw credential
+    pub raw_json: String,
     /// Contact alias (if set)
     pub alias: Option<String>,
     /// Issuer DID

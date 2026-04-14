@@ -165,8 +165,16 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
         Span::styled(vrc.vrc_id.clone(), Style::new().fg(COLOR_DARK_GRAY)),
     ]));
 
+    // Raw credential JSON
     lines.push(Line::from(""));
-    lines.push(Line::from("d: remove  Esc: back").fg(COLOR_DARK_GRAY));
+    lines.push(Line::from(" Raw Credential").fg(COLOR_SUCCESS).bold());
+    lines.push(Line::from(""));
+    for json_line in vrc.raw_json.lines() {
+        lines.push(Line::from(format!("  {}", json_line)).fg(COLOR_DARK_GRAY));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("d: remove  c: copy JSON  Esc: back").fg(COLOR_DARK_GRAY));
 
     lines
 }

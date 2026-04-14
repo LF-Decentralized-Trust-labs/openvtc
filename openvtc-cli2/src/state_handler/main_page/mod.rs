@@ -203,9 +203,12 @@ fn collect_vrcs(vrcs: &openvtc::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
             .and_then(|c| c.alias.clone());
         if let Some(vrc_map) = vrcs.get(remote_p_did) {
             for (vrc_id, vrc) in vrc_map {
+                let raw_json = serde_json::to_string_pretty(vrc.credential())
+                    .unwrap_or_else(|_| "Failed to serialize credential".to_string());
                 result.push(VrcSummary {
                     vrc_id: vrc_id.to_string(),
                     remote_p_did: sanitize_display(remote_p_did, 256),
+                    raw_json,
                     alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
                     issuer: sanitize_display(vrc.issuer(), 256),
                     subject: sanitize_display(vrc.subject(), 256),

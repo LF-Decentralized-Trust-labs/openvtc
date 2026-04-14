@@ -745,6 +745,16 @@ impl MainPage {
                         }
                         true
                     }
+                    KeyCode::Char('c') => {
+                        let active_list = match creds.selected_tab {
+                            CredentialTab::Received => &creds.received,
+                            CredentialTab::Issued => &creds.issued,
+                        };
+                        if let Some(vrc) = active_list.get(detail_index) {
+                            copy_to_clipboard(&vrc.raw_json, "VRC credential", &self.action_tx);
+                        }
+                        true
+                    }
                     _ => false,
                 }
             }
