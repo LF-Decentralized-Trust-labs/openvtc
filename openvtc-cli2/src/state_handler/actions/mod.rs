@@ -117,6 +117,9 @@ pub enum Action {
     /// Select a task by index in the inbox list
     InboxSelectTask(usize),
 
+    /// Open the detail view for a task by index
+    InboxOpenDetail(usize),
+
     /// Accept an inbound relationship request
     InboxAcceptRelationship {
         task_id: String,
@@ -160,6 +163,9 @@ pub enum Action {
     /// Select a relationship by index
     RelationshipSelect(usize),
 
+    /// Open the detail view for a relationship by index
+    RelationshipOpenDetail(usize),
+
     /// Open the new-request form
     RelationshipStartNewRequest,
 
@@ -198,8 +204,11 @@ pub enum Action {
     /// Switch between Received/Issued tabs
     CredentialSwitchTab,
 
-    /// Select a credential by index (high-bit = open detail)
+    /// Select a credential by index
     CredentialSelect(usize),
+
+    /// Open the detail view for a credential by index
+    CredentialOpenDetail(usize),
 
     /// Return from detail or new-request to list
     CredentialBack,
@@ -256,8 +265,31 @@ pub enum Action {
     /// Cancel editing
     SettingsCancelEdit,
 
-    /// Update the text input during editing
-    SettingsEditUpdate(String),
+    /// Update a text field during inline editing (name, mediator, org DID)
+    SettingsFieldUpdate(String),
+
+    /// Update export/import form fields
+    SettingsFormFieldUpdate {
+        field: usize,
+        value: String,
+    },
+    /// Switch field in export/import form
+    SettingsFormTabSwitch,
+
+    /// Change protection: select option (0=set passphrase, 1=remove)
+    SettingsProtectionOptionSelect(usize),
+    /// Change protection: switch to passphrase input mode
+    SettingsProtectionStartInput,
+    /// Change protection: update passphrase field
+    SettingsProtectionFieldUpdate {
+        field: usize,
+        value: String,
+    },
+    /// Change protection: switch between passphrase/confirm fields
+    SettingsProtectionTabSwitch(usize),
+
+    /// Toggle R-DID in relationship form
+    RelationshipToggleRDid,
 
     /// Export config to file
     SettingsExportConfig {

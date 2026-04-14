@@ -342,41 +342,38 @@ impl StateHandler {
                         }
                     },
                     Action::InboxSelectTask(index) => {
-                        // High bit set = open detail view
-                        if index & 0x8000_0000 != 0 {
-                            let real_index = index & 0x7FFF_FFFF;
-                            state.main_page.content_panel.inbox.selected_index = real_index;
-                            // Build ActiveTaskView from the task at this index
-                            if let Some(task) = state.main_page.content_panel.inbox.tasks.get(real_index) {
-                                use main_page::content::{ActiveTaskView, TaskKind};
-                                let view = match &task.kind {
-                                    TaskKind::RelationshipRequestInbound { from_did, their_did, reason } => {
-                                        Some(ActiveTaskView::RelationshipRequestInbound {
-                                            task_id: task.id.clone(),
-                                            from_did: from_did.clone(),
-                                            their_did: their_did.clone(),
-                                            reason: reason.clone(),
-                                        })
-                                    }
-                                    TaskKind::VRCRequestInbound { reason } => {
-                                        Some(ActiveTaskView::VRCRequestInbound {
-                                            task_id: task.id.clone(),
-                                            from_did: task.remote_did.clone(),
-                                            reason: reason.clone(),
-                                        })
-                                    }
-                                    TaskKind::VRCIssued => {
-                                        Some(ActiveTaskView::VRCIssued {
-                                            task_id: task.id.clone(),
-                                            issuer: task.remote_did.clone(),
-                                        })
-                                    }
-                                    _ => None,
-                                };
-                                state.main_page.content_panel.inbox.active_task = view;
-                            }
-                        } else {
-                            state.main_page.content_panel.inbox.selected_index = index;
+                        state.main_page.content_panel.inbox.selected_index = index;
+                    },
+                    Action::InboxOpenDetail(index) => {
+                        state.main_page.content_panel.inbox.selected_index = index;
+                        // Build ActiveTaskView from the task at this index
+                        if let Some(task) = state.main_page.content_panel.inbox.tasks.get(index) {
+                            use main_page::content::{ActiveTaskView, TaskKind};
+                            let view = match &task.kind {
+                                TaskKind::RelationshipRequestInbound { from_did, their_did, reason } => {
+                                    Some(ActiveTaskView::RelationshipRequestInbound {
+                                        task_id: task.id.clone(),
+                                        from_did: from_did.clone(),
+                                        their_did: their_did.clone(),
+                                        reason: reason.clone(),
+                                    })
+                                }
+                                TaskKind::VRCRequestInbound { reason } => {
+                                    Some(ActiveTaskView::VRCRequestInbound {
+                                        task_id: task.id.clone(),
+                                        from_did: task.remote_did.clone(),
+                                        reason: reason.clone(),
+                                    })
+                                }
+                                TaskKind::VRCIssued => {
+                                    Some(ActiveTaskView::VRCIssued {
+                                        task_id: task.id.clone(),
+                                        issuer: task.remote_did.clone(),
+                                    })
+                                }
+                                _ => None,
+                            };
+                            state.main_page.content_panel.inbox.active_task = view;
                         }
                     },
                     Action::InboxBack => {
@@ -491,15 +488,13 @@ impl StateHandler {
                     },
                     // Relationship actions
                     Action::RelationshipSelect(index) => {
+                        state.main_page.content_panel.relationships.selected_index = index;
+                    },
+                    Action::RelationshipOpenDetail(index) => {
                         use main_page::content::RelationshipsMode;
-                        if index & 0x8000_0000 != 0 {
-                            let real = index & 0x7FFF_FFFF;
-                            state.main_page.content_panel.relationships.selected_index = real;
-                            state.main_page.content_panel.relationships.mode =
-                                RelationshipsMode::Detail { index: real };
-                        } else {
-                            state.main_page.content_panel.relationships.selected_index = index;
-                        }
+                        state.main_page.content_panel.relationships.selected_index = index;
+                        state.main_page.content_panel.relationships.mode =
+                            RelationshipsMode::Detail { index };
                     },
                     Action::RelationshipStartNewRequest => {
                         use main_page::content::RelationshipsMode;
@@ -523,16 +518,13 @@ impl StateHandler {
                             ref mut did_input,
                             ref mut alias_input,
                             ref mut reason_input,
-                            ref mut generate_r_did,
                             ref mut active_field,
+                            ..
                         } = state.main_page.content_panel.relationships.mode
                         {
                             if value.is_empty() {
                                 // Just switching field (Tab)
                                 *active_field = field;
-                            } else if field == 3 && value == "\x01" {
-                                // Toggle generate_r_did
-                                *generate_r_did = !*generate_r_did;
                             } else {
                                 match field {
                                     0 => *did_input = value,
@@ -540,6 +532,16 @@ impl StateHandler {
                                     _ => *reason_input = value,
                                 }
                             }
+                        }
+                    },
+                    Action::RelationshipToggleRDid => {
+                        use main_page::content::RelationshipsMode;
+                        if let RelationshipsMode::NewRequest {
+                            ref mut generate_r_did,
+                            ..
+                        } = state.main_page.content_panel.relationships.mode
+                        {
+                            *generate_r_did = !*generate_r_did;
                         }
                     },
                     Action::RelationshipSubmitRequest { did, alias, reason, generate_r_did } => {
@@ -623,15 +625,13 @@ impl StateHandler {
                         state.main_page.content_panel.credentials.selected_index = 0;
                     },
                     Action::CredentialSelect(index) => {
+                        state.main_page.content_panel.credentials.selected_index = index;
+                    },
+                    Action::CredentialOpenDetail(index) => {
                         use main_page::content::CredentialsMode;
-                        if index & 0x8000_0000 != 0 {
-                            let real = index & 0x7FFF_FFFF;
-                            state.main_page.content_panel.credentials.selected_index = real;
-                            state.main_page.content_panel.credentials.mode =
-                                CredentialsMode::Detail { index: real };
-                        } else {
-                            state.main_page.content_panel.credentials.selected_index = index;
-                        }
+                        state.main_page.content_panel.credentials.selected_index = index;
+                        state.main_page.content_panel.credentials.mode =
+                            CredentialsMode::Detail { index };
                     },
                     Action::CredentialBack | Action::CredentialCancelNewRequest => {
                         use main_page::content::CredentialsMode;
@@ -794,7 +794,7 @@ impl StateHandler {
                         use main_page::content::SettingsMode;
                         state.main_page.content_panel.settings.mode = SettingsMode::View;
                     },
-                    Action::SettingsEditUpdate(value) => {
+                    Action::SettingsFieldUpdate(value) => {
                         use main_page::content::SettingsMode;
                         match &mut state.main_page.content_panel.settings.mode {
                             SettingsMode::EditFriendlyName { input }
@@ -802,59 +802,78 @@ impl StateHandler {
                             | SettingsMode::EditOrgDid { input } => {
                                 *input = value;
                             }
+                            _ => {}
+                        }
+                    },
+                    Action::SettingsFormFieldUpdate { field, value } => {
+                        use main_page::content::SettingsMode;
+                        match &mut state.main_page.content_panel.settings.mode {
                             SettingsMode::ExportConfig {
                                 path_input,
                                 passphrase_input,
-                                active_field,
+                                ..
                             }
                             | SettingsMode::ImportConfig {
                                 path_input,
                                 passphrase_input,
-                                active_field,
+                                ..
                             } => {
-                                if value.starts_with('\t') {
-                                    // Tab field switch
-                                    *active_field = if value == "\t1" { 1 } else { 0 };
-                                } else if value.starts_with('\0') && value.len() >= 2 {
-                                    // Field-specific update: \0{field}{content}
-                                    let field = value.as_bytes()[1] - b'0';
-                                    let content = &value[2..];
-                                    if field == 0 {
-                                        *path_input = content.to_string();
-                                    } else {
-                                        *passphrase_input = content.to_string();
-                                    }
+                                if field == 0 {
+                                    *path_input = value;
+                                } else {
+                                    *passphrase_input = value;
                                 }
                             }
-                            SettingsMode::ChangeProtection {
-                                selected_option,
-                                passphrase_input,
-                                confirm_input,
-                                active_field,
-                            } => {
-                                if value.starts_with('\x01') && value.len() == 2 {
-                                    // Option selection update
-                                    *selected_option = (value.as_bytes()[1] - b'0') as usize;
-                                } else if value == "\x02" {
-                                    // Switch to passphrase input
-                                    *active_field = 1;
-                                } else if value.starts_with('\x03') && value.len() == 2 {
-                                    // Switch active field (Tab)
-                                    *active_field = (value.as_bytes()[1] - b'0') as usize;
-                                } else if value.starts_with('\x04') && value.len() >= 2 {
-                                    // Field-specific text update
-                                    let field = (value.as_bytes()[1] - b'0') as usize;
-                                    let content = &value[2..];
-                                    if field == 1 {
-                                        *passphrase_input = content.to_string();
-                                    } else {
-                                        *confirm_input = content.to_string();
-                                    }
-                                }
+                            _ => {}
+                        }
+                    },
+                    Action::SettingsFormTabSwitch => {
+                        use main_page::content::SettingsMode;
+                        match &mut state.main_page.content_panel.settings.mode {
+                            SettingsMode::ExportConfig { active_field, .. }
+                            | SettingsMode::ImportConfig { active_field, .. } => {
+                                *active_field = if *active_field == 0 { 1 } else { 0 };
                             }
-                            SettingsMode::View => {}
-                            #[cfg(feature = "openpgp-card")]
-                            SettingsMode::TokenManagement { .. } => {}
+                            _ => {}
+                        }
+                    },
+                    Action::SettingsProtectionOptionSelect(option) => {
+                        use main_page::content::SettingsMode;
+                        if let SettingsMode::ChangeProtection { selected_option, .. } =
+                            &mut state.main_page.content_panel.settings.mode
+                        {
+                            *selected_option = option;
+                        }
+                    },
+                    Action::SettingsProtectionStartInput => {
+                        use main_page::content::SettingsMode;
+                        if let SettingsMode::ChangeProtection { active_field, .. } =
+                            &mut state.main_page.content_panel.settings.mode
+                        {
+                            *active_field = 1;
+                        }
+                    },
+                    Action::SettingsProtectionFieldUpdate { field, value } => {
+                        use main_page::content::SettingsMode;
+                        if let SettingsMode::ChangeProtection {
+                            passphrase_input,
+                            confirm_input,
+                            ..
+                        } = &mut state.main_page.content_panel.settings.mode
+                        {
+                            if field == 1 {
+                                *passphrase_input = value;
+                            } else {
+                                *confirm_input = value;
+                            }
+                        }
+                    },
+                    Action::SettingsProtectionTabSwitch(next_field) => {
+                        use main_page::content::SettingsMode;
+                        if let SettingsMode::ChangeProtection { active_field, .. } =
+                            &mut state.main_page.content_panel.settings.mode
+                        {
+                            *active_field = next_field;
                         }
                     },
                     Action::SettingsSubmitEdit { value } => {

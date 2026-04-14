@@ -248,12 +248,9 @@ impl MainPage {
                     }),
                     _ => None,
                 };
-                // For tasks with detail views, we use the high bit as a flag
-                // to tell the state handler to open the detail view
+                // For tasks with detail views, send the open-detail action
                 if view.is_some() {
-                    let _ = self
-                        .action_tx
-                        .send(Action::InboxSelectTask(selected | 0x8000_0000));
+                    let _ = self.action_tx.send(Action::InboxOpenDetail(selected));
                 }
                 true
             }
@@ -308,10 +305,7 @@ impl MainPage {
                     }
                     KeyCode::Char(' ') if active_field == 3 => {
                         // Toggle the generate_r_did boolean
-                        let _ = self.action_tx.send(Action::RelationshipInputUpdate {
-                            field: 3,
-                            value: "\x01".to_string(), // special value to toggle
-                        });
+                        let _ = self.action_tx.send(Action::RelationshipToggleRDid);
                         true
                     }
                     KeyCode::Enter if active_field == 3 => {
@@ -404,10 +398,9 @@ impl MainPage {
                         true
                     }
                     KeyCode::Enter if selected < count => {
-                        // Open detail view using high-bit flag
                         let _ = self
                             .action_tx
-                            .send(Action::RelationshipSelect(selected | 0x8000_0000));
+                            .send(Action::RelationshipOpenDetail(selected));
                         true
                     }
                     KeyCode::Char('n') => {
@@ -536,9 +529,7 @@ impl MainPage {
                         true
                     }
                     KeyCode::Enter if selected < active_list_len => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::CredentialSelect(selected | 0x8000_0000));
+                        let _ = self.action_tx.send(Action::CredentialOpenDetail(selected));
                         true
                     }
                     KeyCode::Char('n') => {
@@ -580,13 +571,13 @@ impl MainPage {
                     KeyCode::Backspace => {
                         let mut v = current;
                         v.pop();
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(v));
+                        let _ = self.action_tx.send(Action::SettingsFieldUpdate(v));
                         true
                     }
                     KeyCode::Char(c) => {
                         let mut v = current;
                         v.push(c);
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(v));
+                        let _ = self.action_tx.send(Action::SettingsFieldUpdate(v));
                         true
                     }
                     _ => false,
@@ -604,10 +595,7 @@ impl MainPage {
                         true
                     }
                     KeyCode::Tab => {
-                        // Toggle between path (0) and passphrase (1)
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(
-                            if active == 0 { "\t1" } else { "\t0" }.to_string(),
-                        ));
+                        let _ = self.action_tx.send(Action::SettingsFormTabSwitch);
                         true
                     }
                     KeyCode::Enter if active == 1 => {
@@ -624,11 +612,10 @@ impl MainPage {
                             passphrase_input.clone()
                         };
                         current.pop();
-                        // Prefix with field indicator
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
-                            "\x00{}{}",
-                            active, current
-                        )));
+                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                            field: active,
+                            value: current,
+                        });
                         true
                     }
                     KeyCode::Char(c) => {
@@ -638,10 +625,10 @@ impl MainPage {
                             passphrase_input.clone()
                         };
                         current.push(c);
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
-                            "\x00{}{}",
-                            active, current
-                        )));
+                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                            field: active,
+                            value: current,
+                        });
                         true
                     }
                     _ => false,
@@ -663,21 +650,19 @@ impl MainPage {
                     KeyCode::Up if active == 0 && sel > 0 => {
                         let _ = self
                             .action_tx
-                            .send(Action::SettingsEditUpdate(format!("\x01{}", sel - 1)));
+                            .send(Action::SettingsProtectionOptionSelect(sel - 1));
                         true
                     }
                     KeyCode::Down if active == 0 && sel < 1 => {
                         let _ = self
                             .action_tx
-                            .send(Action::SettingsEditUpdate(format!("\x01{}", sel + 1)));
+                            .send(Action::SettingsProtectionOptionSelect(sel + 1));
                         true
                     }
                     KeyCode::Enter if active == 0 => {
                         if sel == 0 {
                             // Switch to passphrase input
-                            let _ = self
-                                .action_tx
-                                .send(Action::SettingsEditUpdate("\x02".to_string()));
+                            let _ = self.action_tx.send(Action::SettingsProtectionStartInput);
                         } else {
                             // Remove passphrase
                             let _ = self.action_tx.send(Action::SettingsRemovePassphrase);
@@ -688,7 +673,7 @@ impl MainPage {
                         let next = if active == 1 { 2 } else { 1 };
                         let _ = self
                             .action_tx
-                            .send(Action::SettingsEditUpdate(format!("\x03{}", next)));
+                            .send(Action::SettingsProtectionTabSwitch(next));
                         true
                     }
                     KeyCode::Enter if active == 2 => {
@@ -707,10 +692,10 @@ impl MainPage {
                             confirm_input.clone()
                         };
                         current.pop();
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
-                            "\x04{}{}",
-                            active, current
-                        )));
+                        let _ = self.action_tx.send(Action::SettingsProtectionFieldUpdate {
+                            field: active,
+                            value: current,
+                        });
                         true
                     }
                     KeyCode::Char(c) if active >= 1 => {
@@ -720,10 +705,10 @@ impl MainPage {
                             confirm_input.clone()
                         };
                         current.push(c);
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
-                            "\x04{}{}",
-                            active, current
-                        )));
+                        let _ = self.action_tx.send(Action::SettingsProtectionFieldUpdate {
+                            field: active,
+                            value: current,
+                        });
                         true
                     }
                     _ => false,
@@ -772,9 +757,7 @@ impl MainPage {
                         true
                     }
                     KeyCode::Tab => {
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(
-                            if active == 0 { "\t1" } else { "\t0" }.to_string(),
-                        ));
+                        let _ = self.action_tx.send(Action::SettingsFormTabSwitch);
                         true
                     }
                     KeyCode::Enter if active == 1 => {
@@ -791,10 +774,10 @@ impl MainPage {
                             passphrase_input.clone()
                         };
                         current.pop();
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
-                            "\x00{}{}",
-                            active, current
-                        )));
+                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                            field: active,
+                            value: current,
+                        });
                         true
                     }
                     KeyCode::Char(c) => {
@@ -804,10 +787,10 @@ impl MainPage {
                             passphrase_input.clone()
                         };
                         current.push(c);
-                        let _ = self.action_tx.send(Action::SettingsEditUpdate(format!(
-                            "\x00{}{}",
-                            active, current
-                        )));
+                        let _ = self.action_tx.send(Action::SettingsFormFieldUpdate {
+                            field: active,
+                            value: current,
+                        });
                         true
                     }
                     _ => false,
