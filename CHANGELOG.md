@@ -19,21 +19,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Status/Help panel** showing persona DID, mediator DID, protection type, relationship/task/VRC counts, connection status, and keyboard shortcuts
 - **R-DID generation** for relationship requests — derives Ed25519/X25519 keys from BIP32 path, creates did:peer with mediator routing for privacy
 - **VRC issuance** from inbox — sign and send VRCs back to requesters using DataIntegrityProof
+- **VRC rejection** from inbox — send rejection messages back to VRC requesters
 - **Contact management** actions (add/remove) accessible from settings
 - **DIDComm message dispatch** — inbound messages are now processed instead of silently dropped
+- **Outbound message queue** for offline resilience — failed outbound messages are queued and automatically retried when mediator connectivity is restored (bounded at 1K messages, 5 retries per message)
+- **Auto-reconnect mediator** — changing mediator DID in settings automatically tears down the old DIDComm WebSocket and establishes a new connection
+- **Config versioning** with stepwise migration framework — `config_version` field enables safe format upgrades between releases
+- **Panel trait** for content panels — unified render interface enabling future per-panel key handling
+- 18 unit tests covering sanitize_display, shorten_did, outbound queue, file path validation, activity log bounds, and panel switching
+
+### Security
+
+- Passphrases for export/import/protection-change no longer stored in cloned State — replaced with length-only fields, actual content kept in UI-local buffers consumed via `mem::take` on submit
+- Token admin PIN wrapped in `Arc<SecretString>` so State clones share a single allocation
+- Inbound message body size validated (1MB limit) before deserialization to prevent DoS
+- Task ID deduplication prevents hijacking via crafted message IDs/thread IDs
+- Sender identity validation on `thid`-referencing messages to prevent unauthorized state mutations
+- Collection size bounds: max 10K tasks, 5K relationships — reject when limits reached
+- All untrusted display text sanitized: ANSI escape codes and control characters stripped, truncated to 256 chars
+- Unlock attempt rate limiting: max 5 attempts with exponential backoff (2s, 4s, 8s delay)
+- Home directory paths redacted from user-facing error messages (replaced with `~`)
+- DIDs truncated in activity log to limit information exposure
+- Export/import file paths validated against path traversal (`..` rejected)
+- Structured audit log entries for config export and import operations
+- Explicit `drop()` on BIP32-derived key material after use (documented limitation: `ed25519-dalek-bip32` lacks `Zeroize` impl)
 
 ### Fixed
 
 - **Config persistence** (critical) — inbox, relationship, and credential actions now save config to disk after every mutation, preventing data loss on crash or restart
+- All `.unwrap()`/`.expect()` in fallible contexts replaced with proper error propagation (`?`, `ok_or_else`, `map_err`)
+- Clipboard operations gracefully degrade with warning log instead of panicking (fixes crash on headless/SSH)
+- Bug in `sanitize_display()` where ANSI escape stripping was dead code (control char filter removed ESC byte first)
 
 ### Changed
 
-- Replaced `0x8000_0000` bit flag encoding for detail view triggers with separate typed action variants (`InboxOpenDetail`, `RelationshipOpenDetail`, `CredentialOpenDetail`)
-- Replaced control character encoding (`\x00`-`\x04`) in settings form updates with typed action variants (`SettingsFieldUpdate`, `SettingsFormFieldUpdate`, `SettingsProtection*`)
-- Extracted ~40 action handler functions from the 700+ line match block in the state handler, reducing each match arm to 1-3 lines
-- Replaced `Vec<String>` with `VecDeque<String>` for activity log — O(1) bounded insertion instead of O(n)
-- Extracted panel renderers from content_panel.rs (822 lines) into separate files: inbox_panel.rs, relationships_panel.rs, credentials_panel.rs, settings_panel.rs
-- Protection type display now shows human-readable labels ("Keyring Only", "Passphrase Encrypted", "Hardware Token") instead of debug enum names
+- Grouped flat ~65-variant `Action` enum into domain sub-enums: `InboxAction`, `RelationshipAction`, `CredentialAction`, `ContactAction`, `SettingsAction` — each domain is self-contained
+- Replaced `tokio::sync::mpsc::unbounded_channel` with `tokio::sync::watch` for State updates — UI always sees the latest state, no unbounded queue growth
+- Replaced `0x8000_0000` bit flag encoding with separate typed action variants (`InboxOpenDetail`, `RelationshipOpenDetail`, `CredentialOpenDetail`)
+- Replaced control character encoding (`\x00`-`\x04`) in settings form updates with typed action variants
+- Extracted ~40 action handler functions from the 700+ line match block, reducing each arm to 1-3 lines
+- Replaced `Vec<String>` with `VecDeque<String>` for activity log — O(1) bounded insertion
+- Extracted panel renderers from content_panel.rs (822 lines) into separate files
+- Protection type display now shows human-readable labels ("Keyring Only", "Passphrase Encrypted", "Hardware Token")
+- Added `#[must_use]` to pure functions (`sanitize_display`, `shorten_did`, `truncate_did`, `collect_vrcs`)
+- Added doc comments to `State`, `ActivePage`, `MediatorStatus`, `ConnectionState` types
+- Explicit `Arc::clone()` used instead of `.clone()` on 27 Arc values for clarity
+- `truncate_did()` returns `Cow<str>` to avoid allocation when DID is short enough
+- Simplified `SecretString` allocation chains (removed unnecessary `.to_string()`)
 
 ## [0.1.5] - 2026-04-14
 
