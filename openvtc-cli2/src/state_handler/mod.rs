@@ -35,6 +35,7 @@ mod inbox_actions;
 pub mod main_page;
 mod message_dispatch;
 pub mod messaging;
+pub mod outbound_queue;
 mod relationship_actions;
 mod settings_actions;
 mod setup_did_actions;
@@ -304,6 +305,9 @@ impl StateHandler {
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());
+
+        // Outbound message queue for offline resilience (retry on reconnect)
+        let mut outbound_queue = outbound_queue::OutboundQueue::default();
 
         // Spawn DIDComm init + validation as a background task
         let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
@@ -588,6 +592,7 @@ impl StateHandler {
                     }
 
                     if let (Some(atm), Some(profile)) = (conn_result.atm, conn_result.profile) {
+                        let atm_retry = atm.clone();
                         let handle = tokio::spawn(messaging::run_didcomm_loop(
                             atm,
                             profile,
@@ -598,6 +603,39 @@ impl StateHandler {
                         msg_task_handle = Some(handle);
                         state.connection.messaging_active = true;
                         state.main_page.log("DIDComm messaging active");
+
+                        // Retry queued outbound messages now that we are connected
+                        if !outbound_queue.is_empty() {
+                            let count = outbound_queue.len();
+                            state.main_page.log(format!(
+                                "Retrying {count} queued outbound message(s)"
+                            ));
+                            let to_retry = outbound_queue.drain_for_retry();
+                            for pending in to_retry {
+                                match openvtc::pack_and_send(
+                                    &atm_retry,
+                                    &config.persona_did.profile,
+                                    &pending.message,
+                                    &pending.from,
+                                    &pending.to,
+                                    &pending.mediator,
+                                )
+                                .await
+                                {
+                                    Ok(()) => {
+                                        state.main_page.log(format!(
+                                            "Retry succeeded: {}",
+                                            pending.description
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        outbound_queue.enqueue(pending);
+                                        state.main_page.log(format!("Retry failed: {e}"));
+                                    }
+                                }
+                            }
+                            state.connection.queued_outbound = outbound_queue.len();
+                        }
                     }
                 },
                 Some(event) = msg_rx.recv() => {

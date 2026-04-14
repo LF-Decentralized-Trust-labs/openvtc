@@ -41,6 +41,12 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
     };
     lines.push(status_line);
 
+    if connection.queued_outbound > 0 {
+        lines.push(
+            Line::from(format!("Queued outbound: {}", connection.queued_outbound)).fg(COLOR_ORANGE),
+        );
+    }
+
     if let Some(msg) = &state.status_message {
         lines.push(Line::from(""));
         lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
