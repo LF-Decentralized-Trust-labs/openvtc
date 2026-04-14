@@ -1,7 +1,11 @@
 use crate::{
     state_handler::{
         actions::Action,
-        main_page::{MainPageState, MainPanel, menu::MainMenu},
+        main_page::{
+            MainPageState, MainPanel,
+            content::{ActiveTaskView, TaskKind},
+            menu::MainMenu,
+        },
         state::{ConnectionState, MediatorStatus, State},
     },
     ui::{
@@ -81,12 +85,17 @@ impl Component for MainPage {
             return;
         }
 
+        // Content panel key handling (when content panel is focused)
+        let content_selected = self.props.main_page.content_panel.selected;
+        if content_selected && self.handle_content_key_event(key) {
+            return;
+        }
+
         match key.code {
             KeyCode::F(10) => {
                 let _ = self.action_tx.send(Action::Exit);
             }
             KeyCode::Up => {
-                // Handle Up key
                 if self.props.main_page.menu_panel.selected {
                     let _ = self.action_tx.send(Action::MainMenuSelected(
                         self.props.main_page.menu_panel.selected_menu.prev(),
@@ -94,7 +103,6 @@ impl Component for MainPage {
                 }
             }
             KeyCode::Down => {
-                // Handle Down key
                 if self.props.main_page.menu_panel.selected {
                     let _ = self.action_tx.send(Action::MainMenuSelected(
                         self.props.main_page.menu_panel.selected_menu.next(),
@@ -102,7 +110,6 @@ impl Component for MainPage {
                 }
             }
             KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
-                // Switch active panel
                 let next_panel = match self.props.main_page.menu_panel.selected {
                     true => MainPanel::ContentPanel,
                     false => MainPanel::MainMenu,
@@ -110,18 +117,144 @@ impl Component for MainPage {
                 let _ = self.action_tx.send(Action::MainPanelSwitch(next_panel));
             }
             KeyCode::Enter => {
-                // Handle Enter key
                 if self.props.main_page.menu_panel.selected_menu == MainMenu::Quit {
-                    // Stop the application with a termination action
                     let _ = self.action_tx.send(Action::Exit);
                 } else if self.props.main_page.menu_panel.selected {
-                    // Switch to the content panel
                     let _ = self
                         .action_tx
                         .send(Action::MainPanelSwitch(MainPanel::ContentPanel));
                 }
             }
             _ => {}
+        }
+    }
+}
+
+// ****************************************************************************
+// Content panel key event handling
+// ****************************************************************************
+impl MainPage {
+    /// Handle key events when the content panel is focused.
+    /// Returns true if the event was consumed.
+    fn handle_content_key_event(&mut self, key: KeyEvent) -> bool {
+        let menu = self.props.main_page.menu_panel.selected_menu.clone();
+
+        match menu {
+            MainMenu::Inbox => self.handle_inbox_key(key),
+            _ => false,
+        }
+    }
+
+    fn handle_inbox_key(&mut self, key: KeyEvent) -> bool {
+        let inbox = &self.props.main_page.content_panel.inbox;
+
+        // If viewing a task detail, handle detail keys
+        if let Some(active_task) = &inbox.active_task {
+            // Extract what we need before borrowing self mutably
+            let task_id = match active_task {
+                ActiveTaskView::RelationshipRequestInbound { task_id, .. }
+                | ActiveTaskView::VRCRequestInbound { task_id, .. }
+                | ActiveTaskView::VRCIssued { task_id, .. } => task_id.clone(),
+            };
+            let is_rel_inbound = matches!(
+                active_task,
+                ActiveTaskView::RelationshipRequestInbound { .. }
+            );
+            let is_vrc_issued = matches!(active_task, ActiveTaskView::VRCIssued { .. });
+
+            return match key.code {
+                KeyCode::Esc => {
+                    let _ = self.action_tx.send(Action::InboxBack);
+                    true
+                }
+                KeyCode::Char('a') => {
+                    if is_rel_inbound {
+                        let _ = self
+                            .action_tx
+                            .send(Action::InboxAcceptRelationship { task_id });
+                    } else if is_vrc_issued {
+                        let _ = self.action_tx.send(Action::InboxAcceptVrc { task_id });
+                    }
+                    true
+                }
+                KeyCode::Char('r') => {
+                    if is_rel_inbound {
+                        let _ = self.action_tx.send(Action::InboxRejectRelationship {
+                            task_id,
+                            reason: None,
+                        });
+                    }
+                    true
+                }
+                KeyCode::Char('d') => {
+                    let _ = self.action_tx.send(Action::InboxDismissTask { task_id });
+                    true
+                }
+                _ => false,
+            };
+        }
+
+        // Task list navigation
+        let selected = inbox.selected_index;
+        let task_count = inbox.tasks.len();
+
+        match key.code {
+            KeyCode::Up if selected > 0 => {
+                let _ = self.action_tx.send(Action::InboxSelectTask(selected - 1));
+                true
+            }
+            KeyCode::Down if selected + 1 < task_count => {
+                let _ = self.action_tx.send(Action::InboxSelectTask(selected + 1));
+                true
+            }
+            KeyCode::Enter if selected < task_count => {
+                // Build the detail view from the selected task
+                let task = &inbox.tasks[selected];
+                let view = match &task.kind {
+                    TaskKind::RelationshipRequestInbound {
+                        from_did,
+                        their_did,
+                        reason,
+                    } => Some(ActiveTaskView::RelationshipRequestInbound {
+                        task_id: task.id.clone(),
+                        from_did: from_did.clone(),
+                        their_did: their_did.clone(),
+                        reason: reason.clone(),
+                    }),
+                    TaskKind::VRCRequestInbound { reason } => {
+                        Some(ActiveTaskView::VRCRequestInbound {
+                            task_id: task.id.clone(),
+                            from_did: task.remote_did.clone(),
+                            reason: reason.clone(),
+                        })
+                    }
+                    TaskKind::VRCIssued => Some(ActiveTaskView::VRCIssued {
+                        task_id: task.id.clone(),
+                        issuer: task.remote_did.clone(),
+                    }),
+                    _ => None,
+                };
+                // For tasks with detail views, we use the high bit as a flag
+                // to tell the state handler to open the detail view
+                if view.is_some() {
+                    let _ = self
+                        .action_tx
+                        .send(Action::InboxSelectTask(selected | 0x8000_0000));
+                }
+                true
+            }
+            KeyCode::Char('d') if selected < task_count => {
+                let task_id = inbox.tasks[selected].id.clone();
+                let _ = self.action_tx.send(Action::InboxDismissTask { task_id });
+                true
+            }
+            KeyCode::Esc => {
+                let _ = self
+                    .action_tx
+                    .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                true
+            }
+            _ => false,
         }
     }
 }

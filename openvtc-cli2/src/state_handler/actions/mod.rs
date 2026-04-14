@@ -111,4 +111,33 @@ pub enum Action {
 
     /// Final setup step completed, sends the whole setup flow
     SetupCompleted(Box<SetupFlow>),
+
+    // ************************************************************************
+    // INBOX Actions
+    /// Select a task by index in the inbox list
+    InboxSelectTask(usize),
+
+    /// Accept an inbound relationship request
+    InboxAcceptRelationship {
+        task_id: String,
+    },
+
+    /// Reject an inbound relationship request
+    InboxRejectRelationship {
+        task_id: String,
+        reason: Option<String>,
+    },
+
+    /// Accept a received VRC (store it)
+    InboxAcceptVrc {
+        task_id: String,
+    },
+
+    /// Dismiss/remove a task from the inbox
+    InboxDismissTask {
+        task_id: String,
+    },
+
+    /// Return from task detail to the inbox list
+    InboxBack,
 }

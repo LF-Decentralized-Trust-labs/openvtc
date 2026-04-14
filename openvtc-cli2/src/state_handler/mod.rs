@@ -17,6 +17,7 @@ use tokio::sync::{
 use tracing::debug;
 
 pub mod actions;
+mod inbox_actions;
 pub mod main_page;
 mod message_dispatch;
 pub mod messaging;
@@ -334,6 +335,88 @@ impl StateHandler {
                                 state.main_page.content_panel.selected = false;
                             }
                         }
+                    },
+                    Action::InboxSelectTask(index) => {
+                        // High bit set = open detail view
+                        if index & 0x8000_0000 != 0 {
+                            let real_index = index & 0x7FFF_FFFF;
+                            state.main_page.content_panel.inbox.selected_index = real_index;
+                            // Build ActiveTaskView from the task at this index
+                            if let Some(task) = state.main_page.content_panel.inbox.tasks.get(real_index) {
+                                use main_page::content::{ActiveTaskView, TaskKind};
+                                let view = match &task.kind {
+                                    TaskKind::RelationshipRequestInbound { from_did, their_did, reason } => {
+                                        Some(ActiveTaskView::RelationshipRequestInbound {
+                                            task_id: task.id.clone(),
+                                            from_did: from_did.clone(),
+                                            their_did: their_did.clone(),
+                                            reason: reason.clone(),
+                                        })
+                                    }
+                                    TaskKind::VRCRequestInbound { reason } => {
+                                        Some(ActiveTaskView::VRCRequestInbound {
+                                            task_id: task.id.clone(),
+                                            from_did: task.remote_did.clone(),
+                                            reason: reason.clone(),
+                                        })
+                                    }
+                                    TaskKind::VRCIssued => {
+                                        Some(ActiveTaskView::VRCIssued {
+                                            task_id: task.id.clone(),
+                                            issuer: task.remote_did.clone(),
+                                        })
+                                    }
+                                    _ => None,
+                                };
+                                state.main_page.content_panel.inbox.active_task = view;
+                            }
+                        } else {
+                            state.main_page.content_panel.inbox.selected_index = index;
+                        }
+                    },
+                    Action::InboxBack => {
+                        state.main_page.content_panel.inbox.active_task = None;
+                    },
+                    Action::InboxAcceptRelationship { task_id } => {
+                        match inbox_actions::accept_relationship_request(&mut config, &tdk, &task_id).await {
+                            Ok(()) => {
+                                state.main_page.content_panel.inbox.active_task = None;
+                                state.main_page.content_panel.inbox.status_message = Some("Relationship request accepted".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    Action::InboxRejectRelationship { task_id, reason } => {
+                        match inbox_actions::reject_relationship_request(&mut config, &tdk, &task_id, reason.as_deref()).await {
+                            Ok(()) => {
+                                state.main_page.content_panel.inbox.active_task = None;
+                                state.main_page.content_panel.inbox.status_message = Some("Relationship request rejected".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    Action::InboxAcceptVrc { task_id } => {
+                        match inbox_actions::accept_vrc(&mut config, &task_id) {
+                            Ok(()) => {
+                                state.main_page.content_panel.inbox.active_task = None;
+                                state.main_page.content_panel.inbox.status_message = Some("VRC accepted and stored".to_string());
+                                state.main_page.sync_from_config(&config);
+                            }
+                            Err(e) => {
+                                state.main_page.content_panel.inbox.status_message = Some(format!("Error: {e}"));
+                            }
+                        }
+                    },
+                    Action::InboxDismissTask { task_id } => {
+                        let _ = inbox_actions::dismiss_task(&mut config, &task_id);
+                        state.main_page.content_panel.inbox.active_task = None;
+                        state.main_page.sync_from_config(&config);
                     },
                     _ => {}
                 },
