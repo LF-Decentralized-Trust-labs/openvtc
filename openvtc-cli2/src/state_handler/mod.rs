@@ -370,6 +370,9 @@ impl StateHandler {
         }
         let _ = self.state_tx.send(state.clone());
 
+        // Track when a trust-ping was sent to measure round-trip latency
+        let mut ping_sent_at: Option<std::time::Instant> = None;
+
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -470,6 +473,7 @@ impl StateHandler {
                         },
                         RelationshipAction::Ping { remote_p_did } => {
                             handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
+                            ping_sent_at = Some(std::time::Instant::now());
                         },
                         RelationshipAction::Remove { remote_p_did } => {
                             handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
@@ -705,10 +709,22 @@ impl StateHandler {
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
                             let sender = from.as_deref().unwrap_or("unknown");
-                            state.main_page.log(format!(
-                                "Trust-pong received from {} ✓",
-                                truncate_did(sender)
-                            ));
+                            let latency = ping_sent_at
+                                .take()
+                                .map(|t| t.elapsed().as_millis());
+                            if let Some(ms) = latency {
+                                state.main_page.log(format!(
+                                    "Trust-pong received from {} ✓ ({}ms)",
+                                    truncate_did(sender),
+                                    ms
+                                ));
+                                state.connection.last_ping_latency_ms = Some(ms);
+                            } else {
+                                state.main_page.log(format!(
+                                    "Trust-pong received from {} ✓",
+                                    truncate_did(sender)
+                                ));
+                            }
                         }
                     }
                 },
