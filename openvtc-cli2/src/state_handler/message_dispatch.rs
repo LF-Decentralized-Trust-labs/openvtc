@@ -123,8 +123,8 @@ pub async fn process_inbound_message(
             let task_id = require_thid(message)?;
             let body: RelationshipAcceptBody = serde_json::from_value(message.body.clone())?;
 
-            // Update relationship state and remote DID
-            if let Some(relationship) = config.private.relationships.get(&from_did) {
+            // Update relationship state and remote DID, get our_did for sending
+            let our_did = if let Some(relationship) = config.private.relationships.get(&from_did) {
                 let mut lock = relationship
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
@@ -132,24 +132,18 @@ pub async fn process_inbound_message(
                 if lock.remote_did.as_str() != body.did {
                     lock.remote_did = Arc::new(body.did.clone());
                 }
+                lock.our_did.to_string()
             } else {
                 warn!(from = %from_did, "no relationship found for accept message");
                 return Ok(false);
-            }
+            };
 
-            // Send finalize message
-            let finalize_msg =
-                create_finalize_message(&config.public.persona_did, &from_did, &task_id)?;
+            // Send finalize message using our relationship DID (R-DID if available)
+            let finalize_msg = create_finalize_message(&our_did, &from_did, &task_id)?;
 
-            super::didcomm::send_message(
-                service,
-                config,
-                &finalize_msg,
-                &config.public.persona_did,
-                &from_did,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("failed to send finalize: {e}"))?;
+            super::didcomm::send_message(service, config, &finalize_msg, &our_did, &from_did)
+                .await
+                .map_err(|e| anyhow::anyhow!("failed to send finalize: {e}"))?;
 
             config.private.tasks.remove(&task_id);
             config.public.logs.insert(

@@ -120,9 +120,9 @@ pub async fn accept_relationship_request(
             .await?;
     }
 
-    // Build and send acceptance message
-    let msg = build_accept_message(&config.public.persona_did, &from_did, &our_did, &task_id)?;
-    super::didcomm::send_message(service, config, &msg, &config.public.persona_did, &from_did)
+    // Build and send acceptance message using the relationship DID (R-DID if generated)
+    let msg = build_accept_message(&our_did, &from_did, &our_did, &task_id)?;
+    super::didcomm::send_message(service, config, &msg, &our_did, &from_did)
         .await
         .map_err(|e| anyhow::anyhow!("failed to send acceptance: {e}"))?;
 

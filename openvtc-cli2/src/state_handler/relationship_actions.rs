@@ -13,7 +13,7 @@ use affinidi_tdk::{
     dids::{DID, PeerKeyRole},
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use chrono::Utc;
 use ed25519_dalek_bip32::DerivationPath;
 use openvtc::{
@@ -169,11 +169,10 @@ pub async fn send_relationship_request(
 /// Send a trust-ping to a relationship.
 pub async fn ping_relationship(
     config: &mut Config,
-    tdk: &TDK,
+    _tdk: &TDK,
     service: &DIDCommService,
     remote_p_did: &str,
 ) -> Result<()> {
-    let atm = tdk.atm.as_ref().context("ATM not initialized")?;
     let remote_key = Arc::new(remote_p_did.to_string());
 
     let relationship = config
@@ -189,11 +188,26 @@ pub async fn ping_relationship(
         (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
     };
 
-    let ping_msg =
-        atm.trust_ping()
-            .generate_ping_message(Some(our_did.as_str()), &remote_did, true)?;
+    // Build ping message using the relationship DIDs (R-DIDs if available)
+    let ping_msg = {
+        use std::time::SystemTime;
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)?
+            .as_secs();
+        affinidi_tdk::didcomm::Message::build(
+            Uuid::new_v4().to_string(),
+            "https://didcomm.org/trust-ping/2.0/ping".to_string(),
+            serde_json::json!({"response_requested": true}),
+        )
+        .from(our_did.to_string())
+        .to(remote_did.to_string())
+        .created_time(now)
+        .expires_time(60 * 5)
+        .finalize()
+    };
     let msg_id = ping_msg.id.clone();
 
+    // Send via the correct listener (R-DID listener if our_did != persona_did)
     super::didcomm::send_message(service, config, &ping_msg, &our_did, &remote_did)
         .await
         .map_err(|e| anyhow::anyhow!("failed to send trust-ping: {e}"))?;
