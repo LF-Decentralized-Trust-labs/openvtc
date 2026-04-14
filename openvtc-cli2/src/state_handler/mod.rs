@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{
     Interrupted, Terminator,
     state_handler::{
@@ -19,11 +21,11 @@ use tracing::debug;
 
 /// Truncate a DID string for display in activity log messages.
 #[must_use]
-fn truncate_did(did: &str) -> String {
+fn truncate_did(did: &str) -> Cow<'_, str> {
     if did.len() > 30 {
-        format!("{}...", &did[..27])
+        Cow::Owned(format!("{}...", &did[..27]))
     } else {
-        did.to_string()
+        Cow::Borrowed(did)
     }
 }
 
