@@ -437,7 +437,7 @@ impl StateHandler {
                             state.main_page.content_panel.inbox.active_task = None;
                         },
                         InboxAction::AcceptRelationship { task_id, generate_r_did } => {
-                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, generate_r_did).await;
+                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.state_tx, &self.profile, &task_id, generate_r_did).await;
                         },
                         InboxAction::RejectRelationship { task_id, reason } => {
                             handle_inbox_reject_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
@@ -956,15 +956,31 @@ fn inbox_error(state: &mut State, context: &str, err: &anyhow::Error) {
     state.main_page.log(format!("{context}: {err}"));
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_inbox_accept_relationship(
     config: &mut Box<Config>,
     tdk: &TDK,
     service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
+    state_tx: &tokio::sync::watch::Sender<State>,
     profile: &str,
     task_id: &str,
     generate_r_did: bool,
 ) {
+    // Show immediate feedback
+    if generate_r_did {
+        state.main_page.content_panel.inbox.status_message =
+            Some("Accepting with R-DID — creating keys...".to_string());
+        state
+            .main_page
+            .log("Accepting relationship request (creating R-DID)...");
+    } else {
+        state.main_page.content_panel.inbox.status_message =
+            Some("Accepting relationship request...".to_string());
+        state.main_page.log("Accepting relationship request...");
+    }
+    let _ = state_tx.send(state.clone());
+
     match inbox_actions::accept_relationship_request(config, tdk, service, task_id, generate_r_did)
         .await
     {
