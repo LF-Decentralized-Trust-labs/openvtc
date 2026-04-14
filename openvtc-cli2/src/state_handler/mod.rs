@@ -387,6 +387,9 @@ impl StateHandler {
                             Ok(()) => {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message = Some("Relationship request accepted".to_string());
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log("Accepted relationship request");
                             }
@@ -401,6 +404,9 @@ impl StateHandler {
                             Ok(()) => {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message = Some("Relationship request rejected".to_string());
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log("Rejected relationship request");
                             }
@@ -415,6 +421,9 @@ impl StateHandler {
                             Ok(()) => {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message = Some("VRC accepted and stored".to_string());
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log("VRC accepted and stored");
                             }
@@ -430,6 +439,9 @@ impl StateHandler {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message =
                                     Some("VRC issued and sent".to_string());
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log("VRC issued and sent");
                             }
@@ -446,6 +458,9 @@ impl StateHandler {
                                 state.main_page.content_panel.inbox.active_task = None;
                                 state.main_page.content_panel.inbox.status_message =
                                     Some("VRC request rejected".to_string());
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log("Rejected VRC request");
                             }
@@ -459,12 +474,18 @@ impl StateHandler {
                     Action::InboxDismissTask { task_id } => {
                         let _ = inbox_actions::dismiss_task(&mut config, &task_id);
                         state.main_page.content_panel.inbox.active_task = None;
+                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                            state.main_page.log(format!("Failed to save config: {e}"));
+                        }
                         state.main_page.sync_from_config(&config);
                         state.main_page.log("Task dismissed");
                     },
                     Action::InboxClearAll => {
                         let _ = inbox_actions::clear_all_tasks(&mut config);
                         state.main_page.content_panel.inbox.active_task = None;
+                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                            state.main_page.log(format!("Failed to save config: {e}"));
+                        }
                         state.main_page.sync_from_config(&config);
                         state.main_page.log("All inbox tasks cleared");
                     },
@@ -538,6 +559,9 @@ impl StateHandler {
                                     RelationshipsMode::List;
                                 state.main_page.content_panel.relationships.status_message =
                                     Some(format!("Request sent to {}", did));
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log(format!("Relationship request sent to {}", did));
                             }
@@ -562,6 +586,9 @@ impl StateHandler {
                                     RelationshipsMode::List;
                                 state.main_page.content_panel.relationships.status_message =
                                     Some("Ping sent".to_string());
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log("Trust ping sent");
                             }
@@ -579,6 +606,9 @@ impl StateHandler {
                             RelationshipsMode::List;
                         state.main_page.content_panel.relationships.status_message =
                             Some("Relationship removed".to_string());
+                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                            state.main_page.log(format!("Failed to save config: {e}"));
+                        }
                         state.main_page.sync_from_config(&config);
                         state.main_page.log("Relationship removed");
                     },
@@ -665,6 +695,9 @@ impl StateHandler {
                                     CredentialsMode::List;
                                 state.main_page.content_panel.credentials.status_message =
                                     Some(format!("VRC request sent to {}", relationship_p_did));
+                                if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                    state.main_page.log(format!("Failed to save config: {e}"));
+                                }
                                 state.main_page.sync_from_config(&config);
                                 state.main_page.log(format!("VRC request sent to {}", relationship_p_did));
                             }
@@ -682,6 +715,9 @@ impl StateHandler {
                         state.main_page.content_panel.credentials.selected_index = 0;
                         state.main_page.content_panel.credentials.status_message =
                             Some("VRC removed".to_string());
+                        if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                            state.main_page.log(format!("Failed to save config: {e}"));
+                        }
                         state.main_page.sync_from_config(&config);
                         state.main_page.log("VRC removed");
                     },
@@ -1064,6 +1100,9 @@ impl StateHandler {
                             .await
                             {
                                 Ok(true) => {
+                                    if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                        state.main_page.log(format!("Failed to save config: {e}"));
+                                    }
                                     state.main_page.sync_from_config(&config);
                                     state.main_page.log("Inbound message processed");
                                 }
