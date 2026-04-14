@@ -256,6 +256,7 @@ impl MainPage {
             MainMenu::Relationships => self.handle_relationships_key(key),
             MainMenu::Credentials => self.handle_credentials_key(key),
             MainMenu::Settings => self.handle_settings_key(key),
+            MainMenu::Help => self.handle_help_key(key),
             _ => false,
         }
     }
@@ -1102,6 +1103,67 @@ impl MainPage {
             }
         }
     }
+    fn handle_help_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('1') => {
+                // Copy persona DID to clipboard
+                let did = self
+                    .props
+                    .main_page
+                    .content_panel
+                    .settings
+                    .persona_did
+                    .clone();
+                copy_to_clipboard(&did, "Persona DID", &self.action_tx);
+                true
+            }
+            KeyCode::Char('2') => {
+                // Copy mediator DID to clipboard
+                let did = self
+                    .props
+                    .main_page
+                    .content_panel
+                    .settings
+                    .mediator_did
+                    .clone();
+                copy_to_clipboard(&did, "Mediator DID", &self.action_tx);
+                true
+            }
+            KeyCode::Esc => {
+                let _ = self
+                    .action_tx
+                    .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Copy text to the system clipboard and log the result.
+fn copy_to_clipboard(
+    text: &str,
+    label: &str,
+    action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
+) {
+    match arboard::Clipboard::new() {
+        Ok(mut clipboard) => match clipboard.set_text(text) {
+            Ok(()) => {
+                // Log via a no-op action that the state handler will pick up as a state update
+                // For now, we can't easily log from here since we don't have state access.
+                // The user sees the hint change or can just paste to verify.
+                tracing::info!(label, "copied to clipboard");
+            }
+            Err(e) => {
+                tracing::warn!(label, error = %e, "failed to copy to clipboard");
+            }
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "clipboard not available");
+        }
+    }
+    // Suppress unused warning — action_tx could be used to send a log action in the future
+    let _ = action_tx;
 }
 
 // ****************************************************************************

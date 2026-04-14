@@ -105,16 +105,20 @@ fn render_status_help(
         Line::from(""),
     ];
 
-    // Persona DID (full)
+    let hint_style = Style::new().fg(COLOR_DARK_GRAY);
+
+    // Persona DID (full) with copy hotkey
     lines.push(Line::from(vec![
         Span::styled("  Persona DID:  ", label_style),
         Span::styled(settings.persona_did.clone(), value_style),
+        Span::styled("  [1] copy", hint_style),
     ]));
 
-    // Mediator DID (full)
+    // Mediator DID (full) with copy hotkey
     lines.push(Line::from(vec![
         Span::styled("  Mediator DID: ", label_style),
         Span::styled(settings.mediator_did.clone(), value_style),
+        Span::styled("  [2] copy", hint_style),
     ]));
 
     // Protection type
