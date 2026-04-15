@@ -263,7 +263,7 @@ impl TryFrom<&Message> for MessageType {
 // ****************************************************************************
 
 /// Tags what a cryptographic key is used for within a DID Document.
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 pub enum KeyPurpose {
     /// Key used for signing assertions (assertion method).
     Signing,
