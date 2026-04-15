@@ -805,10 +805,15 @@ impl StateHandler {
                                 .unwrap_or(false);
 
                             if is_mediator || has_relationship {
-                                // Send pong to verified sender
+                                // Send pong to verified sender, setting `from` to our
+                                // listener's DID so the recipient can identify us.
+                                let our_listener_did = didcomm_service
+                                    .listener_did(&listener_id)
+                                    .await
+                                    .unwrap_or_else(|| config.public.persona_did.to_string());
                                 if let Some(ref from_did) = from
                                     && let Ok(pong_msg) =
-                                        build_trust_pong(from_did, &message_id)
+                                        build_trust_pong(&our_listener_did, from_did, &message_id)
                                     && let Err(e) = didcomm_service
                                         .send_message(&listener_id, pong_msg, from_did)
                                         .await
@@ -2059,6 +2064,7 @@ fn build_trust_ping(from: &str, to: &str) -> Result<affinidi_tdk::didcomm::Messa
 
 /// Build a trust-pong response message.
 fn build_trust_pong(
+    from: &str,
     to: &str,
     ping_id: &str,
 ) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
@@ -2072,6 +2078,7 @@ fn build_trust_pong(
         "https://didcomm.org/trust-ping/2.0/ping-response".to_string(),
         serde_json::Value::Null,
     )
+    .from(from.to_string())
     .to(to.to_string())
     .thid(ping_id.to_string())
     .created_time(now)
