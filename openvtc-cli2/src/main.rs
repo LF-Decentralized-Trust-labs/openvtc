@@ -43,6 +43,23 @@ fn redact_paths(msg: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Optional file-based debug logging.
+    // Set OPENVTC_DEBUG_LOG to a file path to enable, e.g.:
+    //   OPENVTC_DEBUG_LOG=/tmp/openvtc.log cargo run -p openvtc-cli2
+    // Log level defaults to "debug" but can be overridden with RUST_LOG.
+    if let Ok(log_path) = env::var("OPENVTC_DEBUG_LOG") {
+        let log_file = std::fs::File::create(&log_path)
+            .unwrap_or_else(|e| panic!("Cannot create log file {log_path}: {e}"));
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(log_file)
+            .with_ansi(false)
+            .init();
+        tracing::info!("Debug logging enabled → {log_path}");
+    }
+
     // Which configuration profile to use?
     let profile = if let Ok(env_profile) = env::var("OPENVTC_CONFIG_PROFILE") {
         // ENV Profile will override the CLI Argument
