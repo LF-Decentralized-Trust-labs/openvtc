@@ -54,7 +54,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
         tracing_subscriber::fmt()
             .with_env_filter(filter)
-            .with_writer(log_file)
+            .with_writer(std::sync::Mutex::new(log_file))
             .with_ansi(false)
             .init();
         tracing::info!("Debug logging enabled → {log_path}");
