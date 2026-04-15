@@ -429,6 +429,10 @@ pub async fn process_inbound_message(
             let vrc: dtg_credentials::DTGCredential = serde_json::from_value(message.body.clone())?;
             let task_id = Arc::new(message.thid.clone().unwrap_or_else(|| message.id.clone()));
 
+            // Remove the outbound VRC request task that this issued VRC responds to.
+            // The thid links the issued VRC back to the original request.
+            config.private.tasks.remove(&task_id);
+
             if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
             }
