@@ -120,9 +120,11 @@ pub async fn accept_relationship_request(
             .await?;
     }
 
-    // Build and send acceptance message using the relationship DID (R-DID if generated)
-    let msg = build_accept_message(&our_did, &from_did, &our_did, &task_id)?;
-    super::didcomm::send_message(service, config, &msg, &our_did, &from_did)
+    // Build and send acceptance message to the requester's R-DID (from request body).
+    // Send via the persona listener which is already connected — the newly created
+    // R-DID listener may not be fully connected to the mediator yet.
+    let msg = build_accept_message(&our_did, &their_did, &our_did, &task_id)?;
+    super::didcomm::send_message_via(service, &msg, "persona", &their_did)
         .await
         .map_err(|e| anyhow::anyhow!("failed to send acceptance: {e}"))?;
 
@@ -436,7 +438,7 @@ fn build_accept_message(from: &str, to: &str, r_did: &str, thid: &str) -> Result
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48)
+    .expires_time(now + 60 * 60 * 48)
     .finalize())
 }
 
@@ -457,6 +459,6 @@ fn build_reject_message(from: &str, to: &str, reason: Option<&str>, thid: &str) 
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48)
+    .expires_time(now + 60 * 60 * 48)
     .finalize())
 }

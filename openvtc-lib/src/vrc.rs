@@ -125,7 +125,7 @@ impl DtgCredentialMessage for DTGCredential {
         .from(from.to_string())
         .to(to.to_string())
         .created_time(now)
-        .expires_time(60 * 60 * 48); // 48 hours
+        .expires_time(now + 60 * 60 * 48); // 48 hours
 
         if let Some(thid_value) = thid {
             builder = builder.thid(thid_value.to_string());
@@ -175,7 +175,7 @@ impl VrcRequest {
         .from(from.to_string())
         .to(to.to_string())
         .created_time(now)
-        .expires_time(60 * 60 * 48) // 48 hours
+        .expires_time(now + 60 * 60 * 48) // 48 hours
         .finalize())
     }
 }
@@ -219,7 +219,7 @@ impl VRCRequestReject {
         .to(to.to_string())
         .thid(thid.to_string())
         .created_time(now)
-        .expires_time(60 * 60 * 48) // 48 hours
+        .expires_time(now + 60 * 60 * 48) // 48 hours
         .finalize())
     }
 }

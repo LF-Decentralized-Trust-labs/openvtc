@@ -479,7 +479,7 @@ pub async fn create_send_message_rejected(
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     crate::pack_and_send(
@@ -532,7 +532,7 @@ pub async fn create_send_message_accepted(
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     crate::pack_and_send(

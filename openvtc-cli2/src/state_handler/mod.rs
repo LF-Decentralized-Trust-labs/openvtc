@@ -500,7 +500,7 @@ impl StateHandler {
                             ping_sent_at = Some((std::time::Instant::now(), true));
                         },
                         RelationshipAction::Remove { remote_p_did } => {
-                            handle_relationship_remove(&mut config, &mut state, &self.profile, &remote_p_did);
+                            handle_relationship_remove(&mut config, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
                         },
                         RelationshipAction::StartEditAlias { index, current_alias } => {
                             state.main_page.content_panel.relationships.mode =
@@ -1255,14 +1255,15 @@ async fn handle_relationship_ping(
     }
 }
 
-fn handle_relationship_remove(
+async fn handle_relationship_remove(
     config: &mut Box<Config>,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     remote_p_did: &str,
 ) {
     use main_page::content::RelationshipsMode;
-    let _ = relationship_actions::remove_relationship(config, remote_p_did);
+    let _ = relationship_actions::remove_relationship(config, service, remote_p_did).await;
     state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
     state.main_page.content_panel.relationships.status_message =
         Some("Relationship removed".to_string());
@@ -1880,7 +1881,7 @@ fn build_trust_ping(from: &str, to: &str) -> Result<affinidi_tdk::didcomm::Messa
     .from(from.to_string())
     .to(to.to_string())
     .created_time(now)
-    .expires_time(60 * 5) // 5 minutes
+    .expires_time(now + 60 * 5) // 5 minutes
     .finalize();
 
     Ok(message)

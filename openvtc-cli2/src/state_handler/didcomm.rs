@@ -200,6 +200,8 @@ pub async fn build_listener_configs(
     }];
 
     // Add listeners for each relationship with a dedicated R-DID.
+    // Include pending relationships (RequestSent, RequestAccepted) so that
+    // messages arriving during an in-progress handshake are received after restart.
     // Extract data from the Mutex before any .await to avoid holding the guard.
     let r_did_entries: Vec<(String, String)> = config
         .private
@@ -208,8 +210,12 @@ pub async fn build_listener_configs(
         .iter()
         .filter_map(|(remote_p_did, rel_arc)| {
             let rel = rel_arc.lock().ok()?;
-            if rel.state == RelationshipState::Established
-                && *rel.our_did != *config.public.persona_did
+            if matches!(
+                rel.state,
+                RelationshipState::Established
+                    | RelationshipState::RequestSent
+                    | RelationshipState::RequestAccepted
+            ) && *rel.our_did != *config.public.persona_did
             {
                 Some((rel.our_did.to_string(), remote_p_did.to_string()))
             } else {
@@ -219,14 +225,13 @@ pub async fn build_listener_configs(
         .collect();
 
     for (our_did, remote_p_did) in &r_did_entries {
-        let short_did = truncate_did_id(our_did);
         let r_did_secrets = get_secrets_for_did(tdk, config, our_did).await;
         configs.push(ListenerConfig {
-            id: format!("rel-{short_did}"),
+            id: format!("rel-{}", short_did_id(our_did)),
             profile: make_profile(
                 our_did,
                 &config.public.mediator_did,
-                &format!("R-DID for {}", truncate_did_id(remote_p_did)),
+                &format!("R-DID for {}", truncate_did_display(remote_p_did)),
                 r_did_secrets,
             ),
             restart_policy: restart.clone(),
@@ -246,7 +251,7 @@ pub fn listener_id_for_did(our_did: &str, persona_did: &str) -> String {
     if our_did == persona_did {
         "persona".to_string()
     } else {
-        format!("rel-{}", truncate_did_id(our_did))
+        format!("rel-{}", short_did_id(our_did))
     }
 }
 
@@ -260,17 +265,31 @@ pub async fn send_message(
     to_did: &str,
 ) -> Result<(), DIDCommServiceError> {
     let listener_id = listener_id_for_did(from_did, &config.public.persona_did);
+    send_message_via(service, message, &listener_id, to_did).await
+}
+
+/// Send a DIDComm message through a specific listener, with retry on transient failures.
+///
+/// Use this when the transport listener should differ from the logical sender —
+/// for example, sending via the already-connected persona listener when a newly
+/// created R-DID listener may not be ready yet.
+pub async fn send_message_via(
+    service: &DIDCommService,
+    message: &Message,
+    listener_id: &str,
+    to_did: &str,
+) -> Result<(), DIDCommServiceError> {
     tracing::info!(
         listener = %listener_id,
         msg_type = %message.typ,
-        from = %from_did,
+        from = ?message.from,
         to = %to_did,
         thid = ?message.thid,
         "sending DIDComm message"
     );
     service
         .send_message_with_retry(
-            &listener_id,
+            listener_id,
             message.clone(),
             to_did,
             3,
@@ -356,9 +375,19 @@ pub async fn start_service(
     .await
 }
 
-/// Truncate a DID to a short identifier for listener IDs and display.
-fn truncate_did_id(did: &str) -> &str {
-    let end = did.len().min(24);
+/// Produce a short, collision-resistant identifier from a DID for listener IDs.
+///
+/// Uses a SHA-256 hash (first 16 hex chars) to avoid collisions that would occur
+/// with simple truncation — did:peer DIDs share a long common prefix.
+fn short_did_id(did: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(did.as_bytes());
+    hex::encode(&hash[..8])
+}
+
+/// Truncate a DID for human-readable display (not for unique identification).
+fn truncate_did_display(did: &str) -> &str {
+    let end = did.len().min(32);
     &did[..end]
 }
 
@@ -370,14 +399,13 @@ pub async fn relationship_listener_config(
     remote_p_did: &str,
     mediator_did: &str,
 ) -> ListenerConfig {
-    let short_did = truncate_did_id(our_did);
     let secrets = get_secrets_for_did(tdk, config, our_did).await;
     ListenerConfig {
-        id: format!("rel-{short_did}"),
+        id: format!("rel-{}", short_did_id(our_did)),
         profile: make_profile(
             our_did,
             mediator_did,
-            &format!("R-DID for {}", truncate_did_id(remote_p_did)),
+            &format!("R-DID for {}", truncate_did_display(remote_p_did)),
             secrets,
         ),
         restart_policy: RestartPolicy::Always {

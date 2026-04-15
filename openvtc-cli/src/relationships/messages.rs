@@ -180,7 +180,7 @@ fn create_message_request(
     .from(from.to_string())
     .to(to.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     Ok(message)

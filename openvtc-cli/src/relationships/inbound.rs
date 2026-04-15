@@ -389,7 +389,7 @@ fn create_message_finalize(from: &str, to: &str, task_id: &Arc<String>) -> Resul
     .to(to.to_string())
     .thid(task_id.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     Ok(message)

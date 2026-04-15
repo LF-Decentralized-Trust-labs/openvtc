@@ -202,7 +202,7 @@ pub async fn ping_relationship(
         .from(our_did.to_string())
         .to(remote_did.to_string())
         .created_time(now)
-        .expires_time(60 * 5)
+        .expires_time(now + 60 * 5)
         .finalize()
     };
     let msg_id = ping_msg.id.clone();
@@ -230,9 +230,30 @@ pub async fn ping_relationship(
     Ok(())
 }
 
-/// Remove a relationship and clean up associated VRCs.
-pub fn remove_relationship(config: &mut Config, remote_p_did: &str) -> Result<()> {
+/// Remove a relationship, clean up associated VRCs, and remove the R-DID listener.
+pub async fn remove_relationship(
+    config: &mut Config,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    remote_p_did: &str,
+) -> Result<()> {
     let key = Arc::new(remote_p_did.to_string());
+
+    // Clean up R-DID listener before removing the relationship data
+    if let Some(rel) = config.private.relationships.get(&key) {
+        if let Ok(lock) = rel.lock() {
+            if *lock.our_did != *config.public.persona_did {
+                let listener_id =
+                    super::didcomm::listener_id_for_did(&lock.our_did, &config.public.persona_did);
+                if let Err(e) = service.remove_listener(&listener_id).await {
+                    tracing::warn!(
+                        listener = %listener_id,
+                        error = %e,
+                        "failed to remove R-DID listener"
+                    );
+                }
+            }
+        }
+    }
 
     config.private.relationships.remove(
         &key,
@@ -522,7 +543,7 @@ fn create_request_message(
     .from(from.to_string())
     .to(to.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     Ok(message)

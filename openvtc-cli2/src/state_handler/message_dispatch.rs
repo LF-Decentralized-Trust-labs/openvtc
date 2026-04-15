@@ -99,7 +99,20 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            // Remove the relationship and task
+            // Clean up R-DID listener if present, then remove relationship and task
+            if let Some(rel) = config.private.relationships.find_by_task_id(&task_id) {
+                if let Ok(lock) = rel.lock() {
+                    if *lock.our_did != *config.public.persona_did {
+                        let lid = super::didcomm::listener_id_for_did(
+                            &lock.our_did,
+                            &config.public.persona_did,
+                        );
+                        if let Err(e) = service.remove_listener(&lid).await {
+                            warn!(listener = %lid, error = %e, "failed to remove R-DID listener during rejection cleanup");
+                        }
+                    }
+                }
+            }
             let _ = config.private.relationships.remove_by_task_id(
                 &task_id,
                 &mut config.private.vrcs_issued,
@@ -123,6 +136,11 @@ pub async fn process_inbound_message(
             let task_id = require_thid(message)?;
             let body: RelationshipAcceptBody = serde_json::from_value(message.body.clone())?;
 
+            if let Err(e) = validate_did(&body.did) {
+                warn!(from = %from_did, error = %e, "rejecting accept with invalid DID in body");
+                return Ok(false);
+            }
+
             // Look up relationship by task_id (thid) — the remote party may respond
             // from an R-DID different from their persona DID, so we can't match by from_did.
             let our_did = if let Some(relationship) =
@@ -131,6 +149,18 @@ pub async fn process_inbound_message(
                 let mut lock = relationship
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+
+                // Verify the accept comes from the party we sent the request to.
+                // The sender may use an R-DID, so check both persona and remote DIDs.
+                if *lock.remote_p_did != *from_did && *lock.remote_did != *from_did {
+                    warn!(
+                        from = %from_did,
+                        expected = %lock.remote_p_did,
+                        "accept from unexpected party — possible spoofing"
+                    );
+                    return Ok(false);
+                }
+
                 lock.state = RelationshipState::Established;
                 if lock.remote_did.as_str() != body.did {
                     lock.remote_did = Arc::new(body.did.clone());
@@ -151,20 +181,22 @@ pub async fn process_inbound_message(
                 return Ok(false);
             };
 
-            // Send finalize message using our relationship DID (R-DID if available)
+            // Send finalize message using our relationship DID (R-DID if available).
+            // If the send fails, still persist the Established state — the relationship
+            // is usable on our side and the remote party will eventually time out or retry.
             let finalize_msg = create_finalize_message(&our_did, &from_did, &task_id)?;
 
-            super::didcomm::send_message(service, config, &finalize_msg, &our_did, &from_did)
-                .await
-                .map_err(|e| anyhow::anyhow!("failed to send finalize: {e}"))?;
+            if let Err(e) =
+                super::didcomm::send_message(service, config, &finalize_msg, &our_did, &from_did)
+                    .await
+            {
+                warn!(to = %from_did, error = %e, "failed to send finalize — relationship established locally");
+            }
 
             config.private.tasks.remove(&task_id);
             config.public.logs.insert(
                 LogFamily::Relationship,
-                format!(
-                    "Relationship established with ({}) — finalize sent",
-                    from_did
-                ),
+                format!("Relationship established with ({})", from_did),
             );
             info!(from = %from_did, "relationship accepted + finalize sent (auto-processed)");
             Ok(true)
@@ -178,7 +210,7 @@ pub async fn process_inbound_message(
                 .private
                 .relationships
                 .find_by_task_id(&task_id)
-                .or_else(|| config.private.relationships.get(&from_did));
+                .or_else(|| config.private.relationships.find_by_remote_did(&from_did));
 
             if let Some(relationship) = found {
                 let mut lock = relationship
@@ -241,7 +273,14 @@ pub async fn process_inbound_message(
         // =====================================================================
         MessageType::RelationshipRequest => {
             let task_id = Arc::new(message.id.clone());
-            let body = serde_json::from_value(message.body.clone())?;
+            let body: openvtc::relationships::RelationshipRequestBody =
+                serde_json::from_value(message.body.clone())?;
+
+            if let Err(e) = validate_did(&body.did) {
+                warn!(from = %from_did, error = %e, "rejecting request with invalid DID in body");
+                return Ok(false);
+            }
+
             let to_did = Arc::new(
                 message
                     .to
@@ -267,6 +306,31 @@ pub async fn process_inbound_message(
 
             if config.private.relationships.relationships.len() >= MAX_RELATIONSHIPS {
                 warn!("relationship limit reached — rejecting request");
+                return Ok(false);
+            }
+
+            // Reject if we already have a relationship with this sender
+            if config.private.relationships.get(&from_did).is_some()
+                || config
+                    .private
+                    .relationships
+                    .find_by_remote_did(&from_did)
+                    .is_some()
+            {
+                warn!(from = %from_did, "relationship request from existing relationship — ignoring");
+                return Ok(false);
+            }
+
+            // Reject if a pending inbound request from this sender already exists
+            let has_pending = config.private.tasks.tasks.values().any(|t| {
+                t.lock()
+                    .map(|task| {
+                        matches!(&task.type_, TaskType::RelationshipRequestInbound { from, .. } if *from == from_did)
+                    })
+                    .unwrap_or(false)
+            });
+            if has_pending {
+                warn!(from = %from_did, "duplicate pending relationship request — ignoring");
                 return Ok(false);
             }
 
@@ -298,6 +362,17 @@ pub async fn process_inbound_message(
                 .ok_or_else(|| {
                     anyhow::anyhow!("VRC request from ({}) but no relationship found", from_did)
                 })?;
+
+            // Only accept VRC requests from established relationships
+            {
+                let lock = relationship
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+                if lock.state != RelationshipState::Established {
+                    warn!(from = %from_did, state = ?lock.state, "VRC request from non-established relationship");
+                    return Ok(false);
+                }
+            }
 
             // Prevent task ID collision/hijacking
             if config.private.tasks.get_by_id(&task_id).is_some() {
@@ -418,6 +493,14 @@ fn require_thid(message: &Message) -> Result<Arc<String>, anyhow::Error> {
         .ok_or_else(|| anyhow::anyhow!("message missing required 'thid' header"))
 }
 
+/// Basic validation that a string looks like a DID.
+fn validate_did(did: &str) -> Result<(), anyhow::Error> {
+    if !did.starts_with("did:") || did.len() < 8 {
+        anyhow::bail!("invalid DID format: '{}'", &did[..did.len().min(32)]);
+    }
+    Ok(())
+}
+
 /// Build a DIDComm finalize message for relationship establishment.
 fn create_finalize_message(
     from: &str,
@@ -439,7 +522,7 @@ fn create_finalize_message(
     .to(to.to_string())
     .thid(task_id.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48)
+    .expires_time(now + 60 * 60 * 48)
     .finalize();
 
     Ok(message)
