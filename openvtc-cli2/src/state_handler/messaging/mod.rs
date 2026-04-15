@@ -15,14 +15,24 @@ use super::state::MediatorStatus;
 
 /// Events sent from the messaging loop to the state handler.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum MessagingEvent {
-    TrustPingReceived { from: String },
-    TrustPongReceived { from: String, latency_ms: Option<u128> },
+    TrustPingReceived {
+        from: String,
+    },
+    TrustPongReceived {
+        from: String,
+        latency_ms: Option<u128>,
+    },
     ConnectionStatus(ConnectionStatus),
-    InboundMessage { msg_type: String, from: String },
+    InboundMessage {
+        msg_type: String,
+        from: String,
+    },
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ConnectionStatus {
     Connected,
     Disconnected,
@@ -134,10 +144,7 @@ pub async fn init_and_validate(
     )
     .await
     {
-        Ok(Ok(latency_ms)) => (
-            MediatorStatus::Connected { latency_ms },
-            Some(latency_ms),
-        ),
+        Ok(Ok(latency_ms)) => (MediatorStatus::Connected { latency_ms }, Some(latency_ms)),
         Ok(Err(e)) => (MediatorStatus::Failed(format!("{e}")), None),
         Err(_) => (
             MediatorStatus::Failed("trust-ping timed out".to_string()),
@@ -216,7 +223,7 @@ async fn dispatch_message(
     event_tx: &mpsc::UnboundedSender<MessagingEvent>,
     msg: &Message,
 ) {
-    let msg_type = msg.type_.as_str();
+    let msg_type = msg.typ.as_str();
     let from = msg.from.as_deref().unwrap_or("unknown").to_string();
 
     match msg_type {
@@ -236,7 +243,7 @@ async fn dispatch_message(
                 latency_ms: None,
             });
         }
-        t if t.ends_with("messagepickup/3.0/status") => {
+        t if t == openvtc::protocol_urls::MESSAGEPICKUP_STATUS => {
             // Silently ignore message pickup status
         }
         _ => {
@@ -268,13 +275,7 @@ async fn handle_trust_ping(
     let pong = TrustPing::default().generate_pong_message(ping, Some(persona_did))?;
 
     let (packed, _) = atm
-        .pack_encrypted(
-            &pong,
-            sender_did,
-            Some(persona_did),
-            Some(persona_did),
-            None,
-        )
+        .pack_encrypted(&pong, sender_did, Some(persona_did), None)
         .await?;
 
     atm.send_message(profile, &packed, &pong.id, false, false)

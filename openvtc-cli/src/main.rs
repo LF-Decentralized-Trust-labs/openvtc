@@ -4,7 +4,7 @@
 
 use crate::{
     cli::cli,
-    config::ConfigExtension,
+    config::{ConfigExtension, save_config},
     contacts::ContactsExtension,
     interactions::vrc::vrcs_entry,
     log::LogsExtension,
@@ -22,12 +22,11 @@ use openvtc::config::TokenInteractions;
 use openvtc::{
     colors::{CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED},
     config::{Config, ConfigProtectionType, UnlockCode},
+    process_lock::{check_duplicate_instance, remove_lock_file},
 };
 use secrecy::SecretString;
-use sha2::Digest;
 use status::print_status;
-use std::{env, fs, path::Path, process, str::FromStr};
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+use std::env;
 use tracing_subscriber::EnvFilter;
 
 mod cli;
@@ -83,17 +82,17 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
 
     let public_config = Config::load_step1(profile)?;
 
-    let (user_pin, unlock_passphrase) = match &public_config.protection {
+    let (_user_pin, unlock_passphrase) = match &public_config.protection {
         ConfigProtectionType::Token { .. } => {
             let user_pin = Password::with_theme(&ColorfulTheme::default())
                 .with_prompt("Please enter Token User PIN <blank = default>")
                 .allow_empty_password(true)
                 .interact()
-                .unwrap();
+                .context("Failed to read Token User PIN")?;
             let user_pin = if user_pin.is_empty() {
-                SecretString::new("123456".to_string())
+                SecretString::new("123456".to_string().into())
             } else {
-                SecretString::new(user_pin)
+                SecretString::new(user_pin.into())
             };
 
             (user_pin, None)
@@ -107,14 +106,14 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap()
+                        .context("Failed to read unlock passphrase")?
                 };
             (
-                SecretString::new(String::new()),
-                Some(UnlockCode::from_string(&passphrase)),
+                SecretString::new(String::new().into()),
+                Some(UnlockCode::from_string(&passphrase)?),
             )
         }
-        ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
+        ConfigProtectionType::Plaintext => (SecretString::new(String::new().into()), None),
     };
 
     let config = match Config::load_step2(
@@ -123,7 +122,7 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
         public_config,
         unlock_passphrase.as_ref(),
         #[cfg(feature = "openpgp-card")]
-        &user_pin,
+        &_user_pin,
         #[cfg(feature = "openpgp-card")]
         &a,
         None,
@@ -135,121 +134,13 @@ async fn load(profile: &str) -> Result<(TDK, Config)> {
             println!(
                 "{}{}",
                 style("ERROR: ").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
+                style(&e).color256(CLI_ORANGE)
             );
-            panic!("Exiting...");
+            bail!("Failed to load configuration: {e}");
         }
     };
 
     Ok((tdk, config))
-}
-
-/// Checks if another instance of openvtc is running for the same profile
-/// will return an error if a duplicate instance is found
-/// otherwise, creates a lock file to prvent other instances from running
-/// Returns the path to the lock file created
-fn check_duplicate_instance(profile: &str) -> Result<String> {
-    let lock_file = get_lock_file(profile)?;
-
-    // Check if existing lockfile exists
-    // If so, then check if the PID is still running
-    match fs::exists(&lock_file) {
-        Ok(exists) => {
-            if exists {
-                // Check the PID
-                let pid = fs::read_to_string(&lock_file)
-                    .context("Couldn't read from lockfile")?
-                    .trim_end()
-                    .to_string();
-
-                // We want to only refresh processes.
-                let system = System::new_with_specifics(
-                    RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
-                );
-                if system.process(Pid::from_str(&pid)?).is_some() {
-                    println!(
-                        "{}{}{} {}",
-                        style("ERROR: Another instance of openvtc is running for this profile (")
-                            .color256(CLI_RED),
-                        style(profile).color256(CLI_PURPLE),
-                        style(")!").color256(CLI_RED),
-                        style(
-                            "Only a single instance of openvtc can run for a given profile at a time!"
-                        )
-                        .color256(CLI_ORANGE)
-                    );
-                    bail!("Duplicate openvtc instance running");
-                }
-            }
-        }
-        Err(e) => {
-            println!(
-                "{} {}",
-                style("ERROR: Couldn't check for lock file! Reason:").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
-            );
-            bail!("Lock File Error");
-        }
-    }
-
-    // Create the lock file
-    create_lock_file(&lock_file).context("create_lock_file() failed")?;
-    Ok(lock_file)
-}
-
-/// Returns the path to the lock file for the given profile
-fn get_lock_file(profile: &str) -> Result<String> {
-    let path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
-        if config_path.ends_with('/') {
-            config_path
-        } else {
-            [&config_path, "/"].concat()
-        }
-    } else if let Some(home) = dirs::home_dir()
-        && let Some(home_str) = home.to_str()
-    {
-        [home_str, "/.config/openvtc/"].concat()
-    } else {
-        bail!("Couldn't determine Home directory");
-    };
-
-    if profile == "default" {
-        Ok([&path, "config.lock"].concat())
-    } else {
-        Ok([&path, "config-", profile, ".lock"].concat())
-    }
-}
-
-/// Creates the lock file containg the running process PID
-fn create_lock_file(lock_file: &str) -> Result<()> {
-    let dir_path = Path::new(&lock_file);
-
-    // Check that directory structure exists
-    if let Some(parent_path) = dir_path.parent()
-        && !parent_path.exists()
-    {
-        // Create parent directories
-        fs::create_dir_all(parent_path)?;
-    }
-
-    match fs::write(lock_file, process::id().to_string()) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            println!(
-                "{}{}{}{}",
-                style("ERROR: Couldn't create lock file: ").color256(CLI_RED),
-                style(lock_file).color256(CLI_PURPLE),
-                style(" Reason: ").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
-            );
-            bail!("Couldn't create lock file");
-        }
-    }
-}
-
-/// Removes the lock file for the given profile
-fn remove_lock_file(lock_file: &str) {
-    let _ = fs::remove_file(lock_file);
 }
 
 // ****************************************************************************
@@ -328,7 +219,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
             if let Some(args) = args.subcommand_matches("import") {
                 let passphrase = args.get_one::<String>("passphrase");
                 return Config::import(
-                    passphrase.map(|s| SecretString::new(s.to_string())),
+                    passphrase.map(|s| SecretString::new(s.to_string().into())),
                     args.get_one::<String>("file")
                         .expect("No file specified!")
                         .as_ref(),
@@ -360,20 +251,22 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                         term,
                         &config.get_persona_keys(&tdk).await?,
                         user_id.map(|s| s.as_str()),
-                        passphrase.map(|s| SecretString::new(s.to_string())),
+                        passphrase.map(|s| SecretString::new(s.to_string().into())),
                         false, // Not running in wizard mode
                     );
                 }
                 Some(("settings", sub_args)) => {
                     // Export settings
                     let passphrase = sub_args.get_one::<String>("passphrase");
-                    config.export(
-                        passphrase.map(|s| SecretString::new(s.to_string())),
+                    if let Err(e) = config.export(
+                        passphrase.map(|s| SecretString::new(s.to_string().into())),
                         sub_args
                             .get_one::<String>("file")
                             .expect("Code error - file should has a default!")
                             .as_str(),
-                    );
+                    ) {
+                        eprintln!("ERROR: Export failed: {e}");
+                    }
                 }
                 _ => {
                     println!(
@@ -403,13 +296,7 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
                 .await?
             {
                 // Need to save config
-                config.save(
-                    profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| {
-                        eprintln!("Touch confirmation needed for decryption");
-                    },
-                )?;
+                save_config(&mut config, profile)?;
             }
         }
         Some(("relationships", args)) => {
@@ -440,14 +327,18 @@ async fn openvtc(term: &Term, profile: &str) -> Result<()> {
     Ok(())
 }
 
-/// Prompts user for their unlock code when not using a hardware token
-/// returns the SHA256 hash of whatever they entered
+/// Prompts user for their unlock code when not using a hardware token.
+/// Derives a 32-byte key via Argon2id (same KDF as `UnlockCode::from_string`).
 pub fn get_unlock_code() -> Result<[u8; 32]> {
     let unlock_code = Password::with_theme(&ColorfulTheme::default())
         .with_prompt("Please enter your openvtc unlock code")
-        .allow_empty_password(true)
+        // An empty unlock code would produce a deterministic key, providing no security.
+        .allow_empty_password(false)
         .interact()
-        .unwrap_or_default();
+        .map_err(|e| anyhow::anyhow!("Failed to read unlock code: {e}"))?;
 
-    Ok(sha2::Sha256::digest(unlock_code.as_bytes()).into())
+    Ok(openvtc::config::derive_passphrase_key(
+        unlock_code.as_bytes(),
+        b"openvtc-unlock-code-v1",
+    )?)
 }

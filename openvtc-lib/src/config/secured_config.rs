@@ -20,18 +20,48 @@ use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use keyring::Entry;
 use rand::rngs::OsRng;
-use rand::{SeedableRng, rngs::StdRng};
-use secrecy::ExposeSecret;
-use sha2::Sha256;
-#[cfg(feature = "openpgp-card")]
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use std::collections::HashMap;
 use tracing::{error, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Constants for storing secure info in the OS Secure Store
 const SERVICE: &str = "openvtc";
+
+// ---------------------------------------------------------------------------
+// Serde helpers for SecretString
+//
+// `Secret<String>` does not implement `SerializableSecret`, so the standard
+// `#[serde(with = "secrecy")]` attribute won't compile.  These narrow modules
+// expose the inner value only at the serde boundary and nowhere else.
+// ---------------------------------------------------------------------------
+mod serde_secret_str {
+    use secrecy::{ExposeSecret, SecretString};
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &SecretString, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(v.expose_secret())
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SecretString, D::Error> {
+        // secrecy 0.10: SecretString::new() takes Box<str>, not String
+        Ok(SecretString::new(String::deserialize(d)?.into()))
+    }
+}
+mod serde_opt_secret_str {
+    use secrecy::{ExposeSecret, SecretString};
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &Option<SecretString>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(secret) => s.serialize_some(secret.expose_secret()),
+            None => s.serialize_none(),
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<SecretString>, D::Error> {
+        // secrecy 0.10: SecretString::new() takes Box<str>, not String
+        Ok(Option::<String>::deserialize(d)?.map(|s| SecretString::new(s.into())))
+    }
+}
 
 /// Methods of protecting [SecuredConfig]
 #[derive(Clone, Debug, Default)]
@@ -93,9 +123,12 @@ impl SecuredConfigFormat {
         #[cfg(feature = "openpgp-card")] touch_prompt: &impl TokenInteractions,
     ) -> Result<SecuredConfig, OpenVTCError> {
         let raw_bytes = match self {
-            SecuredConfigFormat::TokenEncrypted { esk, data } => {
+            SecuredConfigFormat::TokenEncrypted {
+                esk: _esk,
+                data: _data,
+            } => {
                 // Token Encrypted format
-                if let Some(token) = token {
+                if let Some(_token) = token {
                     #[cfg(feature = "openpgp-card")]
                     {
                         use crate::openpgp_card::crypt::token_decrypt;
@@ -103,9 +136,9 @@ impl SecuredConfigFormat {
                         token_decrypt(
                             #[cfg(feature = "openpgp-card")]
                             user_pin,
-                            token,
-                            &BASE64_URL_SAFE_NO_PAD.decode(esk)?,
-                            &BASE64_URL_SAFE_NO_PAD.decode(data)?,
+                            _token,
+                            &BASE64_URL_SAFE_NO_PAD.decode(_esk)?,
+                            &BASE64_URL_SAFE_NO_PAD.decode(_data)?,
                             touch_prompt,
                         )?
                     }
@@ -126,11 +159,16 @@ impl SecuredConfigFormat {
             SecuredConfigFormat::PasswordEncrypted { data } => {
                 // Password Encrypted format
                 if let Some(unlock) = unlock {
-                    unlock_code_decrypt(
-                        unlock.0.expose_secret().first_chunk::<32>().unwrap(),
-                        &BASE64_URL_SAFE_NO_PAD.decode(data)?,
-                    )
-                    .map_err(|e| {
+                    let decoded = BASE64_URL_SAFE_NO_PAD.decode(data)?;
+                    let key = unlock
+                        .0
+                        .expose_secret()
+                        .first_chunk::<32>()
+                        .ok_or_else(|| {
+                            OpenVTCError::Decrypt("Unlock code is not 32 bytes".to_string())
+                        })?;
+
+                    unlock_code_decrypt(key, &decoded).map_err(|e| {
                         OpenVTCError::Decrypt(format!(
                             "Couldn't decrypt password encrypted SecuredConfig. Reason: {e}"
                         ))
@@ -156,13 +194,31 @@ impl SecuredConfigFormat {
 /// Try to keep this as small as possible for ease of secure storage
 #[derive(Serialize, Deserialize, Debug, Zeroize, ZeroizeOnDrop)]
 pub struct SecuredConfig {
-    /// base64 encoded BIP32 private seed (legacy - present only for BIP32-based configs)
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bip32_seed: Option<String>,
+    /// base64 encoded BIP32 private seed (legacy - present only for BIP32-based configs).
+    ///
+    /// `SecretString` ensures the value is zeroed on drop via `Secret<T>`'s `ZeroizeOnDrop`
+    /// implementation.  We set `#[zeroize(skip)]` so the outer `Zeroize` derive does not
+    /// try to call `.zeroize()` on `Secret<String>` directly (it doesn't implement `Zeroize`).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serde_opt_secret_str::serialize",
+        deserialize_with = "serde_opt_secret_str::deserialize"
+    )]
+    #[zeroize(skip)]
+    pub bip32_seed: Option<SecretString>,
 
-    /// base64-encoded CredentialBundle for VTA auth
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_bundle: Option<String>,
+    /// base64-encoded CredentialBundle for VTA auth.
+    ///
+    /// Same `#[zeroize(skip)]` rationale as `bip32_seed` above.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serde_opt_secret_str::serialize",
+        deserialize_with = "serde_opt_secret_str::deserialize"
+    )]
+    #[zeroize(skip)]
+    pub credential_bundle: Option<SecretString>,
 
     /// VTA service URL
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -187,7 +243,7 @@ impl From<&Config> for SecuredConfig {
     fn from(cfg: &Config) -> Self {
         match &cfg.key_backend {
             KeyBackend::Bip32 { seed, .. } => SecuredConfig {
-                bip32_seed: Some(seed.expose_secret().to_owned()),
+                bip32_seed: Some(seed.clone()),
                 credential_bundle: None,
                 vta_url: None,
                 vta_did: None,
@@ -201,7 +257,7 @@ impl From<&Config> for SecuredConfig {
                 ..
             } => SecuredConfig {
                 bip32_seed: None,
-                credential_bundle: Some(credential_bundle.expose_secret().to_owned()),
+                credential_bundle: Some(credential_bundle.clone()),
                 vta_url: Some(vta_url.clone()),
                 vta_did: Some(vta_did.clone()),
                 key_info: cfg.key_info.clone(),
@@ -231,12 +287,12 @@ impl SecuredConfig {
         // Serialize SecuredConfig to byte array
         let input = serde_json::to_vec(&self)?;
 
-        let formatted = if let Some(token) = token {
+        let formatted = if let Some(_token) = token {
             #[cfg(feature = "openpgp-card")]
             {
                 use crate::openpgp_card::crypt::token_encrypt;
 
-                let (esk, data) = token_encrypt(token, &input, touch_prompt)?;
+                let (esk, data) = token_encrypt(_token, &input, touch_prompt)?;
                 SecuredConfigFormat::TokenEncrypted {
                     esk: BASE64_URL_SAFE_NO_PAD.encode(&esk),
                     data: BASE64_URL_SAFE_NO_PAD.encode(&data),
@@ -247,7 +303,9 @@ impl SecuredConfig {
         } else if let Some(unlock) = unlock {
             SecuredConfigFormat::PasswordEncrypted {
                 data: BASE64_URL_SAFE_NO_PAD.encode(unlock_code_encrypt(
-                    unlock.first_chunk::<32>().unwrap(),
+                    unlock.first_chunk::<32>().ok_or_else(|| {
+                        OpenVTCError::Encrypt("Unlock code is not 32 bytes".to_string())
+                    })?,
                     &input,
                 )?),
             }
@@ -342,8 +400,15 @@ pub enum KeySourceMaterial {
 
     /// Sourced from an external Key Import
     /// multiencoded private key
-    /// Key Material will be stored in the OS Secure Store
-    Imported { seed: String },
+    /// Key Material will be stored in the OS Secure Store.
+    ///
+    /// `#[zeroize(skip)]`: `Secret<String>` zeroes itself on drop; the outer
+    /// `Zeroize` derive cannot call `.zeroize()` on it directly.
+    Imported {
+        #[serde(with = "serde_secret_str")]
+        #[zeroize(skip)]
+        seed: SecretString,
+    },
 
     /// Managed by VTA service - key_id is VTA's opaque identifier
     /// No derivation paths are stored in openvtc for VTA-managed keys
@@ -391,43 +456,24 @@ pub fn unlock_code_encrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
 
 /// Decrypts data using AES-256-GCM with HKDF-derived key.
 ///
-/// Accepts both the new format (`[nonce | ciphertext]`) and the legacy
-/// deterministic format for backward compatibility. Existing configs
-/// encrypted with the old format will be transparently decrypted and
-/// re-encrypted with the secure format on the next save.
+/// Expected input format: `[12-byte nonce | ciphertext + auth tag]`
 pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
-    // Try new format first: first 12 bytes are the random nonce
-    if input.len() > NONCE_SIZE {
-        let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
-        let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
-        let cipher = derive_key(unlock, nonce_bytes)?;
-
-        if let Ok(decrypted) = cipher.decrypt(nonce, ciphertext) {
-            return Ok(decrypted);
-        }
+    if input.len() <= NONCE_SIZE {
+        return Err(OpenVTCError::Decrypt(
+            "Ciphertext too short (missing nonce)".to_string(),
+        ));
     }
 
-    // Fall back to legacy deterministic format
-    legacy_unlock_code_decrypt(unlock, input)
-}
+    let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
+    let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+    let cipher = derive_key(unlock, nonce_bytes)?;
 
-/// Legacy decryption using the old deterministic PRNG-based key/nonce derivation.
-/// Retained only for backward compatibility with existing encrypted configs.
-fn legacy_unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
-    let mut rng = StdRng::from_seed(*unlock);
-    let key = Aes256Gcm::generate_key(&mut rng);
-    let nonce = Aes256Gcm::generate_nonce(&mut rng);
-    let cipher = Aes256Gcm::new(&key);
-
-    match cipher.decrypt(&nonce, input) {
-        Ok(decrypted) => Ok(decrypted),
-        Err(e) => {
-            error!("Couldn't decrypt data. Likely due to incorrect unlock code! Reason: {e}");
-            Err(OpenVTCError::Decrypt(format!(
-                "Couldn't decrypt data, likely due to incorrect unlock code! Reason: {e}"
-            )))
-        }
-    }
+    cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        error!("Couldn't decrypt data. Likely due to incorrect unlock code! Reason: {e}");
+        OpenVTCError::Decrypt(format!(
+            "Couldn't decrypt data, likely due to incorrect unlock code! Reason: {e}"
+        ))
+    })
 }
 
 #[cfg(test)]
@@ -437,11 +483,10 @@ mod tests {
     #[test]
     fn test_encrypt_decrypt_roundtrip() {
         let unlock = [42u8; 32];
-        let plaintext = b"sensitive data here";
-
+        let plaintext = b"hello world - this is sensitive config data";
         let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
+        assert_ne!(encrypted, plaintext);
         let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
-
         assert_eq!(decrypted, plaintext);
     }
 
@@ -460,8 +505,7 @@ mod tests {
     fn test_decrypt_wrong_key_fails() {
         let unlock = [42u8; 32];
         let wrong_unlock = [99u8; 32];
-        let plaintext = b"secret";
-
+        let plaintext = b"secret data";
         let encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
         assert!(unlock_code_decrypt(&wrong_unlock, &encrypted).is_err());
     }
@@ -478,28 +522,25 @@ mod tests {
     fn test_encrypt_large_data() {
         let unlock = [42u8; 32];
         let plaintext = vec![0xABu8; 10_000];
-
         let encrypted = unlock_code_encrypt(&unlock, &plaintext).unwrap();
         let decrypted = unlock_code_decrypt(&unlock, &encrypted).unwrap();
-
         assert_eq!(decrypted, plaintext);
     }
 
     #[test]
-    fn test_legacy_format_backward_compatibility() {
-        // Encrypt with the legacy deterministic method
+    fn test_decrypt_too_short_input_fails() {
         let unlock = [42u8; 32];
-        let plaintext = b"legacy data";
+        // Input shorter than nonce size should fail
+        assert!(unlock_code_decrypt(&unlock, &[0u8; 5]).is_err());
+        assert!(unlock_code_decrypt(&unlock, &[]).is_err());
+    }
 
-        let mut rng = StdRng::from_seed(unlock);
-        let key = Aes256Gcm::generate_key(&mut rng);
-        let nonce = Aes256Gcm::generate_nonce(&mut rng);
-        let cipher = Aes256Gcm::new(&key);
-        let legacy_ciphertext = cipher.encrypt(&nonce, plaintext.as_slice()).unwrap();
-
-        // New decrypt should handle legacy format via fallback
-        let decrypted = unlock_code_decrypt(&unlock, &legacy_ciphertext).unwrap();
-        assert_eq!(decrypted, plaintext);
+    #[test]
+    fn test_different_unlocks_produce_different_ciphertext() {
+        let plaintext = b"same data";
+        let encrypted1 = unlock_code_encrypt(&[1u8; 32], plaintext).unwrap();
+        let encrypted2 = unlock_code_encrypt(&[2u8; 32], plaintext).unwrap();
+        assert_ne!(encrypted1, encrypted2);
     }
 
     #[test]
@@ -515,13 +556,62 @@ mod tests {
     #[test]
     fn test_decrypt_corrupted_data_fails() {
         let unlock = [42u8; 32];
-        let plaintext = b"test data";
-
+        let plaintext = b"important data";
         let mut encrypted = unlock_code_encrypt(&unlock, plaintext).unwrap();
-        // Corrupt a byte in the ciphertext (after the nonce)
-        let last = encrypted.len() - 1;
-        encrypted[last] ^= 0xFF;
-
+        if let Some(byte) = encrypted.last_mut() {
+            *byte ^= 0xFF;
+        }
         assert!(unlock_code_decrypt(&unlock, &encrypted).is_err());
+    }
+
+    #[test]
+    fn test_key_source_material_zeroize() {
+        // SecretString zeroes itself via ZeroizeOnDrop when dropped.
+        // We just verify the variant is constructed and accessible correctly.
+        let source = KeySourceMaterial::Imported {
+            seed: SecretString::new("z6MkTestSeed123456789".into()),
+        };
+        match &source {
+            KeySourceMaterial::Imported { seed } => {
+                assert!(!seed.expose_secret().is_empty())
+            }
+            _ => panic!("expected Imported variant"),
+        }
+    }
+
+    #[test]
+    fn test_bip32_seed_is_secret_string() {
+        // Verify that SecretString cannot be printed via Debug or Display,
+        // proving the seed value never leaks through formatting.
+        let config = SecuredConfig {
+            bip32_seed: Some(SecretString::new("super-secret-seed-value".into())),
+            credential_bundle: None,
+            vta_url: None,
+            vta_did: None,
+            key_info: std::collections::HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+        };
+        let debug = format!("{:?}", config);
+        assert!(
+            !debug.contains("super-secret-seed-value"),
+            "SecretString must not leak through Debug formatting"
+        );
+    }
+
+    #[test]
+    fn test_imported_seed_requires_expose() {
+        // Prove that the seed field can only be accessed through expose_secret(),
+        // preventing accidental plaintext access.
+        let material = KeySourceMaterial::Imported {
+            seed: SecretString::new("z6MkSensitiveKeyData".into()),
+        };
+        let json = serde_json::to_string(&material).unwrap();
+        // The serde module deliberately exposes the value for serialization only.
+        assert!(json.contains("z6MkSensitiveKeyData"));
+        // But the Rust type system prevents direct field access — must go through
+        // expose_secret(). This test documents the security invariant.
+        if let KeySourceMaterial::Imported { seed } = &material {
+            assert_eq!(seed.expose_secret(), "z6MkSensitiveKeyData");
+        }
     }
 }

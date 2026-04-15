@@ -13,11 +13,12 @@ use byteorder::{BigEndian, ByteOrder};
 use openpgp_card::ocard::KeyType;
 use openpgp_card_rpgp::CardSlot;
 use pgp::{
+    composed::PlainSessionKey,
     crypto::public_key::PublicKeyAlgorithm,
     ser::Serialize,
-    types::{EskType, PkeskBytes},
+    types::{DecryptionKey, EncryptionKey, EskType, Password, PkeskBytes},
 };
-use rand::Rng;
+use rand::{Rng, rngs::OsRng};
 use secrecy::SecretString;
 use std::io::BufReader;
 use tracing::{info, warn};
@@ -42,21 +43,23 @@ pub fn token_encrypt(
     data: &[u8],
     touch_prompt: &(dyn Fn() + Send + Sync),
 ) -> Result<(Vec<u8>, Vec<u8>), OpenVTCError> {
-    let mut card = open_card(token_id)
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't use hardware token ({token_id}): {e}")))?;
+    let mut card = open_card(token_id).map_err(|e| {
+        OpenVTCError::Token(format!("Couldn't use hardware token ({token_id}): {e}"))
+    })?;
     let mut card = card.transaction().map_err(|e| {
         OpenVTCError::Token(format!(
             "Couldn't create hardware token transaction - encrypt: {e}"
         ))
     })?;
 
-    let cs = CardSlot::init_from_card(&mut card, KeyType::Decryption, touch_prompt)
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't init decryption key from token: {e}")))?;
+    let cs =
+        CardSlot::init_from_card(&mut card, KeyType::Decryption, touch_prompt).map_err(|e| {
+            OpenVTCError::Token(format!("Couldn't init decryption key from token: {e}"))
+        })?;
 
-    // Create random 32 byte seed
+    // Create random 32 byte seed using cryptographically secure OS entropy
     let mut seed: [u8; 32] = [0; 32];
-    let mut rng = rand::thread_rng();
-    rng.fill(&mut seed);
+    OsRng.fill(&mut seed);
 
     // Augment the seed with Algo type (PlainText) and a 2-byte Checksum
     let mut seed_augmented: [u8; 35] = [0; 35];
@@ -68,7 +71,7 @@ pub fn token_encrypt(
     // Get the public_key from the hardware token
     let pk = cs.public_key();
     let esk = pk
-        .encrypt(rng, &seed_augmented, EskType::V6)
+        .encrypt(OsRng, &seed_augmented, EskType::V6)
         .map_err(|e| OpenVTCError::Encrypt(format!("Couldn't encrypt config data: {e}")))?;
 
     // Encrypt the data payload using AES-GCM with the seed
@@ -113,17 +116,27 @@ where
         .map_err(|e| OpenVTCError::Token(format!("Couldn't unlock user mode on token: {e}")))?;
 
     let binding = || touch_prompt.touch_notify();
-    let cs = CardSlot::init_from_card(&mut card, KeyType::Decryption, &binding)
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't init decryption key from token: {e}")))?;
+    let cs = CardSlot::init_from_card(&mut card, KeyType::Decryption, &binding).map_err(|e| {
+        OpenVTCError::Token(format!("Couldn't init decryption key from token: {e}"))
+    })?;
     touch_prompt.touch_completed();
 
     // Convert the raw ESK bytes back into a Public Key Encrypted Session Key
     let raw_br = BufReader::new(esk);
-    let pk_esk = PkeskBytes::try_from_reader(&PublicKeyAlgorithm::ECDH, 6, raw_br)
-        .map_err(|e| OpenVTCError::Decrypt(format!("Couldn't convert public-key ESK. Reason: {e}")))?;
-    let (decrypted_esk, _) = cs
-        .decrypt(&pk_esk)
-        .map_err(|e| OpenVTCError::Token(format!("Couldn't decrypt data, reason: {e}")))?;
+    let pk_esk =
+        PkeskBytes::try_from_reader(&PublicKeyAlgorithm::ECDH, 6, raw_br).map_err(|e| {
+            OpenVTCError::Decrypt(format!("Couldn't convert public-key ESK. Reason: {e}"))
+        })?;
+    let plain_session_key = cs
+        .decrypt(&Password::empty(), &pk_esk, EskType::V6)
+        .map_err(|e| OpenVTCError::Token(format!("Couldn't decrypt data, reason: {e}")))?
+        .map_err(|e| OpenVTCError::Token(format!("Session key decryption failed: {e}")))?;
+
+    let decrypted_esk = match &plain_session_key {
+        PlainSessionKey::V6 { key } => key.as_ref(),
+        PlainSessionKey::V3_4 { key, .. } => key.as_ref(),
+        PlainSessionKey::V5 { key } => key.as_ref(),
+    };
 
     if decrypted_esk.len() != 32 {
         warn!(
@@ -137,5 +150,10 @@ where
     }
 
     // Can now decrypt the data payload using the ESK
-    unlock_code_decrypt(decrypted_esk.first_chunk::<32>().unwrap(), data)
+    unlock_code_decrypt(
+        decrypted_esk
+            .first_chunk::<32>()
+            .ok_or_else(|| OpenVTCError::Decrypt("Decrypted ESK is not 32 bytes".to_string()))?,
+        data,
+    )
 }

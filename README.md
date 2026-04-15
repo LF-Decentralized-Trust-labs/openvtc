@@ -11,6 +11,17 @@ capabilities, following the [First Person Project white paper](https://www.first
 for establishing and verifying **first-person trust relationships** using
 Personhood Credentials (PHCs) and Verifiable Relationship Credentials (VRCs).
 
+## Workspace Crates
+
+| Crate | Description |
+|-------|-------------|
+| `openvtc-cli` | Original CLI tool with interactive setup wizard |
+| `openvtc-cli2` | TUI-based CLI with ratatui interface |
+| `openvtc-lib` | Shared library for configuration, DID management, and crypto |
+| `openvtc-service` | Background service for DIDComm messaging |
+| `did-git-sign` | [Git commit signing proxy](./did-git-sign/) using DID Ed25519 keys via VTA |
+| `robotic-maintainers` | Automated VRC issuance for robotic maintainers |
+
 ## Table of Contents
 
 - [Quickstart](#quickstart)
@@ -28,6 +39,7 @@ Personhood Credentials (PHCs) and Verifiable Relationship Credentials (VRCs).
   - [Host Your DID Document](#host-your-did-document)
 - [Check Setup Status](#check-setup-status)
 - [Usage](#usage)
+- [DID Git Signing](#did-git-signing)
 - [Additional Resources](#additional-resources)
 
 ## Quickstart
@@ -214,6 +226,51 @@ openvtc --no-default-features setup
 
 ## Getting Started
 
+### Workspace Layout
+
+This repository is a Cargo workspace. The root `Cargo.toml` defines the following crates:
+
+| Crate | Role |
+|---|---|
+| `openvtc-lib` | Core library — config, storage, cryptography, DID logic |
+| `openvtc-cli` | Primary command-line interface |
+| `openvtc-cli2` | Terminal UI (TUI) interface |
+| `openvtc-service` | Background service component |
+| `robotic-maintainers` | Automated maintenance tooling |
+
+### Building
+
+From the repo root:
+
+```bash
+cargo build
+```
+
+To build without the OpenPGP card feature:
+
+```bash
+cargo build --no-default-features
+```
+
+### Testing
+
+```bash
+cargo test
+```
+
+For a specific crate:
+
+```bash
+cargo test -p openvtc-lib
+```
+
+### PR Guidelines
+
+- Use conventional commits where possible (e.g. `docs: expand CONTRIBUTING.md`)
+- Sign the CLA — GitHub will guide you through this when you open a PR
+- Reference the issue your PR addresses (e.g. `Closes #13`)
+- If platform-specific behaviour is uncertain, write `> **Note:** TBD — help wanted` rather than documenting incorrect information
+
 ### Initial Setup
 
 1. Install locally from the source.
@@ -307,9 +364,33 @@ cargo run -- status
 
 Refer to the complete [command reference](./docs/openvtc-tool-commands.md).
 
+## DID Git Signing
+
+The workspace includes [`did-git-sign`](./did-git-sign/), a standalone tool that
+signs git commits using your DID's Ed25519 key managed by a VTA. It integrates
+with git's SSH signing mechanism as a signing proxy — no private key material
+ever touches disk.
+
+```bash
+# Install
+cargo install --path did-git-sign
+
+# Configure for the current repo
+did-git-sign init \
+  --credential "eyJkaWQiOi..." \
+  --key-id "your-vta-key-id" \
+  --did-key-id "did:webvh:abc123:example.com#key-0" \
+  --name "Your Name"
+
+# Commits are now automatically signed with your DID
+git commit -m "signed with my DID"
+```
+
+See the [did-git-sign README](./did-git-sign/README.md) for full documentation.
+
 ## Additional Resources
 
-Additional resources to learn more about the Open Source Trust Community (OpenVTC) Tool.
+Additional resources to learn more about the Open Verifiable Trust Community (OpenVTC) Tool.
 
 - [First Person Project White Paper](https://www.firstperson.network/white-paper)
 - [Relationships and VRCs Guide](./docs/relationships-vrcs.md)

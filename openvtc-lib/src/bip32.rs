@@ -1,6 +1,7 @@
-// ****************************************************************************
-// BIP32 Handling
-// ****************************************************************************
+//! BIP32 hierarchical deterministic key derivation.
+//!
+//! Provides helpers for creating a BIP32 master key from a seed and deriving
+//! DIDComm-compatible secrets at arbitrary derivation paths.
 
 use crate::{KeyPurpose, errors::OpenVTCError};
 use affinidi_tdk::{
@@ -8,20 +9,32 @@ use affinidi_tdk::{
 };
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
 
-/// Returns a BIP32 Master Key
+/// Creates a BIP32 master (root) key from the given seed bytes.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::BIP32`] if the seed is invalid or cannot produce a master key.
 pub fn get_bip32_root(seed: &[u8]) -> Result<ExtendedSigningKey, OpenVTCError> {
-    ExtendedSigningKey::from_seed(seed)
-        .map_err(|e| OpenVTCError::BIP32(format!("Couldn't create BIP32 Master Key from seed: {}", e)))
+    ExtendedSigningKey::from_seed(seed).map_err(|e| {
+        OpenVTCError::BIP32(format!("Couldn't create BIP32 Master Key from seed: {}", e))
+    })
 }
 
+/// Extension trait for deriving DIDComm secrets from a BIP32 extended signing key.
 pub trait Bip32Extension {
+    /// Derives a [`Secret`] at the given BIP32 derivation path for the specified key purpose.
+    ///
+    /// - For [`KeyPurpose::Signing`] or [`KeyPurpose::Authentication`], produces an Ed25519 secret.
+    /// - For [`KeyPurpose::Encryption`], converts the derived Ed25519 key to X25519.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenVTCError::BIP32`] if the path is invalid or derivation fails,
+    /// or [`OpenVTCError::Secret`] if the key purpose is unsupported or X25519 conversion fails.
     fn get_secret_from_path(&self, path: &str, kp: KeyPurpose) -> Result<Secret, OpenVTCError>;
 }
 
 impl Bip32Extension for ExtendedSigningKey {
-    /// Generates an SSI Secret from a BIP32 root
-    /// path: BIP32 derivation path
-    /// kp: KeyPurpose (SIGN, ENC, AUTH)
     fn get_secret_from_path(&self, path: &str, kp: KeyPurpose) -> Result<Secret, OpenVTCError> {
         let key = self
             .derive(&path.parse::<DerivationPath>().map_err(|e| {

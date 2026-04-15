@@ -3,20 +3,20 @@
 */
 
 use crate::{
+    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED,
     openpgp_card::{
         factory_reset, print_cards, set_cardholder_name, set_signing_touch_policy,
         write::write_keys_to_card,
     },
     setup::PersonaDIDKeys,
-    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED,
 };
-use anyhow::{bail, Result};
-use console::{style, Term};
+use anyhow::{Context, Result, bail};
+use console::{Term, style};
 use crossterm::{
     event::{self, Event},
     terminal,
 };
-use dialoguer::{theme::ColorfulTheme, Confirm, Select};
+use dialoguer::{Confirm, Select, theme::ColorfulTheme};
 use openvtc::openpgp_card::get_cards;
 use secrecy::SecretString;
 
@@ -70,17 +70,17 @@ pub fn setup_hardware_token(
         print_cards(&mut cards)?;
     }
 
-    let mut s_card: Vec<String> = cards
-        .iter_mut()
-        .map(|c| {
-            let mut lock = c.try_lock().unwrap();
-            lock.transaction()
-                .unwrap()
-                .application_identifier()
-                .unwrap()
-                .ident()
-        })
-        .collect();
+    let mut s_card: Vec<String> = Vec::new();
+    for c in cards.iter_mut() {
+        let mut lock = c.try_lock().context("Failed to lock card")?;
+        let ident = lock
+            .transaction()
+            .context("Failed to open card transaction")?
+            .application_identifier()
+            .context("Failed to read card application identifier")?
+            .ident();
+        s_card.push(ident);
+    }
 
     s_card.push("Do not use a hardware token.".to_string());
 
@@ -90,7 +90,7 @@ pub fn setup_hardware_token(
         .default(0)
         .items(&s_card)
         .interact()
-        .unwrap();
+        .context("Failed to read card selection")?;
 
     if selected_option == s_card.len() - 1 {
         println!(

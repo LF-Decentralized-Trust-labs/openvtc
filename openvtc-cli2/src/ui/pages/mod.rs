@@ -17,12 +17,16 @@ pub mod setup_flow;
 
 struct Props {
     active_page: ActivePage,
+    #[cfg(feature = "openpgp-card")]
+    token_touch_pending: bool,
 }
 
 impl From<&State> for Props {
     fn from(state: &State) -> Self {
         Props {
             active_page: state.active_page,
+            #[cfg(feature = "openpgp-card")]
+            token_touch_pending: state.token_touch_pending,
         }
     }
 }
@@ -80,5 +84,57 @@ impl ComponentRender<()> for AppRouter {
             ActivePage::Main => self.main_page.render(frame, props),
             ActivePage::Setup => self.setup_flow.render(frame, props),
         }
+
+        #[cfg(feature = "openpgp-card")]
+        if self.props.token_touch_pending {
+            render_touch_overlay(frame);
+        }
     }
+}
+
+/// Renders a centered popup overlay prompting the user to touch their hardware token.
+#[cfg(feature = "openpgp-card")]
+fn render_touch_overlay(frame: &mut Frame) {
+    use openvtc::colors::{COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_TEXT_DEFAULT};
+    use ratatui::{
+        layout::{Constraint, Flex, Layout},
+        style::Style,
+        text::{Line, Span},
+        widgets::{Block, Clear, Padding, Paragraph},
+    };
+
+    let area = frame.area();
+
+    let popup_width = 50u16.min(area.width.saturating_sub(4));
+    let popup_height = 7u16.min(area.height.saturating_sub(2));
+
+    let [popup_area] = Layout::vertical([Constraint::Length(popup_height)])
+        .flex(Flex::Center)
+        .areas(area);
+    let [popup_area] = Layout::horizontal([Constraint::Length(popup_width)])
+        .flex(Flex::Center)
+        .areas(popup_area);
+
+    // Clear underlying content so the popup is readable
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::bordered()
+        .title(" Hardware Token ")
+        .title_style(Style::new().fg(COLOR_ORANGE).bold())
+        .border_style(Style::new().fg(COLOR_ORANGE))
+        .padding(Padding::uniform(1));
+
+    let text = vec![
+        Line::from(Span::styled(
+            "Please touch your hardware token...",
+            Style::new().fg(COLOR_TEXT_DEFAULT).bold(),
+        )),
+        Line::default(),
+        Line::from(Span::styled(
+            "Waiting for physical confirmation",
+            Style::new().fg(COLOR_DARK_GRAY),
+        )),
+    ];
+
+    frame.render_widget(Paragraph::new(text).block(block), popup_area);
 }

@@ -6,13 +6,13 @@
 
 use std::sync::Arc;
 
-use secrecy::SecretVec;
+use secrecy::SecretBox;
 
+use super::SetupFlow;
 use crate::state_handler::{
     actions::Action,
     setup_sequence::{ConfigProtection, SetupPage, SetupState},
 };
-use super::SetupFlow;
 
 /// Every page-exit event that requires a flow decision.
 pub enum SetupEvent {
@@ -62,7 +62,7 @@ pub enum SetupEvent {
     WantUnlockCode,
     SkipUnlockCode,
     UnlockCodeSet {
-        passphrase_hash: Arc<SecretVec<u8>>,
+        passphrase_hash: Arc<SecretBox<Vec<u8>>>,
     },
     ReturnToSetCode,
     AcceptNoCodeRisk,

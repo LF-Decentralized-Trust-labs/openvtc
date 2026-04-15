@@ -5,18 +5,16 @@
 use std::sync::Arc;
 
 use crate::{
-    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED,
+    CLI_BLUE, CLI_GREEN, CLI_ORANGE, CLI_PURPLE, CLI_RED, config::save_config,
     relationships::messages::create_send_request,
 };
 use affinidi_tdk::{
     TDK,
     affinidi_crypto::ed25519::ed25519_private_to_x25519,
-    didcomm::PackEncryptedOptions,
     dids::{DID, PeerKeyRole},
-    messaging::protocols::Protocols,
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use chrono::Utc;
 use clap::ArgMatches;
 use console::style;
@@ -98,7 +96,14 @@ impl RelationshipsExtension for Relationships {
             println!("{}", style("No relationships exist").color256(CLI_ORANGE));
         } else {
             for r in self.relationships.values() {
-                let r = r.lock().unwrap();
+                let Ok(r) = r.lock() else {
+                    println!(
+                        "{}",
+                        style("ERROR: Relationship mutex poisoned, skipping entry")
+                            .color256(CLI_ORANGE)
+                    );
+                    continue;
+                };
                 let remote_p_did_alias = if let Some(contact) =
                     contacts.find_contact(&r.remote_p_did)
                     && let Some(alias) = &contact.alias
@@ -224,13 +229,7 @@ pub async fn relationships_entry(
             )
             .await?;
 
-            config.save(
-                profile,
-                #[cfg(feature = "openpgp-card")]
-                &|| {
-                    eprintln!("Touch confirmation needed for decryption");
-                },
-            )?;
+            save_config(config, profile)?;
         }
         Some(("ping", sub_args)) => {
             let remote_did = if let Some(did) = sub_args.get_one::<String>("remote") {
@@ -245,13 +244,7 @@ pub async fn relationships_entry(
 
             remote_ping(&tdk, config, &remote_did).await?;
 
-            config.save(
-                profile,
-                #[cfg(feature = "openpgp-card")]
-                &|| {
-                    eprintln!("Touch confirmation needed for decryption");
-                },
-            )?;
+            save_config(config, profile)?;
         }
         Some(("remove", sub_args)) => {
             let remote_did = if let Some(did) = sub_args.get_one::<String>("remote") {
@@ -289,7 +282,9 @@ pub async fn relationships_entry(
             };
 
             let remote_p_did = {
-                let lock = relationship.lock().unwrap();
+                let lock = relationship
+                    .lock()
+                    .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
                 lock.remote_p_did.clone()
             };
 
@@ -305,13 +300,7 @@ pub async fn relationships_entry(
                 style(remote_p_did).color256(CLI_GREEN)
             );
 
-            config.save(
-                profile,
-                #[cfg(feature = "openpgp-card")]
-                &|| {
-                    eprintln!("Touch confirmation needed for decryption");
-                },
-            )?;
+            save_config(config, profile)?;
         }
         _ => {
             println!(
@@ -370,10 +359,8 @@ pub async fn create_relationship_did(
         _ => bail!("create_relationship_did requires a BIP32 key backend"),
     };
 
-    let v_key = bip32_root
-        .derive(&v_path.parse::<DerivationPath>()?)?;
-    let e_key = bip32_root
-        .derive(&e_path.parse::<DerivationPath>()?)?;
+    let v_key = bip32_root.derive(&v_path.parse::<DerivationPath>()?)?;
+    let e_key = bip32_root.derive(&e_path.parse::<DerivationPath>()?)?;
 
     let mut v_secret = Secret::generate_ed25519(None, Some(v_key.signing_key.as_bytes()));
     let mut e_secret = Secret::generate_x25519(
@@ -429,8 +416,7 @@ pub async fn create_relationship_did(
 }
 
 async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()> {
-    let atm = tdk.atm.clone().unwrap();
-    let protocols = Protocols::new();
+    let atm = tdk.atm.clone().context("ATM not initialized")?;
 
     let Some(contact) = config.private.contacts.find_contact(remote) else {
         println!(
@@ -454,7 +440,9 @@ async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()>
     };
 
     let (our_did, remote_did) = {
-        let lock = relationship.lock().unwrap();
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("Relationship mutex poisoned: {e}"))?;
         (lock.our_did.clone(), lock.remote_did.clone())
     };
 
@@ -472,36 +460,17 @@ async fn remote_ping(tdk: &TDK, config: &mut Config, remote: &str) -> Result<()>
     };
 
     let ping_msg =
-        protocols
-            .trust_ping
+        atm.trust_ping()
             .generate_ping_message(Some(our_did.as_str()), &remote_did, true)?;
     let msg_id = ping_msg.id.clone();
 
-    // Pack the message
-    let (ping_msg, _) = ping_msg
-        .pack_encrypted(
-            &remote_did,
-            Some(&our_did),
-            Some(&our_did),
-            tdk.did_resolver(),
-            &tdk.get_shared_state().secrets_resolver,
-            &PackEncryptedOptions {
-                forward: false,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    atm.forward_and_send_message(
+    openvtc::pack_and_send(
+        &atm,
         profile,
-        false,
         &ping_msg,
-        None,
-        &config.public.mediator_did,
+        &our_did,
         &remote_did,
-        None,
-        None,
-        false,
+        &config.public.mediator_did,
     )
     .await?;
 
