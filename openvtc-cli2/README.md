@@ -60,6 +60,25 @@ Uses the same configuration as `openvtc-cli`:
 - Default location: `~/.config/openvtc/`
 - Override: `OPENVTC_CONFIG_PATH` and `OPENVTC_CONFIG_PROFILE` environment variables
 
+### Secure Storage
+
+Sensitive configuration (keys, credentials) is stored in the OS secure store:
+
+| Platform | Backend | Requirements |
+|----------|---------|--------------|
+| macOS | Keychain | Always available |
+| Windows | Credential Manager | Always available |
+| Linux (desktop) | Secret Service (GNOME Keyring / KDE Wallet) | D-Bus + secret service daemon |
+| Linux (headless) | Kernel keyring (`keyutils`) | Available on all Linux kernels ≥ 2.6 |
+
+On headless Linux (servers, containers, CI) where no GUI secret service is
+available, the tool automatically falls back to the kernel keyring. No
+additional configuration is needed.
+
+If you encounter `Couldn't open OS Secure Store` errors, ensure either:
+- A secret service daemon is running (`gnome-keyring-daemon`, `kwalletd`), or
+- The `keyutils` kernel module is loaded (`modprobe keyutils`)
+
 ## Feature Flags
 
 | Flag           | Description                               | Default |

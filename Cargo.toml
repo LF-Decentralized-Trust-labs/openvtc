@@ -46,7 +46,7 @@ didwebvh-rs = "0.4"
 ed25519-dalek-bip32 = "0.3"
 hkdf = "0.12"
 hex = "0.4"
-keyring = "3.6"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "linux-native"] }
 multibase = "0.9"
 pgp = "0.19"
 # Locked to 0.8 — aes-gcm 0.10 depends on rand_core 0.6 (rand 0.8), not 0.9 (rand 0.10)
