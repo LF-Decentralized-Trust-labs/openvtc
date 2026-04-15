@@ -391,7 +391,8 @@ impl StateHandler {
         }
         info!(count = listeners.len(), "DIDComm listeners registered");
 
-        // Wait for persona listener to connect (up to 15 s)
+        // Wait for persona listener to connect and measure connection time
+        let connect_start = std::time::Instant::now();
         match didcomm_service
             .wait_connected(
                 didcomm::PERSONA_LISTENER_ID,
@@ -400,9 +401,15 @@ impl StateHandler {
             .await
         {
             Ok(()) => {
-                state.connection.status = state::MediatorStatus::Connected { latency_ms: 0 };
+                let connect_ms = connect_start.elapsed().as_millis();
+                state.connection.status = state::MediatorStatus::Connected {
+                    latency_ms: connect_ms,
+                };
+                state.connection.last_ping_latency_ms = Some(connect_ms);
                 state.connection.messaging_active = true;
-                state.main_page.log("Connected to mediator");
+                state
+                    .main_page
+                    .log(format!("Connected to mediator ({connect_ms}ms)"));
             }
             Err(e) => {
                 state.connection.status = state::MediatorStatus::Failed(format!("{e}"));
@@ -417,8 +424,8 @@ impl StateHandler {
         // `true` = manual ping (log to activity), `false` = keepalive (silent).
         let mut ping_sent_at: Option<(std::time::Instant, bool)> = None;
 
-        // Periodic keepalive ping to monitor mediator connectivity (every 60s)
-        let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        // Periodic keepalive ping to monitor mediator connectivity (every 30s)
+        let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         keepalive_interval.tick().await; // consume the immediate first tick
 
         // Send initial ping to get first latency reading
