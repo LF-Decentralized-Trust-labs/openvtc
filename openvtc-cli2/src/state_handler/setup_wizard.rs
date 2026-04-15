@@ -1,3 +1,5 @@
+#[cfg(feature = "openpgp-card")]
+use crate::state_handler::setup_token_actions;
 use crate::{
     Interrupted,
     state_handler::{
@@ -5,7 +7,7 @@ use crate::{
         actions::Action,
         setup_did_actions,
         setup_sequence::{Completion, MessageType, SetupPage, config::ConfigExtension},
-        setup_token_actions, setup_vta_actions,
+        setup_vta_actions,
         state::{ActivePage, State},
     },
 };

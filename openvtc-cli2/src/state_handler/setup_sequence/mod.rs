@@ -138,6 +138,7 @@ pub struct VtaSetupState {
 pub enum ConfigProtection {
     #[default]
     PlainText,
+    #[cfg(feature = "openpgp-card")]
     Token(String),
     /// Is a SHA256 digest of the input passcode
     Passcode(Arc<SecretBox<Vec<u8>>>),
@@ -147,6 +148,7 @@ impl std::fmt::Debug for ConfigProtection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ConfigProtection::PlainText => write!(f, "ConfigProtection::PlainText"),
+            #[cfg(feature = "openpgp-card")]
             ConfigProtection::Token(token_id) => {
                 write!(f, "ConfigProtection::Token({})", token_id)
             }

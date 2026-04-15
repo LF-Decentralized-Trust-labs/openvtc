@@ -94,7 +94,7 @@ impl ConfigExtension for Config {
             .context("Imported config does not contain a BIP32 seed (VTA configs cannot be imported via CLI)")?;
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
-                .decode(bip32_seed)
+                .decode(bip32_seed.expose_secret())
                 .context("Couldn't base64 decode BIP32 seed")?
                 .as_slice(),
         )?;

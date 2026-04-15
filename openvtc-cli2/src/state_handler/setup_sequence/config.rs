@@ -16,7 +16,7 @@ use openvtc::{
     },
     logs::{LogFamily, LogMessage, Logs},
 };
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::{
     collections::{HashMap, VecDeque},
     fs,
@@ -127,7 +127,7 @@ impl ConfigExtension for Config {
             .expect("Imported config missing BIP32 seed");
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
-                .decode(bip32_seed)
+                .decode(bip32_seed.expose_secret())
                 .expect("Couldn't base64 decode BIP32 seed")
                 .as_slice(),
         )?;
@@ -207,9 +207,10 @@ impl ConfigExtension for Config {
         let mut unlock_code = None;
         let protection = match &state.protection {
             ConfigProtection::PlainText => ConfigProtectionType::Plaintext,
+            #[cfg(feature = "openpgp-card")]
             ConfigProtection::Token(token) => ConfigProtectionType::Token(token.to_string()),
             ConfigProtection::Passcode(unlock) => {
-                unlock_code = Some(unlock.expose_secret().to_vec());
+                unlock_code = Some(SecretBox::new(Box::new(unlock.expose_secret().to_vec())));
                 ConfigProtectionType::Encrypted
             }
         };

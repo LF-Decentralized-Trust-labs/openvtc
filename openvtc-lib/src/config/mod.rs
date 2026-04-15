@@ -234,8 +234,12 @@ pub struct Config {
     #[cfg(feature = "openpgp-card")]
     pub token_user_pin: SecretString,
 
-    /// Unlock code if required
-    pub unlock_code: Option<Vec<u8>>,
+    /// Argon2id-derived 32-byte symmetric key used to encrypt/decrypt `SecuredConfig`.
+    ///
+    /// Wrapped in `SecretBox` to ensure the key material is zeroed on drop and
+    /// never accidentally logged or compared in constant time.  Set when the
+    /// user provides an unlock passphrase; `None` for plaintext or token flows.
+    pub unlock_code: Option<SecretBox<Vec<u8>>>,
 
     /// Holds ATM profiles for relationships
     /// Key: Our local DID for the relationship

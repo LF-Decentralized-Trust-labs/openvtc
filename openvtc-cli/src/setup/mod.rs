@@ -31,8 +31,7 @@ use openvtc::{
     },
     logs::{LogFamily, LogMessage, Logs},
 };
-use secrecy::SecretString;
-use sha2::Digest;
+use secrecy::{SecretBox, SecretString};
 use std::{
     collections::{HashMap, VecDeque},
     sync::Arc,
@@ -111,7 +110,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
     // If hardware token is not being used, then ask for an unlock code
     let unlock_code = if token_id.is_none() {
         // Check if an unlock code is desired?
-        create_unlock_code()?.map(|c| c.to_vec())
+        create_unlock_code()?.map(|c| SecretBox::new(Box::new(c.to_vec())))
     } else {
         // No need for an unlock code when using hardware token
         None
@@ -341,7 +340,7 @@ fn create_keys(mnemonic: &Mnemonic, imported_keys: &PGPKeys) -> Result<PersonaDI
     })
 }
 
-/// Generates a sha256 hash of an unlock code if required
+/// Derives an unlock code via Argon2id from a user-provided passphrase.
 pub fn create_unlock_code() -> Result<Option<[u8; 32]>> {
     println!("{}", style("NOTE: You are not using any hardware token. While secret information will be stored in your OS secure store where possible, it is best practice to protect this data with an unlock code.").color256(CLI_BLUE));
     println!("  {}", style("This unlock code is asked on application start so it can unlock secret configuration data required.").color256(CLI_BLUE));
@@ -359,8 +358,10 @@ pub fn create_unlock_code() -> Result<Option<[u8; 32]>> {
             .interact()
             .context("Failed to read unlock code")?;
 
-        // Create SHA2-256 hash of the unlock code
-        Ok(Some(sha2::Sha256::digest(unlock_code.as_bytes()).into()))
+        Ok(Some(openvtc::config::derive_passphrase_key(
+            unlock_code.as_bytes(),
+            b"openvtc-unlock-code-v1",
+        )?))
     } else {
         Ok(None)
     }
