@@ -180,8 +180,17 @@ pub async fn build_listener_configs(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
 ) -> Vec<ListenerConfig> {
+    // Use a conservative backoff to prevent reconnect loops.
+    // The mediator kills "duplicate" WebSocket connections for the same DID.
+    // If the restart fires before the old connection is fully torn down, the
+    // new connection triggers the mediator to kill it as a duplicate, which
+    // triggers another restart — creating an infinite loop. A 30-second
+    // initial delay gives the old connection time to fully close.
     let restart = RestartPolicy::Always {
-        backoff: RetryConfig::default(),
+        backoff: RetryConfig {
+            initial_delay_secs: 30,
+            max_delay_secs: 120,
+        },
     };
 
     let persona_secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
