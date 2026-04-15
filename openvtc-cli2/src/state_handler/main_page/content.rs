@@ -28,6 +28,12 @@ pub struct ContentPanelState {
 /// State for the VTA service information panel.
 #[derive(Clone, Debug, Default)]
 pub struct VtaState {
+    /// Active configuration profile name
+    pub profile: String,
+    /// Persona DID
+    pub persona_did: String,
+    /// Mediator DID
+    pub mediator_did: String,
     /// VTA service URL
     pub vta_url: String,
     /// VTA service DID
@@ -36,8 +42,23 @@ pub struct VtaState {
     pub credential_did: String,
     /// Total number of keys managed
     pub key_count: usize,
+    /// Number of persona keys
+    pub persona_key_count: usize,
+    /// Number of relationship keys
+    pub relationship_key_count: usize,
     /// Whether the VTA key backend is in use
     pub is_vta_managed: bool,
+    /// DIDs in use (persona + relationship R-DIDs)
+    pub active_dids: Vec<ActiveDid>,
+}
+
+/// A DID in active use within this context.
+#[derive(Clone, Debug, Default)]
+pub struct ActiveDid {
+    /// The DID string
+    pub did: String,
+    /// Human-readable label
+    pub label: String,
 }
 
 // ****************************************************************************

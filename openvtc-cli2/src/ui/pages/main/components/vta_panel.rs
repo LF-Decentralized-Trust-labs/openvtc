@@ -29,44 +29,98 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
 
     let mut lines = vec![
         Line::from(""),
-        Line::from(" VTA Service").fg(COLOR_SUCCESS).bold(),
+        Line::from(" Context").fg(COLOR_SUCCESS).bold(),
         Line::from(""),
     ];
 
+    // Profile
+    lines.push(Line::from(vec![
+        Span::styled("  Profile:       ", label_style),
+        Span::styled(state.profile.clone(), value_style),
+    ]));
+
+    // Persona DID
+    lines.push(Line::from(vec![
+        Span::styled("  Persona DID:   ", label_style),
+        Span::styled(state.persona_did.clone(), value_style),
+    ]));
+
+    // Mediator DID
+    lines.push(Line::from(vec![
+        Span::styled("  Mediator DID:  ", label_style),
+        Span::styled(state.mediator_did.clone(), value_style),
+    ]));
+
     if !state.is_vta_managed {
-        lines.push(Line::from("  Not using VTA (BIP32 key backend)").fg(COLOR_DARK_GRAY));
         lines.push(Line::from(""));
-        lines.push(
-            Line::from(format!("  Total keys managed: {}", state.key_count)).fg(COLOR_TEXT_DEFAULT),
-        );
-        return lines;
+        lines.push(Line::from(vec![
+            Span::styled("  Key Backend:   ", label_style),
+            Span::styled("BIP32 (local)", value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Keys managed:  ", label_style),
+            Span::styled(state.key_count.to_string(), value_style),
+        ]));
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from(" VTA Service").fg(COLOR_SUCCESS).bold());
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(vec![
+            Span::styled("  VTA URL:       ", label_style),
+            Span::styled(state.vta_url.clone(), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  VTA DID:       ", label_style),
+            Span::styled(state.vta_did.clone(), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Credential:    ", label_style),
+            Span::styled(state.credential_did.clone(), value_style),
+        ]));
+
+        lines.push(Line::from(""));
+        lines.push(Line::from(" Keys").fg(COLOR_SUCCESS).bold());
+        lines.push(Line::from(""));
+
+        lines.push(Line::from(vec![
+            Span::styled("  Total:         ", label_style),
+            Span::styled(state.key_count.to_string(), value_style),
+            Span::styled("  (", Style::new().fg(COLOR_DARK_GRAY)),
+            Span::styled(
+                format!("{} persona", state.persona_key_count),
+                Style::new().fg(COLOR_DARK_GRAY),
+            ),
+            Span::styled(", ", Style::new().fg(COLOR_DARK_GRAY)),
+            Span::styled(
+                format!("{} relationship", state.relationship_key_count),
+                Style::new().fg(COLOR_DARK_GRAY),
+            ),
+            Span::styled(")", Style::new().fg(COLOR_DARK_GRAY)),
+        ]));
     }
 
-    // VTA URL
-    lines.push(Line::from(vec![
-        Span::styled("  VTA URL:         ", label_style),
-        Span::styled(state.vta_url.clone(), value_style),
-    ]));
+    // Active DIDs
+    if !state.active_dids.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from(format!(" Active DIDs ({})", state.active_dids.len()))
+                .fg(COLOR_SUCCESS)
+                .bold(),
+        );
+        lines.push(Line::from(""));
 
-    // VTA DID
-    lines.push(Line::from(vec![
-        Span::styled("  VTA DID:         ", label_style),
-        Span::styled(state.vta_did.clone(), value_style),
-    ]));
-
-    // Credential DID
-    lines.push(Line::from(vec![
-        Span::styled("  Credential DID:  ", label_style),
-        Span::styled(state.credential_did.clone(), value_style),
-    ]));
-
-    lines.push(Line::from(""));
-
-    // Key count
-    lines.push(Line::from(vec![
-        Span::styled("  Total keys managed: ", label_style),
-        Span::styled(state.key_count.to_string(), value_style),
-    ]));
+        for did_entry in &state.active_dids {
+            lines.push(Line::from(vec![
+                Span::styled("  ● ", Style::new().fg(COLOR_SUCCESS)),
+                Span::styled(
+                    format!("{:<16}", did_entry.label),
+                    Style::new().fg(COLOR_TEXT_DEFAULT),
+                ),
+                Span::styled(did_entry.did.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+            ]));
+        }
+    }
 
     lines
 }

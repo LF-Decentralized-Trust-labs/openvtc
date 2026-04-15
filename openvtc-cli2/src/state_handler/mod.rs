@@ -354,6 +354,9 @@ impl StateHandler {
             }
         };
 
+        // Set the profile name once (doesn't change during runtime)
+        state.main_page.content_panel.vta.profile = self.profile.clone();
+
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());

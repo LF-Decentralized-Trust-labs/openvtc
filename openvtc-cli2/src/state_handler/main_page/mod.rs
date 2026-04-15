@@ -243,6 +243,8 @@ impl MainPageState {
         self.content_panel.settings.org_did = config.public.lk_did.clone();
         self.content_panel.settings.persona_did = config.public.persona_did.to_string();
         // Sync VTA info
+        self.content_panel.vta.persona_did = config.public.persona_did.to_string();
+        self.content_panel.vta.mediator_did = config.public.mediator_did.clone();
         match &config.key_backend {
             KeyBackend::Vta {
                 vta_url,
@@ -260,6 +262,36 @@ impl MainPageState {
             }
         }
         self.content_panel.vta.key_count = config.key_info.len();
+        // Count persona vs relationship keys
+        self.content_panel.vta.persona_key_count = config
+            .key_info
+            .keys()
+            .filter(|k| k.starts_with(config.public.persona_did.as_str()))
+            .count();
+        self.content_panel.vta.relationship_key_count =
+            self.content_panel.vta.key_count - self.content_panel.vta.persona_key_count;
+        // Collect active DIDs
+        let mut active_dids = vec![content::ActiveDid {
+            did: config.public.persona_did.to_string(),
+            label: "Persona".to_string(),
+        }];
+        for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
+            if let Ok(rel) = rel_arc.lock()
+                && *rel.our_did != *config.public.persona_did
+            {
+                let alias = config
+                    .private
+                    .contacts
+                    .find_contact(remote_p_did)
+                    .and_then(|c| c.alias.clone())
+                    .unwrap_or_else(|| shorten_did(remote_p_did, 30));
+                active_dids.push(content::ActiveDid {
+                    did: rel.our_did.to_string(),
+                    label: format!("R-DID ({})", alias),
+                });
+            }
+        }
+        self.content_panel.vta.active_dids = active_dids;
 
         self.content_panel.settings.protection_type = match &config.public.protection {
             openvtc::config::ConfigProtectionType::Token(id) => {
