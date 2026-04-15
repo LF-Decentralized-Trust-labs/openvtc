@@ -177,16 +177,40 @@ impl MainPageState {
                     .contacts
                     .find_contact(remote_p_did)
                     .and_then(|c| c.alias.clone());
-                let vrc_sent = config
+                let vrcs_issued = config
                     .private
                     .vrcs_issued
                     .get(remote_p_did)
-                    .map_or(0, |m| m.len());
-                let vrc_received = config
+                    .map(|m| {
+                        m.values()
+                            .map(|vrc| content::RelationshipVrc {
+                                issuer: shorten_did(vrc.issuer(), 40),
+                                subject: shorten_did(vrc.subject(), 40),
+                                valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
+                                valid_until: vrc
+                                    .valid_until()
+                                    .map(|d| d.format("%Y-%m-%d").to_string()),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let vrcs_received = config
                     .private
                     .vrcs_received
                     .get(remote_p_did)
-                    .map_or(0, |m| m.len());
+                    .map(|m| {
+                        m.values()
+                            .map(|vrc| content::RelationshipVrc {
+                                issuer: shorten_did(vrc.issuer(), 40),
+                                subject: shorten_did(vrc.subject(), 40),
+                                valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
+                                valid_until: vrc
+                                    .valid_until()
+                                    .map(|d| d.format("%Y-%m-%d").to_string()),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 Some(RelationshipSummary {
                     remote_p_did: sanitize_display(remote_p_did, 256),
                     alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
@@ -194,8 +218,8 @@ impl MainPageState {
                     our_did: rel.our_did.to_string(),
                     remote_did: sanitize_display(&rel.remote_did, 256),
                     created: rel.created.format("%Y-%m-%d %H:%M").to_string(),
-                    vrc_sent_count: vrc_sent,
-                    vrc_received_count: vrc_received,
+                    vrcs_issued,
+                    vrcs_received,
                 })
             })
             .collect();

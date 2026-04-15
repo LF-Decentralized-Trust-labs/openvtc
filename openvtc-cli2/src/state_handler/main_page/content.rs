@@ -193,10 +193,23 @@ pub struct RelationshipSummary {
     pub remote_did: String,
     /// Formatted creation timestamp
     pub created: String,
-    /// Count of VRCs we issued to this party
-    pub vrc_sent_count: usize,
-    /// Count of VRCs we received from this party
-    pub vrc_received_count: usize,
+    /// VRCs we issued to this party
+    pub vrcs_issued: Vec<RelationshipVrc>,
+    /// VRCs we received from this party
+    pub vrcs_received: Vec<RelationshipVrc>,
+}
+
+/// Minimal VRC info for display in the relationship detail view.
+#[derive(Clone, Debug)]
+pub struct RelationshipVrc {
+    /// Issuer DID (shortened for display)
+    pub issuer: String,
+    /// Subject DID (shortened for display)
+    pub subject: String,
+    /// Formatted valid_from date
+    pub valid_from: String,
+    /// Formatted valid_until date (if set)
+    pub valid_until: Option<String>,
 }
 
 // ****************************************************************************

@@ -153,20 +153,63 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
         Span::styled("Created:      ", Style::new().fg(COLOR_TEXT_DEFAULT)),
         Span::styled(rel.created.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled("VRCs sent:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        Span::styled(
-            rel.vrc_sent_count.to_string(),
-            Style::new().fg(COLOR_TEXT_DEFAULT),
-        ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("VRCs received: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        Span::styled(
-            rel.vrc_received_count.to_string(),
-            Style::new().fg(COLOR_TEXT_DEFAULT),
-        ),
-    ]));
+    // VRCs section
+    let total_vrcs = rel.vrcs_issued.len() + rel.vrcs_received.len();
+    if total_vrcs > 0 {
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from(format!(
+                " Credentials ({} issued, {} received)",
+                rel.vrcs_issued.len(),
+                rel.vrcs_received.len()
+            ))
+            .fg(COLOR_SUCCESS)
+            .bold(),
+        );
+        lines.push(Line::from(""));
+
+        if !rel.vrcs_issued.is_empty() {
+            lines.push(Line::from("  Issued").fg(COLOR_TEXT_DEFAULT).bold());
+            for vrc in &rel.vrcs_issued {
+                let validity = match &vrc.valid_until {
+                    Some(until) => format!("{} → {}", vrc.valid_from, until),
+                    None => format!("{} → no expiry", vrc.valid_from),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("    ● ", Style::new().fg(COLOR_SUCCESS)),
+                    Span::styled(
+                        format!("To: {}  ", vrc.subject),
+                        Style::new().fg(COLOR_SOFT_PURPLE),
+                    ),
+                    Span::styled(validity, Style::new().fg(COLOR_DARK_GRAY)),
+                ]));
+            }
+        }
+
+        if !rel.vrcs_received.is_empty() {
+            if !rel.vrcs_issued.is_empty() {
+                lines.push(Line::from(""));
+            }
+            lines.push(Line::from("  Received").fg(COLOR_TEXT_DEFAULT).bold());
+            for vrc in &rel.vrcs_received {
+                let validity = match &vrc.valid_until {
+                    Some(until) => format!("{} → {}", vrc.valid_from, until),
+                    None => format!("{} → no expiry", vrc.valid_from),
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("    ● ", Style::new().fg(COLOR_SUCCESS)),
+                    Span::styled(
+                        format!("From: {}  ", vrc.issuer),
+                        Style::new().fg(COLOR_SOFT_PURPLE),
+                    ),
+                    Span::styled(validity, Style::new().fg(COLOR_DARK_GRAY)),
+                ]));
+            }
+        }
+    } else {
+        lines.push(Line::from(""));
+        lines.push(Line::from("  No credentials exchanged yet").fg(COLOR_DARK_GRAY));
+    }
 
     lines.push(Line::from(""));
     lines.push(
