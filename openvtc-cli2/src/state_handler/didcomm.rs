@@ -202,7 +202,10 @@ pub async fn build_listener_configs(
     // Add listeners for each relationship with a dedicated R-DID.
     // Include pending relationships (RequestSent, RequestAccepted) so that
     // messages arriving during an in-progress handshake are received after restart.
+    // Deduplicate by our_did to prevent multiple listeners for the same DID,
+    // which would cause a reconnect loop as the mediator detects duplicates.
     // Extract data from the Mutex before any .await to avoid holding the guard.
+    let mut seen_dids = std::collections::HashSet::new();
     let r_did_entries: Vec<(String, String)> = config
         .private
         .relationships
@@ -216,6 +219,7 @@ pub async fn build_listener_configs(
                     | RelationshipState::RequestSent
                     | RelationshipState::RequestAccepted
             ) && *rel.our_did != *config.public.persona_did
+                && seen_dids.insert(rel.our_did.to_string())
             {
                 Some((rel.our_did.to_string(), remote_p_did.to_string()))
             } else {
@@ -239,6 +243,13 @@ pub async fn build_listener_configs(
             ..Default::default()
         });
     }
+
+    debug!(
+        persona = %config.public.persona_did,
+        r_did_listeners = r_did_entries.len(),
+        total = configs.len(),
+        "built listener configs"
+    );
 
     configs
 }
