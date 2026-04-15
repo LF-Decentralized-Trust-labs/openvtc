@@ -60,6 +60,12 @@ async fn main() -> Result<()> {
         tracing::info!("Debug logging enabled → {log_path}");
     }
 
+    // On Linux, the keyring crate defaults to Secret Service (D-Bus) which
+    // isn't available on headless systems. Override with the kernel keyring
+    // (keyutils) which works everywhere — no GUI or daemon required.
+    #[cfg(target_os = "linux")]
+    keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+
     // Which configuration profile to use?
     let profile = if let Ok(env_profile) = env::var("OPENVTC_CONFIG_PROFILE") {
         // ENV Profile will override the CLI Argument
