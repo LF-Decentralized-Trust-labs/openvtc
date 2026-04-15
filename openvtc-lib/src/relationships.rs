@@ -271,11 +271,11 @@ impl Relationships {
                 };
                 match &v.path {
                     KeySourceMaterial::Derived { path } => {
-                        if let KeyBackend::Bip32 { root, .. } = key_backend {
-                            if let Ok(mut s) = root.get_secret_from_path(path, kp) {
-                                s.id = k.clone();
-                                all_secrets.push(s);
-                            }
+                        if let KeyBackend::Bip32 { root, .. } = key_backend
+                            && let Ok(mut s) = root.get_secret_from_path(path, kp)
+                        {
+                            s.id = k.clone();
+                            all_secrets.push(s);
                         }
                     }
                     KeySourceMaterial::Imported { seed } => {
@@ -295,26 +295,35 @@ impl Relationships {
             }
         }
 
-        // Fetch all VTA secrets — sequential but batched into a single pass
-        // (VtaClient doesn't implement Clone so we can't spawn concurrent tasks,
-        // but this is still faster than the old code which interleaved profile
-        // creation with key fetches per-relationship)
-        if let Some(client) = vta_client {
-            if !vta_fetches.is_empty() {
-                debug!("fetching {} VTA secrets", vta_fetches.len());
-                for fetch in &vta_fetches {
-                    match client.get_key_secret(&fetch.key_id).await {
-                        Ok(resp) => {
-                            if let Ok(mut s) =
-                                crate::config::secret_from_vta_response(&resp, fetch.purpose)
-                            {
-                                s.id = fetch.secret_id.clone();
-                                all_secrets.push(s);
-                            }
+        // Fetch all VTA secrets concurrently — VtaClient is Clone so cloned
+        // clients share the HTTP connection pool and auth tokens.
+        if let Some(client) = vta_client
+            && !vta_fetches.is_empty()
+        {
+            debug!("fetching {} VTA secrets concurrently", vta_fetches.len());
+            let mut handles = Vec::with_capacity(vta_fetches.len());
+            for fetch in &vta_fetches {
+                let client = client.clone();
+                let key_id = fetch.key_id.clone();
+                handles.push(tokio::spawn(
+                    async move { client.get_key_secret(&key_id).await },
+                ));
+            }
+            for (fetch, handle) in vta_fetches.iter().zip(handles) {
+                match handle.await {
+                    Ok(Ok(resp)) => {
+                        if let Ok(mut s) =
+                            crate::config::secret_from_vta_response(&resp, fetch.purpose)
+                        {
+                            s.id = fetch.secret_id.clone();
+                            all_secrets.push(s);
                         }
-                        Err(e) => {
-                            warn!(key_id = %fetch.key_id, "VTA get_key_secret failed: {e}");
-                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!(key_id = %fetch.key_id, "VTA get_key_secret failed: {e}");
+                    }
+                    Err(e) => {
+                        warn!(key_id = %fetch.key_id, "VTA fetch task panicked: {e}");
                     }
                 }
             }
