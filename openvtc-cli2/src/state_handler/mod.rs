@@ -560,6 +560,9 @@ impl StateHandler {
                             state.main_page.content_panel.relationships.mode =
                                 main_page::content::RelationshipsMode::Detail { index };
                         },
+                        RelationshipAction::RequestVrc { remote_p_did } => {
+                            handle_relationship_request_vrc(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
+                        },
                     },
                     Action::Credential(ca) => match ca {
                         CredentialAction::SwitchTab => {
@@ -1516,6 +1519,44 @@ fn handle_relationship_edit_alias(
     state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail { index };
     state.main_page.content_panel.relationships.status_message = Some("Alias updated".to_string());
     state.main_page.log("Alias updated");
+}
+
+async fn handle_relationship_request_vrc(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+) {
+    let display_name = resolve_did_to_display(config, remote_p_did);
+
+    match credential_actions::send_vrc_request(config, tdk, service, remote_p_did, None).await {
+        Ok(()) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("VRC requested from {display_name}"));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            state.main_page.log_detailed(
+                format!("VRC requested from {display_name}"),
+                format!(
+                    "VRC Request Sent\n\
+                     ────────────────\n\
+                     To:      {display_name}\n\
+                     DID:     {remote_p_did}",
+                ),
+            );
+        }
+        Err(e) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("VRC request failed: {e}"));
+            state
+                .main_page
+                .log(format!("VRC request to {display_name} failed: {e}"));
+        }
+    }
 }
 
 // ============================================================

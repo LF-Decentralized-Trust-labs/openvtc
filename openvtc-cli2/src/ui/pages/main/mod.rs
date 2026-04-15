@@ -544,6 +544,16 @@ impl MainPage {
                         }
                         true
                     }
+                    KeyCode::Char('v') => {
+                        if let Some(rel) = rels.relationships.get(index) {
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::RequestVrc {
+                                    remote_p_did: rel.remote_p_did.clone(),
+                                },
+                            ));
+                        }
+                        true
+                    }
                     _ => false,
                 }
             }

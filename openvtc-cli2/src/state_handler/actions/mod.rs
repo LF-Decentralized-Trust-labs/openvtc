@@ -93,6 +93,10 @@ pub enum RelationshipAction {
     CancelEditAlias {
         index: usize,
     },
+    /// Request a VRC from a relationship partner
+    RequestVrc {
+        remote_p_did: String,
+    },
 }
 
 #[allow(dead_code)]

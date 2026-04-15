@@ -169,7 +169,10 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
     ]));
 
     lines.push(Line::from(""));
-    lines.push(Line::from("e: edit alias  p: ping  d: remove  Esc: back").fg(COLOR_DARK_GRAY));
+    lines.push(
+        Line::from("e: edit alias  p: ping  v: request VRC  d: remove  Esc: back")
+            .fg(COLOR_DARK_GRAY),
+    );
 
     lines
 }
