@@ -195,6 +195,51 @@ openvtc --no-default-features setup
 
 ## Getting Started
 
+### Workspace Layout
+
+This repository is a Cargo workspace. The root `Cargo.toml` defines the following crates:
+
+| Crate | Role |
+|---|---|
+| `openvtc-lib` | Core library — config, storage, cryptography, DID logic |
+| `openvtc-cli` | Primary command-line interface |
+| `openvtc-cli2` | Terminal UI (TUI) interface |
+| `openvtc-service` | Background service component |
+| `robotic-maintainers` | Automated maintenance tooling |
+
+### Building
+
+From the repo root:
+
+```bash
+cargo build
+```
+
+To build without the OpenPGP card feature:
+
+```bash
+cargo build --no-default-features
+```
+
+### Testing
+
+```bash
+cargo test
+```
+
+For a specific crate:
+
+```bash
+cargo test -p openvtc-lib
+```
+
+### PR Guidelines
+
+- Use conventional commits where possible (e.g. `docs: expand CONTRIBUTING.md`)
+- Sign the CLA — GitHub will guide you through this when you open a PR
+- Reference the issue your PR addresses (e.g. `Closes #13`)
+- If platform-specific behaviour is uncertain, write `> **Note:** TBD — help wanted` rather than documenting incorrect information
+
 ### Initial Setup
 
 1. Install locally from the source.
