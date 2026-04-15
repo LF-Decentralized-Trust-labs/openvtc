@@ -357,6 +357,42 @@ impl StateHandler {
         // Set the profile name once (doesn't change during runtime)
         state.main_page.content_panel.vta.profile = self.profile.clone();
 
+        // Fetch VTA context name if using VTA backend
+        if let openvtc::config::KeyBackend::Vta {
+            vta_url,
+            credential_did,
+            credential_private_key,
+            vta_did,
+            ..
+        } = &config.key_backend
+        {
+            use secrecy::ExposeSecret;
+            if let Ok(token) = vta_sdk::session::challenge_response(
+                vta_url,
+                credential_did,
+                credential_private_key.expose_secret(),
+                vta_did,
+            )
+            .await
+            {
+                let client = vta_sdk::client::VtaClient::new(vta_url);
+                client.set_token(token.access_token);
+                if let Ok(resp) = client.list_contexts().await {
+                    // Match context by DID to find the active one
+                    if let Some(ctx) = resp
+                        .contexts
+                        .iter()
+                        .find(|c| c.did.as_deref() == Some(config.public.persona_did.as_str()))
+                    {
+                        state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+                    } else if let Some(ctx) = resp.contexts.first() {
+                        // Fallback to first context
+                        state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+                    }
+                }
+            }
+        }
+
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());

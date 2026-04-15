@@ -39,6 +39,14 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         Span::styled(state.profile.clone(), value_style),
     ]));
 
+    // VTA Context name
+    if let Some(ctx) = &state.context_name {
+        lines.push(Line::from(vec![
+            Span::styled("  VTA Context:   ", label_style),
+            Span::styled(ctx.clone(), value_style),
+        ]));
+    }
+
     // Persona DID
     lines.push(Line::from(vec![
         Span::styled("  Persona DID:   ", label_style),

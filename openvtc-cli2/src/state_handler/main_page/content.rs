@@ -30,6 +30,8 @@ pub struct ContentPanelState {
 pub struct VtaState {
     /// Active configuration profile name
     pub profile: String,
+    /// VTA context name (fetched from VTA service)
+    pub context_name: Option<String>,
     /// Persona DID
     pub persona_did: String,
     /// Mediator DID
