@@ -44,25 +44,22 @@ pub struct MainPageState {
 impl MainPageState {
     /// Push a timestamped entry to the activity log (O(1) bounded insertion).
     pub fn log(&mut self, message: impl Into<String>) {
-        if self.activity_log.len() >= MAX_ACTIVITY_LOG_ENTRIES {
-            self.activity_log.pop_front();
-        }
-        let timestamp = chrono::Local::now().format("%H:%M:%S");
-        self.activity_log.push_back(ActivityLogEntry {
-            summary: format!("[{}] {}", timestamp, message.into()),
-            detail: None,
-        });
+        self.log_detailed_inner(message.into(), None);
     }
 
     /// Push a timestamped entry with detailed diagnostic info.
     pub fn log_detailed(&mut self, message: impl Into<String>, detail: impl Into<String>) {
+        self.log_detailed_inner(message.into(), Some(detail.into()));
+    }
+
+    fn log_detailed_inner(&mut self, message: String, detail: Option<String>) {
         if self.activity_log.len() >= MAX_ACTIVITY_LOG_ENTRIES {
             self.activity_log.pop_front();
         }
         let timestamp = chrono::Local::now().format("%H:%M:%S");
         self.activity_log.push_back(ActivityLogEntry {
-            summary: format!("[{}] {}", timestamp, message.into()),
-            detail: Some(detail.into()),
+            summary: format!("[{}] {}", timestamp, message),
+            detail,
         });
     }
 }

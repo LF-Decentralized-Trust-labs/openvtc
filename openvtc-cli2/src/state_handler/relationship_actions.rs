@@ -3,7 +3,6 @@
 //! Ported from `openvtc-cli/src/relationships/messages.rs` and `mod.rs`.
 
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{
@@ -535,24 +534,15 @@ fn create_request_message(
     our_did: &str,
     friendly_name: Option<&str>,
 ) -> Result<Message> {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-
-    let message = Message::build(
-        Uuid::new_v4().to_string(),
-        openvtc::protocol_urls::RELATIONSHIP_REQUEST.to_string(),
+    super::didcomm::build_didcomm_message(
+        openvtc::protocol_urls::RELATIONSHIP_REQUEST,
         json!(RelationshipRequestBody {
             reason: reason.map(|r| r.to_string()),
             did: our_did.to_string(),
             name: friendly_name.map(|n| n.to_string()),
         }),
+        from,
+        to,
+        None,
     )
-    .from(from.to_string())
-    .to(to.to_string())
-    .created_time(now)
-    .expires_time(now + 60 * 60 * 48) // 48 hours
-    .finalize();
-
-    Ok(message)
 }

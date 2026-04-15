@@ -16,6 +16,39 @@ use openvtc::relationships::RelationshipState;
 use tokio::sync::mpsc;
 use tracing::debug;
 
+/// Standard message expiry: 48 hours.
+pub const MESSAGE_EXPIRY_SECS: u64 = 60 * 60 * 48;
+
+/// Listener ID used for the persona DID listener.
+pub const PERSONA_LISTENER_ID: &str = "persona";
+
+/// Build a timestamped DIDComm message with standard 48-hour expiry.
+pub fn build_didcomm_message(
+    type_url: &str,
+    body: serde_json::Value,
+    from: &str,
+    to: &str,
+    thid: Option<&str>,
+) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+    let mut builder = affinidi_tdk::didcomm::Message::build(
+        uuid::Uuid::new_v4().to_string(),
+        type_url.to_string(),
+        body,
+    )
+    .from(from.to_string())
+    .to(to.to_string())
+    .created_time(now)
+    .expires_time(now + MESSAGE_EXPIRY_SECS);
+    if let Some(t) = thid {
+        builder = builder.thid(t.to_string());
+    }
+    Ok(builder.finalize())
+}
+
 /// Events sent from DIDComm router handlers to the state handler main loop.
 #[derive(Debug)]
 pub enum DIDCommEvent {
@@ -168,6 +201,22 @@ fn make_profile(
     TDKProfile::new(alias, did, Some(mediator), secrets)
 }
 
+/// Default restart policy for all listeners.
+///
+/// Only restart on failure, not on clean disconnect. This prevents a
+/// reconnect loop when the mediator closes our connection as a "duplicate"
+/// (e.g. when a second process or listener opens a connection for the same DID).
+/// Clean exits (listen() returns Ok) will NOT trigger a restart.
+fn default_listener_restart_policy() -> RestartPolicy {
+    RestartPolicy::OnFailure {
+        max_retries: None,
+        backoff: RetryConfig {
+            initial_delay_secs: 5,
+            max_delay_secs: 60,
+        },
+    }
+}
+
 /// Build `ListenerConfig`s from the loaded `Config`.
 ///
 /// Always includes a "persona" listener. Adds per-relationship listeners
@@ -180,22 +229,12 @@ pub async fn build_listener_configs(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
 ) -> Vec<ListenerConfig> {
-    // Only restart on failure, not on clean disconnect. This prevents a
-    // reconnect loop when the mediator closes our connection as a "duplicate"
-    // (e.g. when a second process or listener opens a connection for the same DID).
-    // Clean exits (listen() returns Ok) will NOT trigger a restart.
-    let restart = RestartPolicy::OnFailure {
-        max_retries: None,
-        backoff: RetryConfig {
-            initial_delay_secs: 5,
-            max_delay_secs: 60,
-        },
-    };
+    let restart = default_listener_restart_policy();
 
     let persona_secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
 
     let mut configs = vec![ListenerConfig {
-        id: "persona".to_string(),
+        id: PERSONA_LISTENER_ID.to_string(),
         profile: make_profile(
             &config.public.persona_did,
             &config.public.mediator_did,
@@ -268,7 +307,7 @@ pub async fn build_listener_configs(
 /// the relationship-listener naming convention.
 pub fn listener_id_for_did(our_did: &str, persona_did: &str) -> String {
     if our_did == persona_did {
-        "persona".to_string()
+        PERSONA_LISTENER_ID.to_string()
     } else {
         format!("rel-{}", short_did_id(our_did))
     }
@@ -377,20 +416,14 @@ pub fn spawn_lifecycle_logger(
 pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -> ListenerConfig {
     let secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
     ListenerConfig {
-        id: "persona".to_string(),
+        id: PERSONA_LISTENER_ID.to_string(),
         profile: make_profile(
             &config.public.persona_did,
             &config.public.mediator_did,
             "Persona",
             secrets,
         ),
-        restart_policy: RestartPolicy::OnFailure {
-            max_retries: None,
-            backoff: RetryConfig {
-                initial_delay_secs: 5,
-                max_delay_secs: 60,
-            },
-        },
+        restart_policy: default_listener_restart_policy(),
         auto_delete: true,
         ..Default::default()
     }
@@ -449,9 +482,7 @@ pub async fn relationship_listener_config(
             &format!("R-DID for {}", truncate_did_display(remote_p_did)),
             secrets,
         ),
-        restart_policy: RestartPolicy::Always {
-            backoff: RetryConfig::default(),
-        },
+        restart_policy: default_listener_restart_policy(),
         auto_delete: true,
         ..Default::default()
     }

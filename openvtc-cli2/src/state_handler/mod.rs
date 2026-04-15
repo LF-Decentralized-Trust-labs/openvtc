@@ -393,7 +393,10 @@ impl StateHandler {
 
         // Wait for persona listener to connect (up to 15 s)
         match didcomm_service
-            .wait_connected("persona", std::time::Duration::from_secs(30))
+            .wait_connected(
+                didcomm::PERSONA_LISTENER_ID,
+                std::time::Duration::from_secs(30),
+            )
             .await
         {
             Ok(()) => {
@@ -423,7 +426,11 @@ impl StateHandler {
             && let Ok(ping_msg) =
                 build_trust_ping(&config.public.persona_did, &config.public.mediator_did)
             && didcomm_service
-                .send_message("persona", ping_msg, &config.public.mediator_did)
+                .send_message(
+                    didcomm::PERSONA_LISTENER_ID,
+                    ping_msg,
+                    &config.public.mediator_did,
+                )
                 .await
                 .is_ok()
         {
@@ -636,7 +643,7 @@ impl StateHandler {
                                 state.main_page.log("Reconnecting to mediator...");
 
                                 // Replace the persona listener with the new mediator DID
-                                let _ = didcomm_service.remove_listener("persona").await;
+                                let _ = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await;
                                 let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                                 if let Err(e) = didcomm_service.add_listener(new_config).await {
                                     state.connection.status =
@@ -644,7 +651,7 @@ impl StateHandler {
                                     state.main_page.log(format!("Reconnect failed: {e}"));
                                 } else {
                                     match didcomm_service
-                                        .wait_connected("persona", std::time::Duration::from_secs(30))
+                                        .wait_connected(didcomm::PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
                                         .await
                                     {
                                         Ok(()) => {
@@ -703,7 +710,7 @@ impl StateHandler {
                             state.main_page.log("Reconnecting to mediator...");
 
                             // Replace the persona listener
-                            let _ = didcomm_service.remove_listener("persona").await;
+                            let _ = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await;
                             let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                             if let Err(e) = didcomm_service.add_listener(new_config).await {
                                 state.connection.status =
@@ -711,7 +718,7 @@ impl StateHandler {
                                 state.main_page.log(format!("Reconnect failed: {e}"));
                             } else {
                                 match didcomm_service
-                                    .wait_connected("persona", std::time::Duration::from_secs(30))
+                                    .wait_connected(didcomm::PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
                                     .await
                                 {
                                     Ok(()) => {
@@ -915,7 +922,7 @@ impl StateHandler {
                         )
                     {
                         match didcomm_service
-                            .send_message("persona", ping_msg, &config.public.mediator_did)
+                            .send_message(didcomm::PERSONA_LISTENER_ID, ping_msg, &config.public.mediator_did)
                             .await
                         {
                             Ok(()) => {
@@ -1115,14 +1122,14 @@ async fn handle_inbox_accept_relationship(
 
 async fn handle_inbox_reject_relationship(
     config: &mut Box<Config>,
-    tdk: &TDK,
+    _tdk: &TDK,
     service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     task_id: &str,
     reason: Option<&str>,
 ) {
-    match inbox_actions::reject_relationship_request(config, tdk, service, task_id, reason).await {
+    match inbox_actions::reject_relationship_request(config, service, task_id, reason).await {
         Ok(()) => inbox_save_and_sync(
             config,
             state,
@@ -1174,14 +1181,14 @@ async fn handle_inbox_accept_vrc_request(
 
 async fn handle_inbox_reject_vrc_request(
     config: &mut Box<Config>,
-    tdk: &TDK,
+    _tdk: &TDK,
     service: &affinidi_messaging_didcomm_service::DIDCommService,
     state: &mut State,
     profile: &str,
     task_id: &str,
     reason: Option<&str>,
 ) {
-    match inbox_actions::reject_vrc_request(config, tdk, service, task_id, reason).await {
+    match inbox_actions::reject_vrc_request(config, service, task_id, reason).await {
         Ok(()) => inbox_save_and_sync(
             config,
             state,

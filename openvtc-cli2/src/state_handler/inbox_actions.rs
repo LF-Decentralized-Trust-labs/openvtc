@@ -5,7 +5,6 @@
 //! `&mut Config` and `&TDK` owned by the StateHandler.
 
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::TDK;
@@ -22,7 +21,6 @@ use openvtc::{
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 /// Accept an inbound relationship request.
 ///
@@ -166,7 +164,6 @@ pub async fn accept_relationship_request(
 /// Sends rejection message to the remote party and removes the task.
 pub async fn reject_relationship_request(
     config: &mut Config,
-    _tdk: &TDK,
     service: &DIDCommService,
     task_id: &str,
     reason: Option<&str>,
@@ -341,7 +338,6 @@ pub async fn accept_vrc_request(
 /// Sends a rejection message to the requester and removes the task.
 pub async fn reject_vrc_request(
     config: &mut Config,
-    _tdk: &TDK,
     service: &DIDCommService,
     task_id: &str,
     reason: Option<&str>,
@@ -432,42 +428,26 @@ pub fn dismiss_task(config: &mut Config, task_id: &str) -> Result<()> {
 
 /// Build a DIDComm relationship-acceptance message.
 fn build_accept_message(from: &str, to: &str, r_did: &str, thid: &str) -> Result<Message> {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-
-    Ok(Message::build(
-        Uuid::new_v4().to_string(),
-        openvtc::protocol_urls::RELATIONSHIP_REQUEST_ACCEPT.to_string(),
+    super::didcomm::build_didcomm_message(
+        openvtc::protocol_urls::RELATIONSHIP_REQUEST_ACCEPT,
         json!(RelationshipAcceptBody {
             did: r_did.to_string()
         }),
+        from,
+        to,
+        Some(thid),
     )
-    .from(from.to_string())
-    .to(to.to_string())
-    .thid(thid.to_string())
-    .created_time(now)
-    .expires_time(now + 60 * 60 * 48)
-    .finalize())
 }
 
 /// Build a DIDComm relationship-rejection message.
 fn build_reject_message(from: &str, to: &str, reason: Option<&str>, thid: &str) -> Result<Message> {
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-
-    Ok(Message::build(
-        Uuid::new_v4().to_string(),
-        openvtc::protocol_urls::RELATIONSHIP_REQUEST_REJECT.to_string(),
+    super::didcomm::build_didcomm_message(
+        openvtc::protocol_urls::RELATIONSHIP_REQUEST_REJECT,
         json!(RelationshipRejectBody {
             reason: reason.map(|r| r.to_string())
         }),
+        from,
+        to,
+        Some(thid),
     )
-    .from(from.to_string())
-    .to(to.to_string())
-    .thid(thid.to_string())
-    .created_time(now)
-    .expires_time(now + 60 * 60 * 48)
-    .finalize())
 }

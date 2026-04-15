@@ -18,7 +18,6 @@ use openvtc::{
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
 /// Maximum allowed message body size in bytes (1 MB).
 const MAX_MESSAGE_BODY_SIZE: usize = 1_048_576;
@@ -28,6 +27,27 @@ const MAX_TASKS: usize = 10_000;
 
 /// Maximum number of relationships allowed before rejecting new requests.
 const MAX_RELATIONSHIPS: usize = 5_000;
+
+/// Check that a new task can be created: no ID collision and under capacity limits.
+/// Returns Ok(()) or logs a warning and returns Err(()).
+fn check_task_capacity(
+    config: &Config,
+    task_id: &Arc<String>,
+    from_did: &Arc<String>,
+) -> Result<(), ()> {
+    if config.private.tasks.get_by_id(task_id).is_some() {
+        warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
+        return Err(());
+    }
+    if config.private.tasks.tasks.len() >= MAX_TASKS {
+        warn!(
+            "task limit reached ({}) — rejecting inbound message",
+            MAX_TASKS
+        );
+        return Err(());
+    }
+    Ok(())
+}
 
 /// Process an inbound DIDComm message.
 ///
@@ -311,17 +331,7 @@ pub async fn process_inbound_message(
                     .unwrap_or_default(),
             );
 
-            // Prevent task ID collision/hijacking
-            if config.private.tasks.get_by_id(&task_id).is_some() {
-                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
-                return Ok(false);
-            }
-
-            if config.private.tasks.tasks.len() >= MAX_TASKS {
-                warn!(
-                    "task limit reached ({}) — rejecting inbound message",
-                    MAX_TASKS
-                );
+            if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
             }
 
@@ -395,17 +405,7 @@ pub async fn process_inbound_message(
                 }
             }
 
-            // Prevent task ID collision/hijacking
-            if config.private.tasks.get_by_id(&task_id).is_some() {
-                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
-                return Ok(false);
-            }
-
-            if config.private.tasks.tasks.len() >= MAX_TASKS {
-                warn!(
-                    "task limit reached ({}) — rejecting inbound message",
-                    MAX_TASKS
-                );
+            if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
             }
 
@@ -429,17 +429,7 @@ pub async fn process_inbound_message(
             let vrc: dtg_credentials::DTGCredential = serde_json::from_value(message.body.clone())?;
             let task_id = Arc::new(message.thid.clone().unwrap_or_else(|| message.id.clone()));
 
-            // Prevent task ID collision/hijacking
-            if config.private.tasks.get_by_id(&task_id).is_some() {
-                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
-                return Ok(false);
-            }
-
-            if config.private.tasks.tasks.len() >= MAX_TASKS {
-                warn!(
-                    "task limit reached ({}) — rejecting inbound message",
-                    MAX_TASKS
-                );
+            if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
             }
 
@@ -469,17 +459,7 @@ pub async fn process_inbound_message(
                     .unwrap_or_default(),
             );
 
-            // Prevent task ID collision/hijacking
-            if config.private.tasks.get_by_id(&task_id).is_some() {
-                warn!(task_id = %task_id, from = %from_did, "rejecting duplicate task ID");
-                return Ok(false);
-            }
-
-            if config.private.tasks.tasks.len() >= MAX_TASKS {
-                warn!(
-                    "task limit reached ({}) — rejecting inbound message",
-                    MAX_TASKS
-                );
+            if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
             }
 
@@ -528,23 +508,11 @@ fn create_finalize_message(
     to: &str,
     task_id: &Arc<String>,
 ) -> Result<Message, anyhow::Error> {
-    use std::time::SystemTime;
-
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-
-    let message = Message::build(
-        Uuid::new_v4().to_string(),
-        openvtc::protocol_urls::RELATIONSHIP_REQUEST_FINALIZE.to_string(),
+    super::didcomm::build_didcomm_message(
+        openvtc::protocol_urls::RELATIONSHIP_REQUEST_FINALIZE,
         json!({}),
+        from,
+        to,
+        Some(task_id.as_str()),
     )
-    .from(from.to_string())
-    .to(to.to_string())
-    .thid(task_id.to_string())
-    .created_time(now)
-    .expires_time(now + 60 * 60 * 48)
-    .finalize();
-
-    Ok(message)
 }
