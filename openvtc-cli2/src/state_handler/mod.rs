@@ -391,8 +391,8 @@ impl StateHandler {
         }
         info!(count = listeners.len(), "DIDComm listeners registered");
 
-        // Wait for persona listener to connect and measure connection time
-        let connect_start = std::time::Instant::now();
+        // Wait for persona listener to connect.
+        // Latency starts at 0 and updates from the first keepalive ping round-trip.
         match didcomm_service
             .wait_connected(
                 didcomm::PERSONA_LISTENER_ID,
@@ -401,15 +401,9 @@ impl StateHandler {
             .await
         {
             Ok(()) => {
-                let connect_ms = connect_start.elapsed().as_millis();
-                state.connection.status = state::MediatorStatus::Connected {
-                    latency_ms: connect_ms,
-                };
-                state.connection.last_ping_latency_ms = Some(connect_ms);
+                state.connection.status = state::MediatorStatus::Connected { latency_ms: 0 };
                 state.connection.messaging_active = true;
-                state
-                    .main_page
-                    .log(format!("Connected to mediator ({connect_ms}ms)"));
+                state.main_page.log("Connected to mediator");
             }
             Err(e) => {
                 state.connection.status = state::MediatorStatus::Failed(format!("{e}"));
