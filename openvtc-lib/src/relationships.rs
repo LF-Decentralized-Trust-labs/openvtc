@@ -228,7 +228,13 @@ impl Relationships {
                 })?;
                 (lock.our_did.clone(), lock.state.clone())
             };
-            if state == RelationshipState::Established && &our_did != our_p_did {
+            if matches!(
+                state,
+                RelationshipState::Established
+                    | RelationshipState::RequestSent
+                    | RelationshipState::RequestAccepted
+            ) && &our_did != our_p_did
+            {
                 // Create an ATMProfile for this relationship
                 let profile =
                     ATMProfile::new(&atm, None, our_did.to_string(), Some(mediator.to_string()))
