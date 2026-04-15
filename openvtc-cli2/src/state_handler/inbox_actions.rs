@@ -59,7 +59,7 @@ pub async fn accept_relationship_request(
     };
 
     // Optionally generate a random relationship DID for privacy
-    let our_did = if generate_r_did {
+    let (our_did, listener_id) = if generate_r_did {
         let r_did = Arc::new(
             super::relationship_actions::create_relationship_did(
                 tdk,
@@ -68,7 +68,10 @@ pub async fn accept_relationship_request(
             )
             .await?,
         );
-        // Register a listener for the new R-DID
+        let lid = super::didcomm::listener_id_for_did(&r_did, &config.public.persona_did);
+        // Register a listener for the new R-DID and wait for it to connect.
+        // The accept message must be sent FROM the R-DID's listener so the
+        // DIDComm encryption keys match the message's `from` field.
         let listener_config = super::didcomm::relationship_listener_config(
             config,
             tdk,
@@ -80,9 +83,18 @@ pub async fn accept_relationship_request(
         if let Err(e) = service.add_listener(listener_config).await {
             tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
         }
-        r_did
+        if let Err(e) = service
+            .wait_connected(&lid, std::time::Duration::from_secs(15))
+            .await
+        {
+            tracing::warn!(listener = %lid, error = %e, "R-DID listener not connected in time");
+        }
+        (r_did, lid)
     } else {
-        Arc::clone(&config.public.persona_did)
+        (
+            Arc::clone(&config.public.persona_did),
+            "persona".to_string(),
+        )
     };
 
     // Add or update contact with sender's name as alias
@@ -120,11 +132,11 @@ pub async fn accept_relationship_request(
             .await?;
     }
 
-    // Build and send acceptance message to the requester's R-DID (from request body).
-    // Send via the persona listener which is already connected — the newly created
-    // R-DID listener may not be fully connected to the mediator yet.
+    // Build and send acceptance message to the requester's DID.
+    // Must send via the matching listener so the DIDComm encryption keys
+    // match the message's `from` field (R-DID listener for R-DIDs, persona for persona).
     let msg = build_accept_message(&our_did, &their_did, &our_did, &task_id)?;
-    super::didcomm::send_message_via(service, &msg, "persona", &their_did)
+    super::didcomm::send_message_via(service, &msg, &listener_id, &their_did)
         .await
         .map_err(|e| anyhow::anyhow!("failed to send acceptance: {e}"))?;
 
