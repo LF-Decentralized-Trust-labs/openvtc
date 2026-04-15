@@ -842,8 +842,30 @@ impl StateHandler {
                             }
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
-                            let sender_did = from.as_deref().unwrap_or("unknown");
-                            let sender_display = resolve_did_to_display(&config, sender_did);
+                            let sender_did = from.as_deref().unwrap_or("");
+                            // Pong often has no `from` field. Resolve by looking
+                            // at our most recent outbound ping task to determine
+                            // who we pinged.
+                            let sender_display = if sender_did.is_empty() {
+                                // Find the most recent TrustPing task to get the target
+                                config
+                                    .private
+                                    .tasks
+                                    .tasks
+                                    .values()
+                                    .filter_map(|t| {
+                                        let task = t.lock().ok()?;
+                                        if let openvtc::tasks::TaskType::TrustPing { to, .. } = &task.type_ {
+                                            Some(resolve_did_to_display(&config, to))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .next()
+                                    .unwrap_or_else(|| "unknown".to_string())
+                            } else {
+                                resolve_did_to_display(&config, sender_did)
+                            };
                             let ping_info = ping_sent_at.take();
                             if let Some((sent_at, is_manual)) = ping_info {
                                 let ms = sent_at.elapsed().as_millis();
@@ -1366,21 +1388,22 @@ async fn handle_relationship_ping(
                 state.main_page.log(format!("Failed to save config: {e}"));
             }
             state.main_page.sync_from_config(config);
+            let using_rdid = our_did_str != *config.public.persona_did;
             state.main_page.log_detailed(
-                format!("Trust-ping sent to {display_name}"),
+                format!(
+                    "Trust-ping sent to {display_name}{}",
+                    if using_rdid { " (via R-DID)" } else { "" }
+                ),
                 format!(
                     "Trust-Ping Sent\n\
                      ───────────────\n\
-                     To (display):    {display_name}\n\
-                     To (persona):    {remote_p_did}\n\
-                     To (R-DID):      {remote_did_str}\n\
-                     From (our DID):  {our_did_str}\n\
-                     Using R-DID:     {}",
-                    if our_did_str != *config.public.persona_did {
-                        "yes"
-                    } else {
-                        "no"
-                    },
+                     To:              {display_name}\n\
+                     Sent to DID:     {remote_did_str}\n\
+                     Sent from DID:   {our_did_str}\n\
+                     Remote persona:  {remote_p_did}\n\
+                     Using R-DIDs:    {}\n\
+                     Routed via:      mediator",
+                    if using_rdid { "yes" } else { "no" },
                 ),
             );
         }
