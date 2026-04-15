@@ -36,9 +36,7 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
 
     // Connection status (compact)
     let status_line = match &connection.status {
-        MediatorStatus::Connected { latency_ms } => {
-            Line::from(format!("Connected ({}ms)", latency_ms)).fg(COLOR_SUCCESS)
-        }
+        MediatorStatus::Connected => Line::from("Connected").fg(COLOR_SUCCESS),
         MediatorStatus::Connecting => Line::from("Connecting...").fg(COLOR_TEXT_DEFAULT),
         MediatorStatus::Failed(reason) => {
             let display = if reason.len() > 40 {
@@ -54,12 +52,6 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
         MediatorStatus::Unknown => Line::from("Not connected").fg(COLOR_ORANGE),
     };
     lines.push(status_line);
-
-    if connection.queued_outbound > 0 {
-        lines.push(
-            Line::from(format!("Queued outbound: {}", connection.queued_outbound)).fg(COLOR_ORANGE),
-        );
-    }
 
     if let Some(msg) = &state.status_message {
         lines.push(Line::from(""));

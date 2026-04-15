@@ -169,15 +169,11 @@ fn render_status_help(
 
     lines.push(Line::from(""));
 
-    // Connection status with latency
+    // Connection status
     let conn_line = match &connection.status {
-        MediatorStatus::Connected { latency_ms } => Line::from(vec![
+        MediatorStatus::Connected => Line::from(vec![
             Span::styled("  Connection:   ", label_style),
             Span::styled("Connected", Style::new().fg(COLOR_SUCCESS)),
-            Span::styled(
-                format!(" ({}ms)", latency_ms),
-                Style::new().fg(COLOR_DARK_GRAY),
-            ),
         ]),
         MediatorStatus::Connecting => Line::from(vec![
             Span::styled("  Connection:   ", label_style),

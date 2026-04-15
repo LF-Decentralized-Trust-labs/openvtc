@@ -38,14 +38,8 @@ pub enum ActivePage {
 pub struct ConnectionState {
     /// Current mediator connection status.
     pub status: MediatorStatus,
-    /// Round-trip latency of the last successful trust-ping (milliseconds).
-    /// Not yet populated via DIDCommService — reserved for future use.
-    #[allow(dead_code)]
-    pub last_ping_latency_ms: Option<u128>,
     /// Whether the DIDComm message loop is actively running.
     pub messaging_active: bool,
-    /// Number of outbound messages queued for retry.
-    pub queued_outbound: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -57,8 +51,8 @@ pub enum MediatorStatus {
     Initializing(String),
     /// Actively connecting to the mediator.
     Connecting,
-    /// Successfully connected, with measured round-trip latency.
-    Connected { latency_ms: u128 },
+    /// Successfully connected.
+    Connected,
     /// Connection failed with an error description.
     Failed(String),
 }

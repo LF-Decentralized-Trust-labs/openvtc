@@ -1351,16 +1351,10 @@ impl ComponentRender<()> for MainPage {
 
         // Connection status indicator
         let connection_line = match &self.props.connection.status {
-            MediatorStatus::Connected { latency_ms } => Line::from(vec![
-                Span::styled(
-                    "Connected ",
-                    ratatui::style::Style::default().fg(COLOR_SUCCESS),
-                ),
-                Span::styled(
-                    format!("({}ms)", latency_ms),
-                    ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),
-                ),
-            ]),
+            MediatorStatus::Connected => Line::from(Span::styled(
+                "Connected",
+                ratatui::style::Style::default().fg(COLOR_SUCCESS),
+            )),
             MediatorStatus::Connecting => Line::from(Span::styled(
                 "Connecting...",
                 ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),

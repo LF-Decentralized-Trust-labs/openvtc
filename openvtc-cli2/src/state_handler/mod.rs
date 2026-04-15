@@ -401,7 +401,7 @@ impl StateHandler {
             .await
         {
             Ok(()) => {
-                state.connection.status = state::MediatorStatus::Connected { latency_ms: 0 };
+                state.connection.status = state::MediatorStatus::Connected;
                 state.connection.messaging_active = true;
                 state.main_page.log("Connected to mediator");
             }
@@ -414,44 +414,8 @@ impl StateHandler {
         }
         let _ = self.state_tx.send(state.clone());
 
-        // Track when a trust-ping was sent to measure round-trip latency.
-        // `true` = manual ping (log to activity), `false` = keepalive (silent).
-        let mut ping_sent_at: Option<(std::time::Instant, bool)> = None;
-
-        // Periodic keepalive ping to monitor mediator connectivity (every 30s)
-        let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(30));
-        keepalive_interval.tick().await; // consume the immediate first tick
-
-        // Send initial ping to measure round-trip latency.
-        // Ping ourselves (via the mediator) — the mediator forwards it to our
-        // own mailbox and we receive it back, measuring the full round-trip.
-        if state.connection.messaging_active {
-            match build_trust_ping(&config.public.persona_did, &config.public.persona_did) {
-                Ok(ping_msg) => {
-                    match didcomm_service
-                        .send_message(
-                            didcomm::PERSONA_LISTENER_ID,
-                            ping_msg,
-                            &config.public.persona_did,
-                        )
-                        .await
-                    {
-                        Ok(()) => {
-                            debug!("initial keepalive ping sent (self-ping via mediator)");
-                            ping_sent_at = Some((std::time::Instant::now(), false));
-                        }
-                        Err(e) => {
-                            debug!("initial keepalive ping failed: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    debug!("failed to build initial ping: {e}");
-                }
-            }
-        } else {
-            debug!("skipping initial ping — messaging not active");
-        }
+        // Track when a manual trust-ping was sent (for activity log latency display).
+        let mut ping_sent_at: Option<std::time::Instant> = None;
 
         let result = loop {
             tokio::select! {
@@ -553,7 +517,7 @@ impl StateHandler {
                         },
                         RelationshipAction::Ping { remote_p_did } => {
                             handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
-                            ping_sent_at = Some((std::time::Instant::now(), true));
+                            ping_sent_at = Some(std::time::Instant::now());
                         },
                         RelationshipAction::Remove { remote_p_did } => {
                             handle_relationship_remove(&mut config, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
@@ -675,7 +639,7 @@ impl StateHandler {
                                     {
                                         Ok(()) => {
                                             state.connection.status =
-                                                state::MediatorStatus::Connected { latency_ms: 0 };
+                                                state::MediatorStatus::Connected;
                                             state.connection.messaging_active = true;
                                             state.main_page.log("Reconnected to mediator");
                                         }
@@ -742,7 +706,7 @@ impl StateHandler {
                                 {
                                     Ok(()) => {
                                         state.connection.status =
-                                            state::MediatorStatus::Connected { latency_ms: 0 };
+                                            state::MediatorStatus::Connected;
                                         state.connection.messaging_active = true;
                                         state.main_page.log("Reconnected to mediator");
                                     }
@@ -816,8 +780,7 @@ impl StateHandler {
                             let sender = from.as_deref().unwrap_or("unknown");
                             let sender_arc = std::sync::Arc::new(sender.to_string());
 
-                            // Only respond to pings from ourselves (keepalive), the mediator, or established relationships
-                            let is_self = sender == *config.public.persona_did;
+                            // Only respond to pings from the mediator or established relationships
                             let is_mediator = sender == config.public.mediator_did;
                             let has_relationship = config
                                 .private
@@ -830,7 +793,7 @@ impl StateHandler {
                                 })
                                 .unwrap_or(false);
 
-                            if is_self || is_mediator || has_relationship {
+                            if is_mediator || has_relationship {
                                 // Send pong to verified sender, setting `from` to our
                                 // listener's DID so the recipient can identify us.
                                 let our_listener_did = didcomm_service
@@ -898,35 +861,23 @@ impl StateHandler {
                             } else {
                                 resolve_did_to_display(&config, sender_did)
                             };
-                            let ping_info = ping_sent_at.take();
-                            if let Some((sent_at, is_manual)) = ping_info {
-                                let ms = sent_at.elapsed().as_millis();
-                                state.connection.status =
-                                    state::MediatorStatus::Connected { latency_ms: ms };
-                                state.connection.last_ping_latency_ms = Some(ms);
-                                if is_manual {
-                                    state.main_page.log_detailed(
-                                        format!("Pong from {sender_display} ({ms}ms)"),
-                                        format!(
-                                            "Trust-Pong Received\n\
-                                             ───────────────────\n\
-                                             From (display):  {sender_display}\n\
-                                             From (DID):      {sender_did}\n\
-                                             Latency:         {ms}ms",
-                                        ),
-                                    );
-                                }
-                            } else {
-                                state.main_page.log_detailed(
-                                    format!("Pong from {sender_display}"),
-                                    format!(
-                                        "Trust-Pong Received (unsolicited)\n\
-                                         ─────────────────────────────────\n\
-                                         From (display):  {sender_display}\n\
-                                         From (DID):      {sender_did}",
-                                    ),
-                                );
-                            }
+                            let ms = ping_sent_at
+                                .take()
+                                .map(|sent_at| sent_at.elapsed().as_millis());
+                            let latency_str = ms
+                                .map(|v| format!(" ({v}ms)"))
+                                .unwrap_or_default();
+                            state.main_page.log_detailed(
+                                format!("Pong from {sender_display}{latency_str}"),
+                                format!(
+                                    "Trust-Pong Received\n\
+                                     ───────────────────\n\
+                                     From (display):  {sender_display}\n\
+                                     From (DID):      {sender_did}\n\
+                                     Latency:         {}",
+                                    ms.map(|v| format!("{v}ms")).unwrap_or_else(|| "n/a".into()),
+                                ),
+                            );
                         }
                     }
                 },
@@ -934,36 +885,7 @@ impl StateHandler {
                 Some(log_msg) = lifecycle_log_rx.recv() => {
                     state.main_page.log(log_msg);
                 },
-                // Periodic keepalive ping for connectivity monitoring
-                _ = keepalive_interval.tick() => {
-                    debug!(
-                        messaging_active = state.connection.messaging_active,
-                        "keepalive tick"
-                    );
-                    if state.connection.messaging_active
-                        && let Ok(ping_msg) = build_trust_ping(
-                            &config.public.persona_did,
-                            &config.public.persona_did,
-                        )
-                    {
-                        match didcomm_service
-                            .send_message(didcomm::PERSONA_LISTENER_ID, ping_msg, &config.public.persona_did)
-                            .await
-                        {
-                            Ok(()) => {
-                                debug!("keepalive ping sent to mediator");
-                                ping_sent_at = Some((std::time::Instant::now(), false));
-                            }
-                            Err(e) => {
-                                state.connection.status = state::MediatorStatus::Failed(
-                                    format!("keepalive failed: {e}"),
-                                );
-                                state.connection.messaging_active = false;
-                                state.main_page.log(format!("Keepalive ping failed: {e}"));
-                            }
-                        }
-                    }
-                },
+                // (keepalive removed — WebSocket-level pings handle connectivity)
                 // Catch and handle interrupt signal to gracefully shutdown
                 Ok(interrupted) = interrupt_rx.recv() => {
                     break interrupted;
@@ -2109,27 +2031,6 @@ fn handle_settings_token_back(state: &mut State) {
         .messages
         .clear();
     state.main_page.content_panel.settings.token.reset_completed = false;
-}
-
-/// Build a DIDComm trust-ping message.
-fn build_trust_ping(from: &str, to: &str) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-
-    let message = affinidi_tdk::didcomm::Message::build(
-        uuid::Uuid::new_v4().to_string(),
-        "https://didcomm.org/trust-ping/2.0/ping".to_string(),
-        serde_json::json!({"response_requested": true}),
-    )
-    .from(from.to_string())
-    .to(to.to_string())
-    .created_time(now)
-    .expires_time(now + 60 * 5) // 5 minutes
-    .finalize();
-
-    Ok(message)
 }
 
 /// Build a trust-pong response message.
