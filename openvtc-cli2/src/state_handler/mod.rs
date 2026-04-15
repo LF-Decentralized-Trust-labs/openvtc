@@ -152,6 +152,15 @@ impl StateHandler {
                     Ok(SetupWizardExit::Config(mut config)) => {
                         crate::apply_env_overrides(&mut config);
 
+                        // The setup wizard saved the config but the TDK secrets
+                        // resolver is empty. Load persona key secrets so the
+                        // DIDComm service can authenticate with the mediator.
+                        if let Err(e) = config.load_persona_secrets(&tdk).await {
+                            state
+                                .main_page
+                                .log(format!("Warning: failed to load persona keys: {e}"));
+                        }
+
                         // Initialize main page state from the freshly created config
                         state.active_page = ActivePage::Main;
                         state.main_page.menu_panel.selected = true;
