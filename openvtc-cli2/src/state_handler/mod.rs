@@ -422,20 +422,35 @@ impl StateHandler {
         let mut keepalive_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         keepalive_interval.tick().await; // consume the immediate first tick
 
-        // Send initial ping to get first latency reading
-        if state.connection.messaging_active
-            && let Ok(ping_msg) =
-                build_trust_ping(&config.public.persona_did, &config.public.mediator_did)
-            && didcomm_service
-                .send_message(
-                    didcomm::PERSONA_LISTENER_ID,
-                    ping_msg,
-                    &config.public.mediator_did,
-                )
-                .await
-                .is_ok()
-        {
-            ping_sent_at = Some((std::time::Instant::now(), false));
+        // Send initial ping to measure round-trip latency.
+        // Ping ourselves (via the mediator) — the mediator forwards it to our
+        // own mailbox and we receive it back, measuring the full round-trip.
+        if state.connection.messaging_active {
+            match build_trust_ping(&config.public.persona_did, &config.public.persona_did) {
+                Ok(ping_msg) => {
+                    match didcomm_service
+                        .send_message(
+                            didcomm::PERSONA_LISTENER_ID,
+                            ping_msg,
+                            &config.public.persona_did,
+                        )
+                        .await
+                    {
+                        Ok(()) => {
+                            debug!("initial keepalive ping sent (self-ping via mediator)");
+                            ping_sent_at = Some((std::time::Instant::now(), false));
+                        }
+                        Err(e) => {
+                            debug!("initial keepalive ping failed: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    debug!("failed to build initial ping: {e}");
+                }
+            }
+        } else {
+            debug!("skipping initial ping — messaging not active");
         }
 
         let result = loop {
@@ -801,7 +816,8 @@ impl StateHandler {
                             let sender = from.as_deref().unwrap_or("unknown");
                             let sender_arc = std::sync::Arc::new(sender.to_string());
 
-                            // Only respond to pings from the mediator or established relationships
+                            // Only respond to pings from ourselves (keepalive), the mediator, or established relationships
+                            let is_self = sender == *config.public.persona_did;
                             let is_mediator = sender == config.public.mediator_did;
                             let has_relationship = config
                                 .private
@@ -814,7 +830,7 @@ impl StateHandler {
                                 })
                                 .unwrap_or(false);
 
-                            if is_mediator || has_relationship {
+                            if is_self || is_mediator || has_relationship {
                                 // Send pong to verified sender, setting `from` to our
                                 // listener's DID so the recipient can identify us.
                                 let our_listener_did = didcomm_service
@@ -857,6 +873,7 @@ impl StateHandler {
                             }
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
+                            debug!(from = ?from, "TrustPongReceived event");
                             let sender_did = from.as_deref().unwrap_or("");
                             // Pong often has no `from` field. Resolve by looking
                             // at our most recent outbound ping task to determine
@@ -919,17 +936,22 @@ impl StateHandler {
                 },
                 // Periodic keepalive ping for connectivity monitoring
                 _ = keepalive_interval.tick() => {
+                    debug!(
+                        messaging_active = state.connection.messaging_active,
+                        "keepalive tick"
+                    );
                     if state.connection.messaging_active
                         && let Ok(ping_msg) = build_trust_ping(
                             &config.public.persona_did,
-                            &config.public.mediator_did,
+                            &config.public.persona_did,
                         )
                     {
                         match didcomm_service
-                            .send_message(didcomm::PERSONA_LISTENER_ID, ping_msg, &config.public.mediator_did)
+                            .send_message(didcomm::PERSONA_LISTENER_ID, ping_msg, &config.public.persona_did)
                             .await
                         {
                             Ok(()) => {
+                                debug!("keepalive ping sent to mediator");
                                 ping_sent_at = Some((std::time::Instant::now(), false));
                             }
                             Err(e) => {
