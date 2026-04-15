@@ -275,6 +275,8 @@ pub struct LogsState {
     /// Currently selected log entry index (0 = newest).
     /// Managed locally by the UI component, not stored in State.
     pub selected_index: usize,
+    /// When true, show the full text of the selected log entry.
+    pub detail_view: bool,
 }
 
 // ****************************************************************************

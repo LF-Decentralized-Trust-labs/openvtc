@@ -43,6 +43,8 @@ pub struct MainPage {
     confirm_buffer: String,
     /// Logs panel selected index (local to UI, not in State)
     logs_selected: usize,
+    /// Whether the logs panel is showing the detail view of a selected entry
+    logs_detail_view: bool,
 }
 
 struct Props {
@@ -71,6 +73,7 @@ impl Component for MainPage {
             passphrase_buffer: String::new(),
             confirm_buffer: String::new(),
             logs_selected: 0,
+            logs_detail_view: false,
         }
         .move_with_state(state)
     }
@@ -1184,6 +1187,25 @@ impl MainPage {
     fn handle_logs_key(&mut self, key: KeyEvent) -> bool {
         let total = self.props.main_page.activity_log.len();
 
+        // Detail view mode — Esc or Enter to close
+        if self.logs_detail_view {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.logs_detail_view = false;
+                    return true;
+                }
+                KeyCode::Char('c') if total > 0 => {
+                    let entries: Vec<&String> =
+                        self.props.main_page.activity_log.iter().rev().collect();
+                    if let Some(entry) = entries.get(self.logs_selected) {
+                        copy_to_clipboard(entry, "Log entry", &self.action_tx);
+                    }
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+
         match key.code {
             KeyCode::Up if self.logs_selected > 0 => {
                 self.logs_selected -= 1;
@@ -1191,6 +1213,10 @@ impl MainPage {
             }
             KeyCode::Down if self.logs_selected + 1 < total => {
                 self.logs_selected += 1;
+                true
+            }
+            KeyCode::Enter if total > 0 => {
+                self.logs_detail_view = true;
                 true
             }
             KeyCode::Char('c') if total > 0 => {
@@ -1389,6 +1415,7 @@ impl ComponentRender<()> for MainPage {
             &self.props.connection,
             &self.props.main_page.activity_log,
             self.logs_selected,
+            self.logs_detail_view,
         );
 
         // Activity log panel
