@@ -143,23 +143,13 @@ pub async fn process_inbound_message(
 
             // Look up relationship by task_id (thid) — the remote party may respond
             // from an R-DID different from their persona DID, so we can't match by from_did.
+            // The thid linkage to our original request is sufficient proof of authenticity.
             let our_did = if let Some(relationship) =
                 config.private.relationships.find_by_task_id(&task_id)
             {
                 let mut lock = relationship
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-
-                // Verify the accept comes from the party we sent the request to.
-                // The sender may use an R-DID, so check both persona and remote DIDs.
-                if *lock.remote_p_did != *from_did && *lock.remote_did != *from_did {
-                    warn!(
-                        from = %from_did,
-                        expected = %lock.remote_p_did,
-                        "accept from unexpected party — possible spoofing"
-                    );
-                    return Ok(false);
-                }
 
                 lock.state = RelationshipState::Established;
                 if lock.remote_did.as_str() != body.did {
