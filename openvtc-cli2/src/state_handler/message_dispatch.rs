@@ -41,10 +41,19 @@ pub async fn process_inbound_message(
     service: &DIDCommService,
     message: &Message,
 ) -> Result<bool, anyhow::Error> {
-    // Validate sender
+    // Validate sender — trust-pong messages may omit `from` (the thid
+    // linkage to our outbound ping is sufficient for task cleanup).
     let from_did = match &message.from {
         Some(did) => Arc::new(did.to_string()),
         None => {
+            // Allow pong through for task cleanup even without `from`
+            if message.typ == openvtc::protocol_urls::TRUST_PONG {
+                if let Some(task_id) = &message.thid {
+                    config.private.tasks.remove(&Arc::new(task_id.to_string()));
+                }
+                debug!("trust-pong (no from) — task cleaned up");
+                return Ok(true);
+            }
             warn!("anonymous inbound message rejected (no 'from' field)");
             return Ok(false);
         }
