@@ -141,44 +141,50 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            // Look up relationship by task_id (thid) — the remote party may respond
-            // from an R-DID different from their persona DID, so we can't match by from_did.
-            // The thid linkage to our original request is sufficient proof of authenticity.
-            let our_did = if let Some(relationship) =
-                config.private.relationships.find_by_task_id(&task_id)
-            {
-                let mut lock = relationship
+            // All handshake messages use persona DIDs for from/to, so from_did
+            // is the remote party's persona DID. Look up by task_id first, then
+            // by persona DID. Validate sender matches the expected remote party.
+            let relationship = config
+                .private
+                .relationships
+                .find_by_task_id(&task_id)
+                .or_else(|| config.private.relationships.get(&from_did));
+
+            if let Some(rel) = relationship {
+                let mut lock = rel
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
 
-                lock.state = RelationshipState::Established;
-                if lock.remote_did.as_str() != body.did {
-                    lock.remote_did = Arc::new(body.did.clone());
+                // Verify sender is the party we sent the request to
+                if *lock.remote_p_did != *from_did {
+                    warn!(
+                        from = %from_did,
+                        expected = %lock.remote_p_did,
+                        "accept from unexpected party"
+                    );
+                    return Ok(false);
                 }
-                lock.our_did.to_string()
-            } else if let Some(relationship) = config.private.relationships.get(&from_did) {
-                // Fallback: try matching by from_did (persona DID case)
-                let mut lock = relationship
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+
                 lock.state = RelationshipState::Established;
-                if lock.remote_did.as_str() != body.did {
-                    lock.remote_did = Arc::new(body.did.clone());
-                }
-                lock.our_did.to_string()
+                lock.remote_did = Arc::new(body.did.clone());
             } else {
                 warn!(from = %from_did, task_id = %task_id, "no relationship found for accept message");
                 return Ok(false);
-            };
+            }
 
-            // Send finalize message using our relationship DID (R-DID if available).
-            // If the send fails, still persist the Established state — the relationship
-            // is usable on our side and the remote party will eventually time out or retry.
-            let finalize_msg = create_finalize_message(&our_did, &from_did, &task_id)?;
+            // Send finalize using persona DIDs (same as request and accept).
+            // If the send fails, still persist the Established state.
+            let finalize_msg =
+                create_finalize_message(&config.public.persona_did, &from_did, &task_id)?;
 
-            if let Err(e) =
-                super::didcomm::send_message(service, config, &finalize_msg, &our_did, &from_did)
-                    .await
+            if let Err(e) = super::didcomm::send_message(
+                service,
+                config,
+                &finalize_msg,
+                &config.public.persona_did,
+                &from_did,
+            )
+            .await
             {
                 warn!(to = %from_did, error = %e, "failed to send finalize — relationship established locally");
             }
@@ -195,17 +201,29 @@ pub async fn process_inbound_message(
         MessageType::RelationshipRequestFinalize => {
             let task_id = require_thid(message)?;
 
-            // Look up by task_id first (handles R-DID case), fall back to from_did
+            // All handshake messages use persona DIDs, so from_did is the
+            // remote persona DID which is the relationship HashMap key.
             let found = config
                 .private
                 .relationships
                 .find_by_task_id(&task_id)
-                .or_else(|| config.private.relationships.find_by_remote_did(&from_did));
+                .or_else(|| config.private.relationships.get(&from_did));
 
             if let Some(relationship) = found {
                 let mut lock = relationship
                     .lock()
                     .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+
+                // Verify sender matches expected remote party
+                if *lock.remote_p_did != *from_did {
+                    warn!(
+                        from = %from_did,
+                        expected = %lock.remote_p_did,
+                        "finalize from unexpected party"
+                    );
+                    return Ok(false);
+                }
+
                 lock.state = RelationshipState::Established;
             } else {
                 warn!(from = %from_did, task_id = %task_id, "no relationship found for finalize message");
