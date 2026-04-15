@@ -39,24 +39,23 @@ fn truncate_did(did: &str) -> Cow<'_, str> {
 /// Tries: contact alias by DID → R-DID relationship → persona contact alias → truncated DID.
 fn resolve_did_to_display(config: &openvtc::config::Config, did: &str) -> String {
     // Direct contact lookup
-    if let Some(contact) = config.private.contacts.find_contact(did) {
-        if let Some(alias) = &contact.alias {
-            return alias.clone();
-        }
+    if let Some(contact) = config.private.contacts.find_contact(did)
+        && let Some(alias) = &contact.alias
+    {
+        return alias.clone();
     }
     // R-DID → persona DID → contact alias
     let did_arc = std::sync::Arc::new(did.to_string());
-    if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc) {
-        if let Ok(lock) = rel.lock() {
-            let p_did = lock.remote_p_did.to_string();
-            if let Some(contact) = config.private.contacts.find_contact(&p_did) {
-                if let Some(alias) = &contact.alias {
-                    return alias.clone();
-                }
-            }
-            // No alias, but show the persona DID instead of the R-DID
-            return truncate_did(&p_did).into_owned();
+    if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc)
+        && let Ok(lock) = rel.lock()
+    {
+        let p_did = lock.remote_p_did.to_string();
+        if let Some(contact) = config.private.contacts.find_contact(&p_did)
+            && let Some(alias) = &contact.alias
+        {
+            return alias.clone();
         }
+        return truncate_did(&p_did).into_owned();
     }
     truncate_did(did).into_owned()
 }

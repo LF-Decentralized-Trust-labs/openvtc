@@ -99,19 +99,23 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            // Clean up R-DID listener if present, then remove relationship and task
-            if let Some(rel) = config.private.relationships.find_by_task_id(&task_id) {
-                if let Ok(lock) = rel.lock() {
-                    if *lock.our_did != *config.public.persona_did {
-                        let lid = super::didcomm::listener_id_for_did(
-                            &lock.our_did,
-                            &config.public.persona_did,
-                        );
-                        if let Err(e) = service.remove_listener(&lid).await {
-                            warn!(listener = %lid, error = %e, "failed to remove R-DID listener during rejection cleanup");
-                        }
-                    }
-                }
+            // Extract listener ID before async work to avoid holding MutexGuard across await
+            let listener_to_remove = if let Some(rel_arc) =
+                config.private.relationships.find_by_task_id(&task_id)
+                && let Ok(lock) = rel_arc.lock()
+                && *lock.our_did != *config.public.persona_did
+            {
+                Some(super::didcomm::listener_id_for_did(
+                    &lock.our_did,
+                    &config.public.persona_did,
+                ))
+            } else {
+                None
+            };
+            if let Some(lid) = listener_to_remove
+                && let Err(e) = service.remove_listener(&lid).await
+            {
+                warn!(listener = %lid, error = %e, "failed to remove R-DID listener during rejection cleanup");
             }
             let _ = config.private.relationships.remove_by_task_id(
                 &task_id,

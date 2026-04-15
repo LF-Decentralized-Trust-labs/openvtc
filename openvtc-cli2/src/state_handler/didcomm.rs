@@ -344,14 +344,14 @@ pub fn spawn_lifecycle_logger(
                     let _ = log_tx.send(msg);
 
                     // Detect rapid cycling: if we disconnected within 10s of last disconnect
-                    if let Some(prev) = last_disconnect.get(&listener_id) {
-                        if now.duration_since(*prev).as_secs() < 10 {
-                            let warn_msg = format!(
-                                "WARNING: Listener '{listener_id}' cycling rapidly — possible duplicate connection"
-                            );
-                            tracing::warn!(listener = %listener_id, "rapid disconnect cycling detected");
-                            let _ = log_tx.send(warn_msg);
-                        }
+                    if let Some(prev) = last_disconnect.get(&listener_id)
+                        && now.duration_since(*prev).as_secs() < 10
+                    {
+                        let warn_msg = format!(
+                            "WARNING: Listener '{listener_id}' cycling rapidly — possible duplicate connection"
+                        );
+                        tracing::warn!(listener = %listener_id, "rapid disconnect cycling detected");
+                        let _ = log_tx.send(warn_msg);
                     }
                     last_disconnect.insert(listener_id, now);
                 }

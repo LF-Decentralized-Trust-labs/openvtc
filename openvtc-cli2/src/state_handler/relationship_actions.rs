@@ -245,20 +245,22 @@ pub async fn remove_relationship(
     let key = Arc::new(remote_p_did.to_string());
 
     // Clean up R-DID listener before removing the relationship data
-    if let Some(rel) = config.private.relationships.get(&key) {
-        if let Ok(lock) = rel.lock() {
-            if *lock.our_did != *config.public.persona_did {
-                let listener_id =
-                    super::didcomm::listener_id_for_did(&lock.our_did, &config.public.persona_did);
-                if let Err(e) = service.remove_listener(&listener_id).await {
-                    tracing::warn!(
-                        listener = %listener_id,
-                        error = %e,
-                        "failed to remove R-DID listener"
-                    );
-                }
-            }
-        }
+    // Extract listener ID before any async work to avoid holding MutexGuard across await
+    let listener_to_remove = if let Some(rel_arc) = config.private.relationships.get(&key)
+        && let Ok(lock) = rel_arc.lock()
+        && *lock.our_did != *config.public.persona_did
+    {
+        Some(super::didcomm::listener_id_for_did(
+            &lock.our_did,
+            &config.public.persona_did,
+        ))
+    } else {
+        None
+    };
+    if let Some(lid) = listener_to_remove
+        && let Err(e) = service.remove_listener(&lid).await
+    {
+        tracing::warn!(listener = %lid, error = %e, "failed to remove R-DID listener");
     }
 
     config.private.relationships.remove(

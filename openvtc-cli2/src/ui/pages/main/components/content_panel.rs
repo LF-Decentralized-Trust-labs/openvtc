@@ -29,6 +29,7 @@ use super::{
 // ****************************************************************************
 impl ContentPanelState {
     /// Render the content panel based on current state
+    #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
         frame: &mut Frame,
