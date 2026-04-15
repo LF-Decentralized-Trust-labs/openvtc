@@ -21,6 +21,7 @@ use pgp::{
     types::{KeyDetails, PlainSecretParams, SecretParams},
 };
 use regex::Regex;
+use secrecy::SecretString;
 use std::time::SystemTime;
 use zeroize::Zeroize;
 
@@ -147,7 +148,7 @@ impl PGPKeys {
         };
         let ki = KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: private_keymultibase,
+                seed: SecretString::new(private_keymultibase.into()),
             },
             secret,
             expiry: expiry_td,
@@ -389,9 +390,12 @@ fn extract_primary_key_details(primary_key: &SignedSecretKey) -> Result<(KeyFlag
         signature.key_flags(),
         KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: secret
-                    .get_private_keymultibase()
-                    .context("Failed to encode primary key as multibase")?,
+                seed: SecretString::new(
+                    secret
+                        .get_private_keymultibase()
+                        .context("Failed to encode primary key as multibase")?
+                        .into(),
+                ),
             },
             secret,
             expiry: expiry_td,

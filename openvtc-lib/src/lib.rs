@@ -21,6 +21,7 @@ pub mod logs;
 pub mod maintainers;
 #[cfg(feature = "openpgp-card")]
 pub mod openpgp_card;
+pub mod process_lock;
 pub mod relationships;
 pub mod tasks;
 pub mod vrc;

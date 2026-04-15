@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use openvtc::{config::Config, logs::LogFamily};
-use secrecy::SecretString;
+use secrecy::{SecretBox, SecretString};
 use tracing::info;
 
 /// Save the config to disk using the profile name.
@@ -57,7 +57,7 @@ pub fn set_passphrase(config: &mut Config, profile: &str, passphrase: &str) -> R
 
     validate_passphrase(passphrase)?;
     let key = derive_passphrase_key(passphrase.as_bytes(), b"openvtc-unlock-code-v1")?;
-    config.unlock_code = Some(key.to_vec());
+    config.unlock_code = Some(SecretBox::new(Box::new(key.to_vec())));
     config.public.protection = ConfigProtectionType::Encrypted;
     config.public.logs.insert(
         LogFamily::Config,

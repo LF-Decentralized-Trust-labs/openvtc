@@ -115,11 +115,19 @@ OpenVTC supports multiple profiles, allowing you to represent different identiti
 
 To use a specific profile when running the tool, set the environment variable `OPENVTC_CONFIG_PROFILE` with the name of your profile. For example:
 
-```bash
-export OPENVTC_CONFIG_PROFILE=profile-1
-```
+**Linux/macOS (bash/zsh):**
 
-> **Tip:** Add `OPENVTC_CONFIG_PROFILE` variable to ~/.zshrc or ~/.bashrc to persist across terminal sessions.
+```bash
+export OPENVTC_CONFIG_PROFILE=profile-1 
+```
+> Add to `~/.zshrc` or `~/.bashrc` to persist across sessions.
+
+**Windows (PowerShell):**
+
+```powershell
+$env:OPENVTC_CONFIG_PROFILE = "profile-1"
+```
+> On Windows, to keep this setting permanently, add it to your PowerShell profile or go to System Properties and set it under Environment Variables.
 
 Each profile manages two types of configurations:
 
@@ -134,16 +142,35 @@ Stored in JSON format, the public configuration contains environment-specific de
 
 Config file location:
 
+**Default location (all platforms unless `OPENVTC_CONFIG_PATH` is set):**
+
 - Default profile: `~/.config/openvtc/config.json`
 - Named profiles: `~/.config/openvtc/config-<PROFILE_NAME>.json`
 
+On Windows this resolves to:
+
+```
+C:\Users\<YourUser>\.config\openvtc\config.json
+```
+
+> Path is built from `dirs::home_dir()` plus `.config/openvtc/`.
+
+
+
 You can change the default location where the public configuration is saved by setting the environment variable `OPENVTC_CONFIG_PATH` with the new path. For example:
+
+**Linux/macOS (bash/zsh):**
 
 ```bash
 export OPENVTC_CONFIG_PATH=~/.config/openvtc-tool
 ```
+**Windows (PowerShell):**
 
-> **Tip:** Add `OPENVTC_CONFIG_PATH` variable to ~/.zshrc or ~/.bashrc to persist across terminal sessions.
+```powershell
+$env:OPENVTC_CONFIG_PATH = "C:\custom\path\openvtc"
+```
+> Ensure the value is a directory path. OpenVTC will create it if it does not exist.
+
 
 ### Private Configuration
 
@@ -160,7 +187,11 @@ The private configuration uses the same encryption method as the [secured config
 
 ### Secured Configuration
 
-Sensitive information is stored in the operating system's secure storage, e.g., macOS Keychain or Linux Keyring.
+Sensitive information is stored in the operating system's secure storage through the project's `keyring` integration:
+
+- **macOS** — Keychain
+- **Linux** — Secret Service keyring
+- **Windows** — Windows Credential Manager
 
 The secured configuration includes:
 
@@ -194,6 +225,51 @@ openvtc --no-default-features setup
 ```
 
 ## Getting Started
+
+### Workspace Layout
+
+This repository is a Cargo workspace. The root `Cargo.toml` defines the following crates:
+
+| Crate | Role |
+|---|---|
+| `openvtc-lib` | Core library — config, storage, cryptography, DID logic |
+| `openvtc-cli` | Primary command-line interface |
+| `openvtc-cli2` | Terminal UI (TUI) interface |
+| `openvtc-service` | Background service component |
+| `robotic-maintainers` | Automated maintenance tooling |
+
+### Building
+
+From the repo root:
+
+```bash
+cargo build
+```
+
+To build without the OpenPGP card feature:
+
+```bash
+cargo build --no-default-features
+```
+
+### Testing
+
+```bash
+cargo test
+```
+
+For a specific crate:
+
+```bash
+cargo test -p openvtc-lib
+```
+
+### PR Guidelines
+
+- Use conventional commits where possible (e.g. `docs: expand CONTRIBUTING.md`)
+- Sign the CLA — GitHub will guide you through this when you open a PR
+- Reference the issue your PR addresses (e.g. `Closes #13`)
+- If platform-specific behaviour is uncertain, write `> **Note:** TBD — help wanted` rather than documenting incorrect information
 
 ### Initial Setup
 

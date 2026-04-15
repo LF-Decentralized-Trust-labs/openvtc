@@ -49,7 +49,7 @@ The OpenVTC tool manages configuration data across three storage types:
 | Storage Type        | Content                                                                   | Storage Location                                         | Encryption                             |
 | ------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------- | -------------------------------------- |
 | **PublicConfig**    | Metadata, DIDs, friendly names, logs, reference to encrypted private data | `~/.config/openvtc/config.json` (or `config-{profile}.json`) | Private field only                     |
-| **SecuredConfig**   | BIP32 seed, key derivation info, cryptographic materials                  | OS secure storage (keyring/keychain)                     | Based on protection mode               |
+| **SecuredConfig** | BIP32 seed, key derivation info, cryptographic materials | OS secure storage via `keyring` crate (macOS: Keychain, Linux: Secret Service, Windows: Credential Manager) | Based on protection mode |
 | **ProtectedConfig** | Contacts, relationships, tasks, VRCs                                      | Encrypted inside `PublicConfig.private` field            | Always encrypted with `m/1'/0'/0'` key |
 
 **Loading Configuration:**

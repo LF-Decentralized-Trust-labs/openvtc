@@ -83,9 +83,11 @@ impl Config {
 
         // Determine key backend from secured config
         let key_backend = if let Some(ref bip32_seed) = sc.bip32_seed {
-            // Legacy BIP32 config
+            // Legacy BIP32 config — call .expose_secret() to get the inner &str.
             let bip32_root = ExtendedSigningKey::from_seed(
-                BASE64_URL_SAFE_NO_PAD.decode(bip32_seed)?.as_slice(),
+                BASE64_URL_SAFE_NO_PAD
+                    .decode(bip32_seed.expose_secret())?
+                    .as_slice(),
             )
             .map_err(|e| {
                 OpenVTCError::BIP32(format!(
@@ -95,17 +97,18 @@ impl Config {
             })?;
             KeyBackend::Bip32 {
                 root: bip32_root,
-                seed: SecretString::new(bip32_seed.clone().into()),
+                seed: bip32_seed.clone(),
             }
         } else if let Some(ref credential_bundle) = sc.credential_bundle {
-            // VTA-managed config
-            let bundle = CredentialBundle::decode(credential_bundle).map_err(|e| {
-                OpenVTCError::Config(format!("Couldn't decode VTA credential bundle: {:?}", e))
-            })?;
+            // VTA-managed config — expose only at the point of decoding.
+            let bundle =
+                CredentialBundle::decode(credential_bundle.expose_secret()).map_err(|e| {
+                    OpenVTCError::Config(format!("Couldn't decode VTA credential bundle: {:?}", e))
+                })?;
             let encryption_seed =
                 ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
             KeyBackend::Vta {
-                credential_bundle: SecretString::new(credential_bundle.clone().into()),
+                credential_bundle: credential_bundle.clone(),
                 credential_did: bundle.did.clone(),
                 credential_private_key: SecretString::new(
                     bundle.private_key_multibase.clone().into(),
@@ -268,7 +271,8 @@ impl Config {
             #[cfg(feature = "openpgp-card")]
             token_user_pin: token_user_pin.clone(),
             protection_method: sc.protection_method.clone(),
-            unlock_code: unlock_passphrase.map(|uc| uc.0.expose_secret().to_owned()),
+            unlock_code: unlock_passphrase
+                .map(|uc| SecretBox::new(Box::new(uc.0.expose_secret().to_owned()))),
             atm_profiles,
             vrcs,
         })

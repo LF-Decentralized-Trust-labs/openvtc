@@ -92,6 +92,14 @@ pub enum OpenVTCError {
     /// A `Mutex` was found in a poisoned state.
     #[error("Mutex poisoned: {0}")]
     MutexPoisoned(String),
+
+    /// Another instance of openvtc is already running for this profile.
+    #[error("Duplicate instance running for profile '{0}'")]
+    DuplicateInstance(String),
+
+    /// A process lock-file operation (create, read, or remove) failed.
+    #[error("Lock file error: {0}")]
+    LockFile(String),
 }
 
 #[cfg(test)]
