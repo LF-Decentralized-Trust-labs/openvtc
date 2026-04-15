@@ -1195,10 +1195,9 @@ impl MainPage {
                     return true;
                 }
                 KeyCode::Char('c') if total > 0 => {
-                    let entries: Vec<&String> =
-                        self.props.main_page.activity_log.iter().rev().collect();
+                    let entries: Vec<_> = self.props.main_page.activity_log.iter().rev().collect();
                     if let Some(entry) = entries.get(self.logs_selected) {
-                        copy_to_clipboard(entry, "Log entry", &self.action_tx);
+                        copy_to_clipboard(&entry.summary, "Log entry", &self.action_tx);
                     }
                     return true;
                 }
@@ -1221,10 +1220,9 @@ impl MainPage {
             }
             KeyCode::Char('c') if total > 0 => {
                 // Copy selected log entry to clipboard
-                let entries: Vec<&String> =
-                    self.props.main_page.activity_log.iter().rev().collect();
+                let entries: Vec<_> = self.props.main_page.activity_log.iter().rev().collect();
                 if let Some(entry) = entries.get(self.logs_selected) {
-                    copy_to_clipboard(entry, "Log entry", &self.action_tx);
+                    copy_to_clipboard(&entry.summary, "Log entry", &self.action_tx);
                 }
                 true
             }
@@ -1236,7 +1234,7 @@ impl MainPage {
                     .activity_log
                     .iter()
                     .rev()
-                    .cloned()
+                    .map(|e| e.summary.as_str())
                     .collect::<Vec<_>>()
                     .join("\n");
                 copy_to_clipboard(&all_text, "All log entries", &self.action_tx);
@@ -1436,7 +1434,7 @@ impl ComponentRender<()> for MainPage {
         let log_lines: Vec<Line> = log
             .iter()
             .skip(skip)
-            .map(|entry| Line::from(entry.clone()).dark_gray())
+            .map(|entry| Line::from(entry.summary.clone()).dark_gray())
             .collect();
         frame.render_widget(Paragraph::new(log_lines), log_inner);
 

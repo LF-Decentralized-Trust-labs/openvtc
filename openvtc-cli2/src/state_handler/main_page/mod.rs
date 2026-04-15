@@ -17,6 +17,16 @@ pub mod menu;
 /// Maximum number of activity log entries to keep in the UI.
 const MAX_ACTIVITY_LOG_ENTRIES: usize = 100;
 
+/// A single activity log entry with a short summary and optional detail.
+#[derive(Clone, Debug)]
+pub struct ActivityLogEntry {
+    /// Short summary shown in the list view (includes timestamp).
+    pub summary: String,
+    /// Detailed information shown when the entry is expanded.
+    /// Includes DIDComm message details, DID addresses, etc.
+    pub detail: Option<String>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MainPageState {
     /// State related to the menu panel
@@ -28,7 +38,7 @@ pub struct MainPageState {
     pub config: MainMenuConfigState,
 
     /// Activity log entries shown in the bottom panel (newest last).
-    pub activity_log: VecDeque<String>,
+    pub activity_log: VecDeque<ActivityLogEntry>,
 }
 
 impl MainPageState {
@@ -38,8 +48,22 @@ impl MainPageState {
             self.activity_log.pop_front();
         }
         let timestamp = chrono::Local::now().format("%H:%M:%S");
-        self.activity_log
-            .push_back(format!("[{}] {}", timestamp, message.into()));
+        self.activity_log.push_back(ActivityLogEntry {
+            summary: format!("[{}] {}", timestamp, message.into()),
+            detail: None,
+        });
+    }
+
+    /// Push a timestamped entry with detailed diagnostic info.
+    pub fn log_detailed(&mut self, message: impl Into<String>, detail: impl Into<String>) {
+        if self.activity_log.len() >= MAX_ACTIVITY_LOG_ENTRIES {
+            self.activity_log.pop_front();
+        }
+        let timestamp = chrono::Local::now().format("%H:%M:%S");
+        self.activity_log.push_back(ActivityLogEntry {
+            summary: format!("[{}] {}", timestamp, message.into()),
+            detail: Some(detail.into()),
+        });
     }
 }
 
@@ -409,7 +433,14 @@ mod tests {
         }
         assert_eq!(state.activity_log.len(), MAX_ACTIVITY_LOG_ENTRIES);
         // Oldest entries should have been dropped
-        assert!(state.activity_log.front().unwrap().contains("entry-10"));
+        assert!(
+            state
+                .activity_log
+                .front()
+                .unwrap()
+                .summary
+                .contains("entry-10")
+        );
     }
 
     // --- MainPanel::switch ---

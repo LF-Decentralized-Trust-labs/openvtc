@@ -1,5 +1,6 @@
 use crate::state_handler::{
     main_page::{
+        ActivityLogEntry,
         content::ContentPanelState,
         menu::{MainMenu, MenuPanelState},
     },
@@ -34,7 +35,7 @@ impl ContentPanelState {
         rect: Rect,
         menu: &MenuPanelState,
         connection: &ConnectionState,
-        activity_log: &std::collections::VecDeque<String>,
+        activity_log: &std::collections::VecDeque<ActivityLogEntry>,
         logs_selected: usize,
         logs_detail_view: bool,
     ) {

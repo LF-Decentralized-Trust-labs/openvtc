@@ -709,6 +709,12 @@ impl StateHandler {
                 Some(event) = didcomm_event_rx.recv() => {
                     match event {
                         didcomm::DIDCommEvent::InboundMessage { message, .. } => {
+                            // Capture message info before processing for detailed logging
+                            let msg_type = message.typ.clone();
+                            let msg_from = message.from.clone().unwrap_or_else(|| "unknown".into());
+                            let msg_to = message.to.as_ref().and_then(|v| v.first()).cloned().unwrap_or_default();
+                            let msg_thid = message.thid.clone().unwrap_or_else(|| "none".into());
+
                             match message_dispatch::process_inbound_message(
                                 &mut config,
                                 &tdk,
@@ -722,11 +728,34 @@ impl StateHandler {
                                         state.main_page.log(format!("Failed to save config: {e}"));
                                     }
                                     state.main_page.sync_from_config(&config);
-                                    state.main_page.log("Inbound message processed");
+                                    // Extract short type name for summary
+                                    let short_type = msg_type.rsplit('/').next().unwrap_or(&msg_type);
+                                    state.main_page.log_detailed(
+                                        format!("Inbound: {short_type}"),
+                                        format!(
+                                            "Inbound DIDComm Message\n\
+                                             ───────────────────────\n\
+                                             Type:    {msg_type}\n\
+                                             From:    {msg_from}\n\
+                                             To:      {msg_to}\n\
+                                             thid:    {msg_thid}",
+                                        ),
+                                    );
                                 }
                                 Ok(false) => {}
                                 Err(e) => {
-                                    state.main_page.log(format!("Message error: {e}"));
+                                    state.main_page.log_detailed(
+                                        format!("Message error: {e}"),
+                                        format!(
+                                            "Failed Inbound Message\n\
+                                             ──────────────────────\n\
+                                             Type:    {msg_type}\n\
+                                             From:    {msg_from}\n\
+                                             To:      {msg_to}\n\
+                                             thid:    {msg_thid}\n\
+                                             Error:   {e}",
+                                        ),
+                                    );
                                     debug!("message dispatch error: {e}");
                                 }
                             }
@@ -1216,11 +1245,37 @@ async fn handle_relationship_submit(
             if let Err(e) = settings_actions::save_config(config, profile) {
                 state.main_page.log(format!("Failed to save config: {e}"));
             }
+            // Look up the relationship we just created for detail info
+            let detail = {
+                let rel_key = std::sync::Arc::new(did.to_string());
+                if let Some(rel_arc) = config.private.relationships.get(&rel_key)
+                    && let Ok(r) = rel_arc.lock()
+                {
+                    format!(
+                        "Relationship Request Sent\n\
+                         ─────────────────────────\n\
+                         To (persona):  {}\n\
+                         Our DID:       {}\n\
+                         R-DID used:    {}\n\
+                         Task ID:       {}",
+                        r.remote_p_did,
+                        r.our_did,
+                        if *r.our_did != *config.public.persona_did {
+                            "yes"
+                        } else {
+                            "no"
+                        },
+                        r.task_id,
+                    )
+                } else {
+                    String::new()
+                }
+            };
             state.main_page.sync_from_config(config);
-            state.main_page.log(format!(
-                "Relationship request sent to {}",
-                truncate_did(did)
-            ));
+            state.main_page.log_detailed(
+                format!("Relationship request sent to {}", truncate_did(did)),
+                detail,
+            );
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =

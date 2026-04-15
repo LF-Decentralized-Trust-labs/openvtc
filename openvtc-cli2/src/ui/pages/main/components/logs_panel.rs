@@ -1,6 +1,6 @@
 //! Logs panel — scrollable activity log with selection and clipboard copy.
 
-use crate::state_handler::main_page::content::LogsState;
+use crate::state_handler::main_page::{ActivityLogEntry, content::LogsState};
 use openvtc::colors::{COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use ratatui::{
     style::{Style, Stylize},
@@ -12,7 +12,10 @@ use std::collections::VecDeque;
 ///
 /// Entries are shown newest-first with a selection highlight.
 /// Hotkeys: Enter = view detail, c = copy selected, a = copy all, Esc = back.
-pub fn render(logs_state: &LogsState, activity_log: &VecDeque<String>) -> Vec<Line<'static>> {
+pub fn render(
+    logs_state: &LogsState,
+    activity_log: &VecDeque<ActivityLogEntry>,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
     let total = activity_log.len();
@@ -32,7 +35,7 @@ pub fn render(logs_state: &LogsState, activity_log: &VecDeque<String>) -> Vec<Li
         return lines;
     }
 
-    let entries: Vec<&String> = activity_log.iter().rev().collect();
+    let entries: Vec<&ActivityLogEntry> = activity_log.iter().rev().collect();
 
     // Detail view — show full text of the selected entry
     if logs_state.detail_view {
@@ -47,8 +50,11 @@ pub fn render(logs_state: &LogsState, activity_log: &VecDeque<String>) -> Vec<Li
             );
             lines.push(Line::from(""));
 
+            // Show detail if available, otherwise show the summary
+            let display_text = entry.detail.as_deref().unwrap_or(&entry.summary);
+
             // Word-wrap the full entry text at ~76 chars per line
-            for wrapped_line in wrap_text(entry, 76) {
+            for wrapped_line in wrap_text(display_text, 76) {
                 lines.push(Line::from(vec![Span::styled(
                     format!("  {}", wrapped_line),
                     Style::new().fg(COLOR_TEXT_DEFAULT),
@@ -74,10 +80,10 @@ pub fn render(logs_state: &LogsState, activity_log: &VecDeque<String>) -> Vec<Li
         };
 
         // Truncate long entries for list display
-        let display = if entry.len() > 80 {
-            format!("{}...", &entry[..77])
+        let display = if entry.summary.len() > 80 {
+            format!("{}...", &entry.summary[..77])
         } else {
-            entry.to_string()
+            entry.summary.clone()
         };
 
         lines.push(Line::from(vec![Span::styled(
