@@ -34,6 +34,33 @@ fn truncate_did(did: &str) -> Cow<'_, str> {
     }
 }
 
+/// Resolve a DID to a human-readable display name.
+///
+/// Tries: contact alias by DID → R-DID relationship → persona contact alias → truncated DID.
+fn resolve_did_to_display(config: &openvtc::config::Config, did: &str) -> String {
+    // Direct contact lookup
+    if let Some(contact) = config.private.contacts.find_contact(did) {
+        if let Some(alias) = &contact.alias {
+            return alias.clone();
+        }
+    }
+    // R-DID → persona DID → contact alias
+    let did_arc = std::sync::Arc::new(did.to_string());
+    if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc) {
+        if let Ok(lock) = rel.lock() {
+            let p_did = lock.remote_p_did.to_string();
+            if let Some(contact) = config.private.contacts.find_contact(&p_did) {
+                if let Some(alias) = &contact.alias {
+                    return alias.clone();
+                }
+            }
+            // No alias, but show the persona DID instead of the R-DID
+            return truncate_did(&p_did).into_owned();
+        }
+    }
+    truncate_did(did).into_owned()
+}
+
 pub mod actions;
 mod credential_actions;
 pub mod didcomm;
@@ -802,7 +829,14 @@ impl StateHandler {
                             }
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
-                            let sender = from.as_deref().unwrap_or("unknown");
+                            let sender_did = from.as_deref().unwrap_or("unknown");
+                            // Resolve to alias: try direct contact lookup, then
+                            // R-DID → persona DID → contact alias
+                            let sender_display = resolve_did_to_display(
+                                &config,
+                                sender_did,
+                            );
+                            let sender = sender_display.as_str();
                             let ping_info = ping_sent_at.take();
                             if let Some((sent_at, is_manual)) = ping_info {
                                 let ms = sent_at.elapsed().as_millis();

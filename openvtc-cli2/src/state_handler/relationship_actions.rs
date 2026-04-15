@@ -189,6 +189,12 @@ pub async fn ping_relationship(
     };
 
     // Build ping message using the relationship DIDs (R-DIDs if available)
+    info!(
+        our_did = %our_did,
+        remote_did = %remote_did,
+        is_r_did = *our_did != *config.public.persona_did,
+        "ping using relationship DIDs"
+    );
     let ping_msg = {
         use std::time::SystemTime;
         let now = SystemTime::now()
