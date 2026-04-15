@@ -185,11 +185,15 @@ impl MainPageState {
                         m.values()
                             .map(|vrc| content::RelationshipVrc {
                                 issuer: shorten_did(vrc.issuer(), 40),
+                                issuer_full: vrc.issuer().to_string(),
                                 subject: shorten_did(vrc.subject(), 40),
+                                subject_full: vrc.subject().to_string(),
                                 valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                                 valid_until: vrc
                                     .valid_until()
                                     .map(|d| d.format("%Y-%m-%d").to_string()),
+                                raw_json: serde_json::to_string_pretty(&vrc.credential())
+                                    .unwrap_or_default(),
                             })
                             .collect()
                     })
@@ -202,11 +206,15 @@ impl MainPageState {
                         m.values()
                             .map(|vrc| content::RelationshipVrc {
                                 issuer: shorten_did(vrc.issuer(), 40),
+                                issuer_full: vrc.issuer().to_string(),
                                 subject: shorten_did(vrc.subject(), 40),
+                                subject_full: vrc.subject().to_string(),
                                 valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                                 valid_until: vrc
                                     .valid_until()
                                     .map(|d| d.format("%Y-%m-%d").to_string()),
+                                raw_json: serde_json::to_string_pretty(&vrc.credential())
+                                    .unwrap_or_default(),
                             })
                             .collect()
                     })

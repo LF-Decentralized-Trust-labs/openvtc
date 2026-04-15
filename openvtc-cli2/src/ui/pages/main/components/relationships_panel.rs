@@ -31,7 +31,10 @@ pub fn render(state: &RelationshipsState) -> Vec<Line<'static>> {
         RelationshipsMode::EditAlias { index, alias_input } => {
             render_edit_alias(state, *index, alias_input)
         }
-        RelationshipsMode::Detail { index } => render_detail(state, *index),
+        RelationshipsMode::Detail {
+            index,
+            selected_vrc,
+        } => render_detail(state, *index, *selected_vrc),
         RelationshipsMode::NewRequest {
             did_input,
             alias_input,
@@ -109,7 +112,11 @@ fn render_list(state: &RelationshipsState) -> Vec<Line<'static>> {
     lines
 }
 
-fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>> {
+fn render_detail(
+    state: &RelationshipsState,
+    index: usize,
+    selected_vrc: Option<usize>,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
     let Some(rel) = state.relationships.get(index) else {
@@ -153,7 +160,8 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
         Span::styled("Created:      ", Style::new().fg(COLOR_TEXT_DEFAULT)),
         Span::styled(rel.created.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
     ]));
-    // VRCs section
+
+    // Combined VRC count: issued first, then received
     let total_vrcs = rel.vrcs_issued.len() + rel.vrcs_received.len();
     if total_vrcs > 0 {
         lines.push(Line::from(""));
@@ -168,21 +176,68 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
         );
         lines.push(Line::from(""));
 
+        let mut vrc_index: usize = 0;
+
         if !rel.vrcs_issued.is_empty() {
             lines.push(Line::from("  Issued").fg(COLOR_TEXT_DEFAULT).bold());
             for vrc in &rel.vrcs_issued {
+                let is_selected = selected_vrc == Some(vrc_index);
                 let validity = match &vrc.valid_until {
-                    Some(until) => format!("{} → {}", vrc.valid_from, until),
-                    None => format!("{} → no expiry", vrc.valid_from),
+                    Some(until) => format!("{} -> {}", vrc.valid_from, until),
+                    None => format!("{} -> no expiry", vrc.valid_from),
                 };
+                let bullet_style = if is_selected {
+                    Style::new().fg(COLOR_ORANGE).bold()
+                } else {
+                    Style::new().fg(COLOR_SUCCESS)
+                };
+                let text_style = if is_selected {
+                    Style::new().fg(COLOR_ORANGE).bold()
+                } else {
+                    Style::new().fg(COLOR_SOFT_PURPLE)
+                };
+                let prefix = if is_selected { "  ▸ " } else { "    " };
                 lines.push(Line::from(vec![
-                    Span::styled("    ● ", Style::new().fg(COLOR_SUCCESS)),
+                    Span::styled(prefix, bullet_style),
+                    Span::styled("● ", bullet_style),
+                    Span::styled(format!("To: {}  ", vrc.subject), text_style),
                     Span::styled(
-                        format!("To: {}  ", vrc.subject),
-                        Style::new().fg(COLOR_SOFT_PURPLE),
+                        validity,
+                        if is_selected {
+                            Style::new().fg(COLOR_ORANGE)
+                        } else {
+                            Style::new().fg(COLOR_DARK_GRAY)
+                        },
                     ),
-                    Span::styled(validity, Style::new().fg(COLOR_DARK_GRAY)),
                 ]));
+
+                // Show expanded detail when selected
+                if is_selected {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("      Issuer:  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                        Span::styled(vrc.issuer_full.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("      Subject: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                        Span::styled(vrc.subject_full.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                    ]));
+                    let validity_detail = match &vrc.valid_until {
+                        Some(until) => format!("{} -> {}", vrc.valid_from, until),
+                        None => format!("{} -> no expiry", vrc.valid_from),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("      Valid:   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                        Span::styled(validity_detail, Style::new().fg(COLOR_TEXT_DEFAULT)),
+                    ]));
+                    lines.push(Line::from(""));
+                    for json_line in vrc.raw_json.lines() {
+                        lines.push(Line::from(format!("      {}", json_line)).fg(COLOR_DARK_GRAY));
+                    }
+                    lines.push(Line::from(""));
+                }
+
+                vrc_index += 1;
             }
         }
 
@@ -192,18 +247,63 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
             }
             lines.push(Line::from("  Received").fg(COLOR_TEXT_DEFAULT).bold());
             for vrc in &rel.vrcs_received {
+                let is_selected = selected_vrc == Some(vrc_index);
                 let validity = match &vrc.valid_until {
-                    Some(until) => format!("{} → {}", vrc.valid_from, until),
-                    None => format!("{} → no expiry", vrc.valid_from),
+                    Some(until) => format!("{} -> {}", vrc.valid_from, until),
+                    None => format!("{} -> no expiry", vrc.valid_from),
                 };
+                let bullet_style = if is_selected {
+                    Style::new().fg(COLOR_ORANGE).bold()
+                } else {
+                    Style::new().fg(COLOR_SUCCESS)
+                };
+                let text_style = if is_selected {
+                    Style::new().fg(COLOR_ORANGE).bold()
+                } else {
+                    Style::new().fg(COLOR_SOFT_PURPLE)
+                };
+                let prefix = if is_selected { "  ▸ " } else { "    " };
                 lines.push(Line::from(vec![
-                    Span::styled("    ● ", Style::new().fg(COLOR_SUCCESS)),
+                    Span::styled(prefix, bullet_style),
+                    Span::styled("● ", bullet_style),
+                    Span::styled(format!("From: {}  ", vrc.issuer), text_style),
                     Span::styled(
-                        format!("From: {}  ", vrc.issuer),
-                        Style::new().fg(COLOR_SOFT_PURPLE),
+                        validity,
+                        if is_selected {
+                            Style::new().fg(COLOR_ORANGE)
+                        } else {
+                            Style::new().fg(COLOR_DARK_GRAY)
+                        },
                     ),
-                    Span::styled(validity, Style::new().fg(COLOR_DARK_GRAY)),
                 ]));
+
+                // Show expanded detail when selected
+                if is_selected {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(vec![
+                        Span::styled("      Issuer:  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                        Span::styled(vrc.issuer_full.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("      Subject: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                        Span::styled(vrc.subject_full.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                    ]));
+                    let validity_detail = match &vrc.valid_until {
+                        Some(until) => format!("{} -> {}", vrc.valid_from, until),
+                        None => format!("{} -> no expiry", vrc.valid_from),
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled("      Valid:   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                        Span::styled(validity_detail, Style::new().fg(COLOR_TEXT_DEFAULT)),
+                    ]));
+                    lines.push(Line::from(""));
+                    for json_line in vrc.raw_json.lines() {
+                        lines.push(Line::from(format!("      {}", json_line)).fg(COLOR_DARK_GRAY));
+                    }
+                    lines.push(Line::from(""));
+                }
+
+                vrc_index += 1;
             }
         }
     } else {
@@ -213,8 +313,10 @@ fn render_detail(state: &RelationshipsState, index: usize) -> Vec<Line<'static>>
 
     lines.push(Line::from(""));
     lines.push(
-        Line::from("e: edit alias  p: ping  v: request VRC  d: remove  Esc: back")
-            .fg(COLOR_DARK_GRAY),
+        Line::from(
+            "e: edit alias  p: ping  v: request VRC  d: remove  \u{2191}/\u{2193}: browse VRCs  Esc: back",
+        )
+        .fg(COLOR_DARK_GRAY),
     );
 
     lines

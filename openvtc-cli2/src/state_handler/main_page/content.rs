@@ -162,8 +162,12 @@ pub enum RelationshipsMode {
     /// Browsing the list of relationships
     #[default]
     List,
-    /// Viewing details of a specific relationship
-    Detail { index: usize },
+    /// Viewing details of a specific relationship.
+    /// `selected_vrc`: None = relationship info shown, Some(n) = VRC at index n expanded.
+    Detail {
+        index: usize,
+        selected_vrc: Option<usize>,
+    },
     /// Editing the alias for an existing relationship
     EditAlias { index: usize, alias_input: String },
     /// Filling out a new relationship request form
@@ -199,17 +203,23 @@ pub struct RelationshipSummary {
     pub vrcs_received: Vec<RelationshipVrc>,
 }
 
-/// Minimal VRC info for display in the relationship detail view.
+/// VRC info for display in the relationship detail view.
 #[derive(Clone, Debug)]
 pub struct RelationshipVrc {
     /// Issuer DID (shortened for display)
     pub issuer: String,
+    /// Full issuer DID
+    pub issuer_full: String,
     /// Subject DID (shortened for display)
     pub subject: String,
+    /// Full subject DID
+    pub subject_full: String,
     /// Formatted valid_from date
     pub valid_from: String,
     /// Formatted valid_until date (if set)
     pub valid_until: Option<String>,
+    /// Pretty-printed JSON of the raw credential
+    pub raw_json: String,
 }
 
 // ****************************************************************************

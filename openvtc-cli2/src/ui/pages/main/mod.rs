@@ -503,9 +503,48 @@ impl MainPage {
                     _ => false,
                 }
             }
-            RelationshipsMode::Detail { index } => {
+            RelationshipsMode::Detail {
+                index,
+                selected_vrc,
+            } => {
                 let index = *index;
+                let current_vrc = *selected_vrc;
                 match key.code {
+                    KeyCode::Down => {
+                        if let Some(rel) = rels.relationships.get(index) {
+                            let total = rel.vrcs_issued.len() + rel.vrcs_received.len();
+                            if total > 0 {
+                                let next = match current_vrc {
+                                    None => Some(0),
+                                    Some(n) if n + 1 < total => Some(n + 1),
+                                    other => other,
+                                };
+                                if let RelationshipsMode::Detail {
+                                    selected_vrc: ref mut sv,
+                                    ..
+                                } = self.props.main_page.content_panel.relationships.mode
+                                {
+                                    *sv = next;
+                                }
+                            }
+                        }
+                        true
+                    }
+                    KeyCode::Up => {
+                        let next = match current_vrc {
+                            Some(0) => None,
+                            Some(n) => Some(n - 1),
+                            None => None,
+                        };
+                        if let RelationshipsMode::Detail {
+                            selected_vrc: ref mut sv,
+                            ..
+                        } = self.props.main_page.content_panel.relationships.mode
+                        {
+                            *sv = next;
+                        }
+                        true
+                    }
                     KeyCode::Esc => {
                         let _ = self
                             .action_tx

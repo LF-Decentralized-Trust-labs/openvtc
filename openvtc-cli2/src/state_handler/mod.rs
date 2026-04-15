@@ -538,7 +538,7 @@ impl StateHandler {
                         },
                         RelationshipAction::CancelEditAlias { index } => {
                             state.main_page.content_panel.relationships.mode =
-                                main_page::content::RelationshipsMode::Detail { index };
+                                main_page::content::RelationshipsMode::Detail { index, selected_vrc: None };
                         },
                         RelationshipAction::RequestVrc { remote_p_did } => {
                             handle_relationship_request_vrc(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
@@ -1180,7 +1180,10 @@ fn handle_inbox_clear_all(config: &mut Box<Config>, state: &mut State, profile: 
 fn handle_relationship_open_detail(state: &mut State, index: usize) {
     use main_page::content::RelationshipsMode;
     state.main_page.content_panel.relationships.selected_index = index;
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail { index };
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
+        index,
+        selected_vrc: None,
+    };
 }
 
 fn handle_relationship_start_new_request(state: &mut State) {
@@ -1461,7 +1464,10 @@ fn handle_relationship_edit_alias(
         .iter()
         .position(|r| r.remote_p_did == remote_p_did)
         .unwrap_or(0);
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail { index };
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
+        index,
+        selected_vrc: None,
+    };
     state.main_page.content_panel.relationships.status_message = Some("Alias updated".to_string());
     state.main_page.log("Alias updated");
 }
