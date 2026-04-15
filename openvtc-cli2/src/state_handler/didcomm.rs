@@ -180,16 +180,15 @@ pub async fn build_listener_configs(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
 ) -> Vec<ListenerConfig> {
-    // Use a conservative backoff to prevent reconnect loops.
-    // The mediator kills "duplicate" WebSocket connections for the same DID.
-    // If the restart fires before the old connection is fully torn down, the
-    // new connection triggers the mediator to kill it as a duplicate, which
-    // triggers another restart — creating an infinite loop. A 30-second
-    // initial delay gives the old connection time to fully close.
-    let restart = RestartPolicy::Always {
+    // Only restart on failure, not on clean disconnect. This prevents a
+    // reconnect loop when the mediator closes our connection as a "duplicate"
+    // (e.g. when a second process or listener opens a connection for the same DID).
+    // Clean exits (listen() returns Ok) will NOT trigger a restart.
+    let restart = RestartPolicy::OnFailure {
+        max_retries: None,
         backoff: RetryConfig {
-            initial_delay_secs: 30,
-            max_delay_secs: 120,
+            initial_delay_secs: 5,
+            max_delay_secs: 60,
         },
     };
 
@@ -319,24 +318,42 @@ pub async fn send_message_via(
 }
 
 /// Subscribe to `DIDCommService` lifecycle events and forward them as
-/// log messages via the provided sender. Returns the spawned task handle.
+/// log messages via the provided sender. Detects rapid reconnect cycling
+/// and logs warnings. Returns the spawned task handle.
 pub fn spawn_lifecycle_logger(
     service: &DIDCommService,
     log_tx: mpsc::UnboundedSender<String>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events_rx = service.subscribe();
     tokio::spawn(async move {
+        // Track disconnect timestamps per listener to detect rapid cycling
+        let mut last_disconnect: std::collections::HashMap<String, std::time::Instant> =
+            std::collections::HashMap::new();
+
         loop {
             match events_rx.recv().await {
                 Ok(ListenerEvent::Connected { listener_id }) => {
                     let _ = log_tx.send(format!("Listener '{listener_id}' connected"));
                 }
                 Ok(ListenerEvent::Disconnected { listener_id, error }) => {
-                    let msg = match error {
+                    let now = std::time::Instant::now();
+                    let msg = match &error {
                         Some(e) => format!("Listener '{listener_id}' disconnected: {e}"),
                         None => format!("Listener '{listener_id}' disconnected"),
                     };
                     let _ = log_tx.send(msg);
+
+                    // Detect rapid cycling: if we disconnected within 10s of last disconnect
+                    if let Some(prev) = last_disconnect.get(&listener_id) {
+                        if now.duration_since(*prev).as_secs() < 10 {
+                            let warn_msg = format!(
+                                "WARNING: Listener '{listener_id}' cycling rapidly — possible duplicate connection"
+                            );
+                            tracing::warn!(listener = %listener_id, "rapid disconnect cycling detected");
+                            let _ = log_tx.send(warn_msg);
+                        }
+                    }
+                    last_disconnect.insert(listener_id, now);
                 }
                 Ok(ListenerEvent::Restarting {
                     listener_id,
@@ -367,8 +384,12 @@ pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -
             "Persona",
             secrets,
         ),
-        restart_policy: RestartPolicy::Always {
-            backoff: RetryConfig::default(),
+        restart_policy: RestartPolicy::OnFailure {
+            max_retries: None,
+            backoff: RetryConfig {
+                initial_delay_secs: 5,
+                max_delay_secs: 60,
+            },
         },
         auto_delete: true,
         ..Default::default()

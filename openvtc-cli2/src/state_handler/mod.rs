@@ -22,7 +22,7 @@ use tokio::sync::{
     broadcast,
     mpsc::{self, UnboundedReceiver},
 };
-use tracing::debug;
+use tracing::{debug, info};
 
 /// Truncate a DID string for display in activity log messages.
 #[must_use]
@@ -357,6 +357,13 @@ impl StateHandler {
         // Forward lifecycle events (connect/disconnect/restart) to the activity log
         let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
         let _lifecycle_handle = didcomm::spawn_lifecycle_logger(&didcomm_service, lifecycle_log_tx);
+
+        // Log registered listeners for diagnostics
+        let listeners = didcomm_service.list_listeners().await;
+        for l in &listeners {
+            debug!(id = %l.id, state = ?l.state, "registered listener");
+        }
+        info!(count = listeners.len(), "DIDComm listeners registered");
 
         // Wait for persona listener to connect (up to 15 s)
         match didcomm_service
