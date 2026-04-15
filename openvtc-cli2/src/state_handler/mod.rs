@@ -817,46 +817,61 @@ impl StateHandler {
                                         .main_page
                                         .log(format!("Failed to send pong: {e}"));
                                 }
-                                state.main_page.log(format!(
-                                    "Trust-ping from {} — pong sent",
-                                    truncate_did(sender)
-                                ));
+                                let ping_display = resolve_did_to_display(&config, sender);
+                                state.main_page.log_detailed(
+                                    format!("Ping from {ping_display} — pong sent"),
+                                    format!(
+                                        "Trust-Ping Received\n\
+                                         ───────────────────\n\
+                                         From (display):  {ping_display}\n\
+                                         From (DID):      {sender}\n\
+                                         Listener:        {listener_id}\n\
+                                         Response:        pong sent",
+                                    ),
+                                );
                             } else {
-                                state.main_page.log(format!(
-                                    "Trust-ping from {} — ignored (no relationship)",
-                                    truncate_did(sender)
-                                ));
+                                state.main_page.log_detailed(
+                                    format!("Ping from {} — ignored", truncate_did(sender)),
+                                    format!(
+                                        "Trust-Ping Rejected\n\
+                                         ───────────────────\n\
+                                         From (DID):      {sender}\n\
+                                         Reason:          no established relationship",
+                                    ),
+                                );
                             }
                         }
                         didcomm::DIDCommEvent::TrustPongReceived { from } => {
                             let sender_did = from.as_deref().unwrap_or("unknown");
-                            // Resolve to alias: try direct contact lookup, then
-                            // R-DID → persona DID → contact alias
-                            let sender_display = resolve_did_to_display(
-                                &config,
-                                sender_did,
-                            );
-                            let sender = sender_display.as_str();
+                            let sender_display = resolve_did_to_display(&config, sender_did);
                             let ping_info = ping_sent_at.take();
                             if let Some((sent_at, is_manual)) = ping_info {
                                 let ms = sent_at.elapsed().as_millis();
-                                // Update connection status with latest latency
                                 state.connection.status =
                                     state::MediatorStatus::Connected { latency_ms: ms };
                                 state.connection.last_ping_latency_ms = Some(ms);
-                                // Only log manual pings (user-initiated), not keepalives
                                 if is_manual {
-                                    state.main_page.log(format!(
-                                        "Trust-pong received from {} ✓ ({}ms)",
-                                        truncate_did(sender),
-                                        ms
-                                    ));
+                                    state.main_page.log_detailed(
+                                        format!("Pong from {sender_display} ({ms}ms)"),
+                                        format!(
+                                            "Trust-Pong Received\n\
+                                             ───────────────────\n\
+                                             From (display):  {sender_display}\n\
+                                             From (DID):      {sender_did}\n\
+                                             Latency:         {ms}ms",
+                                        ),
+                                    );
                                 }
                             } else {
-                                state.main_page.log(format!(
-                                    "Trust-pong received from {} ✓",
-                                    truncate_did(sender)
-                                ));
+                                state.main_page.log_detailed(
+                                    format!("Pong from {sender_display}"),
+                                    format!(
+                                        "Trust-Pong Received (unsolicited)\n\
+                                         ─────────────────────────────────\n\
+                                         From (display):  {sender_display}\n\
+                                         From (DID):      {sender_did}",
+                                    ),
+                                );
                             }
                         }
                     }
@@ -1330,6 +1345,18 @@ async fn handle_relationship_ping(
     remote_p_did: &str,
 ) {
     use main_page::content::RelationshipsMode;
+    // Capture relationship DIDs for logging before the call
+    let rel_key = std::sync::Arc::new(remote_p_did.to_string());
+    let (our_did_str, remote_did_str) = if let Some(rel_arc) =
+        config.private.relationships.get(&rel_key)
+        && let Ok(r) = rel_arc.lock()
+    {
+        (r.our_did.to_string(), r.remote_did.to_string())
+    } else {
+        (String::new(), String::new())
+    };
+    let display_name = resolve_did_to_display(config, remote_p_did);
+
     match relationship_actions::ping_relationship(config, tdk, service, remote_p_did).await {
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
@@ -1339,14 +1366,38 @@ async fn handle_relationship_ping(
                 state.main_page.log(format!("Failed to save config: {e}"));
             }
             state.main_page.sync_from_config(config);
-            state
-                .main_page
-                .log(format!("Trust-ping sent to {}", truncate_did(remote_p_did)));
+            state.main_page.log_detailed(
+                format!("Trust-ping sent to {display_name}"),
+                format!(
+                    "Trust-Ping Sent\n\
+                     ───────────────\n\
+                     To (display):    {display_name}\n\
+                     To (persona):    {remote_p_did}\n\
+                     To (R-DID):      {remote_did_str}\n\
+                     From (our DID):  {our_did_str}\n\
+                     Using R-DID:     {}",
+                    if our_did_str != *config.public.persona_did {
+                        "yes"
+                    } else {
+                        "no"
+                    },
+                ),
+            );
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =
                 Some(format!("Ping failed: {e}"));
-            state.main_page.log(format!("Ping failed: {e}"));
+            state.main_page.log_detailed(
+                format!("Ping to {display_name} failed: {e}"),
+                format!(
+                    "Trust-Ping Failed\n\
+                     ─────────────────\n\
+                     To (persona):    {remote_p_did}\n\
+                     To (R-DID):      {remote_did_str}\n\
+                     From (our DID):  {our_did_str}\n\
+                     Error:           {e}",
+                ),
+            );
         }
     }
 }
