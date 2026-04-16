@@ -44,6 +44,10 @@ struct Cli {
     /// SSH-keygen compatibility: signer identity (-I <principal>, used by -Y verify)
     #[arg(short = 'I', hide = true)]
     identity: Option<String>,
+
+    /// SSH-keygen compatibility: signature option (-O <option>, used by -Y verify, repeatable)
+    #[arg(short = 'O', hide = true, action = clap::ArgAction::Append)]
+    sig_option: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -579,13 +583,18 @@ fn delegate_to_ssh_keygen(op: &str, cli: &Cli) -> Result<()> {
     if let Some(s) = &cli.sig_file {
         cmd.arg("-s").arg(s);
     }
+    for opt in &cli.sig_option {
+        cmd.arg("-O").arg(opt);
+    }
 
     let status = cmd
         .stdin(std::process::Stdio::inherit())
         .stdout(std::process::Stdio::inherit())
         .stderr(std::process::Stdio::inherit())
         .status()
-        .context("failed to invoke ssh-keygen for signature verification — is ssh-keygen installed?")?;
+        .context(
+            "failed to invoke ssh-keygen for signature verification — is ssh-keygen installed?",
+        )?;
 
     std::process::exit(status.code().unwrap_or(1));
 }
