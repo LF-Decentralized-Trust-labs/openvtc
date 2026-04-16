@@ -32,6 +32,10 @@ struct Cli {
     /// SSH-keygen compatibility: namespace
     #[arg(short = 'n', hide = true)]
     namespace: Option<String>,
+
+    /// SSH-keygen compatibility: file to sign (positional, passed by git)
+    #[arg(hide = true)]
+    sign_file: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -46,9 +50,13 @@ enum Commands {
         #[arg(long)]
         credential: String,
 
-        /// Git user.name
+        /// Git user.name to set
         #[arg(long)]
         name: Option<String>,
+
+        /// Git user.email to set (leave unset to keep your existing email)
+        #[arg(long)]
+        email: Option<String>,
 
         /// VTA URL (overrides credential bundle)
         #[arg(long)]
@@ -58,7 +66,7 @@ enum Commands {
         #[arg(long)]
         key_id: Option<String>,
 
-        /// DID#key-id to use as git user.email (skip interactive selection)
+        /// DID#key-id to use as signing identity (skip interactive selection)
         #[arg(long)]
         did_key_id: Option<String>,
     },
@@ -79,7 +87,8 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Handle SSH-keygen-compatible invocation: did-git-sign -Y sign -f <config> -n <namespace>
+    // Handle SSH-keygen-compatible invocation:
+    // git calls: did-git-sign -Y sign -f <config> -n <namespace> <file_to_sign>
     if let Some(op) = &cli.operation {
         if op == "sign" {
             let config_path = cli
@@ -87,7 +96,7 @@ async fn main() -> Result<()> {
                 .as_ref()
                 .context("missing -f <config_path> argument")?;
             let namespace = cli.namespace.as_deref().unwrap_or("git");
-            return sign::handle_sign(config_path, namespace).await;
+            return sign::handle_sign(config_path, namespace, cli.sign_file.as_deref()).await;
         } else {
             anyhow::bail!("unsupported operation: -Y {op}");
         }
@@ -98,10 +107,22 @@ async fn main() -> Result<()> {
             global,
             credential,
             name,
+            email,
             vta_url,
             key_id,
             did_key_id,
-        }) => cmd_init(global, &credential, name, vta_url, key_id, did_key_id).await,
+        }) => {
+            cmd_init(
+                global,
+                &credential,
+                name,
+                email,
+                vta_url,
+                key_id,
+                did_key_id,
+            )
+            .await
+        }
         Some(Commands::Verify) => cmd_verify().await,
         Some(Commands::Health) => cmd_health().await,
         None => {
@@ -117,6 +138,7 @@ async fn cmd_init(
     global: bool,
     credential_b64: &str,
     user_name: Option<String>,
+    user_email: Option<String>,
     vta_url_override: Option<String>,
     key_id_override: Option<String>,
     did_key_id_override: Option<String>,
@@ -193,7 +215,7 @@ async fn cmd_init(
     let verifying_key = signing_key.verifying_key();
 
     // Configure git
-    init::setup_git(&config_path, &cfg, global)?;
+    init::setup_git(&config_path, &cfg, global, user_email.as_deref())?;
     println!("Git configured for DID signing");
 
     // Set up allowed_signers for verification
@@ -209,6 +231,14 @@ async fn cmd_init(
         "  Key: ssh-ed25519 {}",
         init::ssh_public_key_string(verifying_key.as_bytes())
     );
+    println!();
+    println!("IMPORTANT — to make signatures show as 'Verified':");
+    println!("  1. Copy the SSH public key above.");
+    println!("  2. Add it to your account:");
+    println!("       User Settings → SSH Keys → Add new key");
+    println!("       Set Usage type to 'Signing' (or 'Authentication & Signing').");
+    println!("  3. Ensure git user.email matches your account email:");
+    println!("       git config user.email");
     println!();
     println!("To sign a commit: git commit -S -m \"your message\"");
     println!("To verify: git log --show-signature");

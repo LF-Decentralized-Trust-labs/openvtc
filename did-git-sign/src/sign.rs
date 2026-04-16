@@ -11,14 +11,25 @@ use crate::vta;
 const SSHSIG_MAGIC: &[u8; 6] = b"SSHSIG";
 
 /// Handle the signing invocation from git.
-/// Git calls: `did-git-sign -Y sign -f <config_path> -n <namespace>`
-/// Data to sign comes on stdin; armored SSH signature goes to stdout.
-pub async fn handle_sign(config_path: &Path, namespace: &str) -> Result<()> {
-    // Read data to sign from stdin
-    let mut data = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut data)
-        .context("failed to read data from stdin")?;
+/// Git calls: `did-git-sign -Y sign -f <config_path> -n <namespace> <file_to_sign>`
+/// The file to sign is passed as a positional argument; armored SSH signature goes to stdout.
+pub async fn handle_sign(
+    config_path: &Path,
+    namespace: &str,
+    sign_file: Option<&Path>,
+) -> Result<()> {
+    // Read data to sign from the file argument (git passes the buffer file path)
+    // or fall back to stdin for compatibility.
+    let data = if let Some(path) = sign_file {
+        std::fs::read(path)
+            .with_context(|| format!("failed to read file to sign: {}", path.display()))?
+    } else {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("failed to read data from stdin")?;
+        buf
+    };
 
     // Load config
     let cfg = SigningConfig::load(config_path)?;
@@ -34,8 +45,19 @@ pub async fn handle_sign(config_path: &Path, namespace: &str) -> Result<()> {
     // Build the SSH signature
     let signature = create_ssh_signature(&signing_key, &verifying_key, namespace, &data)?;
 
-    // Output armored signature to stdout
-    print!("{signature}");
+    // Write the signature to <file>.sig, mirroring ssh-keygen -Y sign behaviour.
+    // Git reads the signature back from that path after the signing program exits.
+    // Fall back to stdout only when no input file was given (stdin mode).
+    if let Some(path) = sign_file {
+        // Append ".sig" to the full path (not replace the extension), matching ssh-keygen.
+        let mut sig_os = path.as_os_str().to_owned();
+        sig_os.push(".sig");
+        let sig_path = std::path::PathBuf::from(sig_os);
+        std::fs::write(&sig_path, signature.as_bytes())
+            .with_context(|| format!("failed to write signature to {}", sig_path.display()))?;
+    } else {
+        print!("{signature}");
+    }
 
     Ok(())
 }

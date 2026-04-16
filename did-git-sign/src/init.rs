@@ -5,7 +5,14 @@ use std::process::Command;
 use crate::config::SigningConfig;
 
 /// Initialize git configuration for DID-based SSH signing.
-pub fn setup_git(config_path: &Path, cfg: &SigningConfig, global: bool) -> Result<()> {
+///
+/// `email` is optional — when `None` the existing `user.email` is left unchanged.
+pub fn setup_git(
+    config_path: &Path,
+    cfg: &SigningConfig,
+    global: bool,
+    email: Option<&str>,
+) -> Result<()> {
     let scope = if global { "--global" } else { "--local" };
     let config_path_str = config_path
         .to_str()
@@ -15,17 +22,23 @@ pub fn setup_git(config_path: &Path, cfg: &SigningConfig, global: bool) -> Resul
     git_config(scope, "gpg.format", "ssh")?;
 
     // Set our tool as the signing program
-    // Git calls: <program> -Y sign -f <defaultKeyFile> -n git
+    // Git calls: <program> -Y sign -f <user.signingKey or defaultKeyFile> -n git
     git_config(scope, "gpg.ssh.program", "did-git-sign")?;
 
-    // Point git to our config file as the "key file"
+    // Point git to our config file as both the signing key and the fallback key file.
+    // user.signingKey takes precedence over gpg.ssh.defaultKeyFile when set, so we
+    // must set it here to override any global user.signingKey (e.g. an SSH public key)
+    // that would otherwise be passed as -f and cause a config parse error.
+    git_config(scope, "user.signingKey", config_path_str)?;
     git_config(scope, "gpg.ssh.defaultKeyFile", config_path_str)?;
 
     // Enable commit signing by default
     git_config(scope, "commit.gpgsign", "true")?;
 
-    // Set user.email to the DID#key-id
-    git_config(scope, "user.email", &cfg.did_key_id)?;
+    // Only set user.email when explicitly provided — do not override the user's own email.
+    if let Some(e) = email {
+        git_config(scope, "user.email", e)?;
+    }
 
     // Optionally set user.name
     if let Some(name) = &cfg.user_name {
