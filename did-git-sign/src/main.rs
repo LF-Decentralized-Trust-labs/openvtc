@@ -36,6 +36,14 @@ struct Cli {
     /// SSH-keygen compatibility: file to sign (positional, passed by git)
     #[arg(hide = true)]
     sign_file: Option<PathBuf>,
+
+    /// SSH-keygen compatibility: signature file (-s <file>, used by -Y verify)
+    #[arg(short = 's', hide = true)]
+    sig_file: Option<PathBuf>,
+
+    /// SSH-keygen compatibility: signer identity (-I <principal>, used by -Y verify)
+    #[arg(short = 'I', hide = true)]
+    identity: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -90,15 +98,24 @@ async fn main() -> Result<()> {
     // Handle SSH-keygen-compatible invocation:
     // git calls: did-git-sign -Y sign -f <config> -n <namespace> <file_to_sign>
     if let Some(op) = &cli.operation {
-        if op == "sign" {
-            let config_path = cli
-                .key_file
-                .as_ref()
-                .context("missing -f <config_path> argument")?;
-            let namespace = cli.namespace.as_deref().unwrap_or("git");
-            return sign::handle_sign(config_path, namespace, cli.sign_file.as_deref()).await;
-        } else {
-            anyhow::bail!("unsupported operation: -Y {op}");
+        match op.as_str() {
+            "sign" => {
+                let config_path = cli
+                    .key_file
+                    .as_ref()
+                    .context("missing -f <config_path> argument")?;
+                let namespace = cli.namespace.as_deref().unwrap_or("git");
+                return sign::handle_sign(config_path, namespace, cli.sign_file.as_deref()).await;
+            }
+            "verify" | "find-principals" | "check-novalidate" => {
+                // Delegate verification to ssh-keygen — did-git-sign only adds value for signing
+                // (VTA authentication). Verification uses only the public key + allowed_signers
+                // file, which ssh-keygen handles natively.
+                return delegate_to_ssh_keygen(op, &cli);
+            }
+            other => {
+                anyhow::bail!("unsupported -Y operation: {other}");
+            }
         }
     }
 
@@ -536,4 +553,39 @@ async fn cmd_health() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Delegate a verification operation to the system ssh-keygen binary.
+///
+/// did-git-sign only adds value during signing (VTA authentication to retrieve the key).
+/// Verification is stateless and only requires the public key from the allowed_signers file,
+/// which ssh-keygen handles natively. Rebuilding that logic here would duplicate it for no gain.
+///
+/// Git calls: `did-git-sign -Y verify -f <allowed_signers> -I <principal> -n git -s <sig_file>`
+/// We forward this verbatim to: `ssh-keygen -Y verify ...`
+fn delegate_to_ssh_keygen(op: &str, cli: &Cli) -> Result<()> {
+    let mut cmd = std::process::Command::new("ssh-keygen");
+    cmd.arg("-Y").arg(op);
+
+    if let Some(f) = &cli.key_file {
+        cmd.arg("-f").arg(f);
+    }
+    if let Some(i) = &cli.identity {
+        cmd.arg("-I").arg(i);
+    }
+    if let Some(n) = &cli.namespace {
+        cmd.arg("-n").arg(n);
+    }
+    if let Some(s) = &cli.sig_file {
+        cmd.arg("-s").arg(s);
+    }
+
+    let status = cmd
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .context("failed to invoke ssh-keygen for signature verification — is ssh-keygen installed?")?;
+
+    std::process::exit(status.code().unwrap_or(1));
 }
