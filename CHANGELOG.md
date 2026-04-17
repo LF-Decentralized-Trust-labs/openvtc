@@ -56,6 +56,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Backspace to empty** in relationship form fields
 - **Tab after backspace fix** — dedicated `FocusField` action for field switching
 - **DIDComm listener secrets** — pass DID secrets to listeners for mediator authentication
+- **Mediator delete IDs** in `openvtc-cli` — `fetch_tasks` no longer pushes the DIDComm protocol id (`unpacked_msg.id`) into the bulk delete list; only the mediator‑native `msg.msg_id` is used. Mixing the two ID domains left messages in the queue and caused duplicate processing on the next fetch (refs #44)
 - All `.unwrap()`/`.expect()` replaced with proper error propagation
 - Clipboard graceful degradation, `sanitize_display` ANSI stripping order
 
