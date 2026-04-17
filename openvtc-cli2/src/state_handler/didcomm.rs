@@ -242,6 +242,14 @@ pub async fn build_listener_configs(
             persona_secrets,
         ),
         restart_policy: restart.clone(),
+        // Keep `auto_delete: true`. It delegates message deletion to the
+        // mediator's live-stream protocol, which uses the mediator-native
+        // storage id. If you ever set this to false and delete from app
+        // code, you MUST delete by `UnpackMetadata.sha256_hash` (the
+        // mediator-native id), NOT by the DIDComm protocol id `msg.id` —
+        // they are different domains and the mediator's delete API only
+        // accepts the former. Mixing them silently leaks messages and
+        // causes duplicate processing on reconnect (see issue #44).
         auto_delete: true,
         ..Default::default()
     }];
