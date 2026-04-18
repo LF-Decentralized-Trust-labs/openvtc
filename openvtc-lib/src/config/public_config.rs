@@ -66,28 +66,28 @@ pub fn validate_profile_name(profile: &str) -> Result<(), OpenVTCError> {
 }
 
 /// Private helper to determine where the config file is located
-fn get_config_path(profile: &str) -> Result<String, OpenVTCError> {
+fn get_config_path(profile: &str) -> Result<std::path::PathBuf, OpenVTCError> {
     validate_profile_name(profile)?;
+
     let mut path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
         std::path::PathBuf::from(config_path)
-    } else if let Some(home) = dirs::home_dir() {
-        let mut p = std::path::PathBuf::from(home);
-        p.push(".config");
+    } else if let Some(config_dir) = dirs::config_dir() {
+        let mut p = config_dir;
         p.push("openvtc");
         p
     } else {
         return Err(OpenVTCError::Config(
-            "Couldn't determine Home directory".to_string(),
+            "Couldn't determine configuration directory".to_string(),
         ));
     };
 
     if profile == "default" {
         path.push("config.json");
     } else {
-        path.push(format!("config-{}.json", profile));
+        path.push(format!("config-{profile}.json"));
     }
 
-    Ok(path.to_string_lossy().into_owned())
+    Ok(path)
 }
 
 impl PublicConfig {
@@ -99,8 +99,7 @@ impl PublicConfig {
         private: &ProtectedConfig,
         private_seed: &SecretVec<u8>,
     ) -> Result<(), OpenVTCError> {
-        let cfg_path = get_config_path(profile)?;
-        let path = Path::new(&cfg_path);
+        let path = get_config_path(profile)?;
 
         // Check that directory structure exists
         if let Some(parent_path) = path.parent()
@@ -109,9 +108,8 @@ impl PublicConfig {
             // Create parent directories
             fs::create_dir_all(parent_path).map_err(|e| {
                 OpenVTCError::Config(format!(
-                    "Couldn't create parent directory ({}): {}",
-                    parent_path.to_string_lossy(),
-                    e
+                    "Couldn't create parent directory ({}): {e}",
+                    parent_path.to_string_lossy()
                 ))
             })?;
         }
@@ -121,21 +119,19 @@ impl PublicConfig {
             ..self.clone()
         };
         // Write config to disk
-        fs::write(path, serde_json::to_string_pretty(&public)?).map_err(|e| {
+        fs::write(&path, serde_json::to_string_pretty(&public)?).map_err(|e| {
             OpenVTCError::Config(format!(
-                "Couldn't write public config to file ({}): {}",
-                path.to_string_lossy(),
-                e
+                "Couldn't write public config to file ({}): {e}",
+                path.to_string_lossy()
             ))
         })?;
 
         // Restrict file permissions to owner-only on Unix systems
         #[cfg(unix)]
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| {
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|e| {
             OpenVTCError::Config(format!(
-                "Couldn't set permissions on config file ({}): {}",
-                path.to_string_lossy(),
-                e
+                "Couldn't set permissions on config file ({}): {e}",
+                path.to_string_lossy()
             ))
         })?;
 
@@ -145,11 +141,11 @@ impl PublicConfig {
     /// Loads from disk the public information for OpenVTC to unlock it's secrets from the OS Secure
     /// Store
     pub fn load(profile: &str) -> Result<Self, OpenVTCError> {
-        let cfg_path = get_config_path(profile)?;
-        let path = Path::new(&cfg_path);
+        let path = get_config_path(profile)?;
 
-        let file = fs::File::open(path)
-            .map_err(|e| OpenVTCError::ConfigNotFound(cfg_path.to_string(), e))?;
+        let file = fs::File::open(&path).map_err(|e| {
+            OpenVTCError::ConfigNotFound(path.to_string_lossy().into_owned(), e)
+        })?;
 
         match serde_json::from_reader(file) {
             Ok(s) => Ok(s),
@@ -174,32 +170,50 @@ mod tests {
     #[test]
     fn test_get_config_path_default_profile() {
         let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/openvtc-test") };
-        let path = get_config_path("default").unwrap();
-        assert_eq!(path, "/tmp/openvtc-test/config.json");
+        let base = if cfg!(windows) { "C:\\tmp\\openvtc-test" } else { "/tmp/openvtc-test" };
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", base) };
+        let path = get_config_path("default").expect("Should return path");
+        
+        let mut expected = std::path::PathBuf::from(base);
+        expected.push("config.json");
+        assert_eq!(path, expected);
+        
         unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
     }
 
     #[test]
     fn test_get_config_path_named_profile() {
         let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/openvtc-test/") };
-        let path = get_config_path("work").unwrap();
-        assert_eq!(path, "/tmp/openvtc-test/config-work.json");
+        let base = if cfg!(windows) { "C:\\tmp\\openvtc-test" } else { "/tmp/openvtc-test" };
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", base) };
+        let path = get_config_path("work").expect("Should return path");
+        
+        let mut expected = std::path::PathBuf::from(base);
+        expected.push("config-work.json");
+        assert_eq!(path, expected);
+        
         unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
     }
 
     #[test]
     fn test_get_config_path_trailing_slash_normalization() {
         let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { env::set_var("OPENVTC_CONFIG_PATH", "/tmp/cfg") };
-        let path = get_config_path("default").unwrap();
-        assert!(
-            path.starts_with("/tmp/cfg/"),
-            "Path should have a slash appended: {}",
-            path
-        );
-        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+        // Test that both with and without trailing slash work fine with PathBuf::push
+        let bases = if cfg!(windows) {
+            vec!["C:\\tmp\\cfg", "C:\\tmp\\cfg\\"]
+        } else {
+            vec!["/tmp/cfg", "/tmp/cfg/"]
+        };
+
+        for base in bases {
+            unsafe { env::set_var("OPENVTC_CONFIG_PATH", base) };
+            let path = get_config_path("default").expect("Should return path");
+            
+            let mut expected = std::path::PathBuf::from(base);
+            expected.push("config.json");
+            assert_eq!(path, expected, "Failed for base: {base}");
+            unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+        }
     }
 
     #[test]
