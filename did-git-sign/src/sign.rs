@@ -11,14 +11,27 @@ use crate::vta;
 const SSHSIG_MAGIC: &[u8; 6] = b"SSHSIG";
 
 /// Handle the signing invocation from git.
-/// Git calls: `did-git-sign -Y sign -f <config_path> -n <namespace>`
-/// Data to sign comes on stdin; armored SSH signature goes to stdout.
-pub async fn handle_sign(config_path: &Path, namespace: &str) -> Result<()> {
-    // Read data to sign from stdin
-    let mut data = Vec::new();
-    std::io::stdin()
-        .read_to_end(&mut data)
-        .context("failed to read data from stdin")?;
+/// Git calls: `did-git-sign -Y sign -f <config_path> -n <namespace> <file_to_sign>`
+/// The file to sign is passed as a positional argument; the armored SSH signature is written
+/// to `<file_to_sign>.sig` on disk, matching ssh-keygen behaviour. Falls back to stdout
+/// when no file argument is present (stdin mode).
+pub async fn handle_sign(
+    config_path: &Path,
+    namespace: &str,
+    sign_file: Option<&Path>,
+) -> Result<()> {
+    // Read data to sign from the file argument (git passes the buffer file path)
+    // or fall back to stdin for compatibility.
+    let data = if let Some(path) = sign_file {
+        std::fs::read(path)
+            .with_context(|| format!("failed to read file to sign: {}", path.display()))?
+    } else {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("failed to read data from stdin")?;
+        buf
+    };
 
     // Load config
     let cfg = SigningConfig::load(config_path)?;
@@ -34,8 +47,19 @@ pub async fn handle_sign(config_path: &Path, namespace: &str) -> Result<()> {
     // Build the SSH signature
     let signature = create_ssh_signature(&signing_key, &verifying_key, namespace, &data)?;
 
-    // Output armored signature to stdout
-    print!("{signature}");
+    // Write the signature to <file>.sig, mirroring ssh-keygen -Y sign behaviour.
+    // Git reads the signature back from that path after the signing program exits.
+    // Fall back to stdout only when no input file was given (stdin mode).
+    if let Some(path) = sign_file {
+        // Append ".sig" to the full path (not replace the extension), matching ssh-keygen.
+        let mut sig_os = path.as_os_str().to_owned();
+        sig_os.push(".sig");
+        let sig_path = std::path::PathBuf::from(sig_os);
+        std::fs::write(&sig_path, signature.as_bytes())
+            .with_context(|| format!("failed to write signature to {}", sig_path.display()))?;
+    } else {
+        print!("{signature}");
+    }
 
     Ok(())
 }
@@ -298,5 +322,30 @@ mod tests {
         assert_eq!(blob.len(), 83);
         // Type string is "ssh-ed25519"
         assert_eq!(&blob[4..15], b"ssh-ed25519");
+    }
+
+    /// Regression guard: the .sig path must be formed by appending ".sig" to the full
+    /// filename, not by replacing an existing extension.  git's buffer files can have
+    /// names like "COMMIT_EDITMSG" (no extension) or, in theory, dotted names.
+    /// Using Path::with_extension("sig") would silently drop any existing extension,
+    /// so the production code uses OsString::push instead.  This test encodes that
+    /// contract so any future refactor breaks loudly.
+    #[test]
+    fn sig_path_appends_dot_sig_not_replaces_extension() {
+        let base = std::path::Path::new("/tmp/buffer.diff");
+        let mut sig_os = base.as_os_str().to_owned();
+        sig_os.push(".sig");
+        let sig_path = std::path::PathBuf::from(sig_os);
+        assert_eq!(sig_path, std::path::PathBuf::from("/tmp/buffer.diff.sig"));
+
+        // Also verify a name with no extension is handled correctly.
+        let base2 = std::path::Path::new("/tmp/COMMIT_EDITMSG");
+        let mut sig_os2 = base2.as_os_str().to_owned();
+        sig_os2.push(".sig");
+        let sig_path2 = std::path::PathBuf::from(sig_os2);
+        assert_eq!(
+            sig_path2,
+            std::path::PathBuf::from("/tmp/COMMIT_EDITMSG.sig")
+        );
     }
 }

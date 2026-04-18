@@ -15,17 +15,24 @@ pub fn setup_git(config_path: &Path, cfg: &SigningConfig, global: bool) -> Resul
     git_config(scope, "gpg.format", "ssh")?;
 
     // Set our tool as the signing program
-    // Git calls: <program> -Y sign -f <defaultKeyFile> -n git
+    // Git calls: <program> -Y sign -f <user.signingKey or defaultKeyFile> -n git
     git_config(scope, "gpg.ssh.program", "did-git-sign")?;
 
-    // Point git to our config file as the "key file"
+    // Point git to our config file as both the signing key and the fallback key file.
+    // user.signingKey takes precedence over gpg.ssh.defaultKeyFile when set, so we
+    // must set it here to override any global user.signingKey (e.g. an SSH public key)
+    // that would otherwise be passed as -f and cause a config parse error.
+    //
+    // NOTE: user.signingKey is conventionally a .pub path; using a .json path here
+    // is unconventional. Third-party tools inspecting this repo's git config will
+    // see a non-.pub value. This is an accepted trade-off — the local override is
+    // the only non-destructive way to win over a global user.signingKey without
+    // modifying the user's global git configuration.
+    git_config(scope, "user.signingKey", config_path_str)?;
     git_config(scope, "gpg.ssh.defaultKeyFile", config_path_str)?;
 
     // Enable commit signing by default
     git_config(scope, "commit.gpgsign", "true")?;
-
-    // Set user.email to the DID#key-id
-    git_config(scope, "user.email", &cfg.did_key_id)?;
 
     // Optionally set user.name
     if let Some(name) = &cfg.user_name {
@@ -202,5 +209,77 @@ mod tests {
         let key_a = [0x00; 32];
         let key_b = [0xFF; 32];
         assert_ne!(ssh_public_key_string(&key_a), ssh_public_key_string(&key_b));
+    }
+
+    /// Changes the process CWD on construction, restores it on drop (panic-safe).
+    /// Requires `#[serial_test::serial]` — CWD is process-global.
+    /// **Any future non-serial test that uses a relative path or calls
+    /// `current_dir()` will silently resolve against the wrong directory.**
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn change_to(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            CwdGuard { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            // Best-effort restore; ignore errors (e.g. if the temp dir was already removed).
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    /// Regression guard: setup_git must never write user.email to the git config.
+    ///
+    /// user.email was historically set in earlier versions of this tool.  It was
+    /// removed because git's SSH signature verification uses the allowed_signers
+    /// principal (derived from the key fingerprint), not user.email, making the
+    /// field irrelevant and misleading.  This test ensures it stays absent.
+    #[test]
+    #[serial_test::serial]
+    fn setup_git_never_writes_user_email() {
+        let dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        // Move into the temp repo so that `git config --local` targets it.
+        // The inner block ensures CwdGuard is dropped (and CWD restored) before
+        // the assertions run, keeping the verify step independent of CWD.
+        {
+            let _cwd = CwdGuard::change_to(dir.path());
+            let config_path = dir.path().join(".did-git-sign.json");
+            let cfg = SigningConfig {
+                did_key_id: "did:webvh:test#key-0".to_string(),
+                user_name: None,
+            };
+            setup_git(&config_path, &cfg, false).unwrap();
+            // _cwd drops here: original directory is restored
+        }
+
+        // Verify with an explicit -C so the check is not sensitive to the current CWD.
+        let out = std::process::Command::new("git")
+            .args([
+                "-C",
+                dir.path().to_str().unwrap(),
+                "config",
+                "--local",
+                "user.email",
+            ])
+            .output()
+            .unwrap();
+
+        assert!(
+            !out.status.success(),
+            "user.email must not be set by setup_git; found: {}",
+            String::from_utf8_lossy(&out.stdout).trim(),
+        );
     }
 }
