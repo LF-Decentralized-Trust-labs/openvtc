@@ -68,16 +68,13 @@ pub fn validate_profile_name(profile: &str) -> Result<(), OpenVTCError> {
 /// Private helper to determine where the config file is located
 fn get_config_path(profile: &str) -> Result<String, OpenVTCError> {
     validate_profile_name(profile)?;
-    let path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
-        if config_path.ends_with('/') {
-            config_path
-        } else {
-            [&config_path, "/"].concat()
-        }
-    } else if let Some(home) = dirs::home_dir()
-        && let Some(home_str) = home.to_str()
-    {
-        [home_str, "/.config/openvtc/"].concat()
+    let mut path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
+        std::path::PathBuf::from(config_path)
+    } else if let Some(home) = dirs::home_dir() {
+        let mut p = std::path::PathBuf::from(home);
+        p.push(".config");
+        p.push("openvtc");
+        p
     } else {
         return Err(OpenVTCError::Config(
             "Couldn't determine Home directory".to_string(),
@@ -85,10 +82,12 @@ fn get_config_path(profile: &str) -> Result<String, OpenVTCError> {
     };
 
     if profile == "default" {
-        Ok([&path, "config.json"].concat())
+        path.push("config.json");
     } else {
-        Ok([&path, "config-", profile, ".json"].concat())
+        path.push(format!("config-{}.json", profile));
     }
+
+    Ok(path.to_string_lossy().into_owned())
 }
 
 impl PublicConfig {
