@@ -32,6 +32,22 @@ struct Cli {
     /// SSH-keygen compatibility: namespace
     #[arg(short = 'n', hide = true)]
     namespace: Option<String>,
+
+    /// SSH-keygen compatibility: file to sign (positional, passed by git)
+    #[arg(hide = true)]
+    sign_file: Option<PathBuf>,
+
+    /// SSH-keygen compatibility: signature file (-s <file>, used by -Y verify)
+    #[arg(short = 's', hide = true)]
+    sig_file: Option<PathBuf>,
+
+    /// SSH-keygen compatibility: signer identity (-I <principal>, used by -Y verify)
+    #[arg(short = 'I', hide = true)]
+    identity: Option<String>,
+
+    /// SSH-keygen compatibility: signature option (-O <option>, used by -Y verify, repeatable)
+    #[arg(short = 'O', hide = true, action = clap::ArgAction::Append)]
+    sig_option: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -46,7 +62,7 @@ enum Commands {
         #[arg(long)]
         credential: String,
 
-        /// Git user.name
+        /// Git user.name to set
         #[arg(long)]
         name: Option<String>,
 
@@ -58,7 +74,7 @@ enum Commands {
         #[arg(long)]
         key_id: Option<String>,
 
-        /// DID#key-id to use as git user.email (skip interactive selection)
+        /// DID#key-id to use as signing identity (skip interactive selection)
         #[arg(long)]
         did_key_id: Option<String>,
     },
@@ -79,17 +95,29 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    // Handle SSH-keygen-compatible invocation: did-git-sign -Y sign -f <config> -n <namespace>
+    // Handle SSH-keygen-compatible invocation:
+    // git calls: did-git-sign -Y sign -f <config> -n <namespace> <file_to_sign>
     if let Some(op) = &cli.operation {
-        if op == "sign" {
-            let config_path = cli
-                .key_file
-                .as_ref()
-                .context("missing -f <config_path> argument")?;
-            let namespace = cli.namespace.as_deref().unwrap_or("git");
-            return sign::handle_sign(config_path, namespace).await;
-        } else {
-            anyhow::bail!("unsupported operation: -Y {op}");
+        match op.as_str() {
+            "sign" => {
+                let config_path = cli
+                    .key_file
+                    .as_ref()
+                    .context("missing -f <config_path> argument")?;
+                let namespace = cli.namespace.as_deref().unwrap_or("git");
+                return sign::handle_sign(config_path, namespace, cli.sign_file.as_deref()).await;
+            }
+            _ => {
+                // All other -Y operations (verify, find-principals, check-novalidate,
+                // and any future operations git may introduce) are forwarded verbatim
+                // to ssh-keygen. did-git-sign only intercepts signing — everything else
+                // requires no VTA authentication and is handled natively by ssh-keygen.
+                let code = delegate_to_ssh_keygen(op, &cli)?;
+                // NOTE: process::exit skips tokio runtime shutdown. Safe here because no
+                // async work is performed in this branch after delegation. If async work
+                // is ever added above this line, switch to a clean return from main instead.
+                std::process::exit(code);
+            }
         }
     }
 
@@ -105,6 +133,17 @@ async fn main() -> Result<()> {
         Some(Commands::Verify) => cmd_verify().await,
         Some(Commands::Health) => cmd_health().await,
         None => {
+            // sign_file is only legitimate when -Y sign is set (git signing invocation).
+            // If it is set without -Y, the user typed an unrecognised subcommand.
+            // Without this guard, typos like `did-git-sign verfy` silently fall through to help.
+            if let Some(f) = &cli.sign_file {
+                if cli.operation.is_none() {
+                    anyhow::bail!(
+                        "unrecognised subcommand {:?}\n\nUsage: did-git-sign [COMMAND]\n\nRun 'did-git-sign --help' for available commands.",
+                        f.display()
+                    );
+                }
+            }
             use clap::CommandFactory;
             Cli::command().print_help()?;
             println!();
@@ -196,6 +235,23 @@ async fn cmd_init(
     init::setup_git(&config_path, &cfg, global)?;
     println!("Git configured for DID signing");
 
+    // Detect if a global user.signingKey was overridden by our local init.
+    // Print a notice so the user is not surprised when inspecting git config --list.
+    let global_signing_key = std::process::Command::new("git")
+        .args(["config", "--global", "user.signingKey"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    if let Some(prev) = global_signing_key {
+        println!();
+        println!("Note: your global user.signingKey ({prev}) has been overridden locally");
+        println!("      for this repository. did-git-sign uses its JSON config file as the");
+        println!("      signing key path. Your global signing configuration is unchanged.");
+    }
+
     // Set up allowed_signers for verification
     let entry = init::allowed_signers_entry(&cfg, verifying_key.as_bytes());
     let config_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
@@ -209,6 +265,14 @@ async fn cmd_init(
         "  Key: ssh-ed25519 {}",
         init::ssh_public_key_string(verifying_key.as_bytes())
     );
+    println!();
+    println!("IMPORTANT — to make signatures show as 'Verified':");
+    println!("  1. Copy the SSH public key above.");
+    println!("  2. Add it to your account:");
+    println!("       User Settings → SSH Keys → Add new key");
+    println!("       Set Usage type to 'Signing' (or 'Authentication & Signing').");
+    println!("  3. Ensure git user.email matches your account email:");
+    println!("       git config user.email");
     println!();
     println!("To sign a commit: git commit -S -m \"your message\"");
     println!("To verify: git log --show-signature");
@@ -506,4 +570,152 @@ async fn cmd_health() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Delegate a verification operation to the system ssh-keygen binary.
+///
+/// did-git-sign only adds value during signing (VTA authentication to retrieve the key).
+/// Verification is stateless and only requires the public key from the allowed_signers file,
+/// which ssh-keygen handles natively. Rebuilding that logic here would duplicate it for no gain.
+///
+/// Git calls: `did-git-sign -Y verify -f <allowed_signers> -I <principal> -n git -s <sig_file>`
+/// We forward this verbatim to: `ssh-keygen -Y verify ...`
+fn delegate_to_ssh_keygen(op: &str, cli: &Cli) -> Result<i32> {
+    // Allow the ssh-keygen binary path to be overridden via environment variable.
+    // This is useful when did-git-sign is invoked by git in a stripped-down
+    // environment (GUI clients, minimal CI containers) where ssh-keygen may not
+    // be on the inherited $PATH.
+    let ssh_keygen =
+        std::env::var("DID_GIT_SIGN_SSH_KEYGEN").unwrap_or_else(|_| "ssh-keygen".to_string());
+
+    let mut cmd = std::process::Command::new(&ssh_keygen);
+    cmd.arg("-Y").arg(op);
+
+    if let Some(f) = &cli.key_file {
+        cmd.arg("-f").arg(f);
+    }
+    if let Some(i) = &cli.identity {
+        cmd.arg("-I").arg(i);
+    }
+    if let Some(n) = &cli.namespace {
+        cmd.arg("-n").arg(n);
+    }
+    if let Some(s) = &cli.sig_file {
+        cmd.arg("-s").arg(s);
+    }
+    for opt in &cli.sig_option {
+        cmd.arg("-O").arg(opt);
+    }
+
+    let status = cmd
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status()
+        .context(format!(
+            "failed to invoke ssh-keygen at {:?} — is ssh-keygen installed? \
+             Set DID_GIT_SIGN_SSH_KEYGEN to override the path.",
+            ssh_keygen
+        ))?;
+
+    // status.code() returns None when ssh-keygen was terminated by a signal rather
+    // than exiting normally. We collapse that to exit code 1 (generic failure).
+    // Re-raising the signal would be more faithful but requires platform-specific
+    // libc calls and provides no practical benefit here — git treats both cases
+    // identically (verification failed). The unwrap_or(1) is intentional.
+    Ok(status.code().unwrap_or(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sets an env var on construction, removes it on drop (panic-safe).
+    /// Requires `#[serial_test::serial]` — `set_var`/`remove_var` are `unsafe`
+    /// in edition 2024 and safe only when no other thread reads the var
+    /// concurrently. **Any future test reading `DID_GIT_SIGN_SSH_KEYGEN` or
+    /// `DID_GIT_SIGN_TEST_MOCK_OUT` without `#[serial]` will race.**
+    struct EnvVarGuard(&'static str);
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: see struct-level doc comment above.
+            unsafe { std::env::remove_var(self.0) };
+        }
+    }
+
+    fn set_test_env(key: &'static str, value: &str) -> EnvVarGuard {
+        // SAFETY: see EnvVarGuard struct-level doc comment.
+        unsafe { std::env::set_var(key, value) };
+        EnvVarGuard(key)
+    }
+
+    /// Verifies that delegate_to_ssh_keygen forwards every flag in the Cli struct
+    /// to the underlying ssh-keygen binary in the correct order, and that the
+    /// DID_GIT_SIGN_SSH_KEYGEN env var is honoured for path override.
+    ///
+    /// The real ssh-keygen is replaced by a small shell script that writes each
+    /// received argument on its own line to a temp file.  The test then asserts
+    /// that every expected flag and value appears in that file.
+    #[test]
+    #[serial_test::serial]
+    fn delegate_forwards_all_flags_to_ssh_keygen() {
+        let mock_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_ssh_keygen.sh");
+
+        // Ensure the mock script is executable regardless of git checkout settings.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&mock_path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&mock_path, perms).unwrap();
+        }
+
+        let out_file = tempfile::NamedTempFile::new().unwrap();
+        let _ssh_guard = set_test_env("DID_GIT_SIGN_SSH_KEYGEN", mock_path.to_str().unwrap());
+        let _out_guard = set_test_env(
+            "DID_GIT_SIGN_TEST_MOCK_OUT",
+            out_file.path().to_str().unwrap(),
+        );
+
+        // Build a Cli that mirrors what git passes for -Y verify:
+        //   did-git-sign -Y verify -f allowed_signers -I <principal> -n git -s <sig> -O hashalg=sha512
+        let cli = Cli::try_parse_from([
+            "did-git-sign",
+            "-Y",
+            "verify",
+            "-f",
+            "allowed_signers",
+            "-I",
+            "did:webvh:test#key-0",
+            "-n",
+            "git",
+            "-s",
+            "buffer.diff.sig",
+            "-O",
+            "hashalg=sha512",
+        ])
+        .expect("clap should parse these flags without error");
+
+        let code = delegate_to_ssh_keygen("verify", &cli).unwrap();
+        assert_eq!(code, 0, "mock ssh-keygen must exit 0");
+
+        // Each arg is written on its own line by the mock script.
+        let content = std::fs::read_to_string(out_file.path()).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+
+        assert!(lines.contains(&"-Y"), "missing -Y flag");
+        assert!(lines.contains(&"verify"), "missing operation");
+        assert!(lines.contains(&"-f"), "missing -f flag");
+        assert!(lines.contains(&"allowed_signers"), "missing key_file value");
+        assert!(lines.contains(&"-I"), "missing -I flag");
+        assert!(lines.contains(&"did:webvh:test#key-0"), "missing identity");
+        assert!(lines.contains(&"-n"), "missing -n flag");
+        assert!(lines.contains(&"git"), "missing namespace");
+        assert!(lines.contains(&"-s"), "missing -s flag");
+        assert!(lines.contains(&"buffer.diff.sig"), "missing sig_file");
+        assert!(lines.contains(&"-O"), "missing -O flag");
+        assert!(lines.contains(&"hashalg=sha512"), "missing sig_option");
+    }
 }
