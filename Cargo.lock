@@ -4406,6 +4406,7 @@ dependencies = [
  "ed25519-dalek-bip32",
  "hex",
  "hkdf",
+ "indexmap 2.14.0",
  "keyring",
  "multibase",
  "openpgp-card",

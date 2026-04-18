@@ -67,6 +67,7 @@ impl PGPKeys {
                     self.signing = Some(key);
                 }
             }
+            #[allow(clippy::collapsible_match)]
             KeyPurpose::Authentication => {
                 if self.authentication.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
@@ -78,6 +79,7 @@ impl PGPKeys {
                     self.authentication = Some(key);
                 }
             }
+            #[allow(clippy::collapsible_match)]
             KeyPurpose::Encryption => {
                 if self.encryption.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())

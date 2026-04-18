@@ -34,6 +34,7 @@ dtg-credentials.workspace = true
 ed25519-dalek-bip32.workspace = true
 hkdf.workspace = true
 hex.workspace = true
+indexmap.workspace = true
 keyring.workspace = true
 multibase.workspace = true
 pgp.workspace = true

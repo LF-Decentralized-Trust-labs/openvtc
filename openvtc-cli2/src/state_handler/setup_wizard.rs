@@ -84,11 +84,13 @@ impl StateHandler {
                 Action::VtaSubmitCredential(credential_input) => {
                     setup_vta_actions::handle_vta_submit_credential(state, &self.state_tx, credential_input).await?;
                 },
+                #[allow(clippy::collapsible_match)]
                 Action::VtaAuthenticate => {
                     if setup_vta_actions::handle_vta_authenticate(state, &self.state_tx).await? {
                         continue;
                     }
                 },
+                #[allow(clippy::collapsible_match)]
                 Action::VtaCreateKeys => {
                     if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? {
                         continue;

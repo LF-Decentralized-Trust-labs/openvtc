@@ -5,10 +5,11 @@
 //! timestamp.
 
 use std::{
-    collections::HashMap,
     fmt::Display,
     sync::{Arc, Mutex},
 };
+
+use indexmap::IndexMap;
 
 use chrono::{DateTime, Utc};
 use dtg_credentials::DTGCredential;
@@ -84,17 +85,23 @@ impl Display for TaskType {
     }
 }
 
-/// Collection of in-progress tasks, indexed by task ID.
+/// Collection of in-progress tasks, ordered by insertion time.
+///
+/// Uses IndexMap instead of HashMap to maintain insertion order.
+/// This ensures that task positions are deterministic and stable
+/// across insertions and removals.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Tasks {
-    /// key: Task ID
-    pub tasks: HashMap<Arc<String>, Arc<Mutex<Task>>>,
+    /// key: Task ID, values ordered by insertion time (stable)
+    pub tasks: IndexMap<Arc<String>, Arc<Mutex<Task>>>,
 }
 
 impl Tasks {
     /// Removes a task by ID. Returns `true` if the task was found and removed.
+    ///
+    /// Uses `shift_remove` to maintain insertion order of remaining tasks.
     pub fn remove(&mut self, id: &Arc<String>) -> bool {
-        let removed = self.tasks.remove(id).is_some();
+        let removed = self.tasks.shift_remove(id).is_some();
         if removed {
             debug!("task removed: id={}", id);
         }
@@ -113,9 +120,9 @@ impl Tasks {
         task
     }
 
-    /// Returns the task at the given iteration position, or `None` if out of bounds.
+    /// Returns the task at the given insertion position, or `None` if out of bounds.
     ///
-    /// Note: HashMap iteration order is not stable across insertions and removals.
+    /// Note: IndexMap maintains insertion order, so this is stable across insertions/removals.
     pub fn get_by_pos(&self, pos: usize) -> Option<Arc<Mutex<Task>>> {
         self.tasks.iter().nth(pos).map(|(_, task)| task.clone())
     }
@@ -248,5 +255,253 @@ mod tests {
                 variant
             );
         }
+    }
+
+    // NEW TESTS: Deterministic Task Ordering with IndexMap
+
+    #[test]
+    fn test_task_position_stable_after_insertions() {
+        let mut tasks = Tasks::default();
+        let id1 = Arc::new("task-1".to_string());
+        let id2 = Arc::new("task-2".to_string());
+        let id3 = Arc::new("task-3".to_string());
+
+        // Add tasks in order
+        tasks.new_task(&id1, TaskType::TrustPong);
+        tasks.new_task(&id2, TaskType::RelationshipRequestRejected);
+        tasks.new_task(&id3, TaskType::RelationshipRequestAccepted);
+
+        // Verify initial positions
+        assert_eq!(
+            tasks.get_by_pos(0).unwrap().lock().unwrap().id,
+            id1,
+            "Position 0 should be id1"
+        );
+        assert_eq!(
+            tasks.get_by_pos(1).unwrap().lock().unwrap().id,
+            id2,
+            "Position 1 should be id2"
+        );
+        assert_eq!(
+            tasks.get_by_pos(2).unwrap().lock().unwrap().id,
+            id3,
+            "Position 2 should be id3"
+        );
+
+        // Add more tasks - existing positions should NOT change
+        let id4 = Arc::new("task-4".to_string());
+        tasks.new_task(&id4, TaskType::TrustPong);
+
+        // CRITICAL ASSERTION: Existing positions must remain stable
+        assert_eq!(
+            tasks.get_by_pos(0).unwrap().lock().unwrap().id,
+            id1,
+            "Position 0 should STILL be id1 after adding id4"
+        );
+        assert_eq!(
+            tasks.get_by_pos(1).unwrap().lock().unwrap().id,
+            id2,
+            "Position 1 should STILL be id2 after adding id4"
+        );
+        assert_eq!(
+            tasks.get_by_pos(2).unwrap().lock().unwrap().id,
+            id3,
+            "Position 2 should STILL be id3 after adding id4"
+        );
+        assert_eq!(
+            tasks.get_by_pos(3).unwrap().lock().unwrap().id,
+            id4,
+            "Position 3 should be new task id4"
+        );
+    }
+
+    #[test]
+    fn test_removal_preserves_remaining_order() {
+        let mut tasks = Tasks::default();
+        let id1 = Arc::new("task-1".to_string());
+        let id2 = Arc::new("task-2".to_string());
+        let id3 = Arc::new("task-3".to_string());
+
+        tasks.new_task(&id1, TaskType::TrustPong);
+        tasks.new_task(
+            &id2,
+            TaskType::RelationshipRequestOutbound {
+                to: Arc::new("did:example:test".to_string()),
+            },
+        );
+        tasks.new_task(&id3, TaskType::RelationshipRequestAccepted);
+
+        // Remove middle task
+        let was_removed = tasks.remove(&id2);
+        assert!(was_removed, "Should successfully remove task");
+
+        // Verify remaining tasks maintain relative order
+        assert_eq!(
+            tasks.get_by_pos(0).unwrap().lock().unwrap().id,
+            id1,
+            "First remaining task should be id1"
+        );
+        assert_eq!(
+            tasks.get_by_pos(1).unwrap().lock().unwrap().id,
+            id3,
+            "Second remaining task should be id3"
+        );
+        assert!(tasks.get_by_pos(2).is_none(), "Should only be 2 tasks left");
+    }
+
+    #[test]
+    fn test_serialization_preserves_insertion_order() {
+        let mut tasks = Tasks::default();
+        let ids = vec!["task-a", "task-b", "task-c"];
+
+        for id_str in &ids {
+            tasks.new_task(&Arc::new(id_str.to_string()), TaskType::TrustPong);
+        }
+
+        // Serialize to JSON
+        let json = serde_json::to_string(&tasks).expect("Should serialize");
+
+        // Deserialize from JSON
+        let deserialized: Tasks = serde_json::from_str(&json).expect("Should deserialize");
+
+        // Verify order is preserved in round-trip
+        for (i, expected_id) in ids.iter().enumerate() {
+            let retrieved = deserialized
+                .get_by_pos(i)
+                .unwrap_or_else(|| panic!("Task at position {} should exist", i))
+                .lock()
+                .unwrap()
+                .id
+                .clone();
+            assert_eq!(
+                retrieved.as_str(),
+                *expected_id,
+                "Serialization round-trip should preserve order at position {}",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_position_consistency_across_many_operations() {
+        let mut tasks = Tasks::default();
+        let mut added_ids = Vec::new();
+
+        // Add 10 tasks
+        for i in 0..10 {
+            let id = Arc::new(format!("task-{:02}", i));
+            added_ids.push(id.clone());
+            tasks.new_task(&id, TaskType::TrustPong);
+        }
+
+        // Verify all positions match insertion order
+        for (pos, expected_id) in added_ids.iter().enumerate() {
+            let actual = tasks
+                .get_by_pos(pos)
+                .unwrap_or_else(|| panic!("Task at position {} should exist", pos))
+                .lock()
+                .unwrap()
+                .id
+                .clone();
+            assert_eq!(&actual, expected_id);
+        }
+
+        // Remove some tasks (indices 2, 5, 8)
+        tasks.remove(&added_ids[2]);
+        tasks.remove(&added_ids[5]);
+        tasks.remove(&added_ids[8]);
+
+        // Verify remaining count
+        let expected_remaining = 10 - 3;
+        let actual_remaining = (0..100)
+            .take_while(|&pos| tasks.get_by_pos(pos).is_some())
+            .count();
+        assert_eq!(
+            actual_remaining, expected_remaining,
+            "Should have {} tasks remaining after 3 removals",
+            expected_remaining
+        );
+    }
+
+    #[test]
+    fn test_empty_and_single_task_positions() {
+        let mut tasks = Tasks::default();
+
+        // Empty case
+        assert!(
+            tasks.get_by_pos(0).is_none(),
+            "Empty tasks should have no position 0"
+        );
+        assert!(
+            tasks.get_by_pos(1).is_none(),
+            "Empty tasks should have no position 1"
+        );
+
+        // Single task
+        let id1 = Arc::new("only-task".to_string());
+        tasks.new_task(&id1, TaskType::TrustPong);
+
+        assert!(
+            tasks.get_by_pos(0).is_some(),
+            "Single task should be at position 0"
+        );
+        assert!(
+            tasks.get_by_pos(1).is_none(),
+            "Single task should not have position 1"
+        );
+
+        // After removal
+        tasks.remove(&id1);
+        assert!(
+            tasks.get_by_pos(0).is_none(),
+            "After removal, should be empty again"
+        );
+    }
+
+    #[test]
+    fn test_multiple_additions_then_removal() {
+        let mut tasks = Tasks::default();
+        let ids: Vec<Arc<String>> = (0..10).map(|i| Arc::new(format!("task-{}", i))).collect();
+
+        // Add all
+        for id in &ids {
+            tasks.new_task(id, TaskType::TrustPong);
+        }
+
+        // Verify order
+        for (i, expected_id) in ids.iter().enumerate() {
+            let actual = tasks.get_by_pos(i).unwrap().lock().unwrap().id.clone();
+            assert_eq!(&actual, expected_id);
+        }
+
+        // Remove IDs at indices 2, 4, 6, 8 (task-2, task-4, task-6, task-8)
+        // Do them in reverse order to avoid position shifts affecting our logic
+        let indices_to_remove = vec![8, 6, 4, 2];
+        for &idx in &indices_to_remove {
+            tasks.remove(&ids[idx]);
+        }
+
+        // Verify remaining are: task-0, task-1, task-3, task-5, task-7, task-9
+        let expected_remaining = [0, 1, 3, 5, 7, 9];
+        for (pos, &expected_idx) in expected_remaining.iter().enumerate() {
+            let actual = tasks
+                .get_by_pos(pos)
+                .unwrap_or_else(|| panic!("Position {} should have a task", pos))
+                .lock()
+                .unwrap()
+                .id
+                .clone();
+            assert_eq!(
+                actual, ids[expected_idx],
+                "Position {} should be task-{}",
+                pos, expected_idx
+            );
+        }
+
+        // Verify no more tasks after position 5
+        assert!(
+            tasks.get_by_pos(6).is_none(),
+            "Should only have 6 tasks remaining"
+        );
     }
 }
