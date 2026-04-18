@@ -16,10 +16,20 @@
 //! ```
 
 use crate::errors::OpenVTCError;
-use std::{fs, path::Path, process, str::FromStr};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
+    process,
+    str::FromStr,
+};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 
 /// Checks whether another instance of openvtc is already running for `profile`.
+///
+/// Uses atomic `create_new(true)` to avoid TOCTOU race conditions — if two
+/// processes start simultaneously, only one will successfully create the lock
+/// file; the other will see `AlreadyExists` and check the existing PID.
 ///
 /// If no duplicate is found a lock file containing the current PID is created
 /// and its path is returned so the caller can [`remove_lock_file`] it on exit.
@@ -31,31 +41,55 @@ use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 pub fn check_duplicate_instance(profile: &str) -> Result<String, OpenVTCError> {
     let lock_file = get_lock_file(profile)?;
 
-    match fs::exists(&lock_file) {
-        Ok(true) => {
-            let pid_str = fs::read_to_string(&lock_file)
-                .map_err(|e| OpenVTCError::LockFile(format!("couldn't read lock file: {e}")))?;
-            let pid_str = pid_str.trim_end();
+    // Ensure parent directory exists
+    let dir_path = Path::new(&lock_file);
+    if let Some(parent) = dir_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|e| OpenVTCError::LockFile(format!("couldn't create lock directory: {e}")))?;
+    }
 
-            let system = System::new_with_specifics(
-                RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
-            );
-            let pid = Pid::from_str(pid_str)
-                .map_err(|e| OpenVTCError::LockFile(format!("invalid PID in lock file: {e}")))?;
-
-            if system.process(pid).is_some() {
-                return Err(OpenVTCError::DuplicateInstance(profile.to_string()));
-            }
-            // Stale lock file — fall through to overwrite it.
+    // Attempt atomic lock file creation — avoids TOCTOU race
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&lock_file)
+    {
+        Ok(mut file) => {
+            // We won the race — write our PID
+            file.write_all(process::id().to_string().as_bytes())
+                .map_err(|e| {
+                    OpenVTCError::LockFile(format!("couldn't write PID to lock file: {e}"))
+                })?;
+            return Ok(lock_file);
         }
-        Ok(false) => {}
+        Err(ref e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Lock file exists — check if the owning process is still alive
+        }
         Err(e) => {
             return Err(OpenVTCError::LockFile(format!(
-                "couldn't check for lock file: {e}"
+                "couldn't create lock file: {e}"
             )));
         }
     }
 
+    // Lock file already exists — read and validate the PID
+    let pid_str = fs::read_to_string(&lock_file)
+        .map_err(|e| OpenVTCError::LockFile(format!("couldn't read lock file: {e}")))?;
+    let pid_str = pid_str.trim_end();
+
+    let system = System::new_with_specifics(
+        RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
+    );
+    let pid = Pid::from_str(pid_str)
+        .map_err(|e| OpenVTCError::LockFile(format!("invalid PID in lock file: {e}")))?;
+
+    if system.process(pid).is_some() {
+        return Err(OpenVTCError::DuplicateInstance(profile.to_string()));
+    }
+
+    // Stale lock file — overwrite with our PID
     create_lock_file(&lock_file)?;
     Ok(lock_file)
 }

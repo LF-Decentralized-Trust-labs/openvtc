@@ -185,6 +185,7 @@ pub async fn cli_setup(term: &Term, profile: &str) -> Result<()> {
             seed: SecretString::new(BASE64_URL_SAFE_NO_PAD.encode(mnemonic.to_entropy()).into()),
         },
         public: PublicConfig {
+            config_version: openvtc::config::public_config::CONFIG_VERSION,
             protection,
             persona_did: p_did.did.clone(),
             mediator_did: mediator_did.clone(),

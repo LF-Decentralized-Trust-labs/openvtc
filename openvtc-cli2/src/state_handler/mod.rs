@@ -1,7 +1,13 @@
+use std::borrow::Cow;
+use std::sync::Arc;
+
 use crate::{
     Interrupted, Terminator,
     state_handler::{
-        actions::Action,
+        actions::{
+            Action, ContactAction, CredentialAction, InboxAction, RelationshipAction,
+            SettingsAction,
+        },
         main_page::MainPanel,
         state::{ActivePage, State},
     },
@@ -9,17 +15,59 @@ use crate::{
 use affinidi_tdk::{TDK, common::config::TDKConfig};
 use anyhow::Result;
 use openvtc::config::{Config, UnlockCode, public_config::PublicConfig};
+use openvtc::logs::LogFamily;
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 use tokio::sync::{
     broadcast,
-    mpsc::{self, UnboundedReceiver, UnboundedSender},
+    mpsc::{self, UnboundedReceiver},
 };
-use tracing::debug;
+use tracing::{debug, info};
+
+/// Truncate a DID string for display in activity log messages.
+#[must_use]
+fn truncate_did(did: &str) -> Cow<'_, str> {
+    if did.len() > 30 {
+        Cow::Owned(format!("{}...", &did[..27]))
+    } else {
+        Cow::Borrowed(did)
+    }
+}
+
+/// Resolve a DID to a human-readable display name.
+///
+/// Tries: contact alias by DID → R-DID relationship → persona contact alias → truncated DID.
+fn resolve_did_to_display(config: &openvtc::config::Config, did: &str) -> String {
+    // Direct contact lookup
+    if let Some(contact) = config.private.contacts.find_contact(did)
+        && let Some(alias) = &contact.alias
+    {
+        return alias.clone();
+    }
+    // R-DID → persona DID → contact alias
+    let did_arc = std::sync::Arc::new(did.to_string());
+    if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc)
+        && let Ok(lock) = rel.lock()
+    {
+        let p_did = lock.remote_p_did.to_string();
+        if let Some(contact) = config.private.contacts.find_contact(&p_did)
+            && let Some(alias) = &contact.alias
+        {
+            return alias.clone();
+        }
+        return truncate_did(&p_did).into_owned();
+    }
+    truncate_did(did).into_owned()
+}
 
 pub mod actions;
+mod credential_actions;
+pub mod didcomm;
+mod inbox_actions;
 pub mod main_page;
-pub mod messaging;
+mod message_dispatch;
+mod relationship_actions;
+mod settings_actions;
 mod setup_did_actions;
 pub mod setup_sequence;
 mod setup_token_actions;
@@ -44,7 +92,7 @@ pub enum StartingMode {
 }
 
 pub struct StateHandler {
-    state_tx: UnboundedSender<State>,
+    state_tx: tokio::sync::watch::Sender<State>,
     profile: String,
     starting_mode: StartingMode,
 }
@@ -55,8 +103,11 @@ pub(crate) enum SetupWizardExit {
 }
 
 impl StateHandler {
-    pub fn new(profile: &str, starting_mode: StartingMode) -> (Self, UnboundedReceiver<State>) {
-        let (state_tx, state_rx) = mpsc::unbounded_channel::<State>();
+    pub fn new(
+        profile: &str,
+        starting_mode: StartingMode,
+    ) -> (Self, tokio::sync::watch::Receiver<State>) {
+        let (state_tx, state_rx) = tokio::sync::watch::channel(State::default());
 
         (
             StateHandler {
@@ -77,11 +128,12 @@ impl StateHandler {
         let mut state = State::default();
 
         let starting_mode = std::mem::replace(&mut self.starting_mode, StartingMode::NotSet);
-        let (tdk, config) = match starting_mode {
+        let (tdk, mut config) = match starting_mode {
             StartingMode::MainPage(config, tdk) => {
                 state.active_page = ActivePage::Main;
                 state.main_page.menu_panel.selected = true;
                 state.main_page.config = (&config).into();
+                state.main_page.log("Configuration loaded");
 
                 (tdk.to_owned(), config)
             }
@@ -99,6 +151,22 @@ impl StateHandler {
                 {
                     Ok(SetupWizardExit::Config(mut config)) => {
                         crate::apply_env_overrides(&mut config);
+
+                        // The setup wizard saved the config but the TDK secrets
+                        // resolver is empty. Load persona key secrets so the
+                        // DIDComm service can authenticate with the mediator.
+                        if let Err(e) = config.load_persona_secrets(&tdk).await {
+                            state
+                                .main_page
+                                .log(format!("Warning: failed to load persona keys: {e}"));
+                        }
+
+                        // Initialize main page state from the freshly created config
+                        state.active_page = ActivePage::Main;
+                        state.main_page.menu_panel.selected = true;
+                        state.main_page.sync_from_config(&config);
+                        state.main_page.log("Setup complete — configuration loaded");
+
                         (tdk, config)
                     }
                     Ok(SetupWizardExit::Interrupted(interrupted)) => {
@@ -125,7 +193,7 @@ impl StateHandler {
                     did: deferred.public_config.persona_did.clone(),
                 };
                 state.connection.status = state::MediatorStatus::Initializing("Starting...".into());
-                self.state_tx.send(state.clone())?;
+                let _ = self.state_tx.send(state.clone());
 
                 // Spawn TDK init + config load as a background task with progress reporting
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<String>();
@@ -210,7 +278,7 @@ impl StateHandler {
                         Some(msg) = progress_rx.recv() => {
                             state.connection.status =
                                 state::MediatorStatus::Initializing(msg);
-                            self.state_tx.send(state.clone())?;
+                            let _ = self.state_tx.send(state.clone());
                         }
                         // Token-touch notifications arrive through the dedicated channel
                         // so that state is mutated only here, inside the StateHandler loop.
@@ -224,7 +292,7 @@ impl StateHandler {
                                 Ok(Err(e)) => {
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
-                                    self.state_tx.send(state.clone())?;
+                                    let _ = self.state_tx.send(state.clone());
                                     return self
                                         .run_degraded_loop(
                                             &mut action_rx,
@@ -239,7 +307,7 @@ impl StateHandler {
                                         state::MediatorStatus::Failed(
                                             format!("Internal error: {join_err}"),
                                         );
-                                    self.state_tx.send(state.clone())?;
+                                    let _ = self.state_tx.send(state.clone());
                                     return self
                                         .run_degraded_loop(
                                             &mut action_rx,
@@ -271,8 +339,9 @@ impl StateHandler {
                 crate::apply_env_overrides(&mut config);
 
                 let config = Box::new(config);
-                // Update state with full config
-                state.main_page.config = (&config).into();
+                // Sync all display state from the loaded config
+                state.main_page.sync_from_config(&config);
+                state.main_page.log("Configuration loaded");
 
                 (tdk, config)
             }
@@ -285,26 +354,116 @@ impl StateHandler {
             }
         };
 
+        // Set the profile name once (doesn't change during runtime)
+        state.main_page.content_panel.vta.profile = self.profile.clone();
+
+        // Fetch VTA context name if using VTA backend
+        if let openvtc::config::KeyBackend::Vta {
+            vta_url,
+            credential_did,
+            credential_private_key,
+            vta_did,
+            ..
+        } = &config.key_backend
+        {
+            use secrecy::ExposeSecret;
+            if let Ok(token) = vta_sdk::session::challenge_response(
+                vta_url,
+                credential_did,
+                credential_private_key.expose_secret(),
+                vta_did,
+            )
+            .await
+            {
+                let client = vta_sdk::client::VtaClient::new(vta_url);
+                client.set_token(token.access_token);
+                if let Ok(resp) = client.list_contexts().await {
+                    // Match context by DID to find the active one
+                    if let Some(ctx) = resp
+                        .contexts
+                        .iter()
+                        .find(|c| c.did.as_deref() == Some(config.public.persona_did.as_str()))
+                    {
+                        state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+                    } else if let Some(ctx) = resp.contexts.first() {
+                        // Fallback to first context
+                        state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+                    }
+                }
+            }
+        }
+
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
-        self.state_tx.send(state.clone())?;
+        let _ = self.state_tx.send(state.clone());
 
-        // Spawn DIDComm init + validation as a background task
-        let (msg_tx, mut msg_rx) = mpsc::unbounded_channel();
-        let mut msg_task_handle: Option<tokio::task::JoinHandle<()>> = None;
+        // Start the DIDComm service (connection lifecycle, message dispatch, sending)
+        let (didcomm_event_tx, mut didcomm_event_rx) = mpsc::unbounded_channel();
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
 
-        let (conn_result_tx, mut conn_result_rx) = mpsc::channel::<messaging::ConnInitResult>(1);
-        let shared_state = tdk.get_shared_state();
-        let persona_did = config.public.persona_did.to_string();
-        let mediator_did = config.public.mediator_did.clone();
-
-        tokio::spawn(async move {
-            let result =
-                messaging::init_and_validate(shared_state, persona_did, mediator_did).await;
-            if let Err(e) = conn_result_tx.send(result).await {
-                debug!("Failed to send connection init result: {e}");
+        let didcomm_service = match didcomm::start_service(
+            &config,
+            &tdk,
+            didcomm_event_tx.clone(),
+            shutdown_token.clone(),
+        )
+        .await
+        {
+            Ok(svc) => svc,
+            Err(e) => {
+                state.connection.status =
+                    state::MediatorStatus::Failed(format!("DIDComm service: {e}"));
+                state
+                    .main_page
+                    .log(format!("DIDComm service failed to start: {e}"));
+                let _ = self.state_tx.send(state.clone());
+                return self
+                    .run_degraded_loop(
+                        &mut action_rx,
+                        &mut interrupt_rx,
+                        &mut terminator,
+                        &mut state,
+                    )
+                    .await;
             }
-        });
+        };
+
+        // Forward lifecycle events (connect/disconnect/restart) to the activity log
+        let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
+        let _lifecycle_handle = didcomm::spawn_lifecycle_logger(&didcomm_service, lifecycle_log_tx);
+
+        // Log registered listeners for diagnostics
+        let listeners = didcomm_service.list_listeners().await;
+        for l in &listeners {
+            debug!(id = %l.id, state = ?l.state, "registered listener");
+        }
+        info!(count = listeners.len(), "DIDComm listeners registered");
+
+        // Wait for persona listener to connect.
+        // Latency starts at 0 and updates from the first keepalive ping round-trip.
+        match didcomm_service
+            .wait_connected(
+                didcomm::PERSONA_LISTENER_ID,
+                std::time::Duration::from_secs(30),
+            )
+            .await
+        {
+            Ok(()) => {
+                state.connection.status = state::MediatorStatus::Connected;
+                state.connection.messaging_active = true;
+                state.main_page.log("Connected to mediator");
+            }
+            Err(e) => {
+                state.connection.status = state::MediatorStatus::Failed(format!("{e}"));
+                state
+                    .main_page
+                    .log(format!("Mediator connection failed: {e}"));
+            }
+        }
+        let _ = self.state_tx.send(state.clone());
+
+        // Track when a manual trust-ping was sent (for activity log latency display).
+        let mut ping_sent_at: Option<std::time::Instant> = None;
 
         let result = loop {
             tokio::select! {
@@ -342,68 +501,455 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::Inbox(ia) => match ia {
+                        InboxAction::SelectTask(index) => {
+                            handle_inbox_select(&mut state, index);
+                        },
+                        InboxAction::OpenDetail(index) => {
+                            handle_inbox_open_detail(&mut state, index);
+                        },
+                        InboxAction::Back => {
+                            state.main_page.content_panel.inbox.active_task = None;
+                        },
+                        InboxAction::AcceptRelationship { task_id, generate_r_did } => {
+                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.state_tx, &self.profile, &task_id, generate_r_did).await;
+                        },
+                        InboxAction::RejectRelationship { task_id, reason } => {
+                            handle_inbox_reject_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
+                        },
+                        InboxAction::AcceptVrc { task_id } => {
+                            handle_inbox_accept_vrc(&mut config, &mut state, &self.profile, &task_id);
+                        },
+                        InboxAction::AcceptVrcRequest { task_id } => {
+                            handle_inbox_accept_vrc_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id).await;
+                        },
+                        InboxAction::RejectVrcRequest { task_id, reason } => {
+                            handle_inbox_reject_vrc_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
+                        },
+                        InboxAction::DismissTask { task_id } => {
+                            handle_inbox_dismiss_task(&mut config, &mut state, &self.profile, &task_id);
+                        },
+                        InboxAction::ClearAll => {
+                            handle_inbox_clear_all(&mut config, &mut state, &self.profile);
+                        },
+                    },
+                    Action::Relationship(ra) => match ra {
+                        RelationshipAction::Select(index) => {
+                            state.main_page.content_panel.relationships.selected_index = index;
+                        },
+                        RelationshipAction::OpenDetail(index) => {
+                            handle_relationship_open_detail(&mut state, index);
+                        },
+                        RelationshipAction::StartNewRequest => {
+                            handle_relationship_start_new_request(&mut state);
+                        },
+                        RelationshipAction::CancelNewRequest | RelationshipAction::Back => {
+                            handle_relationship_cancel_or_back(&mut state);
+                        },
+                        RelationshipAction::InputUpdate { field, value } => {
+                            handle_relationship_input_update(&mut state, field, value);
+                        },
+                        RelationshipAction::ToggleRDid => {
+                            handle_relationship_toggle_r_did(&mut state);
+                        },
+                        RelationshipAction::FocusField(field) => {
+                            use main_page::content::RelationshipsMode;
+                            if let RelationshipsMode::NewRequest { active_field, .. } =
+                                &mut state.main_page.content_panel.relationships.mode
+                            {
+                                *active_field = field;
+                            }
+                        },
+                        RelationshipAction::SubmitRequest { did, alias, reason, generate_r_did } => {
+                            handle_relationship_submit(&mut config, &tdk, &didcomm_service, &mut state, &self.state_tx, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
+                        },
+                        RelationshipAction::Ping { remote_p_did } => {
+                            handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
+                            ping_sent_at = Some(std::time::Instant::now());
+                        },
+                        RelationshipAction::Remove { remote_p_did } => {
+                            handle_relationship_remove(&mut config, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
+                        },
+                        RelationshipAction::StartEditAlias { index, current_alias } => {
+                            state.main_page.content_panel.relationships.mode =
+                                main_page::content::RelationshipsMode::EditAlias { index, alias_input: current_alias };
+                        },
+                        RelationshipAction::EditAliasUpdate(value) => {
+                            if let main_page::content::RelationshipsMode::EditAlias { ref mut alias_input, .. } =
+                                state.main_page.content_panel.relationships.mode
+                            {
+                                *alias_input = value;
+                            }
+                        },
+                        RelationshipAction::EditAlias { remote_p_did, alias } => {
+                            handle_relationship_edit_alias(&mut config, &mut state, &self.profile, &remote_p_did, &alias);
+                        },
+                        RelationshipAction::CancelEditAlias { index } => {
+                            state.main_page.content_panel.relationships.mode =
+                                main_page::content::RelationshipsMode::Detail { index, selected_vrc: None };
+                        },
+                        RelationshipAction::RequestVrc { remote_p_did } => {
+                            handle_relationship_request_vrc(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
+                        },
+                    },
+                    Action::Credential(ca) => match ca {
+                        CredentialAction::SwitchTab => {
+                            handle_credential_switch_tab(&mut state);
+                        },
+                        CredentialAction::Select(index) => {
+                            state.main_page.content_panel.credentials.selected_index = index;
+                        },
+                        CredentialAction::OpenDetail(index) => {
+                            handle_credential_open_detail(&mut state, index);
+                        },
+                        CredentialAction::Back | CredentialAction::CancelNewRequest => {
+                            handle_credential_back(&mut state);
+                        },
+                        CredentialAction::StartNewRequest => {
+                            handle_credential_start_new_request(&mut state);
+                        },
+                        CredentialAction::SelectRelationship(index) => {
+                            handle_credential_select_relationship(&mut state, index);
+                        },
+                        CredentialAction::ReasonUpdate(value) => {
+                            handle_credential_reason_update(&mut state, value);
+                        },
+                        CredentialAction::SubmitRequest { relationship_p_did, reason } => {
+                            handle_credential_submit_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
+                        },
+                        CredentialAction::Remove { vrc_id } => {
+                            handle_credential_remove(&mut config, &mut state, &self.profile, &vrc_id);
+                        },
+                    },
+                    Action::Contact(ca) => match ca {
+                        ContactAction::Add { did, alias } => {
+                            handle_contact_add(&mut config, &mut state, &self.profile, &did, alias.as_deref());
+                        },
+                        ContactAction::Remove { did } => {
+                            handle_contact_remove(&mut config, &mut state, &self.profile, &did);
+                        },
+                    },
+                    Action::Settings(sa) => match sa {
+                        SettingsAction::Select(index) => {
+                            handle_settings_select(&mut state, index);
+                        },
+                        SettingsAction::StartEdit => {
+                            handle_settings_start_edit(&mut state);
+                        },
+                        SettingsAction::CancelEdit => {
+                            state.main_page.content_panel.settings.mode = main_page::content::SettingsMode::View;
+                        },
+                        SettingsAction::FieldUpdate(value) => {
+                            handle_settings_field_update(&mut state, value);
+                        },
+                        SettingsAction::FormFieldUpdate { field, value } => {
+                            handle_settings_form_field_update(&mut state, field, value);
+                        },
+                        SettingsAction::FormTabSwitch => {
+                            handle_settings_form_tab_switch(&mut state);
+                        },
+                        SettingsAction::ProtectionOptionSelect(option) => {
+                            handle_settings_protection_option_select(&mut state, option);
+                        },
+                        SettingsAction::ProtectionStartInput => {
+                            handle_settings_protection_start_input(&mut state);
+                        },
+                        SettingsAction::ProtectionPassphraseLen(len) => {
+                            handle_settings_protection_passphrase_len(&mut state, len);
+                        },
+                        SettingsAction::ProtectionConfirmLen(len) => {
+                            handle_settings_protection_confirm_len(&mut state, len);
+                        },
+                        SettingsAction::ProtectionTabSwitch(next_field) => {
+                            handle_settings_protection_tab_switch(&mut state, next_field);
+                        },
+                        SettingsAction::PassphraseLen(len) => {
+                            handle_settings_passphrase_len(&mut state, len);
+                        },
+                        SettingsAction::SubmitEdit { value } => {
+                            let needs_reconnect = handle_settings_submit_edit(&mut config, &mut state, &self.profile, &value);
+                            if needs_reconnect {
+                                state.connection.status = state::MediatorStatus::Connecting;
+                                state.connection.messaging_active = false;
+                                state.main_page.log("Reconnecting to mediator...");
+
+                                // Replace the persona listener with the new mediator DID
+                                let _ = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await;
+                                let new_config = didcomm::persona_listener_config(&config, &tdk).await;
+                                if let Err(e) = didcomm_service.add_listener(new_config).await {
+                                    state.connection.status =
+                                        state::MediatorStatus::Failed(format!("{e}"));
+                                    state.main_page.log(format!("Reconnect failed: {e}"));
+                                } else {
+                                    match didcomm_service
+                                        .wait_connected(didcomm::PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            state.connection.status =
+                                                state::MediatorStatus::Connected;
+                                            state.connection.messaging_active = true;
+                                            state.main_page.log("Reconnected to mediator");
+                                        }
+                                        Err(e) => {
+                                            state.connection.status =
+                                                state::MediatorStatus::Failed(format!("{e}"));
+                                            state.main_page.log(format!("Reconnect failed: {e}"));
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        SettingsAction::ExportConfig { path, passphrase } => {
+                            handle_settings_export_config(&mut config, &mut state, &self.profile, &path, &passphrase);
+                        },
+                        SettingsAction::ImportConfig { path, passphrase } => {
+                            handle_settings_import_config(&mut config, &mut state, &self.profile, &path, &passphrase);
+                        },
+                        SettingsAction::ChangeProtection => {
+                            handle_settings_change_protection(&mut state);
+                        },
+                        SettingsAction::SetPassphrase { passphrase } => {
+                            handle_settings_set_passphrase(&mut config, &mut state, &self.profile, &passphrase);
+                        },
+                        SettingsAction::RemovePassphrase => {
+                            handle_settings_remove_passphrase(&mut config, &mut state, &self.profile);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenManagement => {
+                            handle_settings_token_management(&mut state);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenDetect => {
+                            handle_settings_token_detect(&mut state);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenFactoryReset => {
+                            handle_settings_token_factory_reset(&mut state);
+                        },
+                        #[cfg(feature = "openpgp-card")]
+                        SettingsAction::TokenBack => {
+                            handle_settings_token_back(&mut state);
+                        },
+                        SettingsAction::ClipboardCopied(msg) => {
+                            state.main_page.content_panel.settings.status_message = Some(msg.clone());
+                            state.main_page.log(msg);
+                        },
+                        SettingsAction::ReconnectMediator => {
+                            state.connection.status = state::MediatorStatus::Connecting;
+                            state.connection.messaging_active = false;
+                            state.main_page.log("Reconnecting to mediator...");
+
+                            // Replace the persona listener
+                            let _ = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await;
+                            let new_config = didcomm::persona_listener_config(&config, &tdk).await;
+                            if let Err(e) = didcomm_service.add_listener(new_config).await {
+                                state.connection.status =
+                                    state::MediatorStatus::Failed(format!("{e}"));
+                                state.main_page.log(format!("Reconnect failed: {e}"));
+                            } else {
+                                match didcomm_service
+                                    .wait_connected(didcomm::PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        state.connection.status =
+                                            state::MediatorStatus::Connected;
+                                        state.connection.messaging_active = true;
+                                        state.main_page.log("Reconnected to mediator");
+                                    }
+                                    Err(e) => {
+                                        state.connection.status =
+                                            state::MediatorStatus::Failed(format!("{e}"));
+                                        state.main_page.log(format!("Reconnect failed: {e}"));
+                                    }
+                                }
+                            }
+                        },
+                    },
                     _ => {}
                 },
-                Some(conn_result) = conn_result_rx.recv() => {
-                    state.connection.status = conn_result.status;
-                    state.connection.last_ping_latency_ms = conn_result.latency_ms;
-
-                    if let (Some(atm), Some(profile)) = (conn_result.atm, conn_result.profile) {
-                        let handle = tokio::spawn(messaging::run_didcomm_loop(
-                            atm,
-                            profile,
-                            conn_result.persona_did,
-                            msg_tx.clone(),
-                            interrupt_rx.resubscribe(),
-                        ));
-                        msg_task_handle = Some(handle);
-                        state.connection.messaging_active = true;
-                    }
-                },
-                Some(event) = msg_rx.recv() => {
+                // DIDComm inbound message events
+                Some(event) = didcomm_event_rx.recv() => {
                     match event {
-                        messaging::MessagingEvent::TrustPingReceived { .. } => {}
-                        messaging::MessagingEvent::TrustPongReceived { latency_ms, .. } => {
-                            if let Some(ms) = latency_ms {
-                                state.connection.last_ping_latency_ms = Some(ms);
+                        didcomm::DIDCommEvent::InboundMessage { message, .. } => {
+                            // Capture message info before processing for detailed logging
+                            let msg_type = message.typ.clone();
+                            let msg_from = message.from.clone().unwrap_or_else(|| "unknown".into());
+                            let msg_to = message.to.as_ref().and_then(|v| v.first()).cloned().unwrap_or_default();
+                            let msg_thid = message.thid.clone().unwrap_or_else(|| "none".into());
+
+                            match message_dispatch::process_inbound_message(
+                                &mut config,
+                                &tdk,
+                                &didcomm_service,
+                                &message,
+                            )
+                            .await
+                            {
+                                Ok(true) => {
+                                    if let Err(e) = settings_actions::save_config(&config, &self.profile) {
+                                        state.main_page.log(format!("Failed to save config: {e}"));
+                                    }
+                                    state.main_page.sync_from_config(&config);
+                                    // Extract short type name for summary
+                                    let short_type = msg_type.rsplit('/').next().unwrap_or(&msg_type);
+                                    state.main_page.log_detailed(
+                                        format!("Inbound: {short_type}"),
+                                        format!(
+                                            "Inbound DIDComm Message\n\
+                                             ───────────────────────\n\
+                                             Type:    {msg_type}\n\
+                                             From:    {msg_from}\n\
+                                             To:      {msg_to}\n\
+                                             thid:    {msg_thid}",
+                                        ),
+                                    );
+                                }
+                                Ok(false) => {}
+                                Err(e) => {
+                                    state.main_page.log_detailed(
+                                        format!("Message error: {e}"),
+                                        format!(
+                                            "Failed Inbound Message\n\
+                                             ──────────────────────\n\
+                                             Type:    {msg_type}\n\
+                                             From:    {msg_from}\n\
+                                             To:      {msg_to}\n\
+                                             thid:    {msg_thid}\n\
+                                             Error:   {e}",
+                                        ),
+                                    );
+                                    debug!("message dispatch error: {e}");
+                                }
                             }
                         }
-                        messaging::MessagingEvent::ConnectionStatus(status) => {
-                            match status {
-                                messaging::ConnectionStatus::Connected => {
-                                    state.connection.status = state::MediatorStatus::Connected {
-                                        latency_ms: state.connection.last_ping_latency_ms.unwrap_or(0),
-                                    };
+                        didcomm::DIDCommEvent::TrustPingReceived { from, listener_id, message_id } => {
+                            let sender = from.as_deref().unwrap_or("unknown");
+                            let sender_arc = std::sync::Arc::new(sender.to_string());
+
+                            // Only respond to pings from the mediator or established relationships
+                            let is_mediator = sender == config.public.mediator_did;
+                            let has_relationship = config
+                                .private
+                                .relationships
+                                .find_by_remote_did(&sender_arc)
+                                .map(|r| {
+                                    r.lock()
+                                        .map(|l| l.state == openvtc::relationships::RelationshipState::Established)
+                                        .unwrap_or(false)
+                                })
+                                .unwrap_or(false);
+
+                            if is_mediator || has_relationship {
+                                // Send pong to verified sender, setting `from` to our
+                                // listener's DID so the recipient can identify us.
+                                let our_listener_did = didcomm_service
+                                    .listener_did(&listener_id)
+                                    .await
+                                    .unwrap_or_else(|| config.public.persona_did.to_string());
+                                if let Some(ref from_did) = from
+                                    && let Ok(pong_msg) =
+                                        build_trust_pong(&our_listener_did, from_did, &message_id)
+                                    && let Err(e) = didcomm_service
+                                        .send_message(&listener_id, pong_msg, from_did)
+                                        .await
+                                {
+                                    state
+                                        .main_page
+                                        .log(format!("Failed to send pong: {e}"));
                                 }
-                                messaging::ConnectionStatus::Disconnected => {
-                                    state.connection.status = state::MediatorStatus::Unknown;
-                                    state.connection.messaging_active = false;
-                                }
-                                messaging::ConnectionStatus::Error(e) => {
-                                    state.connection.status = state::MediatorStatus::Failed(e);
-                                }
+                                let ping_display = resolve_did_to_display(&config, sender);
+                                state.main_page.log_detailed(
+                                    format!("Ping from {ping_display} — pong sent"),
+                                    format!(
+                                        "Trust-Ping Received\n\
+                                         ───────────────────\n\
+                                         From (display):  {ping_display}\n\
+                                         From (DID):      {sender}\n\
+                                         Listener:        {listener_id}\n\
+                                         Response:        pong sent",
+                                    ),
+                                );
+                            } else {
+                                state.main_page.log_detailed(
+                                    format!("Ping from {} — ignored", truncate_did(sender)),
+                                    format!(
+                                        "Trust-Ping Rejected\n\
+                                         ───────────────────\n\
+                                         From (DID):      {sender}\n\
+                                         Reason:          no established relationship",
+                                    ),
+                                );
                             }
                         }
-                        messaging::MessagingEvent::InboundMessage { .. } => {}
+                        didcomm::DIDCommEvent::TrustPongReceived { from } => {
+                            debug!(from = ?from, "TrustPongReceived event");
+                            let sender_did = from.as_deref().unwrap_or("");
+                            // Pong often has no `from` field. Resolve by looking
+                            // at our most recent outbound ping task to determine
+                            // who we pinged.
+                            let sender_display = if sender_did.is_empty() {
+                                // Find the most recent TrustPing task to get the target
+                                config
+                                    .private
+                                    .tasks
+                                    .tasks
+                                    .values()
+                                    .filter_map(|t| {
+                                        let task = t.lock().ok()?;
+                                        if let openvtc::tasks::TaskType::TrustPing { to, .. } = &task.type_ {
+                                            Some(resolve_did_to_display(&config, to))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .next()
+                                    .unwrap_or_else(|| "unknown".to_string())
+                            } else {
+                                resolve_did_to_display(&config, sender_did)
+                            };
+                            let ms = ping_sent_at
+                                .take()
+                                .map(|sent_at| sent_at.elapsed().as_millis());
+                            let latency_str = ms
+                                .map(|v| format!(" ({v}ms)"))
+                                .unwrap_or_default();
+                            state.main_page.log_detailed(
+                                format!("Pong from {sender_display}{latency_str}"),
+                                format!(
+                                    "Trust-Pong Received\n\
+                                     ───────────────────\n\
+                                     From (display):  {sender_display}\n\
+                                     From (DID):      {sender_did}\n\
+                                     Latency:         {}",
+                                    ms.map(|v| format!("{v}ms")).unwrap_or_else(|| "n/a".into()),
+                                ),
+                            );
+                        }
                     }
                 },
+                // Lifecycle log messages from the DIDCommService
+                Some(log_msg) = lifecycle_log_rx.recv() => {
+                    state.main_page.log(log_msg);
+                },
+                // (keepalive removed — WebSocket-level pings handle connectivity)
                 // Catch and handle interrupt signal to gracefully shutdown
                 Ok(interrupted) = interrupt_rx.recv() => {
                     break interrupted;
                 }
             }
-            self.state_tx.send(state.clone())?;
+            let _ = self.state_tx.send(state.clone());
         };
 
-        // Wait for messaging task to finish shutdown
-        if let Some(handle) = msg_task_handle {
-            let _ = handle.await;
-        }
+        // Shut down the DIDComm service gracefully
+        shutdown_token.cancel();
+        didcomm_service.shutdown().await;
 
         Ok(result)
     }
 
-    /// Minimal event loop for when init fails — keeps UI alive so user sees the error and can exit.
+    /// Minimal event loop for when init fails -- keeps UI alive so user sees the error and can exit.
     async fn run_degraded_loop(
         &self,
         action_rx: &mut UnboundedReceiver<Action>,
@@ -447,7 +993,1121 @@ impl StateHandler {
                     return Ok(interrupted);
                 }
             }
-            self.state_tx.send(state.clone())?;
+            let _ = self.state_tx.send(state.clone());
         }
     }
+}
+
+// ============================================================
+// Inbox action handlers
+// ============================================================
+
+fn handle_inbox_select(state: &mut State, index: usize) {
+    state.main_page.content_panel.inbox.selected_index = index;
+}
+
+fn handle_inbox_open_detail(state: &mut State, index: usize) {
+    use main_page::content::{ActiveTaskView, TaskKind};
+
+    state.main_page.content_panel.inbox.selected_index = index;
+    if let Some(task) = state.main_page.content_panel.inbox.tasks.get(index) {
+        let view = match &task.kind {
+            TaskKind::RelationshipRequestInbound {
+                from_did,
+                their_did,
+                reason,
+                name,
+            } => Some(ActiveTaskView::RelationshipRequestInbound {
+                task_id: task.id.clone(),
+                from_did: from_did.clone(),
+                their_did: their_did.clone(),
+                reason: reason.clone(),
+                name: name.clone(),
+            }),
+            TaskKind::VRCRequestInbound { reason } => Some(ActiveTaskView::VRCRequestInbound {
+                task_id: task.id.clone(),
+                from_did: task.remote_did.clone(),
+                reason: reason.clone(),
+            }),
+            TaskKind::VRCIssued => Some(ActiveTaskView::VRCIssued {
+                task_id: task.id.clone(),
+                issuer: task.remote_did.clone(),
+            }),
+            TaskKind::RelationshipRequestOutbound { our_did } => {
+                Some(ActiveTaskView::RelationshipRequestOutbound {
+                    task_id: task.id.clone(),
+                    to_did: task.remote_did.clone(),
+                    our_did: our_did.clone(),
+                    state: "Request Sent".to_string(),
+                })
+            }
+            TaskKind::VRCRequestOutbound => Some(ActiveTaskView::VRCRequestOutbound {
+                task_id: task.id.clone(),
+                remote_did: task.remote_did.clone(),
+            }),
+            TaskKind::TrustPing | TaskKind::Informational(_) => Some(ActiveTaskView::Info {
+                task_id: task.id.clone(),
+                type_display: task.type_display.clone(),
+                remote_did: task.remote_did.clone(),
+            }),
+        };
+        state.main_page.content_panel.inbox.active_task = view;
+    }
+}
+
+/// Helper: save config after an inbox action, sync UI state, and log messages.
+fn inbox_save_and_sync(
+    config: &Config,
+    state: &mut State,
+    profile: &str,
+    success_status: &str,
+    success_log: &str,
+) {
+    state.main_page.content_panel.inbox.active_task = None;
+    state.main_page.content_panel.inbox.status_message = Some(success_status.to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log(success_log);
+}
+
+fn inbox_error(state: &mut State, context: &str, err: &anyhow::Error) {
+    state.main_page.content_panel.inbox.status_message = Some(format!("Error: {err}"));
+    state.main_page.log(format!("{context}: {err}"));
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_inbox_accept_relationship(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    state_tx: &tokio::sync::watch::Sender<State>,
+    profile: &str,
+    task_id: &str,
+    generate_r_did: bool,
+) {
+    // Show immediate feedback
+    if generate_r_did {
+        state.main_page.content_panel.inbox.status_message =
+            Some("Accepting with R-DID — creating keys...".to_string());
+        state
+            .main_page
+            .log("Accepting relationship request (creating R-DID)...");
+    } else {
+        state.main_page.content_panel.inbox.status_message =
+            Some("Accepting relationship request...".to_string());
+        state.main_page.log("Accepting relationship request...");
+    }
+    let _ = state_tx.send(state.clone());
+
+    match inbox_actions::accept_relationship_request(config, tdk, service, task_id, generate_r_did)
+        .await
+    {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "Relationship request accepted",
+            "Accepted relationship request",
+        ),
+        Err(e) => inbox_error(state, "Failed to accept relationship", &e),
+    }
+}
+
+async fn handle_inbox_reject_relationship(
+    config: &mut Box<Config>,
+    _tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+    reason: Option<&str>,
+) {
+    match inbox_actions::reject_relationship_request(config, service, task_id, reason).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "Relationship request rejected",
+            "Rejected relationship request",
+        ),
+        Err(e) => inbox_error(state, "Failed to reject relationship", &e),
+    }
+}
+
+fn handle_inbox_accept_vrc(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    match inbox_actions::accept_vrc(config, task_id) {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "VRC accepted and stored",
+            "VRC accepted and stored",
+        ),
+        Err(e) => inbox_error(state, "Failed to accept VRC", &e),
+    }
+}
+
+async fn handle_inbox_accept_vrc_request(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    match inbox_actions::accept_vrc_request(config, tdk, service, task_id).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "VRC issued and sent",
+            "VRC issued and sent",
+        ),
+        Err(e) => inbox_error(state, "Failed to issue VRC", &e),
+    }
+}
+
+async fn handle_inbox_reject_vrc_request(
+    config: &mut Box<Config>,
+    _tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+    reason: Option<&str>,
+) {
+    match inbox_actions::reject_vrc_request(config, service, task_id, reason).await {
+        Ok(()) => inbox_save_and_sync(
+            config,
+            state,
+            profile,
+            "VRC request rejected",
+            "Rejected VRC request",
+        ),
+        Err(e) => inbox_error(state, "Failed to reject VRC request", &e),
+    }
+}
+
+fn handle_inbox_dismiss_task(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    task_id: &str,
+) {
+    let _ = inbox_actions::dismiss_task(config, task_id);
+    state.main_page.content_panel.inbox.active_task = None;
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("Task dismissed");
+}
+
+fn handle_inbox_clear_all(config: &mut Box<Config>, state: &mut State, profile: &str) {
+    let _ = inbox_actions::clear_all_tasks(config);
+    state.main_page.content_panel.inbox.active_task = None;
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("All inbox tasks cleared");
+}
+
+// ============================================================
+// Relationship action handlers
+// ============================================================
+
+fn handle_relationship_open_detail(state: &mut State, index: usize) {
+    use main_page::content::RelationshipsMode;
+    state.main_page.content_panel.relationships.selected_index = index;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
+        index,
+        selected_vrc: None,
+    };
+}
+
+fn handle_relationship_start_new_request(state: &mut State) {
+    use main_page::content::RelationshipsMode;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::NewRequest {
+        did_input: String::new(),
+        alias_input: String::new(),
+        reason_input: String::new(),
+        generate_r_did: false,
+        active_field: 0,
+    };
+}
+
+fn handle_relationship_cancel_or_back(state: &mut State) {
+    use main_page::content::RelationshipsMode;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+    state.main_page.content_panel.relationships.status_message = None;
+}
+
+fn handle_relationship_input_update(state: &mut State, field: usize, value: String) {
+    use main_page::content::RelationshipsMode;
+    if let RelationshipsMode::NewRequest {
+        ref mut did_input,
+        ref mut alias_input,
+        ref mut reason_input,
+        ..
+    } = state.main_page.content_panel.relationships.mode
+    {
+        match field {
+            0 => *did_input = value,
+            1 => *alias_input = value,
+            _ => *reason_input = value,
+        }
+    }
+}
+
+fn handle_relationship_toggle_r_did(state: &mut State) {
+    use main_page::content::RelationshipsMode;
+    if let RelationshipsMode::NewRequest {
+        ref mut generate_r_did,
+        ..
+    } = state.main_page.content_panel.relationships.mode
+    {
+        *generate_r_did = !*generate_r_did;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_relationship_submit(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    state_tx: &tokio::sync::watch::Sender<State>,
+    profile: &str,
+    did: &str,
+    alias: &str,
+    reason: Option<&str>,
+    generate_r_did: bool,
+) {
+    use main_page::content::RelationshipsMode;
+
+    // Show progress immediately if R-DID generation will involve network calls
+    if generate_r_did {
+        state.main_page.content_panel.relationships.status_message =
+            Some("Creating relationship DID...".to_string());
+        state
+            .main_page
+            .log("Creating relationship DID via key backend...");
+        let _ = state_tx.send(state.clone());
+    } else {
+        state.main_page.content_panel.relationships.status_message =
+            Some("Sending request...".to_string());
+        let _ = state_tx.send(state.clone());
+    }
+
+    match relationship_actions::send_relationship_request(
+        config,
+        tdk,
+        service,
+        did,
+        alias,
+        reason,
+        generate_r_did,
+    )
+    .await
+    {
+        Ok(()) => {
+            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("Request sent to {}", truncate_did(did)));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            // Look up the relationship we just created for detail info
+            let detail = {
+                let rel_key = std::sync::Arc::new(did.to_string());
+                if let Some(rel_arc) = config.private.relationships.get(&rel_key)
+                    && let Ok(r) = rel_arc.lock()
+                {
+                    format!(
+                        "Relationship Request Sent\n\
+                         ─────────────────────────\n\
+                         To (persona):  {}\n\
+                         Our DID:       {}\n\
+                         R-DID used:    {}\n\
+                         Task ID:       {}",
+                        r.remote_p_did,
+                        r.our_did,
+                        if *r.our_did != *config.public.persona_did {
+                            "yes"
+                        } else {
+                            "no"
+                        },
+                        r.task_id,
+                    )
+                } else {
+                    String::new()
+                }
+            };
+            state.main_page.sync_from_config(config);
+            state.main_page.log_detailed(
+                format!("Relationship request sent to {}", truncate_did(did)),
+                detail,
+            );
+        }
+        Err(e) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to send relationship request: {e}"));
+        }
+    }
+}
+
+async fn handle_relationship_ping(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+) {
+    use main_page::content::RelationshipsMode;
+    // Capture relationship DIDs for logging before the call
+    let rel_key = std::sync::Arc::new(remote_p_did.to_string());
+    let (our_did_str, remote_did_str) = if let Some(rel_arc) =
+        config.private.relationships.get(&rel_key)
+        && let Ok(r) = rel_arc.lock()
+    {
+        (r.our_did.to_string(), r.remote_did.to_string())
+    } else {
+        (String::new(), String::new())
+    };
+    let display_name = resolve_did_to_display(config, remote_p_did);
+
+    match relationship_actions::ping_relationship(config, tdk, service, remote_p_did).await {
+        Ok(()) => {
+            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+            state.main_page.content_panel.relationships.status_message =
+                Some("Ping sent".to_string());
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            let using_rdid = our_did_str != *config.public.persona_did;
+            state.main_page.log_detailed(
+                format!(
+                    "Trust-ping sent to {display_name}{}",
+                    if using_rdid { " (via R-DID)" } else { "" }
+                ),
+                format!(
+                    "Trust-Ping Sent\n\
+                     ───────────────\n\
+                     To:              {display_name}\n\
+                     Sent to DID:     {remote_did_str}\n\
+                     Sent from DID:   {our_did_str}\n\
+                     Remote persona:  {remote_p_did}\n\
+                     Using R-DIDs:    {}\n\
+                     Routed via:      mediator",
+                    if using_rdid { "yes" } else { "no" },
+                ),
+            );
+        }
+        Err(e) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("Ping failed: {e}"));
+            state.main_page.log_detailed(
+                format!("Ping to {display_name} failed: {e}"),
+                format!(
+                    "Trust-Ping Failed\n\
+                     ─────────────────\n\
+                     To (persona):    {remote_p_did}\n\
+                     To (R-DID):      {remote_did_str}\n\
+                     From (our DID):  {our_did_str}\n\
+                     Error:           {e}",
+                ),
+            );
+        }
+    }
+}
+
+async fn handle_relationship_remove(
+    config: &mut Box<Config>,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+) {
+    use main_page::content::RelationshipsMode;
+    let _ = relationship_actions::remove_relationship(config, service, remote_p_did).await;
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+    state.main_page.content_panel.relationships.status_message =
+        Some("Relationship removed".to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("Relationship removed");
+}
+
+fn handle_relationship_edit_alias(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+    alias: &str,
+) {
+    use main_page::content::RelationshipsMode;
+    use openvtc::config::protected_config::Contact;
+
+    // Remove old contact entry (clears old alias mapping too)
+    config
+        .private
+        .contacts
+        .remove_contact(&mut config.public.logs, remote_p_did);
+
+    // Re-add with the new alias
+    let alias_opt = if alias.trim().is_empty() {
+        None
+    } else {
+        Some(alias.trim().to_string())
+    };
+    let contact_did = Arc::new(remote_p_did.to_string());
+    let contact = Arc::new(Contact {
+        did: contact_did.clone(),
+        alias: alias_opt.clone(),
+    });
+    config
+        .private
+        .contacts
+        .contacts
+        .insert(contact_did, contact.clone());
+    if let Some(ref a) = alias_opt {
+        config.private.contacts.aliases.insert(a.clone(), contact);
+    }
+
+    config.public.logs.insert(
+        openvtc::logs::LogFamily::Config,
+        format!(
+            "Alias updated for {}: {}",
+            remote_p_did,
+            alias_opt.as_deref().unwrap_or("(removed)")
+        ),
+    );
+
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    // Return to detail view — find the index for this remote_p_did
+    let index = state
+        .main_page
+        .content_panel
+        .relationships
+        .relationships
+        .iter()
+        .position(|r| r.remote_p_did == remote_p_did)
+        .unwrap_or(0);
+    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
+        index,
+        selected_vrc: None,
+    };
+    state.main_page.content_panel.relationships.status_message = Some("Alias updated".to_string());
+    state.main_page.log("Alias updated");
+}
+
+async fn handle_relationship_request_vrc(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    remote_p_did: &str,
+) {
+    let display_name = resolve_did_to_display(config, remote_p_did);
+
+    match credential_actions::send_vrc_request(config, tdk, service, remote_p_did, None).await {
+        Ok(()) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("VRC requested from {display_name}"));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            state.main_page.log_detailed(
+                format!("VRC requested from {display_name}"),
+                format!(
+                    "VRC Request Sent\n\
+                     ────────────────\n\
+                     To:      {display_name}\n\
+                     DID:     {remote_p_did}",
+                ),
+            );
+        }
+        Err(e) => {
+            state.main_page.content_panel.relationships.status_message =
+                Some(format!("VRC request failed: {e}"));
+            state
+                .main_page
+                .log(format!("VRC request to {display_name} failed: {e}"));
+        }
+    }
+}
+
+// ============================================================
+// Credential action handlers
+// ============================================================
+
+fn handle_credential_switch_tab(state: &mut State) {
+    use main_page::content::CredentialTab;
+    state.main_page.content_panel.credentials.selected_tab =
+        match state.main_page.content_panel.credentials.selected_tab {
+            CredentialTab::Received => CredentialTab::Issued,
+            CredentialTab::Issued => CredentialTab::Received,
+        };
+    state.main_page.content_panel.credentials.selected_index = 0;
+}
+
+fn handle_credential_open_detail(state: &mut State, index: usize) {
+    use main_page::content::CredentialsMode;
+    state.main_page.content_panel.credentials.selected_index = index;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::Detail { index };
+}
+
+fn handle_credential_back(state: &mut State) {
+    use main_page::content::CredentialsMode;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+    state.main_page.content_panel.credentials.selected_index = 0;
+}
+
+fn handle_credential_start_new_request(state: &mut State) {
+    use main_page::content::CredentialsMode;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::NewRequest {
+        relationship_index: 0,
+        reason_input: String::new(),
+    };
+}
+
+fn handle_credential_select_relationship(state: &mut State, index: usize) {
+    use main_page::content::CredentialsMode;
+    if let CredentialsMode::NewRequest {
+        ref mut relationship_index,
+        ..
+    } = state.main_page.content_panel.credentials.mode
+    {
+        let established_count = state
+            .main_page
+            .content_panel
+            .relationships
+            .relationships
+            .iter()
+            .filter(|r| r.state == "Established")
+            .count();
+        if index < established_count {
+            *relationship_index = index;
+        }
+    }
+}
+
+fn handle_credential_reason_update(state: &mut State, value: String) {
+    use main_page::content::CredentialsMode;
+    if let CredentialsMode::NewRequest {
+        ref mut reason_input,
+        ..
+    } = state.main_page.content_panel.credentials.mode
+    {
+        *reason_input = value;
+    }
+}
+
+async fn handle_credential_submit_request(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    state: &mut State,
+    profile: &str,
+    relationship_p_did: &str,
+    reason: Option<&str>,
+) {
+    use main_page::content::CredentialsMode;
+    match credential_actions::send_vrc_request(config, tdk, service, relationship_p_did, reason)
+        .await
+    {
+        Ok(()) => {
+            state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+            state.main_page.content_panel.credentials.status_message = Some(format!(
+                "VRC request sent to {}",
+                truncate_did(relationship_p_did)
+            ));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log(format!("Failed to save config: {e}"));
+            }
+            state.main_page.sync_from_config(config);
+            state.main_page.log(format!(
+                "VRC request sent to {}",
+                truncate_did(relationship_p_did)
+            ));
+        }
+        Err(e) => {
+            state.main_page.content_panel.credentials.status_message = Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to send VRC request: {e}"));
+        }
+    }
+}
+
+fn handle_credential_remove(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    vrc_id: &str,
+) {
+    use main_page::content::CredentialsMode;
+    let _ = credential_actions::remove_vrc(config, vrc_id);
+    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+    state.main_page.content_panel.credentials.selected_index = 0;
+    state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log(format!("Failed to save config: {e}"));
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("VRC removed");
+}
+
+// ============================================================
+// Contact action handlers
+// ============================================================
+
+fn handle_contact_add(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    did: &str,
+    alias: Option<&str>,
+) {
+    match settings_actions::add_contact(config, profile, did, alias) {
+        Ok(()) => {
+            state.main_page.sync_from_config(config);
+            state
+                .main_page
+                .log(format!("Contact added: {}", truncate_did(did)));
+        }
+        Err(e) => {
+            state.main_page.log(format!("Failed to add contact: {e}"));
+        }
+    }
+}
+
+fn handle_contact_remove(config: &mut Box<Config>, state: &mut State, profile: &str, did: &str) {
+    match settings_actions::remove_contact(config, profile, did) {
+        Ok(()) => {
+            state.main_page.sync_from_config(config);
+            state
+                .main_page
+                .log(format!("Contact removed: {}", truncate_did(did)));
+        }
+        Err(e) => {
+            state
+                .main_page
+                .log(format!("Failed to remove contact: {e}"));
+        }
+    }
+}
+
+// ============================================================
+// Settings action handlers
+// ============================================================
+
+fn handle_settings_select(state: &mut State, index: usize) {
+    use main_page::content::SettingsMode;
+    #[cfg(feature = "openpgp-card")]
+    if let SettingsMode::TokenManagement { selected_index } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *selected_index = index;
+    } else {
+        state.main_page.content_panel.settings.selected_index = index;
+    }
+    #[cfg(not(feature = "openpgp-card"))]
+    {
+        state.main_page.content_panel.settings.selected_index = index;
+    }
+}
+
+fn handle_settings_start_edit(state: &mut State) {
+    use main_page::content::SettingsMode;
+    let idx = state.main_page.content_panel.settings.selected_index;
+    let s = &state.main_page.content_panel.settings;
+    state.main_page.content_panel.settings.mode = match idx {
+        0 => SettingsMode::EditFriendlyName {
+            input: s.friendly_name.clone(),
+        },
+        1 => SettingsMode::EditMediatorDid {
+            input: s.mediator_did.clone(),
+        },
+        2 => SettingsMode::EditOrgDid {
+            input: s.org_did.clone(),
+        },
+        5 => SettingsMode::ExportConfig {
+            path_input: "openvtc-export.enc".to_string(),
+            passphrase_len: 0,
+            active_field: 0,
+        },
+        6 => SettingsMode::ImportConfig {
+            path_input: "openvtc-export.enc".to_string(),
+            passphrase_len: 0,
+            active_field: 0,
+        },
+        _ => SettingsMode::View,
+    };
+}
+
+fn handle_settings_field_update(state: &mut State, value: String) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::EditFriendlyName { input }
+        | SettingsMode::EditMediatorDid { input }
+        | SettingsMode::EditOrgDid { input } => {
+            *input = value;
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_form_field_update(state: &mut State, field: usize, value: String) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::ExportConfig { path_input, .. }
+        | SettingsMode::ImportConfig { path_input, .. } => {
+            if field == 0 {
+                *path_input = value;
+            }
+            // Passphrase updates are handled via SettingsPassphraseLen
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_passphrase_len(state: &mut State, len: usize) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::ExportConfig { passphrase_len, .. }
+        | SettingsMode::ImportConfig { passphrase_len, .. } => {
+            *passphrase_len = len;
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_form_tab_switch(state: &mut State) {
+    use main_page::content::SettingsMode;
+    match &mut state.main_page.content_panel.settings.mode {
+        SettingsMode::ExportConfig { active_field, .. }
+        | SettingsMode::ImportConfig { active_field, .. } => {
+            *active_field = if *active_field == 0 { 1 } else { 0 };
+        }
+        _ => {}
+    }
+}
+
+fn handle_settings_protection_option_select(state: &mut State, option: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection {
+        selected_option, ..
+    } = &mut state.main_page.content_panel.settings.mode
+    {
+        *selected_option = option;
+    }
+}
+
+fn handle_settings_protection_start_input(state: &mut State) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { active_field, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *active_field = 1;
+    }
+}
+
+fn handle_settings_protection_passphrase_len(state: &mut State, len: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { passphrase_len, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *passphrase_len = len;
+    }
+}
+
+fn handle_settings_protection_confirm_len(state: &mut State, len: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { confirm_len, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *confirm_len = len;
+    }
+}
+
+fn handle_settings_protection_tab_switch(state: &mut State, next_field: usize) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::ChangeProtection { active_field, .. } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *active_field = next_field;
+    }
+}
+
+/// Returns `true` if the mediator DID was changed and a reconnect is needed.
+fn handle_settings_submit_edit(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    value: &str,
+) -> bool {
+    use main_page::content::SettingsMode;
+    let idx = state.main_page.content_panel.settings.selected_index;
+    let result = match idx {
+        0 => settings_actions::update_friendly_name(config, profile, value),
+        1 => settings_actions::update_mediator_did(config, profile, value),
+        2 => settings_actions::update_org_did(config, profile, value),
+        _ => Ok(()),
+    };
+    match result {
+        Ok(()) => {
+            let setting_name = match idx {
+                0 => "Friendly name",
+                1 => "Mediator DID",
+                2 => "Organization DID",
+                _ => "Setting",
+            };
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some("Setting saved".to_string());
+            state.main_page.sync_from_config(config);
+            state.main_page.log(format!("{} updated", setting_name));
+            // Mediator DID is index 1 — caller should trigger reconnect
+            idx == 1
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
+            state.main_page.log(format!("Failed to save setting: {e}"));
+            false
+        }
+    }
+}
+
+fn handle_settings_export_config(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    path: &str,
+    passphrase: &str,
+) {
+    use main_page::content::SettingsMode;
+    match settings_actions::export_config(config, path, passphrase) {
+        Ok(()) => {
+            config
+                .public
+                .logs
+                .insert(LogFamily::Config, format!("Config exported to {}", path));
+            let _ = settings_actions::save_config(config, profile);
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Config exported to {}", path));
+            state.main_page.log(format!("Config exported to {}", path));
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Export failed: {e}"));
+            state.main_page.log(format!("Config export failed: {e}"));
+        }
+    }
+}
+
+fn handle_settings_import_config(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    path: &str,
+    passphrase: &str,
+) {
+    use main_page::content::SettingsMode;
+    match settings_actions::import_config(path, passphrase) {
+        Ok(msg) => {
+            config
+                .public
+                .logs
+                .insert(LogFamily::Config, format!("Config imported from {}", path));
+            let _ = settings_actions::save_config(config, profile);
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message = Some(msg.clone());
+            state.main_page.log(msg);
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Import failed: {e}"));
+            state.main_page.log(format!("Config import failed: {e}"));
+        }
+    }
+}
+
+fn handle_settings_change_protection(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode = SettingsMode::ChangeProtection {
+        selected_option: 0,
+        passphrase_len: 0,
+        confirm_len: 0,
+        active_field: 0,
+    };
+}
+
+fn handle_settings_set_passphrase(
+    config: &mut Box<Config>,
+    state: &mut State,
+    profile: &str,
+    passphrase: &str,
+) {
+    use main_page::content::SettingsMode;
+    match settings_actions::set_passphrase(config, profile, passphrase) {
+        Ok(()) => {
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some("Passphrase protection enabled".to_string());
+            state.main_page.sync_from_config(config);
+            state.main_page.log("Passphrase protection enabled");
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to set passphrase: {e}"));
+        }
+    }
+}
+
+fn handle_settings_remove_passphrase(config: &mut Box<Config>, state: &mut State, profile: &str) {
+    use main_page::content::SettingsMode;
+    match settings_actions::remove_passphrase(config, profile) {
+        Ok(()) => {
+            state.main_page.content_panel.settings.mode = SettingsMode::View;
+            state.main_page.content_panel.settings.status_message =
+                Some("Protection reverted to keyring only".to_string());
+            state.main_page.sync_from_config(config);
+            state.main_page.log("Protection reverted to keyring only");
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
+            state
+                .main_page
+                .log(format!("Failed to remove passphrase: {e}"));
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_management(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode =
+        SettingsMode::TokenManagement { selected_index: 0 };
+    match openvtc::openpgp_card::get_cards() {
+        Ok(cards) => {
+            state.main_page.content_panel.settings.token.detected_count = cards.len();
+            state
+                .main_page
+                .content_panel
+                .settings
+                .token
+                .messages
+                .clear();
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.token.detected_count = 0;
+            state.main_page.content_panel.settings.token.messages =
+                vec![format!("Error detecting tokens: {e}")];
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_detect(state: &mut State) {
+    match openvtc::openpgp_card::get_cards() {
+        Ok(cards) => {
+            state.main_page.content_panel.settings.token.detected_count = cards.len();
+            state.main_page.content_panel.settings.token.messages =
+                vec![format!("{} token(s) detected", cards.len())];
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.token.detected_count = 0;
+            state.main_page.content_panel.settings.token.messages = vec![format!("Error: {e}")];
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_factory_reset(state: &mut State) {
+    match openvtc::openpgp_card::get_cards() {
+        Ok(cards) if !cards.is_empty() => {
+            match openvtc::openpgp_card::factory_reset(cards[0].clone()) {
+                Ok(()) => {
+                    state.main_page.content_panel.settings.token.messages =
+                        vec!["Factory reset completed successfully.".to_string()];
+                    state.main_page.content_panel.settings.token.reset_completed = true;
+                }
+                Err(e) => {
+                    state.main_page.content_panel.settings.token.messages =
+                        vec![format!("Factory reset failed: {e}")];
+                }
+            }
+        }
+        Ok(_) => {
+            state.main_page.content_panel.settings.token.messages =
+                vec!["No tokens detected. Insert a token first.".to_string()];
+        }
+        Err(e) => {
+            state.main_page.content_panel.settings.token.messages = vec![format!("Error: {e}")];
+        }
+    }
+}
+
+#[cfg(feature = "openpgp-card")]
+fn handle_settings_token_back(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode = SettingsMode::View;
+    state
+        .main_page
+        .content_panel
+        .settings
+        .token
+        .messages
+        .clear();
+    state.main_page.content_panel.settings.token.reset_completed = false;
+}
+
+/// Build a trust-pong response message.
+fn build_trust_pong(
+    from: &str,
+    to: &str,
+    ping_id: &str,
+) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+
+    let message = affinidi_tdk::didcomm::Message::build(
+        uuid::Uuid::new_v4().to_string(),
+        "https://didcomm.org/trust-ping/2.0/ping-response".to_string(),
+        serde_json::Value::Null,
+    )
+    .from(from.to_string())
+    .to(to.to_string())
+    .thid(ping_id.to_string())
+    .created_time(now)
+    .finalize();
+
+    Ok(message)
 }

@@ -224,6 +224,50 @@ impl Component for SetupFlow {
             SetupPage::FinalPage => FinalPage::handle_key_event(self, key),
         }
     }
+
+    fn handle_paste_event(&mut self, text: &str) {
+        // Handle paste as a single operation instead of per-character key events.
+        // This makes pasting large strings (credentials, DIDs) instant.
+        let trimmed = text.trim().to_string();
+        match self.props.state.active_page {
+            SetupPage::VtaCredentialPaste => {
+                self.vta_credential.credential_input = tui_input::Input::new(trimmed);
+                self.vta_credential.warning_msg = None;
+            }
+            SetupPage::ConfigImport => {
+                let target = match self.config_import.active_input {
+                    0 => &mut self.config_import.filename,
+                    1 => &mut self.config_import.config_unlock_passphrase,
+                    _ => &mut self.config_import.new_unlock_passphrase,
+                };
+                *target = tui_input::Input::new(trimmed);
+            }
+            SetupPage::UnlockCodeSet => {
+                self.unlock_code_set.passphrase = tui_input::Input::new(trimmed);
+            }
+            SetupPage::MediatorCustom => {
+                self.mediator_custom.mediator_did = tui_input::Input::new(trimmed);
+            }
+            SetupPage::UserName => {
+                self.username.username = tui_input::Input::new(trimmed);
+            }
+            SetupPage::WebVHAddress => {
+                self.webvh_address.address = tui_input::Input::new(trimmed);
+            }
+            SetupPage::DidKeysExportInputs => {
+                let target = match self.did_keys_export_inputs.active_input {
+                    0 => &mut self.did_keys_export_inputs.passphrase,
+                    _ => &mut self.did_keys_export_inputs.username,
+                };
+                *target = tui_input::Input::new(trimmed);
+            }
+            #[cfg(feature = "openpgp-card")]
+            SetupPage::TokenSetCardholderName => {
+                self.token_set_cardholder_name.name = tui_input::Input::new(trimmed);
+            }
+            _ => {}
+        }
+    }
 }
 
 // ****************************************************************************

@@ -30,7 +30,7 @@ impl StateHandler {
         // Holder for the created config
         let mut config: Option<Config> = None;
         let exit = loop {
-            self.state_tx.send(state.clone())?;
+            let _ = self.state_tx.send(state.clone());
             tokio::select! {
             Some(action) = action_rx.recv() => match action {
                 Action::Exit => {
@@ -161,7 +161,7 @@ impl StateHandler {
                     state.setup.final_page.messages.push(MessageType::Info("Generating your profile configuration...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Securing sensitive data for storage...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Your device may prompt for authentication to access OS secure storage.".to_string()));
-                    self.state_tx.send(state.clone())?;
+                    let _ = self.state_tx.send(state.clone());
                     match Config::create(&state.setup, &setup_flow, tdk, &self.profile).await {
                         Ok(cfg) => {
                             state.setup.final_page.completed = Completion::CompletedOK;

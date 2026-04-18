@@ -13,7 +13,7 @@ use openvtc::openpgp_card::{factory_reset, get_cards};
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 #[cfg(feature = "openpgp-card")]
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::{Mutex, watch};
 
 /// Handle the `GetTokens` action: fetch connected PGP hardware tokens.
 #[cfg(feature = "openpgp-card")]
@@ -34,7 +34,7 @@ pub(crate) fn handle_get_tokens(state: &mut State) {
 #[cfg(feature = "openpgp-card")]
 pub(crate) fn handle_set_admin_pin(state: &mut State, token: String, admin_pin: SecretString) {
     state.setup.protection = ConfigProtection::Token(token);
-    state.token_admin_pin = Some(admin_pin);
+    state.token_admin_pin = Some(Arc::new(admin_pin));
     state.setup.active_page = SetupPage::TokenFactoryReset;
 }
 
@@ -93,7 +93,7 @@ pub(crate) async fn handle_factory_reset(state: &mut State, token: Option<Arc<Mu
 #[cfg(feature = "openpgp-card")]
 pub(crate) async fn handle_token_write_keys(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     token: Option<Arc<Mutex<Card<Open>>>>,
 ) {
     use crate::state_handler::setup_sequence::openpgp_card::write_keys_to_card;
@@ -148,7 +148,7 @@ pub(crate) async fn handle_token_write_keys(
 #[cfg(feature = "openpgp-card")]
 pub(crate) fn handle_set_touch_policy(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     token: Option<Arc<Mutex<Card<Open>>>>,
 ) {
     use crate::state_handler::setup_sequence::openpgp_card::set_signing_touch_policy;
@@ -180,7 +180,7 @@ pub(crate) fn handle_set_touch_policy(
 #[cfg(feature = "openpgp-card")]
 pub(crate) fn handle_set_token_name(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     token: Option<Arc<Mutex<Card<Open>>>>,
     name: &str,
 ) {

@@ -14,9 +14,17 @@ use std::os::unix::fs::PermissionsExt;
 use std::{env, fs, path::Path, sync::Arc};
 use tracing::warn;
 
+/// Current config format version. Increment when the format changes.
+pub const CONFIG_VERSION: u32 = 1;
+
 /// Primary structure used for storing [crate::config::Config] data that is not sensitive
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct PublicConfig {
+    /// Config format version for migration support.
+    /// Absent in pre-0.2.0 configs (treated as version 0).
+    #[serde(default)]
+    pub config_version: u32,
+
     /// How is the configuration protected?
     pub protection: ConfigProtectionType,
 
@@ -118,6 +126,7 @@ impl PublicConfig {
         }
 
         let public = PublicConfig {
+            config_version: CONFIG_VERSION,
             private: Some(private.save(private_seed)?),
             ..self.clone()
         };
@@ -152,14 +161,54 @@ impl PublicConfig {
         let file = fs::File::open(path)
             .map_err(|e| OpenVTCError::ConfigNotFound(cfg_path.to_string(), e))?;
 
-        match serde_json::from_reader(file) {
-            Ok(s) => Ok(s),
+        let mut config: Self = match serde_json::from_reader(file) {
+            Ok(s) => s,
             Err(e) => {
                 warn!("Couldn't Deserialize PublicConfig. Reason: {e}");
-                Err(e.into())
+                return Err(e.into());
+            }
+        };
+
+        // Run migrations if config is from an older version
+        if config.config_version < CONFIG_VERSION {
+            tracing::info!(
+                from = config.config_version,
+                to = CONFIG_VERSION,
+                "migrating config format"
+            );
+            migrate_config(&mut config)?;
+        }
+
+        Ok(config)
+    }
+}
+
+/// Run config migrations from `config.config_version` up to [`CONFIG_VERSION`].
+///
+/// Each migration step handles one version increment. New migrations are added
+/// as new match arms. The version field is updated after all migrations complete.
+fn migrate_config(config: &mut PublicConfig) -> Result<(), OpenVTCError> {
+    let mut version = config.config_version;
+
+    while version < CONFIG_VERSION {
+        match version {
+            // Version 0 → 1: no structural changes, just adding the version field.
+            // Pre-0.2.0 configs lack `config_version` and deserialize as 0.
+            0 => {
+                tracing::debug!("migration 0→1: adding config_version field");
+            }
+            v => {
+                return Err(OpenVTCError::Config(format!(
+                    "Unknown config version {v} — cannot migrate. \
+                     Expected version <= {CONFIG_VERSION}."
+                )));
             }
         }
+        version += 1;
     }
+
+    config.config_version = CONFIG_VERSION;
+    Ok(())
 }
 
 #[cfg(test)]

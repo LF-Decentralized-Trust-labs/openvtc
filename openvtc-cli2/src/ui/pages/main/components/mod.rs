@@ -2,4 +2,11 @@
 /// LEFT: Menu Panel
 /// RIGHT: Content Panel
 pub mod content_panel;
+pub mod credentials_panel;
+pub mod inbox_panel;
+pub mod logs_panel;
 pub mod menu_panel;
+pub mod panel;
+pub mod relationships_panel;
+pub mod settings_panel;
+pub mod vta_panel;

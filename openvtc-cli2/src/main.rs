@@ -25,20 +25,55 @@ mod cli;
 mod state_handler;
 mod ui;
 
+/// Redact file system paths from error messages for user display.
+fn redact_paths(msg: &str) -> String {
+    let home = dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if !home.is_empty() {
+        msg.replace(&home, "~")
+    } else {
+        msg.to_string()
+    }
+}
+
 // ****************************************************************************
 // MAIN Function
 // ****************************************************************************
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Optional file-based debug logging.
+    // Set OPENVTC_DEBUG_LOG to a file path to enable, e.g.:
+    //   OPENVTC_DEBUG_LOG=/tmp/openvtc.log cargo run -p openvtc-cli2
+    // Log level defaults to "debug" but can be overridden with RUST_LOG.
+    if let Ok(log_path) = env::var("OPENVTC_DEBUG_LOG") {
+        let log_file = std::fs::File::create(&log_path)
+            .unwrap_or_else(|e| panic!("Cannot create log file {log_path}: {e}"));
+        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_writer(std::sync::Mutex::new(log_file))
+            .with_ansi(false)
+            .init();
+        tracing::info!("Debug logging enabled → {log_path}");
+    }
+
+    // On Linux, the keyring crate defaults to Secret Service (D-Bus) which
+    // isn't available on headless systems. Override with the kernel keyring
+    // (keyutils) which works everywhere — no GUI or daemon required.
+    #[cfg(target_os = "linux")]
+    keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+
     // Which configuration profile to use?
     let profile = if let Ok(env_profile) = env::var("OPENVTC_CONFIG_PROFILE") {
         // ENV Profile will override the CLI Argument
         let cli_profile = cli()
             .get_matches()
             .get_one::<String>("profile")
-            .unwrap_or(&"default".to_string())
-            .to_string();
+            .cloned()
+            .unwrap_or_else(|| "default".to_string());
         if cli_profile != "default" && cli_profile != env_profile {
             println!("{}", 
                 style("WARNING: Using both ENV OPENVTC_CONFIG_PROFILE and CLI profile! These do not match!").color256(CLI_ORANGE)
@@ -62,8 +97,8 @@ async fn main() -> Result<()> {
         cli()
             .get_matches()
             .get_one::<String>("profile")
-            .unwrap_or(&"default".to_string())
-            .to_string()
+            .cloned()
+            .unwrap_or_else(|| "default".to_string())
     };
 
     // Check if profile is currently active elsewhere?
@@ -89,7 +124,7 @@ async fn main() -> Result<()> {
                 eprintln!(
                     "{} {}",
                     style("ERROR: Couldn't load configuration! Reason:").color256(CLI_RED),
-                    style(e).color256(CLI_ORANGE)
+                    style(redact_paths(&e.to_string())).color256(CLI_ORANGE)
                 );
                 bail!("Configuration Error");
             }
@@ -116,7 +151,10 @@ async fn main() -> Result<()> {
             Interrupted::UserInt => println!("exited per user request"),
             Interrupted::OsSigInt => println!("exited because of an os sig int"),
             Interrupted::SystemError(reason) => {
-                println!("exited because of a system error: {reason}")
+                println!(
+                    "exited because of a system error: {}",
+                    redact_paths(&reason)
+                )
             }
         },
         _ => {
@@ -158,14 +196,19 @@ impl Terminator {
 
 #[cfg(unix)]
 async fn terminate_by_unix_signal(mut terminator: Terminator) {
-    let mut interrupt_signal = signal(tokio::signal::unix::SignalKind::interrupt())
-        .expect("failed to create interrupt signal stream");
+    let mut interrupt_signal = match signal(tokio::signal::unix::SignalKind::interrupt()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to create interrupt signal stream: {e}");
+            return;
+        }
+    };
 
     interrupt_signal.recv().await;
 
-    terminator
-        .terminate(Interrupted::OsSigInt)
-        .expect("failed to send interrupt signal");
+    if let Err(e) = terminator.terminate(Interrupted::OsSigInt) {
+        tracing::error!("Failed to send interrupt signal: {e}");
+    }
 }
 
 // create a broadcast channel for retrieving the application kill signal
@@ -205,6 +248,9 @@ pub fn apply_env_overrides(config: &mut Config) {
     }
 }
 
+/// Maximum number of interactive unlock attempts before aborting.
+const MAX_UNLOCK_ATTEMPTS: usize = 5;
+
 /// Fast, synchronous load — only does local config read + terminal prompts.
 /// Network-heavy work (TDK init, DID resolution, VTA auth) is deferred to the state handler.
 fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
@@ -216,13 +262,46 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
             if let Some(passphrase) = cli().get_matches().get_one::<String>("unlock-code") {
                 Some(UnlockCode::from_string(passphrase)?)
             } else {
-                Some(UnlockCode::from_string(
-                    &Password::with_theme(&ColorfulTheme::default())
+                let mut result = None;
+                for attempt in 1..=MAX_UNLOCK_ATTEMPTS {
+                    // After 3 failed attempts, add exponential backoff delay
+                    if attempt > 3 {
+                        let delay = std::time::Duration::from_secs(1 << (attempt - 3).min(3));
+                        std::thread::sleep(delay);
+                    }
+                    let input = match Password::with_theme(&ColorfulTheme::default())
                         .with_prompt("Please enter unlock passphrase")
                         .allow_empty_password(false)
                         .interact()
-                        .unwrap(),
-                )?)
+                    {
+                        Ok(input) => input,
+                        Err(e) => {
+                            eprintln!("Failed to read passphrase input: {e}");
+                            return Err(OpenVTCError::Config(format!(
+                                "Passphrase input failed: {e}"
+                            )));
+                        }
+                    };
+                    match UnlockCode::from_string(&input) {
+                        Ok(code) => {
+                            result = Some(code);
+                            break;
+                        }
+                        Err(e) => {
+                            let remaining = MAX_UNLOCK_ATTEMPTS - attempt;
+                            if remaining == 0 {
+                                eprintln!("Too many failed unlock attempts. Aborting.");
+                                return Err(e);
+                            }
+                            eprintln!(
+                                "WARNING: Failed unlock attempt. {} attempt{} remaining.",
+                                remaining,
+                                if remaining == 1 { "" } else { "s" }
+                            );
+                        }
+                    }
+                }
+                result
             }
         }
         ConfigProtectionType::Plaintext => None,
@@ -230,9 +309,9 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
 
     #[cfg(feature = "openpgp-card")]
     let user_pin = if matches!(&public_config.protection, ConfigProtectionType::Token(_)) {
-        get_user_pin()
+        get_user_pin().map_err(|e| OpenVTCError::Config(format!("Failed to get user PIN: {e}")))?
     } else {
-        SecretString::new("123456".to_string().into())
+        SecretString::new("123456".into())
     };
 
     Ok(DeferredLoad {

@@ -68,7 +68,10 @@ pub async fn fetch_tasks(
     for msg in &msgs.success {
         task_count += 1;
         if let Some(message) = &msg.msg {
-            // Ensure message is deleted after processing
+            // Delete by mediator-native id (`msg.msg_id`), NOT the DIDComm
+            // protocol id (`unpacked_msg.id`) — they are different domains and
+            // the mediator's delete API only accepts the former. Mixing them
+            // leaves messages in the queue and causes duplicate processing.
             delete_list.message_ids.push(msg.msg_id.clone());
 
             let unpacked_msg = match atm.unpack(message).await {
@@ -91,7 +94,6 @@ pub async fn fetch_tasks(
             } else {
                 // Ignore this TASK as it is anonymous
                 println!("{}", style("WARN: An anonymous message has been received. These are not allowed as there is no ability to reply/respond to an anonymous message. Ignoring this message").color256(CLI_ORANGE));
-                delete_list.message_ids.push(unpacked_msg.id.clone());
                 continue;
             };
 
@@ -107,7 +109,6 @@ pub async fn fetch_tasks(
                         style("from: ").color256(CLI_ORANGE),
                         style(from_did).color256(CLI_PURPLE)
                     );
-                    delete_list.message_ids.push(unpacked_msg.id.clone());
                     continue;
                 }
             } else {
@@ -118,7 +119,6 @@ pub async fn fetch_tasks(
                     style("from: ").color256(CLI_ORANGE),
                     style(from_did).color256(CLI_PURPLE)
                 );
-                delete_list.message_ids.push(unpacked_msg.id.clone());
                 continue;
             };
 

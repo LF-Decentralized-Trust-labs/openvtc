@@ -18,6 +18,165 @@ use crate::{
     ui::pages::setup_flow::{SetupFlow, did_keys_export_inputs::DIDKeysExportInputs},
 };
 
+// ============================================================================
+// Domain sub-enums
+// ============================================================================
+
+#[allow(dead_code)]
+pub enum InboxAction {
+    SelectTask(usize),
+    OpenDetail(usize),
+    AcceptRelationship {
+        task_id: String,
+        generate_r_did: bool,
+    },
+    RejectRelationship {
+        task_id: String,
+        reason: Option<String>,
+    },
+    AcceptVrc {
+        task_id: String,
+    },
+    AcceptVrcRequest {
+        task_id: String,
+    },
+    RejectVrcRequest {
+        task_id: String,
+        reason: Option<String>,
+    },
+    DismissTask {
+        task_id: String,
+    },
+    ClearAll,
+    Back,
+}
+
+#[allow(dead_code)]
+pub enum RelationshipAction {
+    Select(usize),
+    OpenDetail(usize),
+    StartNewRequest,
+    SubmitRequest {
+        did: String,
+        alias: String,
+        reason: Option<String>,
+        generate_r_did: bool,
+    },
+    CancelNewRequest,
+    Ping {
+        remote_p_did: String,
+    },
+    Remove {
+        remote_p_did: String,
+    },
+    Back,
+    InputUpdate {
+        field: usize,
+        value: String,
+    },
+    ToggleRDid,
+    /// Switch focus to a specific form field by index
+    FocusField(usize),
+    /// Begin editing the alias for a relationship
+    StartEditAlias {
+        index: usize,
+        current_alias: String,
+    },
+    /// Update the alias input text during editing
+    EditAliasUpdate(String),
+    /// Submit the edited alias for a relationship
+    EditAlias {
+        remote_p_did: String,
+        alias: String,
+    },
+    /// Cancel alias editing
+    CancelEditAlias {
+        index: usize,
+    },
+    /// Request a VRC from a relationship partner
+    RequestVrc {
+        remote_p_did: String,
+    },
+}
+
+#[allow(dead_code)]
+pub enum CredentialAction {
+    SwitchTab,
+    Select(usize),
+    OpenDetail(usize),
+    Back,
+    StartNewRequest,
+    SelectRelationship(usize),
+    SubmitRequest {
+        relationship_p_did: String,
+        reason: Option<String>,
+    },
+    CancelNewRequest,
+    ReasonUpdate(String),
+    Remove {
+        vrc_id: String,
+    },
+}
+
+#[allow(dead_code)]
+pub enum ContactAction {
+    Add { did: String, alias: Option<String> },
+    Remove { did: String },
+}
+
+#[allow(dead_code)]
+pub enum SettingsAction {
+    Select(usize),
+    StartEdit,
+    FieldUpdate(String),
+    FormFieldUpdate {
+        field: usize,
+        value: String,
+    },
+    FormTabSwitch,
+    ProtectionOptionSelect(usize),
+    ProtectionStartInput,
+    ProtectionPassphraseLen(usize),
+    ProtectionConfirmLen(usize),
+    ProtectionTabSwitch(usize),
+    PassphraseLen(usize),
+    SubmitEdit {
+        value: String,
+    },
+    CancelEdit,
+    ExportConfig {
+        path: String,
+        passphrase: String,
+    },
+    ImportConfig {
+        path: String,
+        passphrase: String,
+    },
+    ChangeProtection,
+    SetPassphrase {
+        passphrase: String,
+    },
+    RemovePassphrase,
+    ReconnectMediator,
+    #[cfg(feature = "openpgp-card")]
+    TokenManagement,
+    #[cfg(feature = "openpgp-card")]
+    TokenDetect,
+    #[cfg(feature = "openpgp-card")]
+    TokenFactoryReset,
+    #[cfg(feature = "openpgp-card")]
+    TokenBack,
+    /// Clipboard copy result message for display on the status panel.
+    ClipboardCopied(String),
+}
+
+// ============================================================================
+// Top-level Action enum
+// ============================================================================
+
+// Some variants (e.g. ContactAction::Add, ContactAction::Remove) are defined
+// for the handler but not yet wired to UI construction; others are gated behind
+// cfg features.
 #[allow(dead_code)]
 pub enum Action {
     Exit,
@@ -34,6 +193,13 @@ pub enum Action {
 
     /// Active Panel switched to
     MainPanelSwitch(MainPanel),
+
+    // Domain actions (grouped into sub-enums)
+    Inbox(InboxAction),
+    Relationship(RelationshipAction),
+    Credential(CredentialAction),
+    Contact(ContactAction),
+    Settings(SettingsAction),
 
     // ************************************************************************
     // SETUP Pages

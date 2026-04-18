@@ -223,13 +223,15 @@ impl Config {
         )
         .await?;
 
-        // Add the persona profile to the TDK ATM Service
-        // This allows it to send/receive messages directly to the Persona DID
+        // Register the persona profile with the TDK ATM Service but do NOT
+        // open a WebSocket connection. The DIDComm service manages its own
+        // connections — connecting here would create a duplicate WebSocket for
+        // the same DID, triggering the mediator's duplicate detection loop.
         let atm = tdk
             .atm
             .clone()
             .ok_or_else(|| OpenVTCError::Config("TDK ATM service not initialized".to_string()))?;
-        let persona_profile = atm.profile_add(&persona_profile, true).await?;
+        let persona_profile = atm.profile_add(&persona_profile, false).await?;
 
         report_progress(&on_progress, "Loading relationships...");
         let atm_profiles = private_cfg

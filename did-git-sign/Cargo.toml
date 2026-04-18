@@ -20,7 +20,7 @@ keyring = { workspace = true }
 zeroize = { workspace = true, features = ["derive"] }
 dirs = { workspace = true }
 base64 = { workspace = true }
-ed25519-dalek = "2.1"
+ed25519-dalek = "2.2"
 ssh-key = { version = "0.6", features = ["ed25519", "crypto"] }
 sha2 = { workspace = true }
 tracing = { workspace = true }

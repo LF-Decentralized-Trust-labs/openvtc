@@ -76,6 +76,11 @@ impl Component for AppRouter {
     fn handle_key_event(&mut self, key: KeyEvent) {
         self.get_active_page_component_mut().handle_key_event(key)
     }
+
+    fn handle_paste_event(&mut self, text: &str) {
+        self.get_active_page_component_mut()
+            .handle_paste_event(text)
+    }
 }
 
 impl ComponentRender<()> for AppRouter {

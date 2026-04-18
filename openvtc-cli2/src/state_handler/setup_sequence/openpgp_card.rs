@@ -21,7 +21,7 @@ use pgp::{
     },
 };
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::{Mutex, watch};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 use crate::state_handler::{setup_sequence::MessageType, state::State};
@@ -29,7 +29,7 @@ use crate::state_handler::{setup_sequence::MessageType, state::State};
 /// Writes keys to the card
 pub fn write_keys_to_card(
     state: &mut State,
-    action_tx: &UnboundedSender<State>,
+    action_tx: &watch::Sender<State>,
     card: Arc<Mutex<Card<Open>>>,
 ) -> Result<()> {
     state
@@ -54,8 +54,10 @@ pub fn write_keys_to_card(
     open_card.verify_admin_pin(
         state
             .token_admin_pin
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?
+            .as_ref()
+            .clone(),
     )?;
     let mut card = open_card.to_admin_card(None)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
@@ -216,7 +218,7 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
 
 pub fn set_signing_touch_policy(
     state: &mut State,
-    action_tx: &UnboundedSender<State>,
+    action_tx: &watch::Sender<State>,
     card: Arc<Mutex<Card<Open>>>,
 ) -> Result<()> {
     let mut lock = card
@@ -226,8 +228,10 @@ pub fn set_signing_touch_policy(
     open_card.verify_admin_pin(
         state
             .token_admin_pin
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?
+            .as_ref()
+            .clone(),
     )?;
     let mut card = open_card.to_admin_card(None)?;
 
@@ -248,7 +252,7 @@ pub fn set_signing_touch_policy(
 /// name: Max length is 39 characters
 pub fn set_cardholder_name(
     state: &mut State,
-    action_tx: &UnboundedSender<State>,
+    action_tx: &watch::Sender<State>,
     card: Arc<Mutex<Card<Open>>>,
     name: &str,
 ) -> Result<()> {
@@ -259,8 +263,10 @@ pub fn set_cardholder_name(
     open_card.verify_admin_pin(
         state
             .token_admin_pin
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?,
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Admin PIN not set"))?
+            .as_ref()
+            .clone(),
     )?;
     let mut card = open_card.to_admin_card(None)?;
 

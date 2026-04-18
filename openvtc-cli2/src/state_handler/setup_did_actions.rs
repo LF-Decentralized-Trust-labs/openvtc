@@ -10,12 +10,12 @@ use crate::{
     },
     ui::pages::setup_flow::did_keys_export_inputs::DIDKeysExportInputs,
 };
-use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::watch;
 
 /// Handle the `ExportDIDKeys` action.
 pub(crate) async fn handle_export_did_keys(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     export_inputs: DIDKeysExportInputs,
 ) {
     state.setup.active_page = SetupPage::DidKeysExportShow;
@@ -85,7 +85,7 @@ pub(crate) async fn handle_export_did_keys(
 /// Returns `true` if the caller should `continue`.
 pub(crate) async fn handle_webvh_server_create_did(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     tdk: &TDK,
     server_id: String,
     custom_path: Option<String>,
@@ -99,7 +99,7 @@ pub(crate) async fn handle_webvh_server_create_did(
     state.setup.webvh_server.messages.push(MessageType::Info(
         "Creating DID via WebVH server...".to_string(),
     ));
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     let access_token = match state.setup.vta.access_token.clone() {
         Some(t) => t,
@@ -122,7 +122,7 @@ pub(crate) async fn handle_webvh_server_create_did(
         .webvh_server
         .messages
         .push(MessageType::Info(format!("Server: {}", server_id)));
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     apply_server_create_result(state, &client, tdk, &context_id, &server_id, custom_path).await;
     Ok(false)
@@ -132,7 +132,7 @@ pub(crate) async fn handle_webvh_server_create_did(
 /// Returns `true` if the caller should `continue`.
 pub(crate) async fn handle_custom_mediator_webvh(
     state: &mut State,
-    state_tx: &UnboundedSender<State>,
+    state_tx: &watch::Sender<State>,
     tdk: &TDK,
 ) -> anyhow::Result<bool> {
     use vta_sdk::client::VtaClient;
@@ -143,7 +143,7 @@ pub(crate) async fn handle_custom_mediator_webvh(
     state.setup.webvh_server.messages.push(MessageType::Info(
         "Creating DID via WebVH server...".to_string(),
     ));
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     let access_token = match state.setup.vta.access_token.clone() {
         Some(t) => t,
@@ -168,7 +168,7 @@ pub(crate) async fn handle_custom_mediator_webvh(
         .webvh_server
         .messages
         .push(MessageType::Info(format!("Server: {}", server_id)));
-    state_tx.send(state.clone())?;
+    let _ = state_tx.send(state.clone());
 
     apply_server_create_result(state, &client, tdk, &context_id, &server_id, custom_path).await;
     Ok(false)

@@ -6,6 +6,72 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-17
+
+### Added
+
+- **Full TUI main menu panels** in `openvtc-cli2` — 8 panels: Inbox, Relationships, Credentials, Settings, VTA Service, Logs, Help/Status, Quit
+- **Inbox panel** with real-time task processing: auto-handles trust-pongs, relationship finalization, and rejections; queues interactive tasks; detail views for all task types (inbound/outbound requests, VRCs, pings, informational)
+- **Relationships panel** with list/detail/new-request views, inline alias editing ('e' key), R-DID privacy toggle, trust-ping with RTT latency
+- **Credentials panel** with Received/Issued tabs, raw VRC JSON in detail view, clipboard copy ('c' key), VRC request and removal
+- **Settings panel** with inline editing, config export/import, passphrase protection management, hardware token detection and factory reset
+- **VTA Service panel** showing VTA URL, DID, credential DID, key count, and backend type
+- **Logs panel** with scrollable timestamped activity log, selected entry copy ('c'), copy all ('a')
+- **Activity log panel** at bottom of screen showing real-time timestamped events (`[HH:MM:SS] message`)
+- **Status/Help panel** with DID clipboard copy hotkeys ([1] persona, [2] mediator), visual feedback on copy
+- **R-DID generation** for both BIP32 and VTA backends — VTA path authenticates and creates keys via API; both sender and receiver can use R-DIDs
+- **Dynamic R-DID listeners** — automatically added when creating R-DIDs (sender or receiver), enabling message delivery to relationship-specific DIDs
+- **VRC issuance** from inbox with DataIntegrityProof signing; **VRC rejection** with message back to requester
+- **Friendly name in relationship requests** — sender's name included in request body, auto-set as contact alias on accept, R-DID recommendation shown when sender uses one
+- **DIDComm service integration** (`affinidi-messaging-didcomm-service` 0.2) — replaces manual messaging with Router-based dispatch, automatic reconnection, message pickup, and multi-DID listener support
+- **Periodic keepalive ping** (60s) with live RTT latency in connection status header
+- **Inbox task count badge** on menu item ("Inbox (3)" in red when tasks pending)
+- **Bracketed paste** for all 21 text input fields — paste is instant regardless of string length
+- **Up/Down arrow navigation** in all multi-field forms alongside Tab
+- **Config versioning** with stepwise migration framework
+- **Panel trait** for content panels — unified render interface
+- **Outbound message retry** via `DIDCommService::send_message_with_retry`
+- **Auto-reconnect mediator** on DID change in settings
+- 15 unit tests covering core functions
+- **Contact management** actions (add/remove)
+
+### Security
+
+- Trust-pings only responded to from mediator DID or established relationships — prevents presence leakage
+- Passphrases removed from cloned State — length-only fields in UI, consumed via `mem::take`
+- Token admin PIN wrapped in `Arc<SecretString>` for shared allocation
+- Inbound message body size validation (1MB limit), task ID deduplication, sender verification
+- Collection bounds (10K tasks, 5K relationships), untrusted display text sanitization
+- Unlock rate limiting (5 attempts, exponential backoff), path redaction, file path validation
+- Key material explicit drop with documented zeroization limitation
+- Structured audit log entries for security-relevant operations
+
+### Fixed
+
+- **R-DID message routing** — acceptance, finalize, VRC, and ping messages now use relationship DID instead of persona DID when R-DID exists
+- **Config persistence** — all mutating actions save to disk
+- **Setup → main transition** — `sync_from_config()` now called after setup wizard completes
+- **VRC "From:" blank** — extract remote DID from relationship for VRC tasks
+- **Alias on accept** — sender's name set as contact alias, existing alias-less contacts updated
+- **Backspace to empty** in relationship form fields
+- **Tab after backspace fix** — dedicated `FocusField` action for field switching
+- **DIDComm listener secrets** — pass DID secrets to listeners for mediator authentication
+- **Mediator delete IDs** in `openvtc-cli` — `fetch_tasks` no longer pushes the DIDComm protocol id (`unpacked_msg.id`) into the bulk delete list; only the mediator‑native `msg.msg_id` is used. Mixing the two ID domains left messages in the queue and caused duplicate processing on the next fetch (refs #44)
+- All `.unwrap()`/`.expect()` replaced with proper error propagation
+- Clipboard graceful degradation, `sanitize_display` ANSI stripping order
+
+### Changed
+
+- **Replaced manual messaging layer** with `affinidi-messaging-didcomm-service` — deleted messaging/mod.rs (~280 lines) and outbound_queue.rs (~90 lines), added didcomm.rs (~260 lines) with Router, listeners, and send_message_with_retry
+- Grouped ~65-variant Action enum into 5 domain sub-enums
+- `tokio::sync::watch` replaces mpsc for State updates
+- Panel trait with per-panel structs implementing unified render interface
+- Dynamic DID display width (`shorten_did(did, max_width)` — 60 chars default, full if fits)
+- `Cow<str>` for zero-alloc DID truncation
+- Explicit `Arc::clone()`, `#[must_use]` on pure functions, doc comments on State types
+- `VecDeque<String>` for O(1) bounded activity log
+- `RelationshipRequestBody.name` protocol field for friendly names
+
 ## [0.1.5] - 2026-04-14
 
 ### Security

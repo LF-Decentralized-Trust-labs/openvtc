@@ -59,7 +59,7 @@ pub async fn create_send_maintainers_list(
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     crate::pack_and_send(

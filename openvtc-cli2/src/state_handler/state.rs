@@ -1,4 +1,7 @@
 #[cfg(feature = "openpgp-card")]
+use std::sync::Arc;
+
+#[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 
 use crate::state_handler::{main_page::MainPageState, setup_sequence::SetupState};
@@ -11,9 +14,9 @@ pub struct State {
     pub setup: SetupState,
     pub connection: ConnectionState,
 
-    /// Hardware Token Admin Pin
+    /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
     #[cfg(feature = "openpgp-card")]
-    pub token_admin_pin: Option<SecretString>,
+    pub token_admin_pin: Option<Arc<SecretString>>,
 
     /// True when the user needs to physically touch their hardware token.
     /// Not gated behind the openpgp-card feature so the StateHandler's
@@ -23,27 +26,33 @@ pub struct State {
 
 #[derive(Default, Debug, Clone, Copy)]
 pub enum ActivePage {
+    /// The main application page with menu, content panels, and activity log.
     #[default]
     Main,
-    // Setup is comprised of multiple screens, handled in setup_page module
+    /// The setup wizard flow (comprised of multiple sequential screens).
     Setup,
 }
 
+/// Tracks the state of the DIDComm mediator connection.
 #[derive(Clone, Debug, Default)]
 pub struct ConnectionState {
+    /// Current mediator connection status.
     pub status: MediatorStatus,
-    pub last_ping_latency_ms: Option<u128>,
+    /// Whether the DIDComm message loop is actively running.
     pub messaging_active: bool,
 }
 
 #[derive(Clone, Debug, Default)]
 pub enum MediatorStatus {
+    /// Status has not been determined yet.
     #[default]
     Unknown,
+    /// Mediator is initializing with a progress message.
     Initializing(String),
+    /// Actively connecting to the mediator.
     Connecting,
-    Connected {
-        latency_ms: u128,
-    },
+    /// Successfully connected.
+    Connected,
+    /// Connection failed with an error description.
     Failed(String),
 }

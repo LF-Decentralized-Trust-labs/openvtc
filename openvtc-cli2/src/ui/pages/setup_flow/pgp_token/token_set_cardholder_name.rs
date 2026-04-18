@@ -30,7 +30,7 @@ use crate::{
 #[derive(Clone, Debug, Default)]
 pub struct TokenSetCardholderName {
     started: bool,
-    name: Input,
+    pub(crate) name: Input,
 }
 
 impl TokenSetCardholderName {

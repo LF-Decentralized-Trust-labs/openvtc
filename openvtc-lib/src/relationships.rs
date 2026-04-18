@@ -220,92 +220,121 @@ impl Relationships {
             }
         };
 
-        for relationship in self.relationships.values() {
-            let (our_did, state) = {
-                let lock = relationship.lock().map_err(|e| {
-                    warn!("relationship mutex poisoned: {e}");
-                    OpenVTCError::MutexPoisoned(format!("Relationship mutex poisoned: {e}"))
-                })?;
-                (lock.our_did.clone(), lock.state.clone())
-            };
-            if state == RelationshipState::Established && &our_did != our_p_did {
-                // Create an ATMProfile for this relationship
-                let profile =
-                    ATMProfile::new(&atm, None, our_did.to_string(), Some(mediator.to_string()))
-                        .await?;
-                profiles.insert(our_did.clone(), atm.profile_add(&profile, false).await?);
+        // Collect R-DID relationships that need profiles + secrets.
+        // Extract data from Mutex before any async work.
+        let r_did_entries: Vec<Arc<String>> = self
+            .relationships
+            .values()
+            .filter_map(|rel| {
+                let lock = rel.lock().ok()?;
+                if matches!(
+                    lock.state,
+                    RelationshipState::Established
+                        | RelationshipState::RequestSent
+                        | RelationshipState::RequestAccepted
+                ) && &lock.our_did != our_p_did
+                {
+                    Some(lock.our_did.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
 
-                // Generate secrets for this DID
-                let mut secrets: Vec<Secret> = Vec::new();
-                for (k, v) in key_info.iter() {
-                    if !k.starts_with(our_did.as_str()) {
-                        continue;
+        // Collect all VTA key fetch futures upfront so they can run concurrently.
+        // Non-VTA secrets (BIP32 derived, imported) are resolved synchronously.
+        struct PendingVtaFetch {
+            key_id: String,
+            secret_id: String,
+            purpose: KeyPurpose,
+        }
+
+        let mut all_secrets: Vec<Secret> = Vec::new();
+        let mut vta_fetches: Vec<PendingVtaFetch> = Vec::new();
+
+        for our_did in &r_did_entries {
+            // Create ATM profile (no network — just registration)
+            let profile =
+                ATMProfile::new(&atm, None, our_did.to_string(), Some(mediator.to_string()))
+                    .await?;
+            profiles.insert(our_did.clone(), atm.profile_add(&profile, false).await?);
+
+            // Collect secrets for this DID
+            for (k, v) in key_info.iter() {
+                if !k.starts_with(our_did.as_str()) {
+                    continue;
+                }
+                let kp = match v.purpose {
+                    KeyTypes::RelationshipVerification => KeyPurpose::Signing,
+                    KeyTypes::RelationshipEncryption => KeyPurpose::Encryption,
+                    _ => continue,
+                };
+                match &v.path {
+                    KeySourceMaterial::Derived { path } => {
+                        if let KeyBackend::Bip32 { root, .. } = key_backend
+                            && let Ok(mut s) = root.get_secret_from_path(path, kp)
+                        {
+                            s.id = k.clone();
+                            all_secrets.push(s);
+                        }
                     }
-                    let kp = match v.purpose {
-                        KeyTypes::RelationshipVerification => KeyPurpose::Signing,
-                        KeyTypes::RelationshipEncryption => KeyPurpose::Encryption,
-                        _ => continue,
-                    };
-                    let secret = match &v.path {
-                        KeySourceMaterial::Derived { path } => {
-                            let KeyBackend::Bip32 { root, .. } = key_backend else {
-                                continue;
-                            };
-                            root.get_secret_from_path(path, kp)
-                                .map(|mut s| {
-                                    s.id = k.clone();
-                                    s
-                                })
-                                .map_err(|e| {
-                                    warn!("secret derivation failed for key {}: {e}", k);
-                                    e
-                                })
-                                .ok()
+                    KeySourceMaterial::Imported { seed } => {
+                        if let Ok(mut s) = Secret::from_multibase(seed.expose_secret(), None) {
+                            s.id = k.clone();
+                            all_secrets.push(s);
                         }
-                        KeySourceMaterial::Imported { seed } => {
-                            Secret::from_multibase(seed.expose_secret(), None)
-                                .map(|mut s| {
-                                    s.id = k.clone();
-                                    s
-                                })
-                                .map_err(|e| {
-                                    warn!("secret import failed for key {}: {e}", k);
-                                    e
-                                })
-                                .ok()
-                        }
-                        KeySourceMaterial::VtaManaged { key_id } => {
-                            if let Some(client) = vta_client {
-                                match client.get_key_secret(key_id).await {
-                                    Ok(resp) => crate::config::secret_from_vta_response(&resp, kp)
-                                        .map(|mut s| {
-                                            s.id = k.clone();
-                                            s
-                                        })
-                                        .map_err(|e| {
-                                            warn!("VTA secret retrieval failed for key {}: {e}", k);
-                                            e
-                                        })
-                                        .ok(),
-                                    Err(e) => {
-                                        warn!("VTA get_key_secret failed for key {}: {e}", k);
-                                        None
-                                    }
-                                }
-                            } else {
-                                None
-                            }
-                        }
-                    };
-                    if let Some(s) = secret {
-                        secrets.push(s);
+                    }
+                    KeySourceMaterial::VtaManaged { key_id } => {
+                        vta_fetches.push(PendingVtaFetch {
+                            key_id: key_id.clone(),
+                            secret_id: k.clone(),
+                            purpose: kp,
+                        });
                     }
                 }
-                tdk.get_shared_state()
-                    .secrets_resolver
-                    .insert_vec(&secrets)
-                    .await;
             }
+        }
+
+        // Fetch all VTA secrets concurrently — VtaClient is Clone so cloned
+        // clients share the HTTP connection pool and auth tokens.
+        if let Some(client) = vta_client
+            && !vta_fetches.is_empty()
+        {
+            debug!("fetching {} VTA secrets concurrently", vta_fetches.len());
+            let mut handles = Vec::with_capacity(vta_fetches.len());
+            for fetch in &vta_fetches {
+                let client = client.clone();
+                let key_id = fetch.key_id.clone();
+                handles.push(tokio::spawn(
+                    async move { client.get_key_secret(&key_id).await },
+                ));
+            }
+            for (fetch, handle) in vta_fetches.iter().zip(handles) {
+                match handle.await {
+                    Ok(Ok(resp)) => {
+                        if let Ok(mut s) =
+                            crate::config::secret_from_vta_response(&resp, fetch.purpose)
+                        {
+                            s.id = fetch.secret_id.clone();
+                            all_secrets.push(s);
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        warn!(key_id = %fetch.key_id, "VTA get_key_secret failed: {e}");
+                    }
+                    Err(e) => {
+                        warn!(key_id = %fetch.key_id, "VTA fetch task panicked: {e}");
+                    }
+                }
+            }
+        }
+
+        // Insert all secrets at once
+        if !all_secrets.is_empty() {
+            tdk.get_shared_state()
+                .secrets_resolver
+                .insert_vec(&all_secrets)
+                .await;
         }
 
         Ok(profiles)
@@ -413,9 +442,15 @@ impl Relationships {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RelationshipRequestBody {
     /// Optional human-readable reason for the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     /// The DID the requester wants to use for this relationship.
     pub did: String,
+    /// Optional human-readable name of the requester (e.g., "Alice").
+    /// Allows the recipient to see who is requesting the relationship
+    /// without needing to resolve the DID first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// DIDComm message body sent to the initiator when a relationship request is rejected.
@@ -473,7 +508,7 @@ pub async fn create_send_message_rejected(
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     crate::pack_and_send(
@@ -526,7 +561,7 @@ pub async fn create_send_message_accepted(
     .to(to.to_string())
     .thid(thid.to_string())
     .created_time(now)
-    .expires_time(60 * 60 * 48) // 48 hours
+    .expires_time(now + 60 * 60 * 48) // 48 hours
     .finalize();
 
     crate::pack_and_send(

@@ -8,21 +8,19 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{DisableMouseCapture, Event, EventStream},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event, EventStream},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use std::io::{self, Stdout};
-use tokio::sync::{
-    broadcast,
-    mpsc::{self, UnboundedReceiver},
-};
+use tokio::sync::{broadcast, mpsc, mpsc::UnboundedReceiver, watch};
 use tokio_stream::StreamExt;
 
 pub mod component;
 pub mod pages;
 
+#[must_use]
 pub fn shorten_did(did: &str, max_len: usize) -> String {
     let char_count = did.chars().count();
 
@@ -52,7 +50,7 @@ impl UiManager {
 
     pub async fn main_loop(
         self,
-        mut state_rx: UnboundedReceiver<State>,
+        mut state_rx: watch::Receiver<State>,
         mut interrupt_rx: broadcast::Receiver<Interrupted>,
     ) -> Result<Interrupted> {
         let mut terminal = setup_terminal()?;
@@ -62,15 +60,8 @@ impl UiManager {
 
         // consume the first state to initialize the ui app
         let mut app_router = {
-            match state_rx.recv().await {
-                Some(state) => AppRouter::new(&state, self.action_tx.clone()),
-                _ => {
-                    let _ = restore_terminal(&mut terminal);
-                    return Err(anyhow::anyhow!(
-                        "could not get the initial application state"
-                    ));
-                }
-            }
+            let state = state_rx.borrow_and_update().clone();
+            AppRouter::new(&state, self.action_tx.clone())
         };
 
         let result: anyhow::Result<Interrupted> = loop {
@@ -89,11 +80,15 @@ impl UiManager {
                     Some(Ok(Event::Key(key)))  => {
                         app_router.handle_key_event(key);
                     },
+                    Some(Ok(Event::Paste(text))) => {
+                        app_router.handle_paste_event(&text);
+                    },
                     None => break Ok(Interrupted::UserInt),
                     _ => (),
                 },
                 // Handle state updates
-                Some(state) = state_rx.recv() => {
+                Ok(()) = state_rx.changed() => {
+                    let state = state_rx.borrow_and_update().clone();
                     app_router = app_router.move_with_state(&state);
                 },
                 // Catch and handle interrupt signal to gracefully shutdown
@@ -114,7 +109,12 @@ fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
 
     enable_raw_mode()?;
 
-    execute!(stdout, EnterAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        DisableMouseCapture,
+        EnableBracketedPaste
+    )?;
 
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     terminal.clear()?;
@@ -128,7 +128,8 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableMouseCapture
+        DisableMouseCapture,
+        DisableBracketedPaste
     )?;
 
     Ok(terminal.show_cursor()?)

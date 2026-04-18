@@ -6,7 +6,7 @@ use crate::{
     KeyPurpose,
     bip32::Bip32Extension,
     config::{
-        Config, KeyBackend, KeyInfo, PersonaDIDKeys,
+        Config, KeyBackend, KeyInfo, KeyTypes, PersonaDIDKeys,
         secured_config::{KeyInfoConfig, KeySourceMaterial, SecuredConfig},
     },
     errors::OpenVTCError,
@@ -87,6 +87,89 @@ impl Config {
             authentication,
             decryption,
         })
+    }
+
+    /// Load persona DID key secrets into the TDK resolver from this Config.
+    ///
+    /// Call this after creating a new config (e.g., after setup wizard) so the
+    /// DIDComm service can authenticate with the mediator. On normal startup
+    /// this is done by `load_step2`.
+    pub async fn load_persona_secrets(&self, tdk: &TDK) -> Result<(), OpenVTCError> {
+        for (key_id, key_info) in &self.key_info {
+            if !key_id.starts_with(self.public.persona_did.as_str()) {
+                continue;
+            }
+            let kp = match key_info.purpose {
+                KeyTypes::PersonaSigning | KeyTypes::PersonaAuthentication => KeyPurpose::Signing,
+                KeyTypes::PersonaEncryption => KeyPurpose::Encryption,
+                _ => continue,
+            };
+            let secret = match &key_info.path {
+                KeySourceMaterial::Derived { path } => {
+                    let KeyBackend::Bip32 { root, .. } = &self.key_backend else {
+                        continue;
+                    };
+                    root.get_secret_from_path(path, kp)
+                        .map(|mut s| {
+                            s.id = key_id.clone();
+                            s
+                        })
+                        .ok()
+                }
+                KeySourceMaterial::Imported { seed } => {
+                    use secrecy::ExposeSecret;
+                    Secret::from_multibase(seed.expose_secret(), None)
+                        .map(|mut s| {
+                            s.id = key_id.clone();
+                            s
+                        })
+                        .ok()
+                }
+                KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
+                    if let KeyBackend::Vta {
+                        vta_url,
+                        credential_did,
+                        credential_private_key,
+                        vta_did,
+                        ..
+                    } = &self.key_backend
+                    {
+                        use secrecy::ExposeSecret;
+                        if let Ok(token) = vta_sdk::session::challenge_response(
+                            vta_url,
+                            credential_did,
+                            credential_private_key.expose_secret(),
+                            vta_did,
+                        )
+                        .await
+                        {
+                            let client = vta_sdk::client::VtaClient::new(vta_url);
+                            client.set_token(token.access_token);
+                            client
+                                .get_key_secret(vta_key_id)
+                                .await
+                                .ok()
+                                .and_then(|resp| {
+                                    crate::config::secret_from_vta_response(&resp, kp)
+                                        .map(|mut s| {
+                                            s.id = key_id.clone();
+                                            s
+                                        })
+                                        .ok()
+                                })
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(s) = secret {
+                tdk.get_shared_state().secrets_resolver.insert(s).await;
+            }
+        }
+        Ok(())
     }
 
     /// Regenerates the persona DID keys from secured config and loads them into the TDK.
