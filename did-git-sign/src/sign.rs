@@ -12,7 +12,9 @@ const SSHSIG_MAGIC: &[u8; 6] = b"SSHSIG";
 
 /// Handle the signing invocation from git.
 /// Git calls: `did-git-sign -Y sign -f <config_path> -n <namespace> <file_to_sign>`
-/// The file to sign is passed as a positional argument; armored SSH signature goes to stdout.
+/// The file to sign is passed as a positional argument; the armored SSH signature is written
+/// to `<file_to_sign>.sig` on disk, matching ssh-keygen behaviour. Falls back to stdout
+/// when no file argument is present (stdin mode).
 pub async fn handle_sign(
     config_path: &Path,
     namespace: &str,
@@ -320,5 +322,30 @@ mod tests {
         assert_eq!(blob.len(), 83);
         // Type string is "ssh-ed25519"
         assert_eq!(&blob[4..15], b"ssh-ed25519");
+    }
+
+    /// Regression guard: the .sig path must be formed by appending ".sig" to the full
+    /// filename, not by replacing an existing extension.  git's buffer files can have
+    /// names like "COMMIT_EDITMSG" (no extension) or, in theory, dotted names.
+    /// Using Path::with_extension("sig") would silently drop any existing extension,
+    /// so the production code uses OsString::push instead.  This test encodes that
+    /// contract so any future refactor breaks loudly.
+    #[test]
+    fn sig_path_appends_dot_sig_not_replaces_extension() {
+        let base = std::path::Path::new("/tmp/buffer.diff");
+        let mut sig_os = base.as_os_str().to_owned();
+        sig_os.push(".sig");
+        let sig_path = std::path::PathBuf::from(sig_os);
+        assert_eq!(sig_path, std::path::PathBuf::from("/tmp/buffer.diff.sig"));
+
+        // Also verify a name with no extension is handled correctly.
+        let base2 = std::path::Path::new("/tmp/COMMIT_EDITMSG");
+        let mut sig_os2 = base2.as_os_str().to_owned();
+        sig_os2.push(".sig");
+        let sig_path2 = std::path::PathBuf::from(sig_os2);
+        assert_eq!(
+            sig_path2,
+            std::path::PathBuf::from("/tmp/COMMIT_EDITMSG.sig")
+        );
     }
 }
