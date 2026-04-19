@@ -1,0 +1,24 @@
+# Advisories to ignore (transitive dependencies we cannot easily update)
+[advisories]
+ignore = [
+    # rsa: Marvin Attack timing sidechannel — no patch available yet.
+    # Transitive dep via affinidi crates; not used directly for RSA operations.
+    "RUSTSEC-2023-0071",
+
+    # rand 0.8: unsound with custom logger using rand::rng().
+    # Pinned to 0.8 because aes-gcm 0.10 requires rand_core 0.6.
+    # We do not use a custom logger that calls rand::rng().
+    "RUSTSEC-2026-0097",
+
+    # rustls-webpki 0.101.7: Name constraints vulnerabilities (RUSTSEC-2026-0098, RUSTSEC-2026-0099)
+    # Transitive dependency from rustls 0.21.12 (via reqwest 0.11.x)
+    # Patched versions available in rustls-webpki 0.103.12+ (used by rustls 0.22+)
+    # Remediation: Upgrade reqwest to 0.12+ which depends on rustls 0.22+
+    # Tracked in: https://github.com/LF-Decentralized-Trust-labs/openvtc/issues/[TBD]
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
+
+    # proc-macro-error 1.0.4: Unmaintained library (RUSTSEC-2024-0370)
+    # Build-time dependency only, no runtime security impact
+    "RUSTSEC-2024-0370",
+]
