@@ -209,28 +209,25 @@ pub fn interact_vrc_inbound(
                 );
                 true
             }
-            1 => {
+            1 if Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Are you sure you want to DELETE this VRC?")
+                .default(false)
+                .interact()? =>
+            {
                 // Delete the VRC
-                if Confirm::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Are you sure you want to DELETE this VRC?")
-                    .default(false)
-                    .interact()?
-                {
-                    config.private.tasks.remove(&task_id);
-                    config.public.logs.insert(
-                        LogFamily::Task,
-                        format!("User deleted inbound VRC issued Task ID({})", task_id),
-                    );
-                    println!(
-                        "{}",
-                        style("VRC deleted. No notification is sent to the issuer.")
-                            .color256(CLI_ORANGE)
-                    );
-                    true
-                } else {
-                    false
-                }
+                config.private.tasks.remove(&task_id);
+                config.public.logs.insert(
+                    LogFamily::Task,
+                    format!("User deleted inbound VRC issued Task ID({})", task_id),
+                );
+                println!(
+                    "{}",
+                    style("VRC deleted. No notification is sent to the issuer.")
+                        .color256(CLI_ORANGE)
+                );
+                true
             }
+            1 => false,
             _ => false,
         },
     )
