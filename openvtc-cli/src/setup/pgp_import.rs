@@ -48,38 +48,43 @@ impl PGPKeys {
         let key = modify_key_expiry(&key, &purpose);
 
         match purpose {
-            KeyPurpose::Signing => {
+            KeyPurpose::Signing
                 if self.signing.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Use this key for Signing?")
                         .default(true)
                         .interact()
-                        .unwrap_or(false)
-                {
-                    self.signing = Some(key);
-                }
+                        .unwrap_or(false) =>
+            {
+                self.signing = Some(key);
             }
+<<<<<<< HEAD
             KeyPurpose::Authentication => {
+=======
+            KeyPurpose::Authentication
+>>>>>>> baccec8 (fix: refactor collapsible_match patterns to use idiomatic match guards)
                 if self.authentication.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Use this key for Authentication?")
                         .default(true)
                         .interact()
-                        .unwrap_or(false)
-                {
-                    self.authentication = Some(key);
-                }
+                        .unwrap_or(false) =>
+            {
+                self.authentication = Some(key);
             }
+<<<<<<< HEAD
             KeyPurpose::Encryption => {
+=======
+            KeyPurpose::Encryption
+>>>>>>> baccec8 (fix: refactor collapsible_match patterns to use idiomatic match guards)
                 if self.encryption.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Use this key for Encryption?")
                         .default(true)
                         .interact()
-                        .unwrap_or(false)
-                {
-                    self.encryption = Some(key)
-                }
+                        .unwrap_or(false) =>
+            {
+                self.encryption = Some(key);
             }
             _ => {
                 // can safely ignore unknown purposes
