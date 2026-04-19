@@ -123,8 +123,9 @@ impl Tasks {
     /// Returns the task at the given insertion position, or `None` if out of bounds.
     ///
     /// Note: IndexMap maintains insertion order, so this is stable across insertions/removals.
+    /// This is O(1) access using IndexMap's native positional API.
     pub fn get_by_pos(&self, pos: usize) -> Option<Arc<Mutex<Task>>> {
-        self.tasks.iter().nth(pos).map(|(_, task)| task.clone())
+        self.tasks.get_index(pos).map(|(_, task)| task.clone())
     }
 
     /// Retrieves a task by ID or returns None

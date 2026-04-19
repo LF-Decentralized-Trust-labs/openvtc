@@ -84,13 +84,19 @@ impl StateHandler {
                 Action::VtaSubmitCredential(credential_input) => {
                     setup_vta_actions::handle_vta_submit_credential(state, &self.state_tx, credential_input).await?;
                 },
-                #[allow(clippy::collapsible_match)]
+                #[allow(
+                    clippy::collapsible_match,
+                    reason = "outer match binding is consumed by continue statement; cannot use pattern guard with control flow"
+                )]
                 Action::VtaAuthenticate => {
                     if setup_vta_actions::handle_vta_authenticate(state, &self.state_tx).await? {
                         continue;
                     }
                 },
-                #[allow(clippy::collapsible_match)]
+                #[allow(
+                    clippy::collapsible_match,
+                    reason = "outer match binding is consumed by continue statement; cannot use pattern guard with control flow"
+                )]
                 Action::VtaCreateKeys => {
                     if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? {
                         continue;
@@ -123,6 +129,10 @@ impl StateHandler {
                 Action::SetTokenName(token, name) => {
                     setup_token_actions::handle_set_token_name(state, &self.state_tx, token, &name);
                 },
+                #[allow(
+                    clippy::collapsible_match,
+                    reason = "pattern bindings are consumed by continue; cannot use guards with control flow statements"
+                )]
                 Action::WebvhServerCreateDid(server_id, custom_path) => {
                     if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id, custom_path).await? {
                         continue;
@@ -146,6 +156,10 @@ impl StateHandler {
                         state.setup.active_page = SetupPage::WebVHAddress;
                     }
                 },
+                #[allow(
+                    clippy::collapsible_match,
+                    reason = "pattern bindings are consumed by continue; cannot use guards with control flow statements"
+                )]
                 Action::CreateWebVHDID(webvh_address) => {
                     if setup_did_actions::handle_create_webvh_did(state, webvh_address).await? {
                         continue;
