@@ -21,4 +21,9 @@ ignore = [
     # proc-macro-error 1.0.4: Unmaintained library (RUSTSEC-2024-0370)
     # Build-time dependency only, no runtime security impact
     "RUSTSEC-2024-0370",
+
+    # rustls-pemfile: Unmaintained but no known security issues (RUSTSEC-2025-0134)
+    # Build-time dependency only (used during TLS handshake setup)
+    # Tracked in: https://github.com/LF-Decentralized-Trust-labs/openvtc/issues/[TBD]
+    "RUSTSEC-2025-0134",
 ]
