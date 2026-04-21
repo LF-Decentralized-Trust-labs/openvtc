@@ -1,4 +1,5 @@
 use super::panel::Panel;
+use super::status::push_status;
 use crate::state_handler::{
     main_page::content::{ContentPanelState, SettingsMode, SettingsState},
     state::ConnectionState,
@@ -70,7 +71,7 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
     if let Some(msg) = &state.status_message {
-        lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
+        push_status(&mut lines, msg, "");
         lines.push(Line::from(""));
     }
 

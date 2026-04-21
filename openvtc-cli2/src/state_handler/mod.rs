@@ -158,7 +158,7 @@ impl StateHandler {
                         if let Err(e) = config.load_persona_secrets(&tdk).await {
                             state
                                 .main_page
-                                .log(format!("Warning: failed to load persona keys: {e}"));
+                                .log_error("Warning: failed to load persona keys", &e);
                         }
 
                         // Initialize main page state from the freshly created config
@@ -412,10 +412,10 @@ impl StateHandler {
             Ok(svc) => svc,
             Err(e) => {
                 state.connection.status =
-                    state::MediatorStatus::Failed(format!("DIDComm service: {e}"));
+                    state::MediatorStatus::Failed(format!("DIDComm service: {e:#}"));
                 state
                     .main_page
-                    .log(format!("DIDComm service failed to start: {e}"));
+                    .log_error("DIDComm service failed to start", &e);
                 let _ = self.state_tx.send(state.clone());
                 return self
                     .run_degraded_loop(
@@ -454,10 +454,8 @@ impl StateHandler {
                 state.main_page.log("Connected to mediator");
             }
             Err(e) => {
-                state.connection.status = state::MediatorStatus::Failed(format!("{e}"));
-                state
-                    .main_page
-                    .log(format!("Mediator connection failed: {e}"));
+                state.connection.status = state::MediatorStatus::Failed(format!("{e:#}"));
+                state.main_page.log_error("Mediator connection failed", &e);
             }
         }
         let _ = self.state_tx.send(state.clone());
@@ -678,8 +676,8 @@ impl StateHandler {
                                 let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                                 if let Err(e) = didcomm_service.add_listener(new_config).await {
                                     state.connection.status =
-                                        state::MediatorStatus::Failed(format!("{e}"));
-                                    state.main_page.log(format!("Reconnect failed: {e}"));
+                                        state::MediatorStatus::Failed(format!("{e:#}"));
+                                    state.main_page.log_error("Reconnect failed", &e);
                                 } else {
                                     match didcomm_service
                                         .wait_connected(didcomm::PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
@@ -693,8 +691,8 @@ impl StateHandler {
                                         }
                                         Err(e) => {
                                             state.connection.status =
-                                                state::MediatorStatus::Failed(format!("{e}"));
-                                            state.main_page.log(format!("Reconnect failed: {e}"));
+                                                state::MediatorStatus::Failed(format!("{e:#}"));
+                                            state.main_page.log_error("Reconnect failed", &e);
                                         }
                                     }
                                 }
@@ -745,8 +743,8 @@ impl StateHandler {
                             let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                             if let Err(e) = didcomm_service.add_listener(new_config).await {
                                 state.connection.status =
-                                    state::MediatorStatus::Failed(format!("{e}"));
-                                state.main_page.log(format!("Reconnect failed: {e}"));
+                                    state::MediatorStatus::Failed(format!("{e:#}"));
+                                state.main_page.log_error("Reconnect failed", &e);
                             } else {
                                 match didcomm_service
                                     .wait_connected(didcomm::PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
@@ -760,8 +758,8 @@ impl StateHandler {
                                     }
                                     Err(e) => {
                                         state.connection.status =
-                                            state::MediatorStatus::Failed(format!("{e}"));
-                                        state.main_page.log(format!("Reconnect failed: {e}"));
+                                            state::MediatorStatus::Failed(format!("{e:#}"));
+                                        state.main_page.log_error("Reconnect failed", &e);
                                     }
                                 }
                             }
@@ -789,7 +787,7 @@ impl StateHandler {
                             {
                                 Ok(true) => {
                                     if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                        state.main_page.log(format!("Failed to save config: {e}"));
+                                        state.main_page.log_error("Failed to save config", &e);
                                     }
                                     state.main_page.sync_from_config(&config);
                                     // Extract short type name for summary
@@ -855,9 +853,7 @@ impl StateHandler {
                                         .send_message(&listener_id, pong_msg, from_did)
                                         .await
                                 {
-                                    state
-                                        .main_page
-                                        .log(format!("Failed to send pong: {e}"));
+                                    state.main_page.log_error("Failed to send pong", &e);
                                 }
                                 let ping_display = resolve_did_to_display(&config, sender);
                                 state.main_page.log_detailed(
@@ -1066,15 +1062,15 @@ fn inbox_save_and_sync(
     state.main_page.content_panel.inbox.active_task = None;
     state.main_page.content_panel.inbox.status_message = Some(success_status.to_string());
     if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log(format!("Failed to save config: {e}"));
+        state.main_page.log_error("Failed to save config", &e);
     }
     state.main_page.sync_from_config(config);
     state.main_page.log(success_log);
 }
 
 fn inbox_error(state: &mut State, context: &str, err: &anyhow::Error) {
-    state.main_page.content_panel.inbox.status_message = Some(format!("Error: {err}"));
-    state.main_page.log(format!("{context}: {err}"));
+    state.main_page.content_panel.inbox.status_message = Some(format!("Error: {err:#}"));
+    state.main_page.log_error(context, err);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1205,7 +1201,7 @@ fn handle_inbox_dismiss_task(
     let _ = inbox_actions::dismiss_task(config, task_id);
     state.main_page.content_panel.inbox.active_task = None;
     if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log(format!("Failed to save config: {e}"));
+        state.main_page.log_error("Failed to save config", &e);
     }
     state.main_page.sync_from_config(config);
     state.main_page.log("Task dismissed");
@@ -1215,7 +1211,7 @@ fn handle_inbox_clear_all(config: &mut Box<Config>, state: &mut State, profile: 
     let _ = inbox_actions::clear_all_tasks(config);
     state.main_page.content_panel.inbox.active_task = None;
     if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log(format!("Failed to save config: {e}"));
+        state.main_page.log_error("Failed to save config", &e);
     }
     state.main_page.sync_from_config(config);
     state.main_page.log("All inbox tasks cleared");
@@ -1324,7 +1320,7 @@ async fn handle_relationship_submit(
             state.main_page.content_panel.relationships.status_message =
                 Some(format!("Request sent to {}", truncate_did(did)));
             if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log(format!("Failed to save config: {e}"));
+                state.main_page.log_error("Failed to save config", &e);
             }
             // Look up the relationship we just created for detail info
             let detail = {
@@ -1360,10 +1356,10 @@ async fn handle_relationship_submit(
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =
-                Some(format!("Error: {e}"));
+                Some(format!("Error: {e:#}"));
             state
                 .main_page
-                .log(format!("Failed to send relationship request: {e}"));
+                .log_error("Failed to send relationship request", &e);
         }
     }
 }
@@ -1395,7 +1391,7 @@ async fn handle_relationship_ping(
             state.main_page.content_panel.relationships.status_message =
                 Some("Ping sent".to_string());
             if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log(format!("Failed to save config: {e}"));
+                state.main_page.log_error("Failed to save config", &e);
             }
             state.main_page.sync_from_config(config);
             let using_rdid = our_did_str != *config.public.persona_did;
@@ -1419,7 +1415,7 @@ async fn handle_relationship_ping(
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =
-                Some(format!("Ping failed: {e}"));
+                Some(format!("Ping failed: {e:#}"));
             state.main_page.log_detailed(
                 format!("Ping to {display_name} failed: {e}"),
                 format!(
@@ -1428,7 +1424,8 @@ async fn handle_relationship_ping(
                      To (persona):    {remote_p_did}\n\
                      To (R-DID):      {remote_did_str}\n\
                      From (our DID):  {our_did_str}\n\
-                     Error:           {e}",
+                     Error:           {e:#}\n\n\
+                     Debug:\n{e:?}",
                 ),
             );
         }
@@ -1448,7 +1445,7 @@ async fn handle_relationship_remove(
     state.main_page.content_panel.relationships.status_message =
         Some("Relationship removed".to_string());
     if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log(format!("Failed to save config: {e}"));
+        state.main_page.log_error("Failed to save config", &e);
     }
     state.main_page.sync_from_config(config);
     state.main_page.log("Relationship removed");
@@ -1500,7 +1497,7 @@ fn handle_relationship_edit_alias(
     );
 
     if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log(format!("Failed to save config: {e}"));
+        state.main_page.log_error("Failed to save config", &e);
     }
     state.main_page.sync_from_config(config);
     // Return to detail view — find the index for this remote_p_did
@@ -1535,7 +1532,7 @@ async fn handle_relationship_request_vrc(
             state.main_page.content_panel.relationships.status_message =
                 Some(format!("VRC requested from {display_name}"));
             if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log(format!("Failed to save config: {e}"));
+                state.main_page.log_error("Failed to save config", &e);
             }
             state.main_page.sync_from_config(config);
             state.main_page.log_detailed(
@@ -1550,10 +1547,10 @@ async fn handle_relationship_request_vrc(
         }
         Err(e) => {
             state.main_page.content_panel.relationships.status_message =
-                Some(format!("VRC request failed: {e}"));
+                Some(format!("VRC request failed: {e:#}"));
             state
                 .main_page
-                .log(format!("VRC request to {display_name} failed: {e}"));
+                .log_error(format!("VRC request to {display_name} failed"), &e);
         }
     }
 }
@@ -1644,7 +1641,7 @@ async fn handle_credential_submit_request(
                 truncate_did(relationship_p_did)
             ));
             if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log(format!("Failed to save config: {e}"));
+                state.main_page.log_error("Failed to save config", &e);
             }
             state.main_page.sync_from_config(config);
             state.main_page.log(format!(
@@ -1653,10 +1650,9 @@ async fn handle_credential_submit_request(
             ));
         }
         Err(e) => {
-            state.main_page.content_panel.credentials.status_message = Some(format!("Error: {e}"));
-            state
-                .main_page
-                .log(format!("Failed to send VRC request: {e}"));
+            state.main_page.content_panel.credentials.status_message =
+                Some(format!("Error: {e:#}"));
+            state.main_page.log_error("Failed to send VRC request", &e);
         }
     }
 }
@@ -1673,7 +1669,7 @@ fn handle_credential_remove(
     state.main_page.content_panel.credentials.selected_index = 0;
     state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
     if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log(format!("Failed to save config: {e}"));
+        state.main_page.log_error("Failed to save config", &e);
     }
     state.main_page.sync_from_config(config);
     state.main_page.log("VRC removed");
@@ -1698,7 +1694,7 @@ fn handle_contact_add(
                 .log(format!("Contact added: {}", truncate_did(did)));
         }
         Err(e) => {
-            state.main_page.log(format!("Failed to add contact: {e}"));
+            state.main_page.log_error("Failed to add contact", &e);
         }
     }
 }
@@ -1712,9 +1708,7 @@ fn handle_contact_remove(config: &mut Box<Config>, state: &mut State, profile: &
                 .log(format!("Contact removed: {}", truncate_did(did)));
         }
         Err(e) => {
-            state
-                .main_page
-                .log(format!("Failed to remove contact: {e}"));
+            state.main_page.log_error("Failed to remove contact", &e);
         }
     }
 }
@@ -1893,8 +1887,8 @@ fn handle_settings_submit_edit(
             idx == 1
         }
         Err(e) => {
-            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
-            state.main_page.log(format!("Failed to save setting: {e}"));
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e:#}"));
+            state.main_page.log_error("Failed to save setting", &e);
             false
         }
     }
@@ -1922,8 +1916,8 @@ fn handle_settings_export_config(
         }
         Err(e) => {
             state.main_page.content_panel.settings.status_message =
-                Some(format!("Export failed: {e}"));
-            state.main_page.log(format!("Config export failed: {e}"));
+                Some(format!("Export failed: {e:#}"));
+            state.main_page.log_error("Config export failed", &e);
         }
     }
 }
@@ -1949,8 +1943,8 @@ fn handle_settings_import_config(
         }
         Err(e) => {
             state.main_page.content_panel.settings.status_message =
-                Some(format!("Import failed: {e}"));
-            state.main_page.log(format!("Config import failed: {e}"));
+                Some(format!("Import failed: {e:#}"));
+            state.main_page.log_error("Config import failed", &e);
         }
     }
 }
@@ -1981,10 +1975,8 @@ fn handle_settings_set_passphrase(
             state.main_page.log("Passphrase protection enabled");
         }
         Err(e) => {
-            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
-            state
-                .main_page
-                .log(format!("Failed to set passphrase: {e}"));
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e:#}"));
+            state.main_page.log_error("Failed to set passphrase", &e);
         }
     }
 }
@@ -2000,10 +1992,8 @@ fn handle_settings_remove_passphrase(config: &mut Box<Config>, state: &mut State
             state.main_page.log("Protection reverted to keyring only");
         }
         Err(e) => {
-            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e}"));
-            state
-                .main_page
-                .log(format!("Failed to remove passphrase: {e}"));
+            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e:#}"));
+            state.main_page.log_error("Failed to remove passphrase", &e);
         }
     }
 }
