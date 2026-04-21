@@ -115,6 +115,7 @@ enum SecuredConfigFormat {
 
 impl SecuredConfigFormat {
     /// Loads secret info from the OS Secure Store
+    #[cfg_attr(not(feature = "openpgp-card"), allow(unused_variables))]
     pub fn unlock(
         &self,
         #[cfg(feature = "openpgp-card")] user_pin: &SecretString,
@@ -123,22 +124,18 @@ impl SecuredConfigFormat {
         #[cfg(feature = "openpgp-card")] touch_prompt: &impl TokenInteractions,
     ) -> Result<SecuredConfig, OpenVTCError> {
         let raw_bytes = match self {
-            SecuredConfigFormat::TokenEncrypted {
-                esk: _esk,
-                data: _data,
-            } => {
+            SecuredConfigFormat::TokenEncrypted { esk, data } => {
                 // Token Encrypted format
-                if let Some(_token) = token {
+                if let Some(token) = token {
                     #[cfg(feature = "openpgp-card")]
                     {
                         use crate::openpgp_card::crypt::token_decrypt;
 
                         token_decrypt(
-                            #[cfg(feature = "openpgp-card")]
                             user_pin,
-                            _token,
-                            &BASE64_URL_SAFE_NO_PAD.decode(_esk)?,
-                            &BASE64_URL_SAFE_NO_PAD.decode(_data)?,
+                            token,
+                            &BASE64_URL_SAFE_NO_PAD.decode(esk)?,
+                            &BASE64_URL_SAFE_NO_PAD.decode(data)?,
                             touch_prompt,
                         )?
                     }
@@ -271,6 +268,7 @@ impl SecuredConfig {
     /// Internal private function that saves a SecuredConfig to the OS Secure Store
     /// Encrypts the secret info as needed based on token/unlock parameters
     /// Converts to BASE64 then saves to OS Secure Store
+    #[cfg_attr(not(feature = "openpgp-card"), allow(unused_variables))]
     pub fn save(
         &self,
         profile: &str,
@@ -287,12 +285,12 @@ impl SecuredConfig {
         // Serialize SecuredConfig to byte array
         let input = serde_json::to_vec(&self)?;
 
-        let formatted = if let Some(_token) = token {
+        let formatted = if let Some(token) = token {
             #[cfg(feature = "openpgp-card")]
             {
                 use crate::openpgp_card::crypt::token_encrypt;
 
-                let (esk, data) = token_encrypt(_token, &input, touch_prompt)?;
+                let (esk, data) = token_encrypt(token, &input, touch_prompt)?;
                 SecuredConfigFormat::TokenEncrypted {
                     esk: BASE64_URL_SAFE_NO_PAD.encode(&esk),
                     data: BASE64_URL_SAFE_NO_PAD.encode(&data),

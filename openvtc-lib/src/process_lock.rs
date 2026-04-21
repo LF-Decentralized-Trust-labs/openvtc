@@ -102,7 +102,7 @@ pub fn check_duplicate_instance(profile: &str) -> Result<String, OpenVTCError> {
 /// # Errors
 ///
 /// Returns [`OpenVTCError::LockFile`] if the home directory cannot be determined.
-pub fn get_lock_file(profile: &str) -> Result<String, OpenVTCError> {
+pub(crate) fn get_lock_file(profile: &str) -> Result<String, OpenVTCError> {
     let path = if let Ok(config_path) = std::env::var("OPENVTC_CONFIG_PATH") {
         if config_path.ends_with('/') {
             config_path
@@ -133,7 +133,7 @@ pub fn get_lock_file(profile: &str) -> Result<String, OpenVTCError> {
 /// # Errors
 ///
 /// Returns [`OpenVTCError::LockFile`] on any I/O failure.
-pub fn create_lock_file(lock_file: &str) -> Result<(), OpenVTCError> {
+pub(crate) fn create_lock_file(lock_file: &str) -> Result<(), OpenVTCError> {
     let dir_path = Path::new(lock_file);
     if let Some(parent) = dir_path.parent()
         && !parent.exists()

@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
-use openvtc::colors::{COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_TEXT_DEFAULT};
+use openvtc::colors::{
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
+};
 use openvtc::config::derive_passphrase_key;
 use ratatui::{
     Frame,
@@ -14,7 +17,9 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph},
 };
 use secrecy::SecretBox;
+use tracing::error;
 use tui_input::{Input, backend::crossterm::EventHandler};
+use zeroize::Zeroizing;
 
 use crate::{
     state_handler::{actions::Action, setup_sequence::SetupState},
@@ -32,6 +37,9 @@ use crate::{
 #[derive(Clone, Debug, Default)]
 pub struct UnlockCodeSet {
     pub passphrase: Input,
+    /// User-visible error from the most recent Enter press. Cleared on the
+    /// next keystroke so the user sees fresh feedback as they retype.
+    pub error_msg: Option<String>,
 }
 
 impl UnlockCodeSet {
@@ -41,14 +49,28 @@ impl UnlockCodeSet {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let passphrase_value = state.unlock_code_set.passphrase.value().to_string();
+                // Copy into a Zeroizing<String> so the plain-text passphrase
+                // is wiped from memory before we return from this handler.
+                let passphrase_value =
+                    Zeroizing::new(state.unlock_code_set.passphrase.value().to_string());
+                if passphrase_value.is_empty() {
+                    state.unlock_code_set.error_msg =
+                        Some("Please enter an unlock code.".to_string());
+                    return;
+                }
                 let key = match derive_passphrase_key(
                     passphrase_value.as_bytes(),
                     b"openvtc-unlock-code-v1",
                 ) {
                     Ok(k) => k,
-                    Err(_) => return,
+                    Err(e) => {
+                        error!(error = %e, "Argon2id passphrase KDF failed");
+                        state.unlock_code_set.error_msg =
+                            Some(format!("Couldn't derive unlock key: {e}"));
+                        return;
+                    }
                 };
+                state.unlock_code_set.error_msg = None;
                 let passphrase_hash = Arc::new(SecretBox::new(Box::new(key.to_vec())));
                 let result = navigate(
                     SetupEvent::UnlockCodeSet { passphrase_hash },
@@ -58,9 +80,11 @@ impl UnlockCodeSet {
             }
             KeyCode::Esc => {
                 state.unlock_code_set.passphrase.reset();
+                state.unlock_code_set.error_msg = None;
             }
             _ => {
                 // Handle text input
+                state.unlock_code_set.error_msg = None;
                 state
                     .unlock_code_set
                     .passphrase
@@ -120,15 +144,20 @@ impl UnlockCodeSet {
 
         render_input(&self.passphrase, frame, input0_box);
 
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("[ESC]", Style::new().fg(COLOR_BORDER).bold()),
-                Span::styled(" to clear input  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-                Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
-                Span::styled(" to continue", Style::new().fg(COLOR_TEXT_DEFAULT)),
-            ])),
-            content[2],
-        );
+        let mut footer: Vec<Line<'_>> = vec![Line::from(vec![
+            Span::styled("[ESC]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled(" to clear input  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled(" to continue", Style::new().fg(COLOR_TEXT_DEFAULT)),
+        ])];
+        if let Some(err) = &self.error_msg {
+            footer.push(Line::default());
+            footer.push(Line::styled(
+                err.clone(),
+                Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+            ));
+        }
+        frame.render_widget(Paragraph::new(footer), content[2]);
 
         let bottom_line = Line::from(vec![
             Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
