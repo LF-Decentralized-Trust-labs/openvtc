@@ -1,5 +1,6 @@
 //! Logs panel — scrollable activity log with selection and clipboard copy.
 
+use super::status::wrap_text;
 use crate::state_handler::main_page::{ActivityLogEntry, content::LogsState};
 use openvtc::colors::{COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use ratatui::{
@@ -99,29 +100,4 @@ pub fn render(
     );
 
     lines
-}
-
-/// Simple word-wrap: break text into lines of at most `width` characters.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let mut result = Vec::new();
-    let mut current_line = String::new();
-
-    for word in text.split_whitespace() {
-        if current_line.is_empty() {
-            current_line = word.to_string();
-        } else if current_line.len() + 1 + word.len() <= width {
-            current_line.push(' ');
-            current_line.push_str(word);
-        } else {
-            result.push(current_line);
-            current_line = word.to_string();
-        }
-    }
-    if !current_line.is_empty() {
-        result.push(current_line);
-    }
-    if result.is_empty() {
-        result.push(String::new());
-    }
-    result
 }

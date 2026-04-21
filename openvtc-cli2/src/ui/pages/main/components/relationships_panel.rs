@@ -56,7 +56,7 @@ fn render_list(state: &RelationshipsState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
     if let Some(msg) = &state.status_message {
-        lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
+        super::status::push_status(&mut lines, msg, "");
         lines.push(Line::from(""));
     }
 

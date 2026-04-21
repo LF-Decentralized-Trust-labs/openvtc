@@ -55,7 +55,7 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
 
     if let Some(msg) = &state.status_message {
         lines.push(Line::from(""));
-        lines.push(Line::from(msg.clone()).fg(COLOR_SUCCESS));
+        super::status::push_status(&mut lines, msg, "");
     }
 
     lines.push(Line::from(""));

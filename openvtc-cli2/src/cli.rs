@@ -10,7 +10,7 @@ use secrecy::SecretString;
 pub fn cli() -> Command {
     // Full CLI Set
     Command::new("openvtc")
-        .about("First Person Protocol")
+        .about("Open Verifiable Trust Communities")
         .subcommand_required(false)
         .arg_required_else_help(false)
         .allow_external_subcommands(true)

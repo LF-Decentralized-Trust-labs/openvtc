@@ -62,6 +62,32 @@ impl MainPageState {
             detail,
         });
     }
+
+    /// Log an error with a short context line and a detailed pane containing
+    /// the full alternate `Display` form (`{err:#}`) plus the `Debug`
+    /// representation. Works with any `Display + Debug` error type (anyhow
+    /// renders its full cause chain under `{err:#}`).
+    pub fn log_error<E>(&mut self, context: impl Into<String>, err: &E)
+    where
+        E: std::fmt::Display + std::fmt::Debug + ?Sized,
+    {
+        let context = context.into();
+        let summary = format!("{context}: {err}");
+        let detail = format_error_detail(&context, err);
+        self.log_detailed_inner(summary, Some(detail));
+    }
+}
+
+/// Format an error for the log detail pane. Includes the context line, the
+/// full `Display` (alternate form, which for anyhow expands the cause chain),
+/// and the `Debug` representation.
+#[must_use]
+pub fn format_error_detail<E>(context: &str, err: &E) -> String
+where
+    E: std::fmt::Display + std::fmt::Debug + ?Sized,
+{
+    let divider = "─".repeat(context.len().min(60));
+    format!("{context}\n{divider}\n\nError: {err:#}\n\nDebug:\n{err:?}")
 }
 
 impl MainPageState {

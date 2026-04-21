@@ -120,7 +120,7 @@ fn render_status_help(
 
     // Show clipboard/status feedback if present
     if let Some(msg) = &settings.status_message {
-        lines.push(Line::from(format!("  {}", msg)).fg(COLOR_SUCCESS));
+        super::status::push_status(&mut lines, msg, "  ");
         lines.push(Line::from(""));
     }
 
