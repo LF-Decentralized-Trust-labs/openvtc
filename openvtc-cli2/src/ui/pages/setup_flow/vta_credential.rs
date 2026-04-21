@@ -15,9 +15,14 @@ use ratatui::{
 use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
-    state_handler::{actions::Action, setup_sequence::SetupState},
+    state_handler::{
+        actions::Action,
+        setup_sequence::{Completion, MessageType, SetupState},
+    },
     ui::pages::setup_flow::{SetupFlow, render_setup_header},
 };
+
+use openvtc::colors::COLOR_WARNING_ACCESSIBLE_RED;
 
 // ****************************************************************************
 // VtaCredentialPaste
@@ -41,6 +46,7 @@ impl VtaCredentialPaste {
                     state.vta_credential.warning_msg =
                         Some("Please paste a credential bundle.".to_string());
                 } else {
+                    state.vta_credential.warning_msg = None;
                     let _ = state.action_tx.send(Action::VtaSubmitCredential(input));
                 }
             }
@@ -113,16 +119,70 @@ impl VtaCredentialPaste {
             content[2],
         );
 
-        if let Some(warning_msg) = &self.warning_msg {
+        // Prefer a local input warning; otherwise surface the first error
+        // returned from the backend (e.g. invalid credential bundle decode).
+        let backend_error = if matches!(state.vta.completed, Completion::CompletedFail) {
+            state.vta.messages.iter().find_map(|m| match m {
+                MessageType::Error(e) => Some(e.clone()),
+                MessageType::Info(_) => None,
+            })
+        } else {
+            None
+        };
+        if let Some(warning_msg) = self.warning_msg.as_ref().or(backend_error.as_ref()) {
             frame.render_widget(
                 Paragraph::new(Line::styled(
-                    warning_msg,
-                    Style::new()
-                        .fg(openvtc::colors::COLOR_WARNING_ACCESSIBLE_RED)
-                        .bold(),
-                )),
+                    warning_msg.clone(),
+                    Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+                ))
+                .wrap(Wrap { trim: false }),
                 content[3],
             );
+        }
+
+        // If the backend returned errors, show them in full (wrapped) in the
+        // bottom area instead of the PNM instructions, so the user can see why
+        // their bundle was rejected rather than appearing to be sent back to
+        // a blank input.
+        if backend_error.is_some() {
+            let mut err_lines: Vec<Line<'_>> = Vec::new();
+            err_lines.push(Line::styled(
+                "The credential bundle could not be used:",
+                Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+            ));
+            err_lines.push(Line::default());
+            for msg in &state.vta.messages {
+                let (prefix, style) = match msg {
+                    MessageType::Error(_) => (
+                        "ERROR: ",
+                        Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+                    ),
+                    MessageType::Info(_) => ("  ", Style::new().fg(COLOR_DARK_GRAY)),
+                };
+                let text = match msg {
+                    MessageType::Error(e) => e.clone(),
+                    MessageType::Info(i) => i.clone(),
+                };
+                err_lines.push(Line::styled(format!("{prefix}{text}"), style));
+            }
+            err_lines.push(Line::default());
+            err_lines.push(Line::styled(
+                "Paste a corrected credential bundle above and press [ENTER] to retry.",
+                Style::new().fg(COLOR_TEXT_DEFAULT),
+            ));
+            frame.render_widget(
+                Paragraph::new(err_lines).wrap(Wrap { trim: false }),
+                content[4],
+            );
+            let bottom_line = Line::from(vec![
+                Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" to quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ]);
+            frame.render_widget(
+                Paragraph::new(bottom_line).block(Block::new().padding(Padding::new(2, 0, 1, 0))),
+                bottom,
+            );
+            return;
         }
 
         // PNM instructions
