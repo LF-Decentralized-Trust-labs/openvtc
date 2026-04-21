@@ -11,6 +11,7 @@ use didwebvh_rs::{
     create::{CreateDIDConfig, create_did},
     log_entry::LogEntryMethods,
     parameters::Parameters,
+    url::WebVHURL,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -46,8 +47,18 @@ pub async fn create_initial_webvh_did(
     update_secret: Secret,
     next_update_secret: Secret,
 ) -> Result<(String, Document), OpenVTCError> {
-    // Build the DID Document with a placeholder DID (create_did will replace with SCID)
-    let placeholder_did = format!("did:webvh:{{SCID}}:{}", extract_domain(raw_url)?);
+    // Normalize and validate the URL, then derive the placeholder DID using
+    // the didwebvh-rs library so that URL path components (e.g. "/custom/path")
+    // are correctly converted to colon-separated DID path segments
+    // (e.g. "did:webvh:{SCID}:example.com:custom:path") rather than leaving a
+    // stray slash that produces an invalid DID like
+    // "did:webvh:{SCID}:example.com/custom/path".
+    let normalized_url = normalize_webvh_url(raw_url)?;
+    let parsed_url = Url::parse(&normalized_url)
+        .map_err(|e| OpenVTCError::Config(format!("Invalid URL ({normalized_url}): {e}")))?;
+    let webvh_url = WebVHURL::parse_url(&parsed_url)
+        .map_err(|e| OpenVTCError::Config(format!("Invalid WebVH URL: {e}")))?;
+    let placeholder_did = webvh_url.to_did_base();
     let mut did_document = Document::new(&placeholder_did)
         .map_err(|e| OpenVTCError::Config(format!("Invalid DID URL: {e}")))?;
 
@@ -198,7 +209,7 @@ pub async fn create_initial_webvh_did(
 
     // Use the new create_did API
     let config = CreateDIDConfig::builder()
-        .address(raw_url)
+        .address(&normalized_url)
         .authorization_key(update_secret)
         .did_document(serde_json::to_value(&did_document)?)
         .parameters(parameters)
@@ -222,17 +233,224 @@ pub async fn create_initial_webvh_did(
     ))
 }
 
-/// Extract domain and path from a URL for building placeholder DIDs.
-fn extract_domain(raw_url: &str) -> Result<String, OpenVTCError> {
-    let url = Url::parse(raw_url)
-        .map_err(|e| OpenVTCError::Config(format!("Invalid URL ({raw_url}): {e}")))?;
-    let host = url
-        .host_str()
-        .ok_or_else(|| OpenVTCError::Config(format!("URL has no host: {raw_url}")))?;
-    let path = url.path().trim_end_matches('/');
-    if path.is_empty() || path == "/" {
-        Ok(host.to_string())
+/// Normalize a user-supplied WebVH URL into a form acceptable to didwebvh-rs.
+///
+/// Accepts input like `example.com`, `example.com/path`, `https://example.com`,
+/// or `https://example.com/path/` and returns a canonicalized
+/// `https://host[:port]/path/` string (trailing slash present). Rejects
+/// malformed inputs early so the user gets a clear error rather than a
+/// silently-broken DID.
+///
+/// Rejection rules:
+/// - schemes other than `http` / `https`
+/// - missing or empty host
+/// - empty-segment paths (e.g. `example.com//foo`, `example.com/foo//bar`)
+///   which would turn into consecutive colons in the DID
+/// - path segments containing `:` or whitespace (would corrupt the DID)
+/// - any query or fragment (not supported in a persona DID address)
+pub fn normalize_webvh_url(raw_url: &str) -> Result<String, OpenVTCError> {
+    let trimmed = raw_url.trim();
+    if trimmed.is_empty() {
+        return Err(OpenVTCError::Config(
+            "WebVH URL is empty. Expected e.g. https://example.com or https://example.com/path"
+                .to_string(),
+        ));
+    }
+
+    // If the user supplied an explicit scheme, keep it; only http/https are allowed.
+    // Otherwise default to https. We detect "scheme://" via `://` so that schemes
+    // other than http/https are caught here rather than being silently converted.
+    let with_scheme = if let Some(scheme_end) = trimmed.find("://") {
+        let scheme = &trimmed[..scheme_end];
+        if scheme != "http" && scheme != "https" {
+            return Err(OpenVTCError::Config(format!(
+                "WebVH URL must use http or https (got {scheme}://)"
+            )));
+        }
+        trimmed.to_string()
     } else {
-        Ok(format!("{host}{path}"))
+        format!("https://{trimmed}")
+    };
+
+    // Guard against empty path segments (e.g. "example.com//foo") *before*
+    // letting `url::Url` normalize them away. After stripping the scheme,
+    // any `//` in the remainder implies an empty path segment.
+    let after_scheme = with_scheme
+        .strip_prefix("https://")
+        .or_else(|| with_scheme.strip_prefix("http://"))
+        .unwrap_or(with_scheme.as_str());
+    if after_scheme.contains("//") {
+        return Err(OpenVTCError::Config(format!(
+            "WebVH URL path contains an empty segment (consecutive slashes): {raw_url}"
+        )));
+    }
+
+    let url = Url::parse(&with_scheme)
+        .map_err(|e| OpenVTCError::Config(format!("Invalid URL ({raw_url}): {e}")))?;
+
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(OpenVTCError::Config(format!(
+            "WebVH URL must use http or https (got {}://)",
+            url.scheme()
+        )));
+    }
+    if url.host_str().is_none_or(|h| h.is_empty()) {
+        return Err(OpenVTCError::Config(format!(
+            "WebVH URL is missing a host: {raw_url}"
+        )));
+    }
+    if url.query().is_some() {
+        return Err(OpenVTCError::Config(format!(
+            "WebVH URL must not contain a query string: {raw_url}"
+        )));
+    }
+    if url.fragment().is_some() {
+        return Err(OpenVTCError::Config(format!(
+            "WebVH URL must not contain a fragment: {raw_url}"
+        )));
+    }
+
+    // Validate path segments: empty segments (from `//`) and segments
+    // containing `:` or whitespace would produce a malformed DID.
+    let path = url.path();
+    let stripped = path.trim_start_matches('/').trim_end_matches('/');
+    if !stripped.is_empty() {
+        for segment in stripped.split('/') {
+            if segment.is_empty() {
+                return Err(OpenVTCError::Config(format!(
+                    "WebVH URL path contains an empty segment (consecutive slashes): {raw_url}"
+                )));
+            }
+            if segment.contains(':') || segment.chars().any(|c| c.is_whitespace()) {
+                return Err(OpenVTCError::Config(format!(
+                    "WebVH URL path segment '{segment}' contains invalid characters \
+                     (':' or whitespace): {raw_url}"
+                )));
+            }
+        }
+    }
+
+    // Re-emit a canonical form with a trailing slash on the path so the
+    // didwebvh-rs URL parser treats the path uniformly.
+    let host = url.host_str().unwrap();
+    let scheme = url.scheme();
+    let mut out = format!("{scheme}://{host}");
+    if let Some(port) = url.port() {
+        out.push_str(&format!(":{port}"));
+    }
+    if stripped.is_empty() {
+        out.push('/');
+    } else {
+        out.push('/');
+        out.push_str(stripped);
+        out.push('/');
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn placeholder_did_for(raw_url: &str) -> String {
+        let normalized = normalize_webvh_url(raw_url).expect("normalize");
+        let parsed = Url::parse(&normalized).expect("parse url");
+        let webvh = WebVHURL::parse_url(&parsed).expect("webvh parse");
+        webvh.to_did_base()
+    }
+
+    #[test]
+    fn normalize_adds_https_when_missing() {
+        assert_eq!(
+            normalize_webvh_url("example.com").unwrap(),
+            "https://example.com/"
+        );
+    }
+
+    #[test]
+    fn normalize_preserves_explicit_scheme_and_port() {
+        assert_eq!(
+            normalize_webvh_url("http://localhost:8080/path").unwrap(),
+            "http://localhost:8080/path/"
+        );
+    }
+
+    #[test]
+    fn normalize_adds_trailing_slash() {
+        assert_eq!(
+            normalize_webvh_url("https://example.com/vincent").unwrap(),
+            "https://example.com/vincent/"
+        );
+    }
+
+    #[test]
+    fn normalize_collapses_leading_slash_only_paths() {
+        assert_eq!(
+            normalize_webvh_url("https://example.com/").unwrap(),
+            "https://example.com/"
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_empty() {
+        assert!(normalize_webvh_url("   ").is_err());
+    }
+
+    #[test]
+    fn normalize_rejects_double_slash_path() {
+        let err = normalize_webvh_url("https://example.com//vincent").unwrap_err();
+        assert!(err.to_string().contains("empty segment"), "got: {err}");
+    }
+
+    #[test]
+    fn normalize_rejects_non_http_scheme() {
+        assert!(normalize_webvh_url("ftp://example.com/").is_err());
+    }
+
+    #[test]
+    fn normalize_rejects_query_and_fragment() {
+        assert!(normalize_webvh_url("https://example.com/?x=1").is_err());
+        assert!(normalize_webvh_url("https://example.com/#frag").is_err());
+    }
+
+    #[test]
+    fn normalize_rejects_colon_in_path_segment() {
+        assert!(normalize_webvh_url("https://example.com/foo:bar").is_err());
+    }
+
+    /// Regression: https://r2.ic3.dev/vincent previously produced a placeholder
+    /// DID with a stray slash ("did:webvh:{SCID}:r2.ic3.dev/vincent") which
+    /// resolved to "r2.ic3.dev/vincent/.well-known/did.jsonl". The DID should
+    /// use colons between the host and path components.
+    #[test]
+    fn placeholder_did_converts_path_slash_to_colon() {
+        assert_eq!(
+            placeholder_did_for("https://r2.ic3.dev/vincent"),
+            "did:webvh:{SCID}:r2.ic3.dev:vincent"
+        );
+    }
+
+    #[test]
+    fn placeholder_did_handles_multiple_path_segments() {
+        assert_eq!(
+            placeholder_did_for("https://example.com/foo/bar"),
+            "did:webvh:{SCID}:example.com:foo:bar"
+        );
+    }
+
+    #[test]
+    fn placeholder_did_handles_no_path() {
+        assert_eq!(
+            placeholder_did_for("https://example.com/"),
+            "did:webvh:{SCID}:example.com"
+        );
+    }
+
+    #[test]
+    fn placeholder_did_encodes_port() {
+        assert_eq!(
+            placeholder_did_for("http://localhost:8080/test"),
+            "did:webvh:{SCID}:localhost%3A8080:test"
+        );
     }
 }
