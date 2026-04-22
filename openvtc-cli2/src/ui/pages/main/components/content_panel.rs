@@ -12,11 +12,13 @@ use openvtc::colors::{
 };
 use ratatui::{
     Frame,
-    layout::{Alignment, Rect},
+    layout::{Alignment, Margin, Rect},
     style::{Style, Stylize},
     symbols::merge::MergeStrategy,
     text::{Line, Span},
-    widgets::{Block, BorderType, Paragraph},
+    widgets::{
+        Block, BorderType, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    },
 };
 
 use super::{
@@ -28,7 +30,14 @@ use super::{
 // Render the Content panel
 // ****************************************************************************
 impl ContentPanelState {
-    /// Render the content panel based on current state
+    /// Render the content panel based on current state.
+    ///
+    /// Applies a single central `Wrap { trim: false }` so every subview gets
+    /// right-edge wrapping for free, and a vertical `scroll_offset` driven by
+    /// the parent so PageUp/PageDown/Home/End work uniformly across panels.
+    ///
+    /// Returns the maximum reachable scroll offset given the current content
+    /// and inner panel height, so the caller can clamp its stored offset.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &self,
@@ -39,7 +48,8 @@ impl ContentPanelState {
         activity_log: &std::collections::VecDeque<ActivityLogEntry>,
         logs_selected: usize,
         logs_detail_view: bool,
-    ) {
+        scroll_offset: u16,
+    ) -> u16 {
         let content_block = if self.selected {
             Block::bordered()
                 .merge_borders(MergeStrategy::Fuzzy)
@@ -92,13 +102,66 @@ impl ContentPanelState {
             }
         };
 
+        // Block borders occupy one column/row on each side.
+        let inner_width = rect.width.saturating_sub(2);
+        let inner_height = rect.height.saturating_sub(2);
+
+        // Approximate the number of visual rows after wrapping at `inner_width`.
+        // Ratatui's `Paragraph::line_count` is gated behind an unstable feature,
+        // so we fall back to a character-count-based estimate. For the content
+        // we show here (ASCII DIDs, JSON, labels) this matches actual wrap
+        // behavior closely enough to drive PageDown clamping and the scrollbar.
+        let total_lines = wrapped_line_count(&lines, inner_width);
+        let max_scroll = total_lines.saturating_sub(inner_height);
+        let offset = scroll_offset.min(max_scroll);
+
         frame.render_widget(
             Paragraph::new(lines)
                 .alignment(Alignment::Left)
+                .wrap(Wrap { trim: false })
+                .scroll((offset, 0))
                 .block(content_block),
             rect,
         );
+
+        // Only draw the scrollbar when there is content beyond the viewport.
+        if max_scroll > 0 {
+            let mut sb_state = ScrollbarState::new(total_lines as usize)
+                .viewport_content_length(inner_height as usize)
+                .position(offset as usize);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None),
+                rect.inner(Margin {
+                    horizontal: 0,
+                    vertical: 1,
+                }),
+                &mut sb_state,
+            );
+        }
+
+        max_scroll
     }
+}
+
+/// Approximate how many visual rows `lines` will occupy after wrapping at
+/// `width` columns. Counts characters per line (not unicode display width) —
+/// close enough for ASCII-heavy content (DIDs, JSON, settings), and only used
+/// to bound scroll offset and size the scrollbar thumb.
+fn wrapped_line_count(lines: &[Line<'_>], width: u16) -> u16 {
+    if width == 0 {
+        return lines.len().try_into().unwrap_or(u16::MAX);
+    }
+    let w = width as usize;
+    let total: usize = lines
+        .iter()
+        .map(|line| {
+            let len: usize = line.iter().map(|s| s.content.chars().count()).sum();
+            if len == 0 { 1 } else { len.div_ceil(w) }
+        })
+        .sum();
+    total.try_into().unwrap_or(u16::MAX)
 }
 
 /// Render the combined status + help panel.
@@ -204,6 +267,8 @@ fn render_status_help(
     lines.push(Line::from("  Up/Down        Navigate").fg(COLOR_TEXT_DEFAULT));
     lines.push(Line::from("  Enter          Select / open").fg(COLOR_TEXT_DEFAULT));
     lines.push(Line::from("  Tab / L / R    Switch panels").fg(COLOR_TEXT_DEFAULT));
+    lines.push(Line::from("  PgUp / PgDn    Scroll content").fg(COLOR_TEXT_DEFAULT));
+    lines.push(Line::from("  Home / End     Jump to top / bottom").fg(COLOR_TEXT_DEFAULT));
     lines.push(Line::from("  Esc            Go back").fg(COLOR_TEXT_DEFAULT));
     lines.push(Line::from("  F10            Quit").fg(COLOR_TEXT_DEFAULT));
 
