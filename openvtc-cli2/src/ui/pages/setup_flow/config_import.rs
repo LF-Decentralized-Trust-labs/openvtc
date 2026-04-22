@@ -35,6 +35,7 @@ pub struct ConfigImport {
     pub filename: Input,
     pub config_unlock_passphrase: Input,
     pub new_unlock_passphrase: Input,
+    pub processing: bool,
 }
 
 impl Default for ConfigImport {
@@ -44,41 +45,56 @@ impl Default for ConfigImport {
             filename: Input::new("export.openvtc".to_string()),
             config_unlock_passphrase: Input::default(),
             new_unlock_passphrase: Input::default(),
+            processing: false,
         }
     }
 }
 
 impl ConfigImport {
     pub fn handle_key_event(state: &mut SetupFlow, key: KeyEvent) {
+        // Unlock the inputs once the backend has responded with a failure, so
+        // the user can edit fields and retry. On success the user is prompted
+        // to exit, so keeping the inputs locked is fine.
+        if state.config_import.processing
+            && matches!(
+                state.props.state.config_import.completed,
+                Completion::CompletedFail
+            )
+        {
+            state.config_import.processing = false;
+        }
+
         // NOTE: if let statements are experimental still in Rust
         // So we create a boolean here instead
         let completed_ok = matches!(
             state.props.state.config_import.completed,
             Completion::CompletedOK
         );
+        let locked = state.config_import.processing;
 
         match key.code {
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
             }
-            KeyCode::Tab | KeyCode::Down if !completed_ok => {
+            KeyCode::Tab | KeyCode::Down if !completed_ok && !locked => {
                 if state.config_import.active_input == 2 {
                     state.config_import.active_input = 0;
                 } else {
                     state.config_import.active_input += 1;
                 }
             }
-            KeyCode::Up if !completed_ok => {
+            KeyCode::Up if !completed_ok && !locked => {
                 if state.config_import.active_input == 0 {
                     state.config_import.active_input = 2;
                 } else {
                     state.config_import.active_input -= 1;
                 }
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if !locked => {
                 if let Completion::CompletedOK = state.props.state.config_import.completed {
                     let _ = state.action_tx.send(Action::Exit);
                 } else {
+                    state.config_import.processing = true;
                     let _ = state.action_tx.send(Action::ImportConfig(
                         state.config_import.filename.value().to_string(),
                         state
@@ -94,13 +110,13 @@ impl ConfigImport {
                     ));
                 }
             }
-            KeyCode::Esc if !completed_ok => match state.config_import.active_input {
+            KeyCode::Esc if !completed_ok && !locked => match state.config_import.active_input {
                 0 => state.config_import.filename.reset(),
                 1 => state.config_import.config_unlock_passphrase.reset(),
                 2 => state.config_import.new_unlock_passphrase.reset(),
                 _ => {}
             },
-            _ if !completed_ok => {
+            _ if !completed_ok && !locked => {
                 // Handle text input
                 match state.config_import.active_input {
                     0 => state.config_import.filename.handle_event(&Event::Key(key)),

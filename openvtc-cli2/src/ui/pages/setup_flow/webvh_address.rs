@@ -130,12 +130,15 @@ impl WebvhAddress {
                     }
                 }
             }
-            (KeyCode::Esc, _) => {
+            (KeyCode::Esc, _) if !state.webvh_address.processing => {
                 state.webvh_address.address.reset();
             }
-            _ => {
+            _ if !state.webvh_address.processing => {
                 // Handle text input
                 state.webvh_address.address.handle_event(&Event::Key(key));
+            }
+            _ => {
+                // Input is locked while an async DID create/resolve is in flight.
             }
         }
     }
