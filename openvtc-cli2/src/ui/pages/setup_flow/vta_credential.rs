@@ -32,32 +32,47 @@ use openvtc::colors::COLOR_WARNING_ACCESSIBLE_RED;
 pub struct VtaCredentialPaste {
     pub credential_input: Input,
     pub warning_msg: Option<String>,
+    pub processing: bool,
 }
 
 impl VtaCredentialPaste {
     pub fn handle_key_event(state: &mut SetupFlow, key: KeyEvent) {
+        // Unlock the input once the backend has responded with a failure, so the
+        // user can edit and retry. On success the backend moves the wizard to
+        // the next page, so the lock is moot.
+        if state.vta_credential.processing
+            && matches!(state.props.state.vta.completed, Completion::CompletedFail)
+        {
+            state.vta_credential.processing = false;
+        }
+        let locked = state.vta_credential.processing;
+
         match key.code {
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
             }
-            KeyCode::Enter => {
+            KeyCode::Enter if !locked => {
                 let input = state.vta_credential.credential_input.value().to_string();
                 if input.trim().is_empty() {
                     state.vta_credential.warning_msg =
                         Some("Please paste a credential bundle.".to_string());
                 } else {
                     state.vta_credential.warning_msg = None;
+                    state.vta_credential.processing = true;
                     let _ = state.action_tx.send(Action::VtaSubmitCredential(input));
                 }
             }
-            KeyCode::Esc => {
+            KeyCode::Esc if !locked => {
                 state.vta_credential.credential_input.reset();
             }
-            _ => {
+            _ if !locked => {
                 state
                     .vta_credential
                     .credential_input
                     .handle_event(&Event::Key(key));
+            }
+            _ => {
+                // Input locked while VtaSubmitCredential is in flight.
             }
         }
     }
