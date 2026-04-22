@@ -243,7 +243,12 @@ impl Component for SetupFlow {
                 *target = tui_input::Input::new(trimmed);
             }
             SetupPage::UnlockCodeSet => {
-                self.unlock_code_set.passphrase = tui_input::Input::new(trimmed);
+                let target = if self.unlock_code_set.active_input == 0 {
+                    &mut self.unlock_code_set.passphrase
+                } else {
+                    &mut self.unlock_code_set.confirm
+                };
+                *target = tui_input::Input::new(trimmed);
             }
             SetupPage::MediatorCustom => {
                 self.mediator_custom.mediator_did = tui_input::Input::new(trimmed);
