@@ -25,6 +25,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph},
 };
+use std::cell::Cell;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub mod components;
@@ -45,7 +46,19 @@ pub struct MainPage {
     logs_selected: usize,
     /// Whether the logs panel is showing the detail view of a selected entry
     logs_detail_view: bool,
+    /// Vertical scroll offset (in wrapped lines) applied to the content panel.
+    /// Mutated by the key handler; clamped at render time.
+    content_scroll: u16,
+    /// Max reachable scroll offset from the most recent render — written by
+    /// render (via `Cell`) and read by the key handler to clamp PageDown/End.
+    content_scroll_max: Cell<u16>,
+    /// Identifier for the active content view (menu + mode). When it changes
+    /// across frames, we reset `content_scroll` so a fresh view starts at top.
+    last_view_id: String,
 }
+
+/// Number of lines to scroll per PageUp / PageDown press.
+const CONTENT_PAGE: u16 = 10;
 
 struct Props {
     main_page: MainPageState,
@@ -74,19 +87,26 @@ impl Component for MainPage {
             confirm_buffer: String::new(),
             logs_selected: 0,
             logs_detail_view: false,
+            content_scroll: 0,
+            content_scroll_max: Cell::new(0),
+            last_view_id: view_id(&state.main_page),
         }
         .move_with_state(state)
     }
 
-    fn move_with_state(self, state: &State) -> Self
+    fn move_with_state(mut self, state: &State) -> Self
     where
         Self: Sized,
     {
-        MainPage {
-            props: Props::from(state),
-            // propagate the update to the child components
-            ..self
+        let new_id = view_id(&state.main_page);
+        if new_id != self.last_view_id {
+            // Switching menu or mode (e.g. list → detail) starts the new view
+            // at the top, even if the previous view was scrolled down.
+            self.content_scroll = 0;
+            self.last_view_id = new_id;
         }
+        self.props = Props::from(state);
+        self
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) {
@@ -260,6 +280,32 @@ impl MainPage {
     /// Handle key events when the content panel is focused.
     /// Returns true if the event was consumed.
     fn handle_content_key_event(&mut self, key: KeyEvent) -> bool {
+        // Vertical scroll for the content panel is handled centrally here,
+        // before per-menu dispatch, so it works uniformly on every view
+        // without conflicting with Up/Down selection bindings.
+        match key.code {
+            KeyCode::PageUp => {
+                let max = self.content_scroll_max.get();
+                let cur = self.content_scroll.min(max);
+                self.content_scroll = cur.saturating_sub(CONTENT_PAGE);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = self.content_scroll_max.get();
+                self.content_scroll = self.content_scroll.saturating_add(CONTENT_PAGE).min(max);
+                return true;
+            }
+            KeyCode::Home => {
+                self.content_scroll = 0;
+                return true;
+            }
+            KeyCode::End => {
+                self.content_scroll = self.content_scroll_max.get();
+                return true;
+            }
+            _ => {}
+        }
+
         let menu = self.props.main_page.menu_panel.selected_menu.clone();
 
         match menu {
@@ -1336,6 +1382,50 @@ impl MainPage {
     }
 }
 
+/// Stable identifier for the currently-displayed content view, derived from
+/// the active menu and its per-panel mode. When this changes across frames
+/// (e.g. list → detail, or switching menus), the content panel scroll offset
+/// is reset to 0 so the new view starts at the top.
+fn view_id(page: &MainPageState) -> String {
+    use crate::state_handler::main_page::content::{
+        CredentialsMode, RelationshipsMode, SettingsMode,
+    };
+    let menu = &page.menu_panel.selected_menu;
+    let mode: &str = match menu {
+        MainMenu::Inbox => {
+            if page.content_panel.inbox.active_task.is_some() {
+                "detail"
+            } else {
+                "list"
+            }
+        }
+        MainMenu::Credentials => match &page.content_panel.credentials.mode {
+            CredentialsMode::List => "list",
+            CredentialsMode::Detail { .. } => "detail",
+            CredentialsMode::NewRequest { .. } => "new",
+        },
+        MainMenu::Relationships => match &page.content_panel.relationships.mode {
+            RelationshipsMode::List => "list",
+            RelationshipsMode::Detail { .. } => "detail",
+            RelationshipsMode::NewRequest { .. } => "new",
+            RelationshipsMode::EditAlias { .. } => "edit",
+        },
+        MainMenu::Settings => match &page.content_panel.settings.mode {
+            SettingsMode::View => "view",
+            SettingsMode::EditFriendlyName { .. } => "edit-name",
+            SettingsMode::EditMediatorDid { .. } => "edit-mediator",
+            SettingsMode::EditOrgDid { .. } => "edit-org",
+            SettingsMode::ExportConfig { .. } => "export",
+            SettingsMode::ImportConfig { .. } => "import",
+            SettingsMode::ChangeProtection { .. } => "protect",
+            #[cfg(feature = "openpgp-card")]
+            SettingsMode::TokenManagement { .. } => "token",
+        },
+        _ => "",
+    };
+    format!("{menu:?}:{mode}")
+}
+
 /// Copy text to the system clipboard, log the result to the activity log,
 /// and update the status panel message to give the user visual feedback.
 fn copy_to_clipboard(
@@ -1449,7 +1539,7 @@ impl ComponentRender<()> for MainPage {
             .main_page
             .menu_panel
             .render(frame, middle[0], inbox_task_count);
-        self.props.main_page.content_panel.render(
+        let max_scroll = self.props.main_page.content_panel.render(
             frame,
             middle[1],
             &self.props.main_page.menu_panel,
@@ -1457,7 +1547,9 @@ impl ComponentRender<()> for MainPage {
             &self.props.main_page.activity_log,
             self.logs_selected,
             self.logs_detail_view,
+            self.content_scroll,
         );
+        self.content_scroll_max.set(max_scroll);
 
         // Activity log panel
         let log_block = Block::bordered()
@@ -1483,7 +1575,7 @@ impl ComponentRender<()> for MainPage {
 
         // Bottom key hints (single line)
         frame.render_widget(
-            Paragraph::new(" <TAB> switch panels  <F10> quit")
+            Paragraph::new(" <TAB> switch panels  <PgUp/PgDn/Home/End> scroll  <F10> quit")
                 .dark_gray()
                 .alignment(Alignment::Left),
             main_bottom,
