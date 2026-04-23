@@ -23,7 +23,7 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use chrono::{DateTime, TimeDelta, Utc};
 use dtg_credentials::DTGCredential;
 use ed25519_dalek_bip32::ExtendedSigningKey;
-use secrecy::{ExposeSecret, SecretString, SecretVec};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt::Display, sync::Arc};
@@ -106,7 +106,7 @@ pub fn validate_passphrase(passphrase: &str) -> Result<(), OpenVTCError> {
 
 /// A 32-byte symmetric key derived from a user-provided passphrase via Argon2id.
 /// Used to encrypt/decrypt the secured configuration on disk.
-pub struct UnlockCode(pub(crate) SecretVec<u8>);
+pub struct UnlockCode(pub(crate) SecretBox<Vec<u8>>);
 
 impl UnlockCode {
     /// Derives an unlock code from a plaintext passphrase string using Argon2id.
@@ -117,7 +117,7 @@ impl UnlockCode {
     pub fn from_string(s: &str) -> Result<Self, OpenVTCError> {
         validate_passphrase(s)?;
         let key = derive_passphrase_key(s.as_bytes(), b"openvtc-unlock-code-v1")?;
-        Ok(UnlockCode(SecretVec::new(key.to_vec())))
+        Ok(UnlockCode(SecretBox::new(Box::new(key.to_vec()))))
     }
 }
 
@@ -176,7 +176,7 @@ pub enum KeyBackend {
         vta_url: String,
         /// SHA-256 hash of the private key multibase, used as the encryption seed
         /// for `ProtectedConfig` (replaces BIP32 `m/0'/0'/0'` in the VTA flow).
-        encryption_seed: SecretVec<u8>,
+        encryption_seed: SecretBox<Vec<u8>>,
     },
 }
 
@@ -234,8 +234,12 @@ pub struct Config {
     #[cfg(feature = "openpgp-card")]
     pub token_user_pin: SecretString,
 
-    /// Unlock code if required
-    pub unlock_code: Option<Vec<u8>>,
+    /// Argon2id-derived 32-byte symmetric key used to encrypt/decrypt `SecuredConfig`.
+    ///
+    /// Wrapped in `SecretBox` to ensure the key material is zeroed on drop and
+    /// never accidentally logged or compared in constant time.  Set when the
+    /// user provides an unlock passphrase; `None` for plaintext or token flows.
+    pub unlock_code: Option<SecretBox<Vec<u8>>>,
 
     /// Holds ATM profiles for relationships
     /// Key: Our local DID for the relationship
@@ -271,12 +275,14 @@ impl Config {
     ///
     /// For `Bip32` backends, this derives the seed from path `m/0'/0'/0'`.
     /// For `Vta` backends, this returns the pre-computed SHA-256 hash of the private key.
-    pub fn get_encryption_seed(&self) -> Result<SecretVec<u8>, OpenVTCError> {
+    pub fn get_encryption_seed(&self) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
         match &self.key_backend {
             KeyBackend::Bip32 { root, .. } => ProtectedConfig::get_seed(root, "m/0'/0'/0'"),
             KeyBackend::Vta {
                 encryption_seed, ..
-            } => Ok(SecretVec::new(encryption_seed.expose_secret().to_vec())),
+            } => Ok(SecretBox::new(Box::new(
+                encryption_seed.expose_secret().to_vec(),
+            ))),
         }
     }
 }

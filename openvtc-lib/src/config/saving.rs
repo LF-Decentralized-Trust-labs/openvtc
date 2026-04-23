@@ -42,7 +42,7 @@ impl Config {
             } else {
                 None
             },
-            self.unlock_code.as_ref(),
+            self.unlock_code.as_ref().map(|s| s.expose_secret()),
             #[cfg(feature = "openpgp-card")]
             touch_prompt,
         )?;

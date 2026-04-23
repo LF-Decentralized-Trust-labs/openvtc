@@ -2,7 +2,9 @@
 */
 
 use clap::{Arg, Command};
+#[cfg(feature = "openpgp-card")]
 use dialoguer::{Password, theme::ColorfulTheme};
+#[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 
 pub fn cli() -> Command {
@@ -26,6 +28,7 @@ pub fn cli() -> Command {
         .subcommand(Command::new("setup").about("Initial configuration of the openvtc tool"))
 }
 
+#[cfg(feature = "openpgp-card")]
 pub fn get_user_pin() -> SecretString {
     let user_pin = Password::with_theme(&ColorfulTheme::default())
         .with_prompt("Please enter Token User PIN")
@@ -33,8 +36,8 @@ pub fn get_user_pin() -> SecretString {
         .interact()
         .unwrap();
     if user_pin.is_empty() {
-        SecretString::new("123456".to_string())
+        SecretString::new("123456".to_string().into())
     } else {
-        SecretString::new(user_pin)
+        SecretString::new(user_pin.into())
     }
 }

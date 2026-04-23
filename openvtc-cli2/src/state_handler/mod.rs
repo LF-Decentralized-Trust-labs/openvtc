@@ -9,6 +9,7 @@ use crate::{
 use affinidi_tdk::{TDK, common::config::TDKConfig};
 use anyhow::Result;
 use openvtc::config::{Config, UnlockCode, public_config::PublicConfig};
+#[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 use tokio::sync::{
     broadcast,
@@ -129,6 +130,17 @@ impl StateHandler {
                 // Spawn TDK init + config load as a background task with progress reporting
                 let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<String>();
 
+                // Dedicated channel for token-touch events.  The notifier sends a bool
+                // (true = touch required, false = touch completed) and the StateHandler's
+                // select loop below is the sole authority that updates `state` and
+                // broadcasts it to the UI.  This preserves unidirectional data flow and
+                // eliminates the previous race-prone Arc<Mutex<State>> pattern.
+                //
+                // The channel is always created so the select! branch below can be
+                // unconditional; when the openpgp-card feature is disabled the sender is
+                // dropped inside the spawn and recv() immediately returns None.
+                let (token_touch_tx, mut token_touch_rx) = mpsc::unbounded_channel::<bool>();
+
                 let mut load_handle = tokio::spawn(async move {
                     let on_progress = |msg: &str| {
                         if let Err(e) = progress_tx.send(msg.to_string()) {
@@ -147,18 +159,33 @@ impl StateHandler {
                     .await
                     .map_err(|e| anyhow::anyhow!("TDK init failed: {e}"))?;
 
-                    // TokenInteractions impl for openpgp-card
+                    // TokenInteractions impl for openpgp-card.
+                    // Sends a plain bool through the dedicated channel instead of
+                    // directly mutating shared state, keeping state transitions
+                    // inside the StateHandler's main select loop.
                     #[cfg(feature = "openpgp-card")]
                     let token_notifier = {
                         use openvtc::config::TokenInteractions;
 
-                        struct TokenNotifier;
-                        impl TokenInteractions for TokenNotifier {
-                            fn touch_notify(&self) {}
-                            fn touch_completed(&self) {}
+                        struct TokenNotifier {
+                            touch_tx: mpsc::UnboundedSender<bool>,
                         }
-                        TokenNotifier
+                        impl TokenInteractions for TokenNotifier {
+                            fn touch_notify(&self) {
+                                let _ = self.touch_tx.send(true);
+                            }
+                            fn touch_completed(&self) {
+                                let _ = self.touch_tx.send(false);
+                            }
+                        }
+                        TokenNotifier {
+                            touch_tx: token_touch_tx,
+                        }
                     };
+                    // When openpgp-card is disabled, drop the sender so the receiver
+                    // in the select loop sees a closed channel immediately.
+                    #[cfg(not(feature = "openpgp-card"))]
+                    drop(token_touch_tx);
 
                     let config = Config::load_step2(
                         &mut tdk,
@@ -183,6 +210,12 @@ impl StateHandler {
                         Some(msg) = progress_rx.recv() => {
                             state.connection.status =
                                 state::MediatorStatus::Initializing(msg);
+                            self.state_tx.send(state.clone())?;
+                        }
+                        // Token-touch notifications arrive through the dedicated channel
+                        // so that state is mutated only here, inside the StateHandler loop.
+                        Some(pending) = token_touch_rx.recv() => {
+                            state.token_touch_pending = pending;
                             self.state_tx.send(state.clone())?;
                         }
                         result = &mut load_handle => {

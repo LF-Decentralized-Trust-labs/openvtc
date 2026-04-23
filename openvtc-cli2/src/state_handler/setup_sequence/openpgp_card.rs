@@ -3,7 +3,6 @@
 */
 
 use anyhow::{Result, bail};
-use chrono::Utc;
 use ed25519_dalek_bip32::VerifyingKey;
 use openpgp_card::{
     Card,
@@ -12,6 +11,7 @@ use openpgp_card::{
 };
 use openpgp_card_rpgp::UploadableKey;
 use openvtc::{KeyPurpose, config::KeyInfo};
+use pgp::types::Timestamp;
 use pgp::{
     crypto::{self, ed25519::Mode, public_key::PublicKeyAlgorithm},
     packet::{PacketHeader, PublicKey, SecretKey},
@@ -108,7 +108,7 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 packet_header,
                 KeyVersion::V4,
                 PublicKeyAlgorithm::EdDSALegacy,
-                Utc::now(),
+                Timestamp::now(),
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
                     key: VerifyingKey::from_bytes(
@@ -145,7 +145,7 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 packet_header,
                 KeyVersion::V4,
                 PublicKeyAlgorithm::EdDSALegacy,
-                Utc::now(),
+                Timestamp::now(),
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::EdDSALegacy(EddsaLegacyPublicParams::Ed25519 {
                     key: VerifyingKey::from_bytes(
@@ -190,7 +190,7 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 packet_header,
                 KeyVersion::V4,
                 PublicKeyAlgorithm::ECDH,
-                Utc::now(),
+                Timestamp::now(),
                 key.expiry.map(|e| e.num_days() as u16),
                 PublicParams::ECDH(EcdhPublicParams::Curve25519 {
                     p: x25519_pk,

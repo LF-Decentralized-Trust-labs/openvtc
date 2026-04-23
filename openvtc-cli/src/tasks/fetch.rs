@@ -279,7 +279,7 @@ pub async fn fetch_tasks(
                             println!(
                                 "{}",
                                 style(
-                                    "WARN: A Trust-Ping response was reeceived, but has no thread-id (`thid`). Can't process this message..."
+                                    "WARN: A Trust-Ping response was received, but has no thread-id (`thid`). Can't process this message..."
                                 )
                             );
                             continue;

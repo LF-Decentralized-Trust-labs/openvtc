@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use openvtc::colors::{COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_TEXT_DEFAULT};
+use openvtc::config::derive_passphrase_key;
 use ratatui::{
     Frame,
     layout::{
@@ -12,8 +13,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Padding, Paragraph},
 };
-use secrecy::SecretVec;
-use sha2::{Digest, Sha256};
+use secrecy::SecretBox;
 use tui_input::{Input, backend::crossterm::EventHandler};
 
 use crate::{
@@ -41,9 +41,15 @@ impl UnlockCodeSet {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
-                let passphrase_hash = Arc::new(SecretVec::new(
-                    Sha256::digest(state.unlock_code_set.passphrase.value()).to_vec(),
-                ));
+                let passphrase_value = state.unlock_code_set.passphrase.value().to_string();
+                let key = match derive_passphrase_key(
+                    passphrase_value.as_bytes(),
+                    b"openvtc-unlock-code-v1",
+                ) {
+                    Ok(k) => k,
+                    Err(_) => return,
+                };
+                let passphrase_hash = Arc::new(SecretBox::new(Box::new(key.to_vec())));
                 let result = navigate(
                     SetupEvent::UnlockCodeSet { passphrase_hash },
                     &state.props.state,

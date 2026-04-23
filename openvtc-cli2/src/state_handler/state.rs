@@ -14,6 +14,11 @@ pub struct State {
     /// Hardware Token Admin Pin
     #[cfg(feature = "openpgp-card")]
     pub token_admin_pin: Option<SecretString>,
+
+    /// True when the user needs to physically touch their hardware token.
+    /// Not gated behind the openpgp-card feature so the StateHandler's
+    /// select loop can update it unconditionally regardless of build config.
+    pub token_touch_pending: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy)]

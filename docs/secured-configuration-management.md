@@ -2,6 +2,8 @@
 
 The OpenVTC CLI tool securely stores the sensitive configuration in a Base64 format in the OS secure storage layer of your device. The configuration contains the following information:
 
+On macOS this uses the system Keychain. On Linux this uses the system keyring (for example GNOME Keyring or KWallet). On Windows, secrets are stored using the Windows Credential Manager via the `keyring` crate integration used by OpenVTC.
+
 - BIP32 seed used to create the cryptographic keys to generate Decentralised Identifiers (DIDs), specifically your Persona DID.
 
 - Key Info containing the following details:

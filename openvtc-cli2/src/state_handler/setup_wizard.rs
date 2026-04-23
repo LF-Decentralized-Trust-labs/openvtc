@@ -1,3 +1,5 @@
+#[cfg(feature = "openpgp-card")]
+use crate::state_handler::setup_token_actions;
 use crate::{
     Interrupted,
     state_handler::{
@@ -5,7 +7,7 @@ use crate::{
         actions::Action,
         setup_did_actions,
         setup_sequence::{Completion, MessageType, SetupPage, config::ConfigExtension},
-        setup_token_actions, setup_vta_actions,
+        setup_vta_actions,
         state::{ActivePage, State},
     },
 };
@@ -39,8 +41,8 @@ impl StateHandler {
                 },
                 Action::ImportConfig(filename, import_unlock_passphrase, new_unlock_passphrase) => {
                     // Import a configuration backup
-                    let import_unlock_passphrase = SecretString::new(import_unlock_passphrase);
-                    let new_unlock_passphrase = SecretString::new(new_unlock_passphrase);
+                    let import_unlock_passphrase = SecretString::new(import_unlock_passphrase.into());
+                    let new_unlock_passphrase = SecretString::new(new_unlock_passphrase.into());
                     state.setup.active_page = SetupPage::ConfigImport;
                     match Config::import(
                         state, &self.state_tx,

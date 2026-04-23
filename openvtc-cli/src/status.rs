@@ -157,7 +157,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
         }
     };
 
-    let (user_pin, unlock_passphrase) = match &public_config.protection {
+    let (_user_pin, unlock_passphrase) = match &public_config.protection {
         ConfigProtectionType::Token { .. } => {
             let user_pin = Password::with_theme(&ColorfulTheme::default())
                 .with_prompt("Please enter Token User PIN <blank = default>")
@@ -175,9 +175,9 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 }
             };
             let user_pin = if user_pin.is_empty() {
-                SecretString::new("123456".to_string())
+                SecretString::new("123456".to_string().into())
             } else {
-                SecretString::new(user_pin)
+                SecretString::new(user_pin.into())
             };
 
             (user_pin, None)
@@ -204,7 +204,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                     }
                 };
             (
-                SecretString::new(String::new()),
+                SecretString::new(String::new().into()),
                 match UnlockCode::from_string(&passphrase) {
                     Ok(uc) => Some(uc),
                     Err(e) => {
@@ -218,7 +218,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
                 },
             )
         }
-        ConfigProtectionType::Plaintext => (SecretString::new(String::new()), None),
+        ConfigProtectionType::Plaintext => (SecretString::new(String::new().into()), None),
     };
 
     let config = match Config::load_step2(
@@ -227,7 +227,7 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
         public_config,
         unlock_passphrase.as_ref(),
         #[cfg(feature = "openpgp-card")]
-        &user_pin,
+        &_user_pin,
         #[cfg(feature = "openpgp-card")]
         &a,
         None,
@@ -302,28 +302,32 @@ pub async fn print_status(term: &Term, tdk: &mut TDK, profile: &str) {
 }
 
 // Rust Feature Flags enabled for this build
+// `_prev_flag` tracks whether a comma separator is needed before each feature
+// label. It is written inside cfg-gated blocks and may not be read in all
+// feature combinations — the allow attributes suppress the resulting lints.
+#[allow(unused_assignments, unused_variables)]
 fn feature_flags() {
     print!("{} ", style("openvtc enabled features:").color256(CLI_BLUE),);
-    let mut prev_flag = false; // set to true if a feature has been enabled
+    let mut _prev_flag = false;
 
     #[cfg(not(feature = "default"))]
     {
         print!("{}", style("no-default").color256(CLI_RED));
-        prev_flag = true;
+        _prev_flag = true;
     }
 
     #[cfg(feature = "default")]
     {
-        if prev_flag {
+        if _prev_flag {
             print!("{}", style(", ").bold().color256(CLI_GREEN))
         }
         print!("{}", style("default").bold().color256(CLI_GREEN));
-        prev_flag = true;
+        _prev_flag = true;
     }
 
     #[cfg(feature = "openpgp-card")]
     {
-        if prev_flag {
+        if _prev_flag {
             print!("{}", style(", ").bold().color256(CLI_GREEN))
         }
         print!("{}", style("openpgp-card").bold().color256(CLI_GREEN));

@@ -15,7 +15,7 @@ use crate::{
 use affinidi_tdk::TDK;
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::{DerivationPath, ExtendedSigningKey};
-use secrecy::{ExposeSecret, SecretVec};
+use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
@@ -197,7 +197,7 @@ pub struct ProtectedConfig {
 
 impl ProtectedConfig {
     /// Converts ProtectedConfig to an encrypted BASE64 string for saving to disk
-    pub fn save(&self, seed_bytes: &SecretVec<u8>) -> Result<String, OpenVTCError> {
+    pub fn save(&self, seed_bytes: &SecretBox<Vec<u8>>) -> Result<String, OpenVTCError> {
         let bytes = serde_json::to_vec(self)?;
 
         match unlock_code_encrypt(
@@ -214,7 +214,10 @@ impl ProtectedConfig {
         }
     }
 
-    pub fn load(seed_bytes: &SecretVec<u8>, input: &str) -> Result<ProtectedConfig, OpenVTCError> {
+    pub fn load(
+        seed_bytes: &SecretBox<Vec<u8>>,
+        input: &str,
+    ) -> Result<ProtectedConfig, OpenVTCError> {
         let bytes = BASE64_URL_SAFE_NO_PAD.decode(input)?;
 
         let bytes = unlock_code_decrypt(
@@ -230,7 +233,10 @@ impl ProtectedConfig {
         Ok(serde_json::from_slice(&bytes)?)
     }
 
-    pub fn get_seed(bip32: &ExtendedSigningKey, path: &str) -> Result<SecretVec<u8>, OpenVTCError> {
+    pub fn get_seed(
+        bip32: &ExtendedSigningKey,
+        path: &str,
+    ) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
         let derived = bip32
             .derive(&path.parse::<DerivationPath>().map_err(|e| {
                 OpenVTCError::BIP32(format!("Couldn't parse derivation path ({}): {}", path, e))
@@ -241,7 +247,9 @@ impl ProtectedConfig {
                     path, e
                 ))
             })?;
-        Ok(SecretVec::new(derived.signing_key.as_bytes().to_vec()))
+        Ok(SecretBox::new(Box::new(
+            derived.signing_key.as_bytes().to_vec(),
+        )))
     }
 
     /// Legacy seed derivation using the verifying (public) key.
@@ -251,7 +259,7 @@ impl ProtectedConfig {
     pub fn get_seed_legacy(
         bip32: &ExtendedSigningKey,
         path: &str,
-    ) -> Result<SecretVec<u8>, OpenVTCError> {
+    ) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
         let derived = bip32
             .derive(&path.parse::<DerivationPath>().map_err(|e| {
                 OpenVTCError::BIP32(format!("Couldn't parse derivation path ({}): {}", path, e))
@@ -262,7 +270,9 @@ impl ProtectedConfig {
                     path, e
                 ))
             })?;
-        Ok(SecretVec::new(derived.verifying_key().to_bytes().to_vec()))
+        Ok(SecretBox::new(Box::new(
+            derived.verifying_key().to_bytes().to_vec(),
+        )))
     }
 
     /// Derives an encryption seed from a VTA credential's private key multibase.
@@ -272,7 +282,7 @@ impl ProtectedConfig {
     /// bound to its purpose and cannot be confused with keys derived for other uses.
     pub fn get_seed_from_credential(
         private_key_multibase: &str,
-    ) -> Result<SecretVec<u8>, OpenVTCError> {
+    ) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
         use hkdf::Hkdf;
         use sha2::Sha256;
 
@@ -283,7 +293,7 @@ impl ProtectedConfig {
             .map_err(|e| {
                 OpenVTCError::Encrypt(format!("HKDF expansion failed for credential seed: {e}"))
             })?;
-        Ok(SecretVec::new(seed))
+        Ok(SecretBox::new(Box::new(seed)))
     }
 }
 
@@ -291,8 +301,8 @@ impl ProtectedConfig {
 mod tests {
     use super::*;
 
-    fn test_seed() -> SecretVec<u8> {
-        SecretVec::new(vec![42u8; 32])
+    fn test_seed() -> SecretBox<Vec<u8>> {
+        SecretBox::new(Box::new(vec![42u8; 32]))
     }
 
     #[test]
@@ -311,7 +321,7 @@ mod tests {
     fn test_protected_config_wrong_seed_fails() {
         let config = ProtectedConfig::default();
         let seed = test_seed();
-        let wrong_seed = SecretVec::new(vec![99u8; 32]);
+        let wrong_seed = SecretBox::new(Box::new(vec![99u8; 32]));
 
         let saved = config.save(&seed).unwrap();
         let result = ProtectedConfig::load(&wrong_seed, &saved);

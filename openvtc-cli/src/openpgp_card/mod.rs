@@ -19,6 +19,7 @@ use openpgp_card::{
 };
 use openvtc::KeyPurpose;
 use secrecy::SecretString;
+use std::time::SystemTime;
 use std::{fmt, sync::Arc};
 use tokio::sync::Mutex;
 
@@ -199,7 +200,8 @@ pub fn get_key_info(
     match key_type {
         KeyType::Signing => {
             if let Some(kgt) = kgt.signature() {
-                key_info.creation_time = Some(format!("{}", DateTime::<Utc>::from(kgt)));
+                key_info.creation_time =
+                    Some(format!("{}", DateTime::<Utc>::from(SystemTime::from(kgt))));
             }
             key_info.status = ki.map(|ki| ki.sig_status());
             key_info.signature_count = Some(card.digital_signature_count()?);
@@ -209,7 +211,8 @@ pub fn get_key_info(
         }
         KeyType::Authentication => {
             if let Some(kgt) = kgt.authentication() {
-                key_info.creation_time = Some(format!("{}", DateTime::<Utc>::from(kgt)));
+                key_info.creation_time =
+                    Some(format!("{}", DateTime::<Utc>::from(SystemTime::from(kgt))));
             }
             key_info.status = ki.map(|ki| ki.aut_status());
             if let Some(fp) = fps.authentication() {
@@ -218,7 +221,8 @@ pub fn get_key_info(
         }
         KeyType::Decryption => {
             if let Some(kgt) = kgt.decryption() {
-                key_info.creation_time = Some(format!("{}", DateTime::<Utc>::from(kgt)));
+                key_info.creation_time =
+                    Some(format!("{}", DateTime::<Utc>::from(SystemTime::from(kgt))));
             }
             key_info.status = ki.map(|ki| ki.dec_status());
             if let Some(fp) = fps.decryption() {

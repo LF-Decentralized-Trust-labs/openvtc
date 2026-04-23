@@ -21,6 +21,8 @@ use pgp::{
     types::{KeyDetails, PlainSecretParams, SecretParams},
 };
 use regex::Regex;
+use secrecy::SecretString;
+use std::time::SystemTime;
 use zeroize::Zeroize;
 
 /// Holds imported PGP Keys
@@ -111,9 +113,10 @@ impl PGPKeys {
         show_key_purpose(signature.key_flags());
         // Print some key info
         print!("{} ", style("Created time:").color256(CLI_BLUE));
-        let created = if let Some(created) = signature.created() {
-            print!("{}", style(created).color256(CLI_GREEN));
-            created.to_owned()
+        let created: DateTime<Utc> = if let Some(created) = signature.created() {
+            let dt: DateTime<Utc> = SystemTime::from(created).into();
+            print!("{}", style(dt).color256(CLI_GREEN));
+            dt
         } else {
             println!("{}", style("N/A").color256(CLI_ORANGE));
             println!("{}", style("WARNING: A key must have a creation time, as it is missing we assume new creation time of now").color256(CLI_ORANGE));
@@ -121,11 +124,11 @@ impl PGPKeys {
         };
 
         print!(" {} ", style("Expires?:").color256(CLI_BLUE));
-        print!(
-            "{}",
-            style(get_expiry_date(&created, signature.key_expiration_time()))
-        );
-        if let Some(expiry) = signature.key_expiration_time() {
+        let expiry_td = signature
+            .key_expiration_time()
+            .map(|d| TimeDelta::seconds(i64::from(d.as_secs())));
+        print!("{}", style(get_expiry_date(&created, expiry_td.as_ref())));
+        if let Some(expiry) = &expiry_td {
             print!("{}", style(created + *expiry).color256(CLI_GREEN));
         } else {
             print!("{}", style("Never").color256(CLI_GREEN));
@@ -145,10 +148,10 @@ impl PGPKeys {
         };
         let ki = KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: private_keymultibase,
+                seed: SecretString::new(private_keymultibase.into()),
             },
             secret,
-            expiry: signature.key_expiration_time().map(|e| e.to_owned()),
+            expiry: expiry_td,
             created,
         };
 
@@ -357,17 +360,21 @@ fn extract_primary_key_details(primary_key: &SignedSecretKey) -> Result<(KeyFlag
 
     // Print some key info
     print!("{} ", style("Created time:").color256(CLI_BLUE));
-    let created = if let Some(created) = signature.created() {
-        print!("{}", style(created).color256(CLI_GREEN));
-        created.to_owned()
+    let created: DateTime<Utc> = if let Some(created) = signature.created() {
+        let dt: DateTime<Utc> = SystemTime::from(created).into();
+        print!("{}", style(dt).color256(CLI_GREEN));
+        dt
     } else {
         print!("{}", style("N/A").color256(CLI_ORANGE));
         println!("\n{}", style("WARNING: Something strange has occurred. You have a key with an expiry but no creation date. This is an invalid state.").color256(CLI_RED));
         Utc::now()
     };
 
+    let expiry_td = signature
+        .key_expiration_time()
+        .map(|d| TimeDelta::seconds(i64::from(d.as_secs())));
     print!(" {} ", style("Expires?:").color256(CLI_BLUE));
-    if let Some(expiry) = signature.key_expiration_time() {
+    if let Some(expiry) = &expiry_td {
         print!("{}", style(created + *expiry).color256(CLI_GREEN));
     } else {
         print!("{}", style("Never").color256(CLI_GREEN));
@@ -383,12 +390,15 @@ fn extract_primary_key_details(primary_key: &SignedSecretKey) -> Result<(KeyFlag
         signature.key_flags(),
         KeyInfo {
             source: KeySourceMaterial::Imported {
-                seed: secret
-                    .get_private_keymultibase()
-                    .context("Failed to encode primary key as multibase")?,
+                seed: SecretString::new(
+                    secret
+                        .get_private_keymultibase()
+                        .context("Failed to encode primary key as multibase")?
+                        .into(),
+                ),
             },
             secret,
-            expiry: signature.key_expiration_time().map(|e| e.to_owned()),
+            expiry: expiry_td,
             created,
         },
     ))

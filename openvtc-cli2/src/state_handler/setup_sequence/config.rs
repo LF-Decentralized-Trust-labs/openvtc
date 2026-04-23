@@ -16,7 +16,7 @@ use openvtc::{
     },
     logs::{LogFamily, LogMessage, Logs},
 };
-use secrecy::{ExposeSecret, SecretString};
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::{
     collections::{HashMap, VecDeque},
     fs,
@@ -127,7 +127,7 @@ impl ConfigExtension for Config {
             .expect("Imported config missing BIP32 seed");
         let bip32_root = ExtendedSigningKey::from_seed(
             BASE64_URL_SAFE_NO_PAD
-                .decode(bip32_seed)
+                .decode(bip32_seed.expose_secret())
                 .expect("Couldn't base64 decode BIP32 seed")
                 .as_slice(),
         )?;
@@ -207,9 +207,10 @@ impl ConfigExtension for Config {
         let mut unlock_code = None;
         let protection = match &state.protection {
             ConfigProtection::PlainText => ConfigProtectionType::Plaintext,
+            #[cfg(feature = "openpgp-card")]
             ConfigProtection::Token(token) => ConfigProtectionType::Token(token.to_string()),
             ConfigProtection::Passcode(unlock) => {
-                unlock_code = Some(unlock.expose_secret().to_vec());
+                unlock_code = Some(SecretBox::new(Box::new(unlock.expose_secret().to_vec())));
                 ConfigProtectionType::Encrypted
             }
         };
@@ -259,9 +260,9 @@ impl ConfigExtension for Config {
         let encryption_seed =
             ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
         let key_backend = KeyBackend::Vta {
-            credential_bundle: SecretString::new(credential_raw),
+            credential_bundle: SecretString::new(credential_raw.into()),
             credential_did: bundle.did.clone(),
-            credential_private_key: SecretString::new(bundle.private_key_multibase.clone()),
+            credential_private_key: SecretString::new(bundle.private_key_multibase.clone().into()),
             vta_did: bundle.vta_did.clone(),
             vta_url: bundle.vta_url.clone().unwrap_or_default(),
             encryption_seed,
@@ -302,7 +303,7 @@ impl ConfigExtension for Config {
             #[cfg(feature = "openpgp-card")]
             token_admin_pin: None,
             #[cfg(feature = "openpgp-card")]
-            token_user_pin: SecretString::new(String::new()),
+            token_user_pin: SecretString::new(String::new().into()),
             protection_method: ProtectionMethod::default(),
             unlock_code,
             atm_profiles: HashMap::new(),

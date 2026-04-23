@@ -4299,27 +4299,25 @@ checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
 name = "openpgp-card"
-version = "0.5.1"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56d9f9032bc868b82b289dddf471434b96c1f229898c2497d847c5b056a2cc6d"
+checksum = "c5a3953947ab2bc105fd007670101c13a61e4fc41f04cd1b537f6fabbbc16a7b"
 dependencies = [
  "card-backend",
- "chrono",
  "hex-slice",
  "log",
  "nom 7.1.3",
  "secrecy",
  "sha2 0.10.9",
- "thiserror 1.0.69",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
 name = "openpgp-card-rpgp"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80b44dbb43220b6925013dfe4646eba740f27dc6f9b185b96c7047bbf7589caf"
+checksum = "5f3c2dbf032c1403df9fb3f4e3c25ee80ea89cffab86869bd039bbda400ea7c5"
 dependencies = [
- "chrono",
  "ed25519-dalek",
  "openpgp-card",
  "p256",
@@ -4389,7 +4387,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -4420,6 +4418,7 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
+ "sysinfo",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -4432,7 +4431,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -4477,7 +4476,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc-cli2"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
@@ -4529,7 +4528,7 @@ dependencies = [
 
 [[package]]
 name = "openvtc-service"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "affinidi-tdk",
  "anyhow",
@@ -4760,9 +4759,9 @@ dependencies = [
 
 [[package]]
 name = "pgp"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66d4a27a4d5cfd4e185ddd3eff94dee0f611c4c3e776422254237c54c336c160"
+checksum = "eaffe1ec22db286599c30ae6be75b37493b558735d86c8e59ec5c38794415fe4"
 dependencies = [
  "aead",
  "aes",
@@ -4780,7 +4779,6 @@ dependencies = [
  "camellia",
  "cast5",
  "cfb-mode",
- "chrono",
  "cipher",
  "const-oid 0.9.6",
  "crc24",
@@ -4929,9 +4927,9 @@ dependencies = [
 
 [[package]]
 name = "pkg-config"
-version = "0.3.32"
+version = "0.3.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
+checksum = "19f132c84eca552bf34cab8ec81f1c1dcc229b811638f9d283dceabe58c5569e"
 
 [[package]]
 name = "plotters"
@@ -5657,7 +5655,7 @@ dependencies = [
 
 [[package]]
 name = "robotic-maintainers"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "affinidi-tdk",
  "anyhow",
@@ -5944,10 +5942,11 @@ dependencies = [
 
 [[package]]
 name = "secrecy"
-version = "0.8.0"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bd1c54ea06cfd2f6b63219704de0b9b4f72dcc2b8fdef820be6cd799780e91e"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
 dependencies = [
+ "serde",
  "zeroize",
 ]
 

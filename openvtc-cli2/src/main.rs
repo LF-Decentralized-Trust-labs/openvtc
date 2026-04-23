@@ -1,16 +1,20 @@
+#[cfg(feature = "openpgp-card")]
+use crate::cli::get_user_pin;
 use crate::{
-    cli::{cli, get_user_pin},
+    cli::cli,
     state_handler::{DeferredLoad, StartingMode, StateHandler},
     ui::UiManager,
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use console::style;
 use dialoguer::{Password, theme::ColorfulTheme};
 use openvtc::{
     colors::{CLI_BLUE, CLI_ORANGE, CLI_PURPLE, CLI_RED},
     config::{Config, ConfigProtectionType, UnlockCode},
     errors::OpenVTCError,
+    process_lock::{check_duplicate_instance, remove_lock_file},
 };
+#[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 use std::{env, fs, path::{Path, PathBuf}, process, str::FromStr};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
@@ -22,117 +26,6 @@ mod cli;
 mod state_handler;
 mod ui;
 
-/// Checks if another instance of openvtc is running for the same profile
-/// will return an error if a duplicate instance is found
-/// otherwise, creates a lock file to prvent other instances from running
-/// Returns the path to the lock file created
-fn check_duplicate_instance(profile: &str) -> Result<PathBuf> {
-    let lock_file = get_lock_file(profile)?;
-
-    // Check if existing lockfile exists
-    // If so, then check if the PID is still running
-    match fs::exists(&lock_file) {
-        Ok(exists) => {
-            if exists {
-                // Check the PID
-                let pid = fs::read_to_string(&lock_file)
-                    .context("Couldn't read from lockfile")?
-                    .trim_end()
-                    .to_string();
-
-                // We want to only refresh processes.
-                let system = System::new_with_specifics(
-                    RefreshKind::nothing().with_processes(ProcessRefreshKind::nothing()),
-                );
-                if system.process(Pid::from_str(&pid)?).is_some() {
-                    eprintln!(
-                        "{}{}{} {}",
-                        style("ERROR: Another instance of openvtc is running for this profile (")
-                            .color256(CLI_RED),
-                        style(profile).color256(CLI_PURPLE),
-                        style(")!").color256(CLI_RED),
-                        style(
-                            "Only a single instance of openvtc can run for a given profile at a time!"
-                        )
-                        .color256(CLI_ORANGE)
-                    );
-                    bail!("Duplicate openvtc instance running");
-                }
-            }
-        }
-        Err(e) => {
-            eprintln!(
-                "{} {}",
-                style("ERROR: Couldn't check for lock file! Reason:").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
-            );
-            bail!("Lock File Error");
-        }
-    }
-
-    // Create the lock file
-    create_lock_file(&lock_file).context("create_lock_file() failed")?;
-    Ok(lock_file)
-}
-
-/// Returns the path to the lock file for the given profile
-fn get_lock_file(profile: &str) -> Result<PathBuf> {
-    let mut path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
-        PathBuf::from(config_path)
-    } else {
-        #[cfg(windows)]
-        {
-            dirs::config_dir()
-                .map(|p| p.join("openvtc"))
-                .ok_or_else(|| anyhow::anyhow!("Couldn't determine configuration directory"))?
-        }
-        #[cfg(not(windows))]
-        {
-            dirs::home_dir()
-                .map(|p| p.join(".config").join("openvtc"))
-                .ok_or_else(|| anyhow::anyhow!("Couldn't determine home directory"))?
-        }
-    };
-
-    if profile == "default" {
-        path.push("config.lock");
-    } else {
-        path.push(format!("config-{profile}.lock"));
-    }
-
-    Ok(path)
-}
-
-/// Creates the lock file containg the running process PID
-fn create_lock_file<P: AsRef<Path>>(lock_file: P) -> Result<()> {
-    let lock_file = lock_file.as_ref();
-    // Check that directory structure exists
-    if let Some(parent_path) = lock_file.parent()
-        && !parent_path.exists()
-    {
-        // Create parent directories
-        fs::create_dir_all(parent_path)?;
-    }
-
-    match fs::write(lock_file, process::id().to_string()) {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            println!(
-                "{}{}{}{}",
-                style("ERROR: Couldn't create lock file: ").color256(CLI_RED),
-                style(lock_file.to_string_lossy()).color256(CLI_PURPLE),
-                style(" Reason: ").color256(CLI_RED),
-                style(e).color256(CLI_ORANGE)
-            );
-            bail!("Couldn't create lock file");
-        }
-    }
-}
-
-/// Removes the lock file for the given profile
-fn remove_lock_file<P: AsRef<Path>>(lock_file: P) {
-    let _ = fs::remove_file(lock_file);
-}
 
 // ****************************************************************************
 // MAIN Function
@@ -341,7 +234,7 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
     let user_pin = if matches!(&public_config.protection, ConfigProtectionType::Token(_)) {
         get_user_pin()
     } else {
-        SecretString::from_str("123456").unwrap()
+        SecretString::new("123456".to_string().into())
     };
 
     Ok(DeferredLoad {
