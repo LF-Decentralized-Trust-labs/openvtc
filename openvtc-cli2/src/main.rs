@@ -12,7 +12,7 @@ use openvtc::{
     errors::OpenVTCError,
 };
 use secrecy::SecretString;
-use std::{env, fs, path::Path, process, str::FromStr};
+use std::{env, fs, path::{Path, PathBuf}, process, str::FromStr};
 use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 #[cfg(unix)]
 use tokio::signal::unix::signal;
@@ -26,7 +26,7 @@ mod ui;
 /// will return an error if a duplicate instance is found
 /// otherwise, creates a lock file to prvent other instances from running
 /// Returns the path to the lock file created
-fn check_duplicate_instance(profile: &str) -> Result<String> {
+fn check_duplicate_instance(profile: &str) -> Result<PathBuf> {
     let lock_file = get_lock_file(profile)?;
 
     // Check if existing lockfile exists
@@ -76,34 +76,38 @@ fn check_duplicate_instance(profile: &str) -> Result<String> {
 }
 
 /// Returns the path to the lock file for the given profile
-fn get_lock_file(profile: &str) -> Result<String> {
-    let path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
-        if config_path.ends_with('/') {
-            config_path
-        } else {
-            [&config_path, "/"].concat()
-        }
-    } else if let Some(home) = dirs::home_dir()
-        && let Some(home_str) = home.to_str()
-    {
-        [home_str, "/.config/openvtc/"].concat()
+fn get_lock_file(profile: &str) -> Result<PathBuf> {
+    let mut path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
+        PathBuf::from(config_path)
     } else {
-        bail!("Couldn't determine Home directory");
+        #[cfg(windows)]
+        {
+            dirs::config_dir()
+                .map(|p| p.join("openvtc"))
+                .ok_or_else(|| anyhow::anyhow!("Couldn't determine configuration directory"))?
+        }
+        #[cfg(not(windows))]
+        {
+            dirs::home_dir()
+                .map(|p| p.join(".config").join("openvtc"))
+                .ok_or_else(|| anyhow::anyhow!("Couldn't determine home directory"))?
+        }
     };
 
     if profile == "default" {
-        Ok([&path, "config.lock"].concat())
+        path.push("config.lock");
     } else {
-        Ok([&path, "config-", profile, ".lock"].concat())
+        path.push(format!("config-{profile}.lock"));
     }
+
+    Ok(path)
 }
 
 /// Creates the lock file containg the running process PID
-fn create_lock_file(lock_file: &str) -> Result<()> {
-    let dir_path = Path::new(&lock_file);
-
+fn create_lock_file<P: AsRef<Path>>(lock_file: P) -> Result<()> {
+    let lock_file = lock_file.as_ref();
     // Check that directory structure exists
-    if let Some(parent_path) = dir_path.parent()
+    if let Some(parent_path) = lock_file.parent()
         && !parent_path.exists()
     {
         // Create parent directories
@@ -116,7 +120,7 @@ fn create_lock_file(lock_file: &str) -> Result<()> {
             println!(
                 "{}{}{}{}",
                 style("ERROR: Couldn't create lock file: ").color256(CLI_RED),
-                style(lock_file).color256(CLI_PURPLE),
+                style(lock_file.to_string_lossy()).color256(CLI_PURPLE),
                 style(" Reason: ").color256(CLI_RED),
                 style(e).color256(CLI_ORANGE)
             );
@@ -126,7 +130,7 @@ fn create_lock_file(lock_file: &str) -> Result<()> {
 }
 
 /// Removes the lock file for the given profile
-fn remove_lock_file(lock_file: &str) {
+fn remove_lock_file<P: AsRef<Path>>(lock_file: P) {
     let _ = fs::remove_file(lock_file);
 }
 

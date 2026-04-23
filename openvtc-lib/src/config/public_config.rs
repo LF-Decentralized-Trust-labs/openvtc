@@ -11,7 +11,7 @@ use secrecy::SecretVec;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{env, fs, path::Path, sync::Arc};
+use std::{env, fs, path::PathBuf, sync::Arc};
 use tracing::warn;
 
 /// Primary structure used for storing [crate::config::Config] data that is not sensitive
@@ -66,19 +66,28 @@ pub fn validate_profile_name(profile: &str) -> Result<(), OpenVTCError> {
 }
 
 /// Private helper to determine where the config file is located
-fn get_config_path(profile: &str) -> Result<std::path::PathBuf, OpenVTCError> {
+fn get_config_path(profile: &str) -> Result<PathBuf, OpenVTCError> {
     validate_profile_name(profile)?;
 
     let mut path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
-        std::path::PathBuf::from(config_path)
-    } else if let Some(config_dir) = dirs::config_dir() {
-        let mut p = config_dir;
-        p.push("openvtc");
-        p
+        PathBuf::from(config_path)
     } else {
-        return Err(OpenVTCError::Config(
-            "Couldn't determine configuration directory".to_string(),
-        ));
+        #[cfg(windows)]
+        {
+            dirs::config_dir()
+                .map(|p| p.join("openvtc"))
+                .ok_or_else(|| {
+                    OpenVTCError::Config("Couldn't determine configuration directory".to_string())
+                })?
+        }
+        #[cfg(not(windows))]
+        {
+            dirs::home_dir()
+                .map(|p| p.join(".config").join("openvtc"))
+                .ok_or_else(|| {
+                    OpenVTCError::Config("Couldn't determine home directory".to_string())
+                })?
+        }
     };
 
     if profile == "default" {
@@ -174,7 +183,7 @@ mod tests {
         unsafe { env::set_var("OPENVTC_CONFIG_PATH", base) };
         let path = get_config_path("default").expect("Should return path");
         
-        let mut expected = std::path::PathBuf::from(base);
+        let mut expected = PathBuf::from(base);
         expected.push("config.json");
         assert_eq!(path, expected);
         
@@ -188,7 +197,7 @@ mod tests {
         unsafe { env::set_var("OPENVTC_CONFIG_PATH", base) };
         let path = get_config_path("work").expect("Should return path");
         
-        let mut expected = std::path::PathBuf::from(base);
+        let mut expected = PathBuf::from(base);
         expected.push("config-work.json");
         assert_eq!(path, expected);
         
@@ -198,22 +207,42 @@ mod tests {
     #[test]
     fn test_get_config_path_trailing_slash_normalization() {
         let _guard = ENV_LOCK.lock().unwrap();
-        // Test that both with and without trailing slash work fine with PathBuf::push
-        let bases = if cfg!(windows) {
-            vec!["C:\\tmp\\cfg", "C:\\tmp\\cfg\\"]
+        let (base_with, base_without) = if cfg!(windows) {
+            ("C:\\tmp\\cfg\\", "C:\\tmp\\cfg")
         } else {
-            vec!["/tmp/cfg", "/tmp/cfg/"]
+            ("/tmp/cfg/", "/tmp/cfg")
         };
 
-        for base in bases {
-            unsafe { env::set_var("OPENVTC_CONFIG_PATH", base) };
-            let path = get_config_path("default").expect("Should return path");
-            
-            let mut expected = std::path::PathBuf::from(base);
-            expected.push("config.json");
-            assert_eq!(path, expected, "Failed for base: {base}");
-            unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
-        }
+        // Assert that both versions produce the exact same PathBuf
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", base_with) };
+        let path_with = get_config_path("default").unwrap();
+
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", base_without) };
+        let path_without = get_config_path("default").unwrap();
+
+        assert_eq!(path_with, path_without, "Paths with and without trailing slashes must be identical");
+        
+        // Verify the actual content
+        let mut expected = PathBuf::from(base_without);
+        expected.push("config.json");
+        assert_eq!(path_with, expected);
+
+        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+    }
+
+    #[test]
+    fn test_get_config_path_fallback() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
+
+        let path = get_config_path("default").expect("Should return path");
+
+        // Verify it ends with openvtc/config.json (cross-platform check)
+        let mut expected_suffix = PathBuf::new();
+        expected_suffix.push("openvtc");
+        expected_suffix.push("config.json");
+
+        assert!(path.ends_with(expected_suffix));
     }
 
     #[test]
