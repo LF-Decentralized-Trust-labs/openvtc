@@ -189,7 +189,13 @@ impl ConfigExtension for Config {
                 } else {
                     None
                 },
-                Some(&new_unlock_passphrase.expose_secret().as_bytes().to_vec()),
+                Some(
+                    &derive_passphrase_key(
+                        new_unlock_passphrase.expose_secret().as_bytes(),
+                        b"openvtc-unlock-code-v1",
+                    )?
+                    .to_vec(),
+                ),
             )
             .map_err(|e| anyhow::anyhow!("Couldn't save Secured Config: {e}"))?;
 
