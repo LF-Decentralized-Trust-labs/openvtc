@@ -108,16 +108,24 @@ impl TokenSelect {
                     let _ = state.action_tx.send(Action::SetAdminPin(token, admin_pin));
                 } else {
                     // Selected Token - Now get Admin PIN
-                    if state.token_select.selected == state.props.state.tokens.tokens.len() {
-                        // No token selected
-                        state.token_select.selected_token = None;
-                        let result = navigate(SetupEvent::TokenNoSelection, &state.props.state);
-                        handle_nav_result(result, state);
-                    } else {
-                        state.token_select.selected_token = Some(
-                            state.props.state.tokens.tokens[state.token_select.selected].clone(),
-                        );
-                        state.token_select.ask_admin_pin = true;
+                    // `selected` persists across state updates while the token
+                    // list can shrink (unplug / refresh), so look it up safely.
+                    match state
+                        .props
+                        .state
+                        .tokens
+                        .tokens
+                        .get(state.token_select.selected)
+                    {
+                        Some(token) => {
+                            state.token_select.selected_token = Some(token.clone());
+                            state.token_select.ask_admin_pin = true;
+                        }
+                        None => {
+                            state.token_select.selected_token = None;
+                            let result = navigate(SetupEvent::TokenNoSelection, &state.props.state);
+                            handle_nav_result(result, state);
+                        }
                     }
                 }
             }
@@ -139,7 +147,10 @@ impl TokenSelect {
 
         if self.ask_admin_pin {
             // Need to get ADMIN Pin from the user
-            let mut lock = match state.tokens.tokens[self.selected].try_lock() {
+            let Some(token) = state.tokens.tokens.get(self.selected) else {
+                return;
+            };
+            let mut lock = match token.try_lock() {
                 Ok(lock) => lock,
                 Err(_) => return,
             };
