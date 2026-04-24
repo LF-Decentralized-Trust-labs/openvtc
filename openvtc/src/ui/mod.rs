@@ -99,6 +99,16 @@ fn setup_terminal() -> anyhow::Result<Terminal<CrosstermBackend<Stdout>>> {
         EnableBracketedPaste
     )?;
 
+    // Ensure a panic anywhere in the render loop or a spawned task still
+    // returns the terminal to a usable state instead of leaving it in raw
+    // mode on the alternate screen.
+    let original_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        original_hook(info);
+    }));
+
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
     terminal.clear()?;
 
