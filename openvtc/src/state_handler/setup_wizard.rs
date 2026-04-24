@@ -159,6 +159,10 @@ impl StateHandler {
                 },
                 Action::SetupCompleted(setup_flow) => {
                     state.setup.active_page = SetupPage::FinalPage;
+                    // The armored private-key block is no longer needed once we
+                    // leave the export page; drop it so it stops being cloned
+                    // out on every state broadcast.
+                    state.setup.did_keys_export.exported = None;
                     state.setup.final_page.messages.push(MessageType::Info("Generating your profile configuration...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Securing sensitive data for storage...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Your device may prompt for authentication to access OS secure storage.".to_string()));
