@@ -49,6 +49,17 @@ impl DIDKeysExportShow {
                 let _ = state.action_tx.send(Action::Exit);
             }
             KeyCode::Enter => {
+                // If we put the private-key block on the clipboard and it is
+                // still there, clear it before leaving so it does not linger
+                // in clipboard history / managers. Don't clobber anything the
+                // user has copied since.
+                if state.did_keys_export_show.clipboard_copy
+                    && let Some(exported) = &state.props.state.did_keys_export.exported
+                    && let Ok(mut clipboard) = Clipboard::new()
+                    && clipboard.get_text().ok().as_deref() == Some(exported.as_str())
+                {
+                    let _ = clipboard.clear();
+                }
                 let result = navigate(SetupEvent::ExportComplete, &state.props.state);
                 handle_nav_result(result, state);
             }
