@@ -272,10 +272,20 @@ pub struct DidGitSignSetupState {
 }
 
 /// Update messages as the Key export works through
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct DIDKeysExportState {
     pub messages: Vec<String>,
+    /// PGP-armored private key block — must never appear in Debug output
     pub exported: Option<String>,
+}
+
+impl fmt::Debug for DIDKeysExportState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DIDKeysExportState")
+            .field("messages", &self.messages)
+            .field("exported", &self.exported.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 /// State relating to detecting attached hardware tokens
