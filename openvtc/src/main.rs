@@ -302,6 +302,14 @@ fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
         ConfigProtectionType::Token { .. } => None,
         ConfigProtectionType::Encrypted => {
             if let Some(passphrase) = cli().get_matches().get_one::<String>("unlock-code") {
+                eprintln!(
+                    "{}",
+                    style(
+                        "WARNING: --unlock-code exposes the passphrase in the process list; \
+                         prefer the interactive prompt on shared systems."
+                    )
+                    .color256(CLI_ORANGE)
+                );
                 Some(UnlockCode::from_string(passphrase)?)
             } else {
                 let mut result = None;

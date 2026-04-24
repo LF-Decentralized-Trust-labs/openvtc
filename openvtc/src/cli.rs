@@ -18,7 +18,12 @@ pub fn cli() -> Command {
             Arg::new("unlock-code")
                 .short('u')
                 .long("unlock-code")
-                .help("If using unlock codes, can specify it here"),
+                .help(
+                    "Unlock passphrase for the encrypted config. \
+                     WARNING: command-line arguments are visible to other \
+                     local users via the process list (`ps`, /proc); prefer \
+                     the interactive prompt on shared systems.",
+                ),
             Arg::new("profile")
                 .short('p')
                 .long("profile")
