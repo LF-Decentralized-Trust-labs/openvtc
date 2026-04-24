@@ -108,6 +108,11 @@ impl ConfigImport {
                             .value()
                             .to_string(),
                     ));
+                    // The action carries SecretString copies; drop the
+                    // plaintext from the tui_input buffers so it isn't
+                    // re-rendered (masked) every frame or left in heap memory.
+                    state.config_import.config_unlock_passphrase.reset();
+                    state.config_import.new_unlock_passphrase.reset();
                 }
             }
             KeyCode::Esc if !completed_ok && !locked => match state.config_import.active_input {
