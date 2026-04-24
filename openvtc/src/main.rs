@@ -126,6 +126,23 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "default".to_string())
     };
 
+    // The profile name is interpolated into lock-file and config paths and
+    // used as the OS keyring account identifier; reject path separators and
+    // traversal sequences before it reaches the filesystem.
+    if profile.is_empty()
+        || !profile
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        || profile.contains("..")
+    {
+        eprintln!(
+            "{} {}",
+            style("ERROR: Invalid profile name:").color256(CLI_RED),
+            style(&profile).color256(CLI_ORANGE)
+        );
+        bail!("Profile name may only contain [A-Za-z0-9._-] and must not contain '..'");
+    }
+
     // Check if profile is currently active elsewhere?
     let lock_file = check_duplicate_instance(&profile)?;
 
