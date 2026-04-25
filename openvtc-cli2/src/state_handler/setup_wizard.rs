@@ -84,16 +84,14 @@ impl StateHandler {
                 Action::VtaSubmitCredential(credential_input) => {
                     setup_vta_actions::handle_vta_submit_credential(state, &self.state_tx, credential_input).await?;
                 },
-                Action::VtaAuthenticate => {
-                    if setup_vta_actions::handle_vta_authenticate(state, &self.state_tx).await? {
-                        continue;
-                    }
+                Action::VtaAuthenticate if setup_vta_actions::handle_vta_authenticate(state, &self.state_tx).await? => {
+                    continue;
                 },
-                Action::VtaCreateKeys => {
-                    if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? {
-                        continue;
-                    }
+                Action::VtaAuthenticate => {},
+                Action::VtaCreateKeys if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? => {
+                    continue;
                 },
+                Action::VtaCreateKeys => {},
                 Action::ExportDIDKeys(export_inputs) => {
                     setup_did_actions::handle_export_did_keys(state, &self.state_tx, export_inputs).await;
                 },
@@ -121,11 +119,10 @@ impl StateHandler {
                 Action::SetTokenName(token, name) => {
                     setup_token_actions::handle_set_token_name(state, &self.state_tx, token, &name);
                 },
-                Action::WebvhServerCreateDid(server_id, custom_path) => {
-                    if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id, custom_path).await? {
-                        continue;
-                    }
+                Action::WebvhServerCreateDid(ref server_id, ref custom_path) if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id.clone(), custom_path.clone()).await? => {
+                    continue;
                 },
+                Action::WebvhServerCreateDid(..) => {},
                 Action::SetCustomMediator(mediator_did) => {
                     state.setup.custom_mediator = Some(mediator_did.clone());
                     if state.setup.vta.use_webvh_server {
@@ -144,11 +141,10 @@ impl StateHandler {
                         state.setup.active_page = SetupPage::WebVHAddress;
                     }
                 },
-                Action::CreateWebVHDID(webvh_address) => {
-                    if setup_did_actions::handle_create_webvh_did(state, webvh_address).await? {
-                        continue;
-                    }
+                Action::CreateWebVHDID(ref webvh_address) if setup_did_actions::handle_create_webvh_did(state, webvh_address.clone()).await? => {
+                    continue;
                 },
+                Action::CreateWebVHDID(_) => {},
                 Action::ResetWebVHDID => {
                     state.setup.webvh_address.messages.clear();
                     state.setup.webvh_address.completed = Completion::NotFinished;

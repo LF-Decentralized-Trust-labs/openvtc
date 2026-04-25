@@ -56,39 +56,39 @@ impl PGPKeys {
         };
 
         match purpose {
-            KeyPurpose::Signing => {
+            KeyPurpose::Signing
                 if self.signing.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Use this key for Signing?")
                         .default(true)
                         .interact()
-                        .unwrap_or(false)
-                {
-                    self.signing = Some(key);
-                }
+                        .unwrap_or(false) =>
+            {
+                self.signing = Some(key);
             }
-            KeyPurpose::Authentication => {
+            KeyPurpose::Signing => {}
+            KeyPurpose::Authentication
                 if self.authentication.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Use this key for Authentication?")
                         .default(true)
                         .interact()
-                        .unwrap_or(false)
-                {
-                    self.authentication = Some(key);
-                }
+                        .unwrap_or(false) =>
+            {
+                self.authentication = Some(key);
             }
-            KeyPurpose::Encryption => {
+            KeyPurpose::Authentication => {}
+            KeyPurpose::Encryption
                 if self.encryption.is_none()
                     && Confirm::with_theme(&ColorfulTheme::default())
                         .with_prompt("Use this key for Encryption?")
                         .default(true)
                         .interact()
-                        .unwrap_or(false)
-                {
-                    self.encryption = Some(key)
-                }
+                        .unwrap_or(false) =>
+            {
+                self.encryption = Some(key)
             }
+            KeyPurpose::Encryption => {}
             _ => {
                 // can safely ignore unknown purposes
             }

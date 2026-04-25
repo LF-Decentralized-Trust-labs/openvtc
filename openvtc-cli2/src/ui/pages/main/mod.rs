@@ -85,22 +85,20 @@ impl Component for MainPage {
             KeyCode::F(10) => {
                 let _ = self.action_tx.send(Action::Exit);
             }
-            KeyCode::Up => {
+            KeyCode::Up if self.props.main_page.menu_panel.selected => {
                 // Handle Up key
-                if self.props.main_page.menu_panel.selected {
-                    let _ = self.action_tx.send(Action::MainMenuSelected(
-                        self.props.main_page.menu_panel.selected_menu.prev(),
-                    ));
-                }
+                let _ = self.action_tx.send(Action::MainMenuSelected(
+                    self.props.main_page.menu_panel.selected_menu.prev(),
+                ));
             }
-            KeyCode::Down => {
+            KeyCode::Up => {}
+            KeyCode::Down if self.props.main_page.menu_panel.selected => {
                 // Handle Down key
-                if self.props.main_page.menu_panel.selected {
-                    let _ = self.action_tx.send(Action::MainMenuSelected(
-                        self.props.main_page.menu_panel.selected_menu.next(),
-                    ));
-                }
+                let _ = self.action_tx.send(Action::MainMenuSelected(
+                    self.props.main_page.menu_panel.selected_menu.next(),
+                ));
             }
+            KeyCode::Down => {}
             KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
                 // Switch active panel
                 let next_panel = match self.props.main_page.menu_panel.selected {
