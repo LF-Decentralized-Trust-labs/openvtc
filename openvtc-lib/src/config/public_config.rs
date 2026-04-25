@@ -48,20 +48,24 @@ impl From<&Config> for PublicConfig {
 
 /// Validates that a profile name contains only safe characters.
 pub fn validate_profile_name(profile: &str) -> Result<(), OpenVTCError> {
-    if profile != "default"
-        && !profile
+    let trimmed = profile.trim();
+
+    if trimmed.is_empty() {
+        return Err(OpenVTCError::Config(
+            "Profile name cannot be empty or contain only whitespace".to_string(),
+        ));
+    }
+
+    if trimmed != "default"
+        && !trimmed
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
     {
         return Err(OpenVTCError::Config(format!(
-            "Invalid profile name '{profile}'. Only alphanumeric characters, hyphens, and underscores are allowed."
+            "Invalid profile name '{trimmed}'. Only alphanumeric characters, hyphens, and underscores are allowed."
         )));
     }
-    if profile.is_empty() {
-        return Err(OpenVTCError::Config(
-            "Profile name cannot be empty".to_string(),
-        ));
-    }
+
     Ok(())
 }
 
