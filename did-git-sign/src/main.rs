@@ -11,6 +11,22 @@ use std::path::PathBuf;
 
 use config::{SigningConfig, VtaCredentials};
 
+/// Register the platform-specific keyring-core credential store as the
+/// process default. Must run before any `keyring_core::Entry::new` call.
+fn init_default_keyring_store() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let store = apple_native_keyring_store::keychain::Store::new()
+        .map_err(|e| anyhow::anyhow!("init macOS keychain store: {e}"))?;
+    #[cfg(target_os = "linux")]
+    let store = linux_keyutils_keyring_store::Store::new()
+        .map_err(|e| anyhow::anyhow!("init linux keyutils store: {e}"))?;
+    #[cfg(target_os = "windows")]
+    let store = windows_native_keyring_store::Store::new()
+        .map_err(|e| anyhow::anyhow!("init Windows credential manager store: {e}"))?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
 #[derive(Parser)]
 #[command(
     name = "did-git-sign",
@@ -92,6 +108,11 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_writer(std::io::stderr)
         .init();
+
+    // Register the platform's keyring-core credential store before any
+    // Entry::new call. Same backend choice as openvtc-cli2 so credential
+    // namespaces line up across both binaries.
+    init_default_keyring_store()?;
 
     let cli = Cli::parse();
 

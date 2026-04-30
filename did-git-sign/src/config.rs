@@ -69,7 +69,7 @@ impl SigningConfig {
 pub fn store_vta_credentials(did_key_id: &str, creds: &VtaCredentials) -> Result<()> {
     let key = format!("{did_key_id}:vta");
     let value = serde_json::to_string(creds)?;
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key)
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &key)
         .context("failed to create keyring entry for VTA credentials")?;
     entry
         .set_password(&value)
@@ -80,8 +80,8 @@ pub fn store_vta_credentials(did_key_id: &str, creds: &VtaCredentials) -> Result
 /// Retrieve VTA credentials from the OS keyring.
 pub fn load_vta_credentials(did_key_id: &str) -> Result<VtaCredentials> {
     let key = format!("{did_key_id}:vta");
-    let entry =
-        keyring::Entry::new(KEYRING_SERVICE, &key).context("failed to create keyring entry")?;
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &key)
+        .context("failed to create keyring entry")?;
     let data = entry
         .get_password()
         .context("VTA credentials not found in keyring — run `did-git-sign init` first")?;
@@ -95,8 +95,8 @@ pub fn cache_token(did_key_id: &str, token: &str, expires_at: u64) -> Result<()>
         "access_token": token,
         "access_expires_at": expires_at,
     });
-    let entry =
-        keyring::Entry::new(KEYRING_SERVICE, &key).context("failed to create token cache entry")?;
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &key)
+        .context("failed to create token cache entry")?;
     entry
         .set_password(&value.to_string())
         .context("failed to cache token in keyring")?;
@@ -106,7 +106,7 @@ pub fn cache_token(did_key_id: &str, token: &str, expires_at: u64) -> Result<()>
 /// Load a cached VTA access token if it is still valid.
 pub fn load_cached_token(did_key_id: &str) -> Option<String> {
     let key = format!("{did_key_id}:token");
-    let entry = keyring::Entry::new(KEYRING_SERVICE, &key).ok()?;
+    let entry = keyring_core::Entry::new(KEYRING_SERVICE, &key).ok()?;
     let data = entry.get_password().ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&data).ok()?;
 

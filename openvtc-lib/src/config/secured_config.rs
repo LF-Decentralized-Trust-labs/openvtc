@@ -18,7 +18,7 @@ use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, aead::Aead};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
-use keyring::Entry;
+use keyring_core::Entry;
 use rand::rngs::OsRng;
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};

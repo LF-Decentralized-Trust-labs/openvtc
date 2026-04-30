@@ -25,6 +25,22 @@ mod cli;
 mod state_handler;
 mod ui;
 
+/// Register the platform-specific keyring-core credential store as the
+/// process default. Must run before any `keyring_core::Entry::new` call.
+fn init_default_keyring_store() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    let store = apple_native_keyring_store::keychain::Store::new()
+        .map_err(|e| anyhow::anyhow!("init macOS keychain store: {e}"))?;
+    #[cfg(target_os = "linux")]
+    let store = linux_keyutils_keyring_store::Store::new()
+        .map_err(|e| anyhow::anyhow!("init linux keyutils store: {e}"))?;
+    #[cfg(target_os = "windows")]
+    let store = windows_native_keyring_store::Store::new()
+        .map_err(|e| anyhow::anyhow!("init Windows credential manager store: {e}"))?;
+    keyring_core::set_default_store(store);
+    Ok(())
+}
+
 /// Redact file system paths from error messages for user display.
 fn redact_paths(msg: &str) -> String {
     let home = dirs::home_dir()
@@ -60,11 +76,11 @@ async fn main() -> Result<()> {
         tracing::info!("Debug logging enabled → {log_path}");
     }
 
-    // On Linux, the keyring crate defaults to Secret Service (D-Bus) which
-    // isn't available on headless systems. Override with the kernel keyring
-    // (keyutils) which works everywhere — no GUI or daemon required.
-    #[cfg(target_os = "linux")]
-    keyring::set_default_credential_builder(keyring::keyutils::default_credential_builder());
+    // Register the platform's keyring-core credential store. keyring-core 1.0
+    // doesn't auto-pick a backend — every binary registers exactly one at
+    // startup. On Linux we use the kernel keyutils backend so headless
+    // sessions (no D-Bus, no GUI) work without extra setup.
+    init_default_keyring_store()?;
 
     // Which configuration profile to use?
     let profile = if let Ok(env_profile) = env::var("OPENVTC_CONFIG_PROFILE") {
