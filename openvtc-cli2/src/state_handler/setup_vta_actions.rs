@@ -248,7 +248,9 @@ pub(crate) async fn handle_vta_start_provision(
             }
 
             state.setup.vta.completed = Completion::CompletedOK;
-            state.setup.active_page = SetupPage::VtaAuthenticate;
+            // Stay on VtaProvisioning so the operator can see the admin DID
+            // rotation result (ephemeral setup DID → long-term admin DID)
+            // before advancing on Enter.
             let _ = state_tx.send(state.clone());
         }
         Err(e) => {
