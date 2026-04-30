@@ -28,7 +28,11 @@ use crate::{
         actions::Action,
         setup_sequence::{Completion, MessageType, SetupPage, SetupState},
     },
-    ui::pages::setup_flow::{SetupFlow, render_setup_header},
+    ui::pages::setup_flow::{
+        SetupFlow,
+        navigation::{SetupEvent, handle_nav_result, navigate},
+        render_setup_header,
+    },
 };
 
 #[derive(Clone, Debug, Default)]
@@ -46,9 +50,13 @@ impl VtaProvisioning {
                     // can verify the ACL grant and retry.
                     state.props.state.active_page = SetupPage::VtaAclInstructions;
                 }
-                Completion::CompletedOK | Completion::NotFinished => {
-                    // OK auto-advances inside the backend handler; NotFinished
-                    // means we're mid-flight — Enter is a no-op.
+                Completion::CompletedOK => {
+                    let result = navigate(SetupEvent::VtaAuthCompleted, &state.props.state);
+                    handle_nav_result(result, state);
+                }
+                Completion::NotFinished => {
+                    // Mid-flight — Enter is a no-op until the bootstrap
+                    // either succeeds or fails.
                 }
             },
             _ => {}
@@ -87,6 +95,22 @@ impl VtaProvisioning {
             lines.push(Line::from(vec![
                 Span::styled("Setup DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
                 Span::styled(&setup_key.did, Style::new().fg(COLOR_SOFT_PURPLE)),
+                Span::styled(" (ephemeral)", Style::new().fg(COLOR_DARK_GRAY)),
+            ]));
+        }
+        if !state.vta.credential_did.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("           ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled("↓ rotated", Style::new().fg(COLOR_SUCCESS).bold()),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Admin DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled(
+                    &state.vta.credential_did,
+                    Style::new().fg(COLOR_SOFT_PURPLE),
+                ),
+                Span::styled(" (long-term) ", Style::new().fg(COLOR_DARK_GRAY)),
+                Span::styled("✓", Style::new().fg(COLOR_SUCCESS).bold()),
             ]));
         }
         lines.push(Line::default());
@@ -151,13 +175,16 @@ impl VtaProvisioning {
                 ));
             }
             Completion::CompletedOK => {
-                // The backend transitions away as soon as the admin VC is in
-                // hand, so users typically only see this for one frame.
                 lines.push(Line::default());
                 lines.push(Line::styled(
-                    "Bootstrap complete — advancing to key setup…",
+                    "Bootstrap complete — admin key rotated, ephemeral setup DID retired.",
                     Style::new().fg(COLOR_SUCCESS),
                 ));
+                lines.push(Line::default());
+                lines.push(Line::from(vec![
+                    Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
+                    Span::styled(" to continue", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                ]));
             }
             Completion::CompletedFail => {
                 lines.push(Line::default());
