@@ -277,6 +277,7 @@ impl ConfigExtension for Config {
             credential_private_key: SecretString::new(admin.admin_private_key_mb.clone().into()),
             vta_did: state.vta.vta_did.clone(),
             vta_url: state.vta.vta_url.clone(),
+            mediator_did: state.vta.mediator_did.clone(),
             encryption_seed,
         };
 

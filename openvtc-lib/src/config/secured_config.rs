@@ -224,13 +224,19 @@ pub struct SecuredConfig {
     #[zeroize(skip)]
     pub credential_bundle: Option<SecretString>,
 
-    /// VTA service URL
+    /// VTA service URL (REST). `None` for DIDComm-only VTAs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vta_url: Option<String>,
 
     /// VTA's DID
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vta_did: Option<String>,
+
+    /// DIDComm mediator DID advertised by the VTA's DID document. Present
+    /// when the VTA was reached over DIDComm during setup; runtime uses it
+    /// to reopen authenticated DIDComm sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
 
     /// Key information containing path info
     /// key is the DID VerificationMethod ID
@@ -251,6 +257,7 @@ impl From<&Config> for SecuredConfig {
                 credential_bundle: None,
                 vta_url: None,
                 vta_did: None,
+                mediator_did: None,
                 key_info: cfg.key_info.clone(),
                 protection_method: cfg.protection_method.clone(),
             },
@@ -258,12 +265,18 @@ impl From<&Config> for SecuredConfig {
                 credential_bundle,
                 vta_did,
                 vta_url,
+                mediator_did,
                 ..
             } => SecuredConfig {
                 bip32_seed: None,
                 credential_bundle: Some(credential_bundle.clone()),
-                vta_url: Some(vta_url.clone()),
+                vta_url: if vta_url.is_empty() {
+                    None
+                } else {
+                    Some(vta_url.clone())
+                },
                 vta_did: Some(vta_did.clone()),
+                mediator_did: mediator_did.clone(),
                 key_info: cfg.key_info.clone(),
                 protection_method: cfg.protection_method.clone(),
             },
@@ -593,6 +606,7 @@ mod tests {
             credential_bundle: None,
             vta_url: None,
             vta_did: None,
+            mediator_did: None,
             key_info: std::collections::HashMap::new(),
             protection_method: ProtectionMethod::default(),
         };

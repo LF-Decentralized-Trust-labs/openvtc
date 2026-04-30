@@ -32,22 +32,54 @@ pub(crate) async fn handle_vta_submit_did(
     ));
     let _ = state_tx.send(state.clone());
 
-    let vta_url = match vta_sdk::session::resolve_vta_url(&vta_did).await {
-        Ok(url) => url,
+    // Use `resolve_vta` (not `resolve_vta_url`) so we get an honest answer:
+    // `rest_url` is `Some` only when the DID document advertises a `#vta-rest`
+    // service, and `mediator_did` is `Some` only when it advertises a DIDComm
+    // mediator. `resolve_vta_url` synthesizes a fake URL from the DID's
+    // domain on the assumption REST exists — which lies on DIDComm-only VTAs.
+    let resolved = match vta_sdk::provision_client::resolve_vta(&vta_did).await {
+        Ok(r) => r,
         Err(e) => {
             state.setup.vta.messages.push(MessageType::Error(format!(
-                "Could not resolve VTA URL from {vta_did}: {e}"
+                "Could not resolve {vta_did}: {e}"
             )));
             state.setup.vta.completed = Completion::CompletedFail;
             return Ok(());
         }
     };
-    state.setup.vta.vta_url = vta_url.clone();
-    state
-        .setup
-        .vta
-        .messages
-        .push(MessageType::Info(format!("VTA URL: {vta_url}")));
+
+    if resolved.rest_url.is_none() && resolved.mediator_did.is_none() {
+        state.setup.vta.messages.push(MessageType::Error(format!(
+            "{vta_did} advertises neither a REST endpoint nor a DIDComm mediator. \
+             The VTA cannot be reached online."
+        )));
+        state.setup.vta.completed = Completion::CompletedFail;
+        return Ok(());
+    }
+
+    state.setup.vta.vta_url = resolved.rest_url.clone().unwrap_or_default();
+    state.setup.vta.mediator_did = resolved.mediator_did.clone();
+    match (&resolved.rest_url, &resolved.mediator_did) {
+        (Some(url), Some(med)) => {
+            state
+                .setup
+                .vta
+                .messages
+                .push(MessageType::Info(format!("REST: {url}")));
+            state
+                .setup
+                .vta
+                .messages
+                .push(MessageType::Info(format!("DIDComm mediator: {med}")));
+        }
+        (Some(url), None) => state.setup.vta.messages.push(MessageType::Info(format!(
+            "REST: {url} (DIDComm not advertised)"
+        ))),
+        (None, Some(med)) => state.setup.vta.messages.push(MessageType::Info(format!(
+            "DIDComm-only VTA — mediator: {med}"
+        ))),
+        (None, None) => unreachable!("guarded above"),
+    }
 
     // Mint the ephemeral admin did:key. Held in memory only — a fresh key is
     // generated if the wizard restarts, and the operator must re-run the PNM
