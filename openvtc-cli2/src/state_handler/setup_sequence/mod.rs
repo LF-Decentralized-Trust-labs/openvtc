@@ -39,6 +39,8 @@ pub enum SetupPage {
     DidKeysExportAsk,
     DidKeysExportInputs,
     DidKeysExportShow,
+    /// Asks whether to configure did-git-sign before running the install.
+    DidGitSignAsk,
     /// Auto-configures did-git-sign for the freshly-provisioned persona.
     DidGitSignSetup,
 
