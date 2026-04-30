@@ -12,6 +12,7 @@ use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
 use tokio::sync::Mutex;
+use vta_sdk::provision_client::{AdminCredentialReply, DiagEntry, EphemeralSetupKey};
 use vta_sdk::webvh::WebvhServerRecord;
 
 pub mod config;
@@ -26,7 +27,12 @@ pub enum SetupPage {
     #[default]
     StartAsk,
     ConfigImport, // Optional path where user will import existing config
-    VtaCredentialPaste,
+    /// Online provisioning entry — operator enters the VTA DID.
+    VtaEnterDid,
+    /// Operator runs `pnm contexts create … --admin-did <setup>` and presses Enter.
+    VtaAclInstructions,
+    /// Live diagnostics list while `provision_client::run_connection_test` runs.
+    VtaProvisioning,
     VtaAuthenticate,
     VtaKeysFetch,
     DIDKeysShow,
@@ -114,9 +120,11 @@ pub struct SetupState {
 }
 
 /// VTA-specific setup state
-#[derive(Clone, Default, Debug)]
+///
+/// `Debug` is implemented manually because `EphemeralSetupKey` doesn't expose
+/// `Debug` (and shouldn't — its private key would otherwise leak into logs).
+#[derive(Clone, Default)]
 pub struct VtaSetupState {
-    pub credential_bundle_raw: Option<String>,
     pub vta_url: String,
     pub vta_did: String,
     pub credential_did: String,
@@ -131,6 +139,60 @@ pub struct VtaSetupState {
     pub webvh_servers: Vec<WebvhServerRecord>,
     /// Whether user chose to use a webvh-server for DID hosting
     pub use_webvh_server: bool,
+    /// Ephemeral did:key minted at VtaEnterDid; used as the admin DID the
+    /// operator authorises via `pnm contexts create --admin-did …`.
+    /// `Arc` because `EphemeralSetupKey` isn't `Clone` and `SetupState`
+    /// derives `Clone` for the watch channel.
+    pub setup_key: Option<Arc<EphemeralSetupKey>>,
+    /// Live diagnostics list streamed from `provision_client::run_connection_test`.
+    pub diagnostics: Vec<DiagEntry>,
+    /// Admin credential issued by the VTA on successful provisioning. The
+    /// `admin_did` becomes the new `credential_did` and the matching private
+    /// key is what `challenge_response` re-authenticates with.
+    pub admin_credential: Option<AdminCredentialReply>,
+}
+
+impl fmt::Debug for VtaSetupState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("VtaSetupState")
+            .field("vta_url", &self.vta_url)
+            .field("vta_did", &self.vta_did)
+            .field("credential_did", &self.credential_did)
+            .field("authenticated", &self.authenticated)
+            .field(
+                "access_token",
+                &self.access_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("messages", &self.messages)
+            .field("completed", &self.completed)
+            .field("context_id", &self.context_id)
+            .field(
+                "update_secret",
+                &self.update_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "next_update_secret",
+                &self.next_update_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .field("webvh_servers", &self.webvh_servers)
+            .field("use_webvh_server", &self.use_webvh_server)
+            .field(
+                "setup_key",
+                &self
+                    .setup_key
+                    .as_ref()
+                    .map(|k| format!("<setup_key did={}>", k.did)),
+            )
+            .field("diagnostics", &self.diagnostics)
+            .field(
+                "admin_credential",
+                &self
+                    .admin_credential
+                    .as_ref()
+                    .map(|a| format!("<admin_did={}>", a.admin_did)),
+            )
+            .finish()
+    }
 }
 
 /// How is the configuration protected?

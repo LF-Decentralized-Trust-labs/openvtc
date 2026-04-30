@@ -81,13 +81,11 @@ impl StateHandler {
                     state.setup.did_keys = Some(*keys);
                     state.setup.active_page = SetupPage::DIDKeysShow;
                 },
-                Action::VtaSubmitCredential(credential_input) => {
-                    setup_vta_actions::handle_vta_submit_credential(state, &self.state_tx, credential_input).await?;
+                Action::VtaSubmitDid(vta_did) => {
+                    setup_vta_actions::handle_vta_submit_did(state, &self.state_tx, vta_did).await?;
                 },
-                Action::VtaAuthenticate => {
-                    if setup_vta_actions::handle_vta_authenticate(state, &self.state_tx).await? {
-                        continue;
-                    }
+                Action::VtaStartProvision(context_id) => {
+                    setup_vta_actions::handle_vta_start_provision(state, &self.state_tx, context_id).await?;
                 },
                 Action::VtaCreateKeys => {
                     if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? {

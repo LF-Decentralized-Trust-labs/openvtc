@@ -2,164 +2,250 @@ use crate::state_handler::{
     setup_sequence::{Completion, MessageType, SetupPage},
     state::State,
 };
-use tokio::sync::watch;
+use std::sync::Arc;
+use tokio::sync::{mpsc, watch};
+use vta_sdk::provision_client::{
+    DiagStatus, EphemeralSetupKey, ProvisionAsk, VtaEvent, VtaIntent, VtaReply, apply_update,
+    pending_list, run_connection_test,
+};
 
-/// Handle the `VtaSubmitCredential` action: decode credential bundle, authenticate, discover context & servers.
-pub(crate) async fn handle_vta_submit_credential(
+/// Handle the `VtaSubmitDid` action: resolve the VTA service URL from the
+/// supplied DID and mint an ephemeral did:key the operator will authorise via
+/// PNM in the next step. On success we transition to `VtaAclInstructions`; on
+/// failure we stay on `VtaEnterDid` so the operator can edit and resubmit.
+pub(crate) async fn handle_vta_submit_did(
     state: &mut State,
     state_tx: &watch::Sender<State>,
-    credential_input: String,
+    vta_did: String,
 ) -> anyhow::Result<()> {
-    use crate::state_handler::setup_sequence::vta;
-
-    match vta::decode_credential(&credential_input) {
-        Ok(bundle) => {
-            // Immediately show progress so the user knows something is happening
-            state.setup.vta.credential_bundle_raw = Some(credential_input);
-            state.setup.vta.credential_did = bundle.did.clone();
-            state.setup.vta.vta_did = bundle.vta_did.clone();
-            state.setup.vta.messages.clear();
-            state.setup.vta.completed = Completion::NotFinished;
-            state.setup.active_page = SetupPage::VtaAuthenticate;
-            state.setup.vta.messages.push(MessageType::Info(
-                "Resolving VTA service endpoint...".to_string(),
-            ));
-            let _ = state_tx.send(state.clone());
-
-            // Resolve VTA URL from DID document's #vta service endpoint,
-            // falling back to bundle URL if resolution fails
-            let vta_url = match vta_sdk::session::resolve_vta_url(&bundle.vta_did).await {
-                Ok(url) => url,
-                Err(_) => bundle.vta_url.clone().unwrap_or_default(),
-            };
-            state.setup.vta.vta_url = vta_url.clone();
-
-            // Pre-populate mediator DID from #didcomm service endpoint
-            state.setup.vta.messages.push(MessageType::Info(
-                "Resolving mediator endpoint...".to_string(),
-            ));
-            let _ = state_tx.send(state.clone());
-            if let Ok(Some(mediator_did)) =
-                vta_sdk::session::resolve_mediator_did(&bundle.vta_did).await
-            {
-                state.setup.custom_mediator = Some(mediator_did);
-            }
-
-            state
-                .setup
-                .vta
-                .messages
-                .push(MessageType::Info(format!("VTA URL: {}", vta_url)));
-            state
-                .setup
-                .vta
-                .messages
-                .push(MessageType::Info("Authenticating with VTA...".to_string()));
-            let _ = state_tx.send(state.clone());
-
-            // Auto-trigger authentication inline
-            match vta::authenticate(
-                &vta_url,
-                &bundle.did,
-                &bundle.private_key_multibase,
-                &bundle.vta_did,
-            )
-            .await
-            {
-                Ok(token_result) => {
-                    state.setup.vta.access_token = Some(token_result.access_token);
-                    state.setup.vta.authenticated = true;
-                    state.setup.vta.messages.push(MessageType::Info(
-                        "VTA authentication successful.".to_string(),
-                    ));
-                    state.setup.vta.completed = Completion::CompletedOK;
-
-                    // Discover admin's allowed contexts from ACL
-                    discover_context_and_servers(state, &vta_url).await;
-                }
-                Err(e) => {
-                    state
-                        .setup
-                        .vta
-                        .messages
-                        .push(MessageType::Error(format!("Authentication failed: {e}")));
-                    state.setup.vta.completed = Completion::CompletedFail;
-                }
-            }
-        }
-        Err(e) => {
-            state.setup.vta.messages = vec![MessageType::Error(format!(
-                "Invalid credential bundle: {e}"
-            ))];
-            state.setup.vta.completed = Completion::CompletedFail;
-        }
-    }
-    Ok(())
-}
-
-/// Handle the `VtaAuthenticate` action: retry authentication with VTA.
-/// Returns `true` if the caller should `continue` (skip the rest of the loop iteration).
-pub(crate) async fn handle_vta_authenticate(
-    state: &mut State,
-    state_tx: &watch::Sender<State>,
-) -> anyhow::Result<bool> {
-    use crate::state_handler::setup_sequence::vta;
-
+    // The transition from StartAsk → VtaEnterDid is a UI-only navigation
+    // (handle_nav_result doesn't round-trip through the backend), so the
+    // backend's active_page is still StartAsk at this point. Pin it to
+    // VtaEnterDid before pushing the first state update so the UI doesn't
+    // momentarily re-render StartAsk while we resolve the URL.
+    state.setup.active_page = SetupPage::VtaEnterDid;
     state.setup.vta.messages.clear();
     state.setup.vta.completed = Completion::NotFinished;
-    state.setup.active_page = SetupPage::VtaAuthenticate;
+    state.setup.vta.vta_did = vta_did.clone();
+    state.setup.vta.messages.push(MessageType::Info(
+        "Resolving VTA service endpoint…".to_string(),
+    ));
+    let _ = state_tx.send(state.clone());
+
+    let vta_url = match vta_sdk::session::resolve_vta_url(&vta_did).await {
+        Ok(url) => url,
+        Err(e) => {
+            state.setup.vta.messages.push(MessageType::Error(format!(
+                "Could not resolve VTA URL from {vta_did}: {e}"
+            )));
+            state.setup.vta.completed = Completion::CompletedFail;
+            return Ok(());
+        }
+    };
+    state.setup.vta.vta_url = vta_url.clone();
     state
         .setup
         .vta
         .messages
-        .push(MessageType::Info("Authenticating with VTA...".to_string()));
-    let _ = state_tx.send(state.clone());
+        .push(MessageType::Info(format!("VTA URL: {vta_url}")));
 
-    let credential_raw = match state.setup.vta.credential_bundle_raw.clone() {
-        Some(raw) => raw,
-        None => {
-            state.setup.vta.messages.push(MessageType::Error(
-                "No credential bundle available for re-authentication.".to_string(),
-            ));
-            state.setup.vta.completed = Completion::CompletedFail;
-            return Ok(true);
-        }
-    };
-    let bundle = match vta::decode_credential(&credential_raw) {
-        Ok(b) => b,
+    // Mint the ephemeral admin did:key. Held in memory only — a fresh key is
+    // generated if the wizard restarts, and the operator must re-run the PNM
+    // ACL step for the new DID.
+    let setup_key = match EphemeralSetupKey::generate() {
+        Ok(k) => Arc::new(k),
         Err(e) => {
             state.setup.vta.messages.push(MessageType::Error(format!(
-                "Failed to decode credential: {e}"
+                "Could not generate setup did:key: {e}"
             )));
             state.setup.vta.completed = Completion::CompletedFail;
-            return Ok(true);
+            return Ok(());
         }
     };
+    state.setup.vta.messages.push(MessageType::Info(format!(
+        "Setup DID minted: {}",
+        setup_key.did
+    )));
+    state.setup.vta.setup_key = Some(setup_key);
+    state.setup.vta.completed = Completion::CompletedOK;
+    state.setup.active_page = SetupPage::VtaAclInstructions;
+    let _ = state_tx.send(state.clone());
 
-    // Resolve VTA URL from DID document, falling back to stored URL
-    let vta_url = match vta_sdk::session::resolve_vta_url(&bundle.vta_did).await {
-        Ok(url) => url,
-        Err(_) => state.setup.vta.vta_url.clone(),
+    Ok(())
+}
+
+/// Handle the `VtaStartProvision` action: spawn `run_connection_test` against
+/// the VTA, drain its `VtaEvent` stream into the diagnostics list, and on
+/// success store the issued admin VC + access token before transitioning to
+/// the existing `VtaAuthenticate` screen so the keys-fetch / webvh-server
+/// pick flow takes over unchanged.
+pub(crate) async fn handle_vta_start_provision(
+    state: &mut State,
+    state_tx: &watch::Sender<State>,
+    context_id: String,
+) -> anyhow::Result<()> {
+    use crate::state_handler::setup_sequence::vta;
+    use vta_sdk::client::VtaClient;
+
+    let setup_key = match state.setup.vta.setup_key.clone() {
+        Some(k) => k,
+        None => {
+            state.setup.vta.messages.push(MessageType::Error(
+                "Setup DID not generated yet — restart the setup wizard.".to_string(),
+            ));
+            state.setup.vta.completed = Completion::CompletedFail;
+            return Ok(());
+        }
+    };
+    let vta_did = state.setup.vta.vta_did.clone();
+    // Persist the operator's chosen context id so downstream config writes use
+    // the same value.
+    state.setup.vta.context_id = Some(context_id.clone());
+
+    state.setup.active_page = SetupPage::VtaProvisioning;
+    state.setup.vta.messages.clear();
+    state.setup.vta.completed = Completion::NotFinished;
+    state.setup.vta.diagnostics = pending_list();
+    let _ = state_tx.send(state.clone());
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<VtaEvent>();
+    let ask = ProvisionAsk::vta_admin(context_id.clone()).with_label("openvtc");
+    let setup_did = setup_key.did.clone();
+    let setup_priv = setup_key.private_key_multibase().to_string();
+    let runner_vta_did = vta_did.clone();
+    tokio::spawn(async move {
+        run_connection_test(
+            VtaIntent::AdminOnly,
+            runner_vta_did,
+            setup_did,
+            setup_priv,
+            ask,
+            None,
+            tx,
+        )
+        .await;
+    });
+
+    let mut admin_reply: Option<vta_sdk::provision_client::AdminCredentialReply> = None;
+    let mut connect_rest_url: Option<String> = None;
+    let mut connect_mediator_did: Option<String> = None;
+
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            VtaEvent::CheckStart(check) => {
+                apply_update(&mut state.setup.vta.diagnostics, check, DiagStatus::Running);
+            }
+            VtaEvent::CheckDone(check, status) => {
+                apply_update(&mut state.setup.vta.diagnostics, check, status);
+            }
+            VtaEvent::Resolved(resolved) => {
+                if let Some(rest) = resolved.rest_url.clone() {
+                    state.setup.vta.vta_url = rest;
+                }
+            }
+            VtaEvent::AttemptCompleted { .. } => {
+                // Per-transport telemetry; the diagnostics list already shows
+                // the operator-relevant outcome on the matching DiagCheck row.
+            }
+            VtaEvent::PreflightDone { .. } => {
+                // AdminOnly intent never reaches preflight — FullSetup-only.
+            }
+            VtaEvent::Connected {
+                rest_url,
+                mediator_did,
+                reply,
+                ..
+            } => {
+                connect_rest_url = rest_url;
+                connect_mediator_did = mediator_did;
+                if let VtaReply::AdminOnly(adm) = reply {
+                    admin_reply = Some(adm);
+                }
+            }
+            VtaEvent::Failed(reason) => {
+                state
+                    .setup
+                    .vta
+                    .messages
+                    .push(MessageType::Error(reason.clone()));
+                state.setup.vta.completed = Completion::CompletedFail;
+                let _ = state_tx.send(state.clone());
+            }
+        }
+        let _ = state_tx.send(state.clone());
+    }
+
+    let Some(admin) = admin_reply else {
+        if matches!(state.setup.vta.completed, Completion::NotFinished) {
+            state.setup.vta.messages.push(MessageType::Error(
+                "Provisioning ended without an admin credential.".to_string(),
+            ));
+            state.setup.vta.completed = Completion::CompletedFail;
+            let _ = state_tx.send(state.clone());
+        }
+        return Ok(());
     };
 
+    // Adopt the admin credential as the authenticated identity for the rest
+    // of setup. Mirrors what the legacy paste-bundle flow used to do.
+    state.setup.vta.credential_did = admin.admin_did.clone();
+    if let Some(rest) = connect_rest_url {
+        state.setup.vta.vta_url = rest;
+    }
+    if let Some(mediator) = connect_mediator_did
+        && state.setup.custom_mediator.is_none()
+    {
+        state.setup.custom_mediator = Some(mediator);
+    }
+    state
+        .setup
+        .vta
+        .messages
+        .push(MessageType::Info("Authenticating with VTA…".to_string()));
+    let _ = state_tx.send(state.clone());
+
+    let vta_url = state.setup.vta.vta_url.clone();
     match vta::authenticate(
         &vta_url,
-        &bundle.did,
-        &bundle.private_key_multibase,
-        &bundle.vta_did,
+        &admin.admin_did,
+        &admin.admin_private_key_mb,
+        &vta_did,
     )
     .await
     {
         Ok(token_result) => {
-            state.setup.vta.access_token = Some(token_result.access_token);
+            state.setup.vta.access_token = Some(token_result.access_token.clone());
             state.setup.vta.authenticated = true;
+            state.setup.vta.admin_credential = Some(admin);
             state.setup.vta.messages.push(MessageType::Info(
                 "VTA authentication successful.".to_string(),
             ));
-            state.setup.vta.completed = Completion::CompletedOK;
 
-            // Discover admin's allowed contexts from ACL
-            discover_context_and_servers(state, &vta_url).await;
+            // Discover available WebVH servers (context is already known, so
+            // skip the ACL-based context discovery path).
+            let client = VtaClient::new(&vta_url);
+            client.set_token(token_result.access_token);
+            match vta::list_webvh_servers(&client).await {
+                Ok(servers) => {
+                    if !servers.is_empty() {
+                        state.setup.vta.messages.push(MessageType::Info(format!(
+                            "Found {} WebVH server(s) available for DID hosting.",
+                            servers.len()
+                        )));
+                    }
+                    state.setup.vta.webvh_servers = servers;
+                }
+                Err(e) => {
+                    state.setup.vta.messages.push(MessageType::Info(format!(
+                        "Could not list WebVH servers: {e}"
+                    )));
+                    state.setup.vta.webvh_servers = vec![];
+                }
+            }
+
+            state.setup.vta.completed = Completion::CompletedOK;
+            state.setup.active_page = SetupPage::VtaAuthenticate;
+            let _ = state_tx.send(state.clone());
         }
         Err(e) => {
             state
@@ -168,9 +254,11 @@ pub(crate) async fn handle_vta_authenticate(
                 .messages
                 .push(MessageType::Error(format!("Authentication failed: {e}")));
             state.setup.vta.completed = Completion::CompletedFail;
+            let _ = state_tx.send(state.clone());
         }
     }
-    Ok(false)
+
+    Ok(())
 }
 
 /// Handle the `VtaCreateKeys` action: create persona keys and WebVH update keys via VTA.
@@ -245,47 +333,4 @@ pub(crate) async fn handle_vta_create_keys(
         }
     }
     Ok(false)
-}
-
-/// Shared helper: discover allowed contexts from ACL and check for WebVH servers.
-async fn discover_context_and_servers(state: &mut State, vta_url: &str) {
-    use vta_sdk::client::VtaClient;
-
-    if let Some(token) = state.setup.vta.access_token.clone() {
-        let acl_client = VtaClient::new(vta_url);
-        acl_client.set_token(token);
-        match acl_client.get_acl(&state.setup.vta.credential_did).await {
-            Ok(acl) => {
-                if acl.allowed_contexts.len() == 1 {
-                    state.setup.vta.context_id = Some(acl.allowed_contexts[0].clone());
-                    state.setup.vta.messages.push(MessageType::Info(format!(
-                        "Context: {}",
-                        acl.allowed_contexts[0]
-                    )));
-                }
-            }
-            Err(e) => {
-                state.setup.vta.messages.push(MessageType::Info(format!(
-                    "Could not discover context: {e}"
-                )));
-            }
-        }
-
-        // Check for available WebVH servers
-        use crate::state_handler::setup_sequence::vta;
-        match vta::list_webvh_servers(&acl_client).await {
-            Ok(servers) => {
-                if !servers.is_empty() {
-                    state.setup.vta.messages.push(MessageType::Info(format!(
-                        "Found {} WebVH server(s) available for DID hosting.",
-                        servers.len()
-                    )));
-                }
-                state.setup.vta.webvh_servers = servers;
-            }
-            Err(_) => {
-                state.setup.vta.webvh_servers = vec![];
-            }
-        }
-    }
 }
