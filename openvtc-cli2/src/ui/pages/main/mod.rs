@@ -1371,6 +1371,26 @@ impl MainPage {
                 copy_to_clipboard(&did, "Mediator DID", &self.action_tx);
                 true
             }
+            KeyCode::Char('3') => {
+                if let Some(info) = &self.props.main_page.content_panel.settings.did_git_sign {
+                    copy_to_clipboard(
+                        &info.did_key_id,
+                        "Signing principal (DID#kid)",
+                        &self.action_tx,
+                    );
+                }
+                true
+            }
+            KeyCode::Char('4') => {
+                if let Some(info) = &self.props.main_page.content_panel.settings.did_git_sign {
+                    copy_to_clipboard(
+                        &info.ssh_public_key,
+                        "SSH signing public key",
+                        &self.action_tx,
+                    );
+                }
+                true
+            }
             KeyCode::Esc => {
                 let _ = self
                     .action_tx

@@ -260,6 +260,39 @@ fn render_status_help(
     };
     lines.push(conn_line);
 
+    // Git signing section — only shown when did-git-sign is configured for
+    // this persona. The principal + ssh-ed25519 pair is what GitHub /
+    // GitLab / etc. need: SSH public key in the host's signing-key
+    // settings, and the principal in the local allowed_signers file.
+    if let Some(info) = &settings.did_git_sign {
+        lines.push(Line::from(""));
+        lines.push(Line::from(" Git Signing").fg(COLOR_SUCCESS).bold());
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  Principal:    ", label_style),
+            Span::styled(info.did_key_id.clone(), value_style),
+            Span::styled("  [3] copy", hint_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  SSH key:      ", label_style),
+            Span::styled(info.ssh_public_key.clone(), value_style),
+            Span::styled("  [4] copy", hint_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Config:       ", label_style),
+            Span::styled(info.config_path.clone(), value_style),
+        ]));
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from("  Paste the SSH key into your git host's SSH keys page")
+                .fg(COLOR_DARK_GRAY),
+        );
+        lines.push(
+            Line::from("  with usage type 'Signing' to verify your signed commits.")
+                .fg(COLOR_DARK_GRAY),
+        );
+    }
+
     // Keyboard shortcuts section
     lines.push(Line::from(""));
     lines.push(Line::from(" Keyboard Shortcuts").fg(COLOR_SUCCESS).bold());
