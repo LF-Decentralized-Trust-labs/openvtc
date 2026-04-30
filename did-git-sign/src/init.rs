@@ -109,6 +109,151 @@ pub fn install(args: InstallArgs<'_>) -> Result<InstallResult> {
     })
 }
 
+/// Tear down a did-git-sign install for `did_key_id`. Idempotent — every
+/// step succeeds (best-effort) when its target is already gone, so the
+/// function is safe to run repeatedly or against a partial install.
+///
+/// The caller decides scope: pass `global = true` to remove the user's
+/// `~/.config/did-git-sign/config.json` install, `false` to remove a
+/// repo-local `.did-git-sign.json` next to the current directory.
+///
+/// Returned [`UninstallResult`] is informational — it lists what was
+/// touched so callers can render a summary, but never carries a hard
+/// failure.
+pub fn uninstall(global: bool, did_key_id: &str) -> Result<UninstallResult> {
+    let mut summary = UninstallResult::default();
+
+    let config_path = if global {
+        SigningConfig::default_global_path()?
+    } else {
+        SigningConfig::repo_local_path()
+    };
+
+    // 1. Remove SigningConfig JSON file (silently if absent).
+    if config_path.exists() {
+        match std::fs::remove_file(&config_path) {
+            Ok(()) => {
+                summary.removed_config_file = Some(config_path.clone());
+            }
+            Err(e) => {
+                summary
+                    .warnings
+                    .push(format!("could not remove {}: {e}", config_path.display()));
+            }
+        }
+    }
+
+    // 2. Drop the keyring entries that are keyed by did_key_id. The
+    //    `delete_credential` API errors when the entry doesn't exist —
+    //    swallow that case.
+    for suffix in [":vta", ":token"] {
+        let key = format!("{did_key_id}{suffix}");
+        if let Ok(entry) = keyring_core::Entry::new(config::KEYRING_SERVICE, &key) {
+            match entry.delete_credential() {
+                Ok(()) => summary.removed_keyring_entries.push(key),
+                Err(keyring_core::Error::NoEntry) => {}
+                Err(e) => {
+                    summary
+                        .warnings
+                        .push(format!("could not remove keyring entry '{key}': {e}"));
+                }
+            }
+        }
+    }
+
+    // 3. Strip the matching line out of allowed_signers (if the file
+    //    exists and contains an entry for this principal). Other principals
+    //    in the same file are preserved.
+    let signers_path = config_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join("allowed_signers");
+    if signers_path.exists() {
+        match std::fs::read_to_string(&signers_path) {
+            Ok(content) => {
+                let prefix = format!("{did_key_id} ");
+                let mut kept = Vec::new();
+                let mut removed = false;
+                for line in content.lines() {
+                    if line.trim_start().starts_with(&prefix) {
+                        removed = true;
+                    } else {
+                        kept.push(line);
+                    }
+                }
+                if removed {
+                    let mut new_content = kept.join("\n");
+                    if !new_content.is_empty() {
+                        new_content.push('\n');
+                    }
+                    if let Err(e) = std::fs::write(&signers_path, new_content) {
+                        summary
+                            .warnings
+                            .push(format!("could not rewrite {}: {e}", signers_path.display()));
+                    } else {
+                        summary.allowed_signers_entry_removed = true;
+                    }
+                }
+            }
+            Err(e) => {
+                summary
+                    .warnings
+                    .push(format!("could not read {}: {e}", signers_path.display()));
+            }
+        }
+    }
+
+    // 4. Unset the git config keys we own at the install scope. Best
+    //    effort — `git config --unset` errors when the key isn't set,
+    //    which we ignore.
+    let scope = if global { "--global" } else { "--local" };
+    for key in [
+        "user.signingKey",
+        "gpg.format",
+        "gpg.ssh.program",
+        "gpg.ssh.defaultKeyFile",
+        "gpg.ssh.allowedSignersFile",
+        "commit.gpgsign",
+    ] {
+        if git_config_unset(scope, key) {
+            summary.git_config_keys_unset.push(key.to_string());
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Outcome of an [`uninstall`] call. None of the variants represent fatal
+/// errors — the caller is expected to render `warnings` if it wants to
+/// surface partial-state issues to the operator.
+#[derive(Debug, Default)]
+pub struct UninstallResult {
+    /// Path of the SigningConfig file that was removed (if any).
+    pub removed_config_file: Option<PathBuf>,
+    /// Keyring keys that were deleted (under the `did-git-sign` service).
+    pub removed_keyring_entries: Vec<String>,
+    /// True when an allowed_signers line for this principal was removed.
+    pub allowed_signers_entry_removed: bool,
+    /// Git config keys that were unset at the install scope.
+    pub git_config_keys_unset: Vec<String>,
+    /// Best-effort warnings — used for display, not error propagation.
+    pub warnings: Vec<String>,
+}
+
+/// Returns true if `git config <scope> --unset <key>` removed something.
+/// Errors and "key not present" both map to false (best-effort cleanup).
+fn git_config_unset(scope: &str, key: &str) -> bool {
+    Command::new("git")
+        .arg("config")
+        .arg(scope)
+        .arg("--unset")
+        .arg(key)
+        .output()
+        .ok()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
 /// Initialize git configuration for DID-based SSH signing.
 pub fn setup_git(config_path: &Path, cfg: &SigningConfig, global: bool) -> Result<()> {
     let scope = if global { "--global" } else { "--local" };
