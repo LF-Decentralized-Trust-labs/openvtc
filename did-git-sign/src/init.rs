@@ -31,8 +31,14 @@ pub struct InstallArgs<'a> {
     pub credential_private_key_mb: String,
     /// VTA's own DID (e.g. `did:webvh:.../vta`).
     pub vta_did: String,
-    /// VTA service URL, as resolved from the VTA's DID document.
+    /// VTA service URL, as resolved from the VTA's DID document. May be
+    /// empty for DIDComm-only VTAs — `mediator_did` must be set in that
+    /// case so the signer can reach the VTA over DIDComm.
     pub vta_url: String,
+    /// DIDComm mediator DID advertised by the VTA. When `Some`, the signer
+    /// uses DIDComm transport instead of REST. Required when `vta_url` is
+    /// empty.
+    pub mediator_did: Option<String>,
     /// Optional `git config user.name` to set during install.
     pub user_name: Option<String>,
     /// Persona signing key public bytes (Ed25519, 32 bytes).
@@ -70,6 +76,7 @@ pub fn install(args: InstallArgs<'_>) -> Result<InstallResult> {
         credential_did: args.credential_did,
         private_key_multibase: args.credential_private_key_mb,
         key_id: args.vta_key_id,
+        mediator_did: args.mediator_did,
     };
 
     let config_path = if args.global {

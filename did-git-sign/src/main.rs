@@ -389,6 +389,10 @@ async fn cmd_init(
         credential_private_key_mb: admin.admin_private_key_mb.clone(),
         vta_did: vta_did.clone(),
         vta_url,
+        // Standalone CLI install path uses REST today; the openvtc-cli2
+        // setup flow populates this via its own InstallArgs construction.
+        // A follow-up could plumb DIDComm into this path too.
+        mediator_did: None,
         user_name,
         verifying_key: verifying_key.as_bytes(),
     })?;
