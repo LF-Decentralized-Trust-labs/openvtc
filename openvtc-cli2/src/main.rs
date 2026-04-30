@@ -22,6 +22,7 @@ use tokio::signal::unix::signal;
 use tokio::sync::broadcast;
 
 mod cli;
+mod clipboard;
 mod state_handler;
 mod ui;
 

@@ -1,4 +1,3 @@
-use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent};
 use openvtc::colors::{
     COLOR_BORDER, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
@@ -34,20 +33,18 @@ pub struct DIDKeysExportShow {
 impl DIDKeysExportShow {
     pub fn handle_key_event(state: &mut SetupFlow, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('c') | KeyCode::Char('C') => match Clipboard::new() {
-                Ok(mut clipboard) => {
-                    if let Some(ref exported) = state.props.state.did_keys_export.exported {
-                        if let Err(e) = clipboard.set_text(exported.clone()) {
-                            tracing::warn!("Failed to copy to clipboard: {e}");
-                        } else {
+            KeyCode::Char('c') | KeyCode::Char('C') => {
+                if let Some(exported) = &state.props.state.did_keys_export.exported {
+                    match crate::clipboard::copy_to_clipboard(exported) {
+                        Ok(_) => {
                             state.did_keys_export_show.clipboard_copy = true;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to copy export to clipboard: {e}");
                         }
                     }
                 }
-                Err(e) => {
-                    tracing::warn!("Clipboard not available: {e}");
-                }
-            },
+            }
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
             }

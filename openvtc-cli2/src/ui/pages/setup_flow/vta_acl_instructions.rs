@@ -7,7 +7,6 @@
 //! reflects the live input value, so what's on screen is what they paste into
 //! their PNM session.
 
-use arboard::Clipboard;
 use crossterm::event::{Event, KeyCode, KeyEvent};
 use openvtc::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
@@ -43,7 +42,9 @@ pub struct VtaAclInstructions {
 
 #[derive(Clone, Debug)]
 pub enum CopyStatus {
-    Copied,
+    /// Carries the transport label (e.g. "OSC 52 (terminal)" /
+    /// "system clipboard") so the operator can tell which path took.
+    Copied(String),
     Failed(String),
 }
 
@@ -72,11 +73,11 @@ impl VtaAclInstructions {
                     &state.props.state,
                     state.vta_acl_instructions.context_id.value(),
                 );
-                let result = Clipboard::new().and_then(|mut c| c.set_text(cmd).map(|()| ()));
-                state.vta_acl_instructions.copy_status = Some(match result {
-                    Ok(()) => CopyStatus::Copied,
-                    Err(e) => CopyStatus::Failed(format!("{e}")),
-                });
+                state.vta_acl_instructions.copy_status =
+                    Some(match crate::clipboard::copy_to_clipboard(&cmd) {
+                        Ok(method) => CopyStatus::Copied(method.label().to_string()),
+                        Err(e) => CopyStatus::Failed(e),
+                    });
             }
             KeyCode::Enter => {
                 let raw = state
@@ -189,9 +190,9 @@ impl VtaAclInstructions {
             Line::default(),
         ];
         match &self.copy_status {
-            Some(CopyStatus::Copied) => {
+            Some(CopyStatus::Copied(method)) => {
                 footer.push(Line::styled(
-                    "✓ Copied to clipboard.",
+                    format!("✓ Copied via {method}."),
                     Style::new().fg(COLOR_SUCCESS).bold(),
                 ));
                 footer.push(Line::default());
