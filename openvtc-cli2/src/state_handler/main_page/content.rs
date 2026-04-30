@@ -351,6 +351,22 @@ pub struct SettingsState {
     /// Hardware token management state
     #[cfg(feature = "openpgp-card")]
     pub token: TokenManagementState,
+    /// did-git-sign install info, when this persona has been configured for
+    /// git commit signing. Surfaced on the Help/Status panel so the operator
+    /// can copy the SSH public key into their git host's signing-key
+    /// settings.
+    pub did_git_sign: Option<DidGitSignInfo>,
+}
+
+/// Snapshot of the local did-git-sign install for this persona.
+#[derive(Clone, Debug)]
+pub struct DidGitSignInfo {
+    /// Verification method id from the SigningConfig file.
+    pub did_key_id: String,
+    /// Persona signing public key formatted as `ssh-ed25519 AAAA…`.
+    pub ssh_public_key: String,
+    /// Filesystem path to the SigningConfig the install wrote.
+    pub config_path: String,
 }
 
 /// Hardware token management state.

@@ -7,7 +7,9 @@ use openvtc::{
 };
 
 use crate::state_handler::main_page::{
-    content::{ContentPanelState, RelationshipSummary, TaskKind, TaskSummary, VrcSummary},
+    content::{
+        ContentPanelState, DidGitSignInfo, RelationshipSummary, TaskKind, TaskSummary, VrcSummary,
+    },
     menu::MenuPanelState,
 };
 
@@ -268,6 +270,8 @@ impl MainPageState {
         self.content_panel.settings.mediator_did = config.public.mediator_did.clone();
         self.content_panel.settings.org_did = config.public.lk_did.clone();
         self.content_panel.settings.persona_did = config.public.persona_did.to_string();
+        self.content_panel.settings.did_git_sign =
+            detect_did_git_sign_info(config.public.persona_did.as_str());
         // Sync VTA info
         self.content_panel.vta.persona_did = config.public.persona_did.to_string();
         self.content_panel.vta.mediator_did = config.public.mediator_did.clone();
@@ -393,6 +397,47 @@ pub fn sanitize_display(input: &str, max_len: usize) -> String {
         .filter(|c| !c.is_control() || *c == ' ')
         .take(max_len)
         .collect()
+}
+
+/// Detect a did-git-sign install for the given persona DID by reading its
+/// global SigningConfig and the matching allowed_signers entry. Returns
+/// `None` if did-git-sign is not configured for this persona, or if the
+/// state on disk is malformed.
+///
+/// Reads files synchronously and is cheap (single small file open + read).
+/// Sourced from disk rather than re-derived from runtime key material so
+/// the help screen reflects what `did-git-sign` itself would actually use
+/// — i.e. if the config was hand-edited, the help view stays consistent
+/// with the install.
+fn detect_did_git_sign_info(persona_did: &str) -> Option<DidGitSignInfo> {
+    let config_path = did_git_sign::config::SigningConfig::default_global_path().ok()?;
+    let cfg = did_git_sign::config::SigningConfig::load(&config_path).ok()?;
+
+    // Only show on the help screen if the configured signing identity
+    // belongs to this persona. Avoids leaking another persona's keys when
+    // multiple openvtc profiles share a host.
+    let prefix = format!("{persona_did}#");
+    if !cfg.did_key_id.starts_with(&prefix) {
+        return None;
+    }
+
+    // Lift the SSH public key out of allowed_signers, which lives next to
+    // the config and is written by `init::install`. Format is one entry
+    // per line: `<principal> ssh-ed25519 <base64>`.
+    let signers_path = config_path.parent()?.join("allowed_signers");
+    let signers = std::fs::read_to_string(&signers_path).ok()?;
+    let entry_prefix = format!("{} ssh-ed25519 ", cfg.did_key_id);
+    let ssh_public_key = signers.lines().find_map(|line| {
+        let line = line.trim();
+        line.starts_with(&entry_prefix)
+            .then(|| line.trim_start_matches(&cfg.did_key_id).trim().to_string())
+    })?;
+
+    Some(DidGitSignInfo {
+        did_key_id: cfg.did_key_id,
+        ssh_public_key,
+        config_path: config_path.display().to_string(),
+    })
 }
 
 /// Shortens a DID for display, fitting within `max_width` characters.
