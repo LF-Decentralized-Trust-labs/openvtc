@@ -267,6 +267,14 @@ pub async fn remove_relationship(
         &mut config.private.vrcs_received,
     );
 
+    // Also remove the associated contact (and its alias mapping). Without this,
+    // the alias remains registered and re-creating the relationship with the
+    // same alias fails with a duplicate-alias error.
+    config
+        .private
+        .contacts
+        .remove_contact(&mut config.public.logs, remote_p_did);
+
     config.public.logs.insert(
         LogFamily::Relationship,
         format!("Removed relationship with ({})", remote_p_did),
