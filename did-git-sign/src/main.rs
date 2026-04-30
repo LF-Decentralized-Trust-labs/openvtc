@@ -1,15 +1,11 @@
-mod config;
-mod init;
-mod sign;
-mod vta;
-
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use dialoguer::{Select, theme::ColorfulTheme};
+use did_git_sign::{config, init, sign, vta};
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 
-use config::{SigningConfig, VtaCredentials};
+use config::SigningConfig;
 
 /// Run `provision_client::run_connection_test` against the VTA with the
 /// given setup did:key, drain its `VtaEvent` stream to stdout, and return
@@ -344,81 +340,44 @@ async fn cmd_init(
             interactive_select(&client).await?
         };
 
-    // Config file contains only the DID identity
-    let cfg = SigningConfig {
-        did_key_id: did_key_id.clone(),
-        user_name,
-    };
-
-    // VTA credentials and key ID go into the OS keyring. The credential
-    // identity is the admin DID minted by the VTA, not the ephemeral setup
-    // did:key — that one is discarded once provisioning is done.
-    let vta_creds = VtaCredentials {
-        vta_url,
-        vta_did: vta_did.clone(),
-        credential_did: admin.admin_did.clone(),
-        private_key_multibase: admin.admin_private_key_mb.clone(),
-        key_id,
-    };
-
-    // Determine config path
-    let config_path = if global {
-        SigningConfig::default_global_path()?
-    } else {
-        SigningConfig::repo_local_path()
-    };
-
-    // Save config (non-sensitive only)
-    cfg.save(&config_path)?;
-    println!("Config saved to: {}", config_path.display());
-
-    // Store VTA credentials in keyring
-    config::store_vta_credentials(&did_key_id, &vta_creds)?;
-    println!("VTA credentials stored in OS keyring");
-
-    // Cache the token we already have
-    let _ = config::cache_token(&did_key_id, &token.access_token, token.access_expires_at);
-
-    // Fetch signing key to get public key for allowed_signers
-    let (auth_client, creds) = vta::authenticate(&cfg).await?;
-    let seed = vta::get_signing_key(&auth_client, &creds.key_id).await?;
+    // Fetch the persona signing key so we know its public bytes for the
+    // allowed_signers entry. Uses the freshly-issued admin token.
+    let seed = vta::get_signing_key(&client, &key_id).await?;
     let signing_key = SigningKey::from_bytes(seed.as_bytes());
     let verifying_key = signing_key.verifying_key();
 
-    // Configure git
-    init::setup_git(&config_path, &cfg, global)?;
+    // Cache the token we already have so the very next sign operation
+    // doesn't have to re-auth.
+    let _ = config::cache_token(&did_key_id, &token.access_token, token.access_expires_at);
+
+    let result = init::install(init::InstallArgs {
+        global,
+        did_key_id: did_key_id.clone(),
+        vta_key_id: key_id,
+        credential_did: admin.admin_did.clone(),
+        credential_private_key_mb: admin.admin_private_key_mb.clone(),
+        vta_did: vta_did.clone(),
+        vta_url,
+        user_name,
+        verifying_key: verifying_key.as_bytes(),
+    })?;
+
+    println!("Config saved to: {}", result.config_path.display());
+    println!("VTA credentials stored in OS keyring");
     println!("Git configured for DID signing");
+    println!("Allowed signers file updated");
 
-    // Detect if a global user.signingKey was overridden by our local init.
-    // Print a notice so the user is not surprised when inspecting git config --list.
-    let global_signing_key = std::process::Command::new("git")
-        .args(["config", "--global", "user.signingKey"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty());
-
-    if let Some(prev) = global_signing_key {
+    if let Some(prev) = result.overridden_global_signing_key {
         println!();
         println!("Note: your global user.signingKey ({prev}) has been overridden locally");
         println!("      for this repository. did-git-sign uses its JSON config file as the");
         println!("      signing key path. Your global signing configuration is unchanged.");
     }
 
-    // Set up allowed_signers for verification
-    let entry = init::allowed_signers_entry(&cfg, verifying_key.as_bytes());
-    let config_dir = config_path.parent().unwrap_or(std::path::Path::new("."));
-    init::setup_allowed_signers(config_dir, &entry, global)?;
-    println!("Allowed signers file updated");
-
     println!();
     println!("Setup complete! Git commits will now be signed with:");
     println!("  DID: {did_key_id}");
-    println!(
-        "  Key: ssh-ed25519 {}",
-        init::ssh_public_key_string(verifying_key.as_bytes())
-    );
+    println!("  Key: {}", result.ssh_public_key);
     println!();
     println!("IMPORTANT — to make signatures show as 'Verified':");
     println!("  1. Copy the SSH public key above.");

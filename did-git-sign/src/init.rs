@@ -1,8 +1,113 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::SigningConfig;
+use crate::config::{self, SigningConfig, VtaCredentials};
+
+/// Inputs to install did-git-sign for an already-provisioned persona.
+///
+/// All fields are values the caller already has — there is no VTA bootstrap
+/// here. The function writes the config file, stores VTA credentials in the
+/// OS keyring, runs the relevant `git config` invocations, and updates the
+/// allowed_signers file.
+///
+/// The `verifying_key` is the Ed25519 public key (32 raw bytes) that signs
+/// the persona's commits. It's used in the allowed_signers entry; the
+/// caller is expected to have already derived it from the persona key
+/// material.
+pub struct InstallArgs<'a> {
+    /// `true` writes config to the user's `~/.config/did-git-sign/`,
+    /// `false` writes a repo-local `.did-git-sign.json`.
+    pub global: bool,
+    /// The verification method id, e.g. `did:webvh:.../persona#key-1`.
+    pub did_key_id: String,
+    /// VTA key UUID for the persona's signing key (stored in keyring so
+    /// `did-git-sign -Y sign` can fetch the secret on demand).
+    pub vta_key_id: String,
+    /// DID this binary authenticates to the VTA as. The persona admin DID
+    /// minted during VTA provisioning is the right value here.
+    pub credential_did: String,
+    /// Multibase-encoded private key paired with `credential_did`.
+    pub credential_private_key_mb: String,
+    /// VTA's own DID (e.g. `did:webvh:.../vta`).
+    pub vta_did: String,
+    /// VTA service URL, as resolved from the VTA's DID document.
+    pub vta_url: String,
+    /// Optional `git config user.name` to set during install.
+    pub user_name: Option<String>,
+    /// Persona signing key public bytes (Ed25519, 32 bytes).
+    pub verifying_key: &'a [u8; 32],
+}
+
+/// Output of [`install`]. Mostly informational — used for the post-install
+/// summary the caller prints.
+pub struct InstallResult {
+    /// Path the JSON config was written to.
+    pub config_path: PathBuf,
+    /// SSH public key string (`ssh-ed25519 …`) for the user to paste into
+    /// their git host's signing-key settings.
+    pub ssh_public_key: String,
+    /// Set to the previous `--global user.signingKey` value if a non-global
+    /// install just shadowed it. The caller can flag this to the operator
+    /// so they aren't surprised when inspecting `git config --list`.
+    pub overridden_global_signing_key: Option<String>,
+}
+
+/// Configure did-git-sign for an already-provisioned persona.
+///
+/// Idempotent against the file/keyring/git config state — re-running on a
+/// host that already has did-git-sign installed updates the values without
+/// erroring.
+pub fn install(args: InstallArgs<'_>) -> Result<InstallResult> {
+    let cfg = SigningConfig {
+        did_key_id: args.did_key_id.clone(),
+        user_name: args.user_name,
+    };
+
+    let vta_creds = VtaCredentials {
+        vta_url: args.vta_url,
+        vta_did: args.vta_did,
+        credential_did: args.credential_did,
+        private_key_multibase: args.credential_private_key_mb,
+        key_id: args.vta_key_id,
+    };
+
+    let config_path = if args.global {
+        SigningConfig::default_global_path()?
+    } else {
+        SigningConfig::repo_local_path()
+    };
+
+    cfg.save(&config_path)?;
+    config::store_vta_credentials(&args.did_key_id, &vta_creds)?;
+
+    setup_git(&config_path, &cfg, args.global)?;
+
+    let entry = allowed_signers_entry(&cfg, args.verifying_key);
+    let config_dir = config_path.parent().unwrap_or(Path::new("."));
+    setup_allowed_signers(config_dir, &entry, args.global)?;
+
+    // If we just shadowed a global user.signingKey with a local one, tell
+    // the caller so they can surface it. Best-effort — failures here are
+    // non-fatal.
+    let overridden_global_signing_key = (!args.global)
+        .then(|| {
+            std::process::Command::new("git")
+                .args(["config", "--global", "user.signingKey"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .flatten();
+
+    Ok(InstallResult {
+        config_path,
+        ssh_public_key: ssh_public_key_string(args.verifying_key),
+        overridden_global_signing_key,
+    })
+}
 
 /// Initialize git configuration for DID-based SSH signing.
 pub fn setup_git(config_path: &Path, cfg: &SigningConfig, global: bool) -> Result<()> {
