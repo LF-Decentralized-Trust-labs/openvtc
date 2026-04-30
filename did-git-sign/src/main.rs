@@ -24,13 +24,16 @@ async fn run_provision(
     println!("Bootstrapping with the VTA…");
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<VtaEvent>();
-    let ask = ProvisionAsk::vta_admin(context.to_string()).with_label("did-git-sign");
+    // AdminRotated rolls the ephemeral setup did:key over to a fresh
+    // long-term admin DID server-side, so the credential we persist
+    // doesn't carry the setup key's `--admin-expires 1h` lifetime.
+    let ask = ProvisionAsk::vta_admin_rotated(context.to_string()).with_label("did-git-sign");
     let setup_did = setup_key.did.clone();
     let setup_priv = setup_key.private_key_multibase().to_string();
     let runner_vta_did = vta_did.to_string();
     tokio::spawn(async move {
         run_connection_test(
-            VtaIntent::AdminOnly,
+            VtaIntent::AdminRotated,
             runner_vta_did,
             setup_did,
             setup_priv,
