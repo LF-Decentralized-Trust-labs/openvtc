@@ -44,6 +44,10 @@ pub enum SetupEvent {
     StartExport,
     ExportComplete,
 
+    // DidGitSignAsk
+    DidGitSignAccept,
+    DidGitSignSkip,
+
     // DidGitSignSetup
     DidGitSignDone,
 
@@ -137,14 +141,17 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         SetupEvent::DIDKeysViewed => NavResult::GoTo(SetupPage::DidKeysExportAsk),
 
         // === DidKeysExportAsk ===
-        // Both skip and complete dispatch the auto did-git-sign install;
-        // the action handler is responsible for transitioning the page
-        // and running the install.
-        SetupEvent::SkipExport => NavResult::SendAction(Action::DidGitSignInstall),
+        // Both skip and complete land on the git-signing prompt — the
+        // operator chooses there whether to actually run the install.
+        SetupEvent::SkipExport => NavResult::GoTo(SetupPage::DidGitSignAsk),
         SetupEvent::StartExport => NavResult::GoTo(SetupPage::DidKeysExportInputs),
 
         // === DidKeysExportShow ===
-        SetupEvent::ExportComplete => NavResult::SendAction(Action::DidGitSignInstall),
+        SetupEvent::ExportComplete => NavResult::GoTo(SetupPage::DidGitSignAsk),
+
+        // === DidGitSignAsk ===
+        SetupEvent::DidGitSignAccept => NavResult::SendAction(Action::DidGitSignInstall),
+        SetupEvent::DidGitSignSkip => NavResult::GoTo(after_export()),
 
         // === DidGitSignSetup ===
         SetupEvent::DidGitSignDone => NavResult::GoTo(after_export()),

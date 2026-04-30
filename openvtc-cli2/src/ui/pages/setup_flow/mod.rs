@@ -13,12 +13,13 @@ use crate::{
     ui::{
         component::{Component, ComponentRender},
         pages::setup_flow::{
-            config_import::ConfigImport, did_git_sign_setup::DidGitSignSetup,
-            did_keys_export_ask::DIDKeysExportAsk, did_keys_export_inputs::DIDKeysExportInputs,
-            did_keys_export_show::DIDKeysExportShow, did_keys_show::DIDKeysShow,
-            final_page::FinalPage, mediator_ask::MediatorAsk, mediator_custom::MediatorCustom,
-            start_ask::StartAskPanel, unlock_code_ask::UnlockCodeAsk,
-            unlock_code_set::UnlockCodeSet, unlock_code_warn::UnlockCodeWarn, username::UserName,
+            config_import::ConfigImport, did_git_sign_ask::DidGitSignAsk,
+            did_git_sign_setup::DidGitSignSetup, did_keys_export_ask::DIDKeysExportAsk,
+            did_keys_export_inputs::DIDKeysExportInputs, did_keys_export_show::DIDKeysExportShow,
+            did_keys_show::DIDKeysShow, final_page::FinalPage, mediator_ask::MediatorAsk,
+            mediator_custom::MediatorCustom, start_ask::StartAskPanel,
+            unlock_code_ask::UnlockCodeAsk, unlock_code_set::UnlockCodeSet,
+            unlock_code_warn::UnlockCodeWarn, username::UserName,
             vta_acl_instructions::VtaAclInstructions, vta_authenticate::VtaAuthenticate,
             vta_enter_did::VtaEnterDid, vta_keys_fetch::VtaKeysFetch,
             vta_provisioning::VtaProvisioning, webvh_address::WebvhAddress,
@@ -40,6 +41,7 @@ use ratatui::{
 use tokio::sync::mpsc::UnboundedSender;
 
 pub mod config_import;
+pub mod did_git_sign_ask;
 pub mod did_git_sign_setup;
 pub mod did_keys_export_ask;
 pub mod did_keys_export_inputs;
@@ -87,6 +89,7 @@ pub struct SetupFlow {
     pub did_keys_export_ask: DIDKeysExportAsk,
     pub did_keys_export_inputs: DIDKeysExportInputs,
     pub did_keys_export_show: DIDKeysExportShow,
+    pub did_git_sign_ask: DidGitSignAsk,
     pub did_git_sign_setup: DidGitSignSetup,
 
     #[cfg(feature = "openpgp-card")]
@@ -152,6 +155,7 @@ impl Component for SetupFlow {
             did_keys_export_ask: DIDKeysExportAsk::default(),
             did_keys_export_inputs: DIDKeysExportInputs::default(),
             did_keys_export_show: DIDKeysExportShow::default(),
+            did_git_sign_ask: DidGitSignAsk::default(),
             did_git_sign_setup: DidGitSignSetup::default(),
 
             #[cfg(feature = "openpgp-card")]
@@ -210,6 +214,7 @@ impl Component for SetupFlow {
             SetupPage::DidKeysExportAsk => DIDKeysExportAsk::handle_key_event(self, key),
             SetupPage::DidKeysExportInputs => DIDKeysExportInputs::handle_key_event(self, key),
             SetupPage::DidKeysExportShow => DIDKeysExportShow::handle_key_event(self, key),
+            SetupPage::DidGitSignAsk => DidGitSignAsk::handle_key_event(self, key),
             SetupPage::DidGitSignSetup => DidGitSignSetup::handle_key_event(self, key),
 
             #[cfg(feature = "openpgp-card")]
@@ -315,6 +320,7 @@ impl ComponentRender<()> for SetupFlow {
             SetupPage::DidKeysExportShow => {
                 self.did_keys_export_show.render(&self.props.state, frame)
             }
+            SetupPage::DidGitSignAsk => self.did_git_sign_ask.render(&self.props.state, frame),
             SetupPage::DidGitSignSetup => self.did_git_sign_setup.render(&self.props.state, frame),
 
             #[cfg(feature = "openpgp-card")]
@@ -377,6 +383,7 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
             | SetupPage::DidKeysExportAsk
             | SetupPage::DidKeysExportInputs
             | SetupPage::DidKeysExportShow
+            | SetupPage::DidGitSignAsk
             | SetupPage::DidGitSignSetup
     );
 
