@@ -1220,11 +1220,15 @@ impl MainPage {
             }
             SettingsMode::View => {
                 let selected = settings.selected_index;
-                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=protection, 5=export, 6=import, 7=token
+                // 0=name, 1=mediator, 2=org, 3=persona(ro), 4=protection, 5=export,
+                // 6=import, [7=token w/ openpgp-card,] last=wipe.
                 #[cfg(feature = "openpgp-card")]
-                let max_index = 7;
+                let token_index: usize = 7;
+                #[cfg(feature = "openpgp-card")]
+                let wipe_index: usize = 8;
                 #[cfg(not(feature = "openpgp-card"))]
-                let max_index = 6;
+                let wipe_index: usize = 7;
+                let max_index = wipe_index;
 
                 match key.code {
                     KeyCode::Up if selected > 0 => {
@@ -1261,10 +1265,15 @@ impl MainPage {
                                 .send(Action::Settings(SettingsAction::StartEdit));
                         }
                         #[cfg(feature = "openpgp-card")]
-                        if selected == 7 {
+                        if selected == token_index {
                             let _ = self
                                 .action_tx
                                 .send(Action::Settings(SettingsAction::TokenManagement));
+                        }
+                        if selected == wipe_index {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::WipeProfileStart));
                         }
                         true
                     }
@@ -1272,6 +1281,41 @@ impl MainPage {
                         let _ = self
                             .action_tx
                             .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                        true
+                    }
+                    _ => false,
+                }
+            }
+            SettingsMode::WipeConfirm { confirm_input } => {
+                let current = confirm_input.clone();
+                match key.code {
+                    KeyCode::Esc => {
+                        // Drop back to the Settings list — wipe is cancelled.
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::CancelEdit));
+                        true
+                    }
+                    KeyCode::Enter => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::WipeProfileConfirm));
+                        true
+                    }
+                    KeyCode::Backspace => {
+                        let mut next = current;
+                        next.pop();
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::WipeProfileInput(next)));
+                        true
+                    }
+                    KeyCode::Char(c) => {
+                        let mut next = current;
+                        next.push(c);
+                        let _ = self
+                            .action_tx
+                            .send(Action::Settings(SettingsAction::WipeProfileInput(next)));
                         true
                     }
                     _ => false,
@@ -1440,6 +1484,7 @@ fn view_id(page: &MainPageState) -> String {
             SettingsMode::ChangeProtection { .. } => "protect",
             #[cfg(feature = "openpgp-card")]
             SettingsMode::TokenManagement { .. } => "token",
+            SettingsMode::WipeConfirm { .. } => "wipe",
         },
         _ => "",
     };

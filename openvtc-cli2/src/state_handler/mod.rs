@@ -741,6 +741,23 @@ impl StateHandler {
                             state.main_page.content_panel.settings.status_message = Some(msg.clone());
                             state.main_page.log(msg);
                         },
+                        SettingsAction::WipeProfileStart => {
+                            handle_settings_wipe_start(&mut state);
+                        },
+                        SettingsAction::WipeProfileInput(value) => {
+                            handle_settings_wipe_input(&mut state, value);
+                        },
+                        SettingsAction::WipeProfileConfirm => {
+                            // Returns true when the wipe actually ran — the
+                            // process can no longer authenticate against the
+                            // VTA in that case, so we tear down and exit.
+                            if handle_settings_wipe_confirm(&mut state, &self.profile) {
+                                if let Err(e) = terminator.terminate(Interrupted::UserInt) {
+                                    debug!("Failed to send terminate signal: {e}");
+                                }
+                                break Interrupted::UserInt;
+                            }
+                        },
                         SettingsAction::ReconnectMediator => {
                             state.connection.status = state::MediatorStatus::Connecting;
                             state.connection.messaging_active = false;
@@ -1987,6 +2004,112 @@ fn handle_settings_set_passphrase(
             state.main_page.log_error("Failed to set passphrase", &e);
         }
     }
+}
+
+/// Open the wipe-profile confirmation dialog.
+fn handle_settings_wipe_start(state: &mut State) {
+    use main_page::content::SettingsMode;
+    state.main_page.content_panel.settings.mode = SettingsMode::WipeConfirm {
+        confirm_input: String::new(),
+    };
+}
+
+/// Mirror the operator's typing into the WipeConfirm dialog. No-op when
+/// the dialog isn't open.
+fn handle_settings_wipe_input(state: &mut State, value: String) {
+    use main_page::content::SettingsMode;
+    if let SettingsMode::WipeConfirm { confirm_input } =
+        &mut state.main_page.content_panel.settings.mode
+    {
+        *confirm_input = value;
+    }
+}
+
+/// Token the operator must type to authorise a wipe. Case-insensitive so
+/// "wipe" / "Wipe" / "WIPE" all work, but the on-screen prompt always
+/// shows the upper-case form to make the intent obvious.
+const WIPE_CONFIRM_TOKEN: &str = "WIPE";
+
+/// Process a `WipeProfileConfirm` action. Returns `true` if the wipe
+/// actually ran (so the caller knows to terminate the process). On
+/// confirm-token mismatch the dialog stays open with a warning; on real
+/// failure mid-wipe the operator gets an error and stays on the dialog so
+/// they can read it.
+fn handle_settings_wipe_confirm(state: &mut State, profile: &str) -> bool {
+    use main_page::content::SettingsMode;
+    let typed = match &state.main_page.content_panel.settings.mode {
+        SettingsMode::WipeConfirm { confirm_input } => confirm_input.trim().to_string(),
+        _ => return false,
+    };
+    if !typed.eq_ignore_ascii_case(WIPE_CONFIRM_TOKEN) {
+        state.main_page.content_panel.settings.status_message = Some(format!(
+            "Type {WIPE_CONFIRM_TOKEN} (exactly) to confirm — wipe cancelled."
+        ));
+        state.main_page.content_panel.settings.mode = SettingsMode::View;
+        return false;
+    }
+
+    // 1. Tear down did-git-sign first if it's installed for this persona.
+    //    Best-effort: a failure here doesn't block the openvtc-side wipe.
+    if let Some(info) = state.main_page.content_panel.settings.did_git_sign.clone() {
+        match did_git_sign::init::uninstall(true, &info.did_key_id) {
+            Ok(summary) => {
+                if let Some(path) = &summary.removed_config_file {
+                    state
+                        .main_page
+                        .log(format!("Removed did-git-sign config: {}", path.display()));
+                }
+                if !summary.removed_keyring_entries.is_empty() {
+                    state.main_page.log(format!(
+                        "Removed did-git-sign keyring entries: {}",
+                        summary.removed_keyring_entries.join(", ")
+                    ));
+                }
+                if summary.allowed_signers_entry_removed {
+                    state
+                        .main_page
+                        .log("Removed did-git-sign allowed_signers entry");
+                }
+                for w in &summary.warnings {
+                    state.main_page.log(format!("did-git-sign uninstall: {w}"));
+                }
+            }
+            Err(e) => {
+                state
+                    .main_page
+                    .log_error("did-git-sign uninstall failed", &e);
+            }
+        }
+    }
+
+    // 2. openvtc's own state — JSON config + SecuredConfig keyring entry.
+    match openvtc::config::public_config::PublicConfig::delete_profile(profile) {
+        Ok(summary) => {
+            if let Some(path) = &summary.removed_config_file {
+                state
+                    .main_page
+                    .log(format!("Removed openvtc config: {path}"));
+            }
+            if summary.removed_keyring_entry {
+                state.main_page.log("Removed openvtc keyring entry");
+            }
+            for w in &summary.warnings {
+                state.main_page.log(format!("openvtc wipe: {w}"));
+            }
+        }
+        Err(e) => {
+            state
+                .main_page
+                .log_error("Failed to wipe openvtc profile", &e);
+            state.main_page.content_panel.settings.status_message =
+                Some(format!("Wipe failed: {e:#}"));
+            // Leave the dialog open so the operator sees the error.
+            return false;
+        }
+    }
+
+    state.main_page.log("Profile wiped — exiting.");
+    true
 }
 
 fn handle_settings_remove_passphrase(config: &mut Box<Config>, state: &mut State, profile: &str) {

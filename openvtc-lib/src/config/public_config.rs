@@ -17,6 +17,19 @@ use tracing::warn;
 /// Current config format version. Increment when the format changes.
 pub const CONFIG_VERSION: u32 = 1;
 
+/// Result of [`PublicConfig::delete_profile`]. Mostly informational —
+/// callers render `warnings` when surfacing partial-state issues. None of
+/// the fields represent fatal errors.
+#[derive(Debug, Default)]
+pub struct DeleteProfileSummary {
+    /// Path of the JSON config that was deleted (if any).
+    pub removed_config_file: Option<String>,
+    /// True when the openvtc keyring entry was deleted.
+    pub removed_keyring_entry: bool,
+    /// Best-effort warnings — used for display, not error propagation.
+    pub warnings: Vec<String>,
+}
+
 /// Primary structure used for storing [crate::config::Config] data that is not sensitive
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
 pub struct PublicConfig {
@@ -150,6 +163,66 @@ impl PublicConfig {
         })?;
 
         Ok(())
+    }
+
+    ///
+    /// Removes the public config JSON file under the resolved config path
+    /// and (best-effort) deletes the matching `SecuredConfig` keyring
+    /// entry. Each step is idempotent — both succeed when the artifact is
+    /// already gone, so the function is safe to run against a partial /
+    /// already-clean install.
+    ///
+    /// Caller is expected to coordinate other cleanup (e.g.
+    /// `did_git_sign::init::uninstall`) themselves; this function only
+    /// owns openvtc's own state.
+    /// Tear down the on-disk + OS-keyring footprint of a profile.
+    ///
+    /// Removes the public config JSON file under the resolved config path
+    /// and (best-effort) deletes the matching `SecuredConfig` keyring
+    /// entry. Each step is idempotent — both succeed when the artifact is
+    /// already gone, so the function is safe to run against a partial /
+    /// already-clean install.
+    ///
+    /// Caller is expected to coordinate other cleanup (e.g.
+    /// `did_git_sign::init::uninstall`) themselves; this function only
+    /// owns openvtc's own state.
+    pub fn delete_profile(profile: &str) -> Result<DeleteProfileSummary, OpenVTCError> {
+        validate_profile_name(profile)?;
+        let mut summary = DeleteProfileSummary::default();
+
+        let cfg_path = get_config_path(profile)?;
+        let path = Path::new(&cfg_path);
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| {
+                OpenVTCError::Config(format!(
+                    "Couldn't remove public config file ({}): {}",
+                    path.to_string_lossy(),
+                    e
+                ))
+            })?;
+            summary.removed_config_file = Some(cfg_path);
+        }
+
+        // Drop the SecuredConfig keyring entry if present. `delete_credential`
+        // returns `NoEntry` when nothing is stored — swallow that case.
+        match keyring_core::Entry::new(crate::config::secured_config::service_name(), profile) {
+            Ok(entry) => match entry.delete_credential() {
+                Ok(()) => summary.removed_keyring_entry = true,
+                Err(keyring_core::Error::NoEntry) => {}
+                Err(e) => {
+                    summary
+                        .warnings
+                        .push(format!("could not remove keyring entry: {e}"));
+                }
+            },
+            Err(e) => {
+                summary
+                    .warnings
+                    .push(format!("could not access keyring entry: {e}"));
+            }
+        }
+
+        Ok(summary)
     }
 
     /// Loads from disk the public information for OpenVTC to unlock it's secrets from the OS Secure

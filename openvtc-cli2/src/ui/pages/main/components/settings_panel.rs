@@ -6,6 +6,7 @@ use crate::state_handler::{
 };
 use openvtc::colors::{
     COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
 };
 use ratatui::{
     style::{Style, Stylize},
@@ -56,8 +57,74 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
         SettingsMode::TokenManagement { selected_index } => {
             render_token_management(state, *selected_index)
         }
+        SettingsMode::WipeConfirm { confirm_input } => render_wipe_confirm(confirm_input),
         SettingsMode::View => render_view(state),
     }
+}
+
+const WIPE_CONFIRM_TOKEN: &str = "WIPE";
+
+fn render_wipe_confirm(confirm_input: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from("")];
+    lines.push(
+        Line::from(" Wipe profile")
+            .fg(COLOR_WARNING_ACCESSIBLE_RED)
+            .bold(),
+    );
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "  This will permanently remove this profile from this host:",
+        Style::new().fg(COLOR_TEXT_DEFAULT),
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "    • openvtc config file",
+        Style::new().fg(COLOR_TEXT_DEFAULT),
+    ));
+    lines.push(Line::styled(
+        "    • openvtc keyring entry (secured config)",
+        Style::new().fg(COLOR_TEXT_DEFAULT),
+    ));
+    lines.push(Line::styled(
+        "    • did-git-sign config + keyring entries (if installed)",
+        Style::new().fg(COLOR_TEXT_DEFAULT),
+    ));
+    lines.push(Line::styled(
+        "    • git config keys did-git-sign owns",
+        Style::new().fg(COLOR_TEXT_DEFAULT),
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "  Your VTA-side context, persona DID, and keys are NOT affected.",
+        Style::new().fg(COLOR_DARK_GRAY),
+    ));
+    lines.push(Line::styled(
+        "  If you want to clean those up too, run `pnm contexts delete` first.",
+        Style::new().fg(COLOR_DARK_GRAY),
+    ));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  Type ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+        Span::styled(
+            WIPE_CONFIRM_TOKEN,
+            Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+        ),
+        Span::styled(
+            " to confirm and press Enter:",
+            Style::new().fg(COLOR_TEXT_DEFAULT),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  > ", Style::new().fg(COLOR_SOFT_PURPLE).bold()),
+        Span::styled(
+            confirm_input.to_string(),
+            Style::new().fg(COLOR_SOFT_PURPLE),
+        ),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from("  Esc: cancel  |  Enter: confirm").fg(COLOR_DARK_GRAY));
+    lines
 }
 
 fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
@@ -168,6 +235,22 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
             Span::styled("Hardware Token Management", token_style),
         ]));
     }
+
+    // Wipe profile (index 7 without openpgp-card, 8 with).
+    #[cfg(feature = "openpgp-card")]
+    let wipe_index: usize = 8;
+    #[cfg(not(feature = "openpgp-card"))]
+    let wipe_index: usize = 7;
+    let wipe_selected = state.selected_index == wipe_index;
+    let wipe_style = if wipe_selected {
+        Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold()
+    } else {
+        Style::new().fg(COLOR_TEXT_DEFAULT)
+    };
+    lines.push(Line::from(vec![
+        Span::styled(if wipe_selected { "▸ " } else { "  " }, wipe_style),
+        Span::styled("Wipe profile", wipe_style),
+    ]));
 
     lines.push(Line::from(""));
     lines.push(Line::from("↑/↓ navigate  Enter: edit/open").fg(COLOR_DARK_GRAY));
