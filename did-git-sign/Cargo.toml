@@ -9,6 +9,14 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "did_git_sign"
+path = "src/lib.rs"
+
+[[bin]]
+name = "did-git-sign"
+path = "src/main.rs"
+
 [dependencies]
 vta-sdk = { workspace = true, features = ["client", "session"] }
 clap = { workspace = true }
