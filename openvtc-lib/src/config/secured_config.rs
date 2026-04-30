@@ -30,6 +30,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Constants for storing secure info in the OS Secure Store
 const SERVICE: &str = "openvtc";
 
+/// Returns the `keyring` service name openvtc stores its `SecuredConfig`
+/// under. Exposed for cleanup helpers that need to address the same entry.
+#[must_use]
+pub fn service_name() -> &'static str {
+    SERVICE
+}
+
 // ---------------------------------------------------------------------------
 // Serde helpers for SecretString
 //

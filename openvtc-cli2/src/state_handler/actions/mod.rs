@@ -158,6 +158,12 @@ pub enum SettingsAction {
     },
     RemovePassphrase,
     ReconnectMediator,
+    /// Open the wipe-profile confirmation dialog from the Settings menu.
+    WipeProfileStart,
+    /// Update the live "type WIPE to confirm" input on the wipe dialog.
+    WipeProfileInput(String),
+    /// Operator typed `WIPE` and pressed Enter — actually nuke the profile.
+    WipeProfileConfirm,
     #[cfg(feature = "openpgp-card")]
     TokenManagement,
     #[cfg(feature = "openpgp-card")]

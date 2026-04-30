@@ -421,4 +421,11 @@ pub enum SettingsMode {
     /// Token management sub-screen
     #[cfg(feature = "openpgp-card")]
     TokenManagement { selected_index: usize },
+    /// Wipe-profile confirmation. Operator must type the literal token
+    /// `WIPE` (case-insensitive) into `confirm_input` before the wipe is
+    /// permitted to proceed. Anything else just closes the dialog.
+    WipeConfirm {
+        /// Live text the operator is typing into the confirm field.
+        confirm_input: String,
+    },
 }
