@@ -28,6 +28,10 @@ affinidi-tdk.workspace = true
 affinidi-data-integrity.workspace = true
 affinidi-messaging-didcomm-service.workspace = true
 anyhow.workspace = true
+# did-git-sign exposes init::install so the cli2 setup wizard can configure
+# git commit signing for the freshly-provisioned persona without having to
+# spawn the binary or re-run a VTA bootstrap.
+did-git-sign = { path = "../did-git-sign" }
 base64.workspace = true
 byteorder.workspace = true
 chrono.workspace = true

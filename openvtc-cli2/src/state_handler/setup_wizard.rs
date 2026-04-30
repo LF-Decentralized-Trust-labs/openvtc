@@ -5,7 +5,7 @@ use crate::{
     state_handler::{
         SetupWizardExit, StateHandler,
         actions::Action,
-        setup_did_actions,
+        setup_did_actions, setup_did_git_sign_actions,
         setup_sequence::{Completion, MessageType, SetupPage, config::ConfigExtension},
         setup_vta_actions,
         state::{ActivePage, State},
@@ -94,6 +94,9 @@ impl StateHandler {
                 },
                 Action::ExportDIDKeys(export_inputs) => {
                     setup_did_actions::handle_export_did_keys(state, &self.state_tx, export_inputs).await;
+                },
+                Action::DidGitSignInstall => {
+                    setup_did_git_sign_actions::handle_did_git_sign_install(state, &self.state_tx).await?;
                 },
                 #[cfg(feature = "openpgp-card")]
                 Action::GetTokens => {

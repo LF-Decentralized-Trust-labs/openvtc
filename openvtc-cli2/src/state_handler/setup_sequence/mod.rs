@@ -39,6 +39,8 @@ pub enum SetupPage {
     DidKeysExportAsk,
     DidKeysExportInputs,
     DidKeysExportShow,
+    /// Auto-configures did-git-sign for the freshly-provisioned persona.
+    DidGitSignSetup,
 
     /// Optional PGP Token setup occurs here
     #[cfg(feature = "openpgp-card")]
@@ -78,6 +80,9 @@ pub struct SetupState {
 
     /// VTA setup state
     pub vta: VtaSetupState,
+
+    /// Result of the auto-configured did-git-sign install.
+    pub did_git_sign: DidGitSignSetupState,
 
     /// DID Keys
     pub did_keys: Option<PersonaDIDKeys>,
@@ -240,6 +245,18 @@ pub enum Completion {
 pub struct ConfigImport {
     pub completed: Completion,
     pub messages: Vec<MessageType>,
+}
+
+/// Result of the automatic did-git-sign install during setup.
+#[derive(Clone, Default, Debug)]
+pub struct DidGitSignSetupState {
+    pub completed: Completion,
+    pub messages: Vec<MessageType>,
+    pub config_path: Option<String>,
+    pub ssh_public_key: Option<String>,
+    /// `Some(prev)` when a `--global` `user.signingKey` was shadowed by
+    /// the local install; surfaced to the operator so it isn't a surprise.
+    pub overridden_global_signing_key: Option<String>,
 }
 
 /// Update messages as the Key export works through

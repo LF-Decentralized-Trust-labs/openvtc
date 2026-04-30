@@ -4672,6 +4672,7 @@ dependencies = [
  "console",
  "crossterm",
  "dialoguer",
+ "did-git-sign",
  "didwebvh-rs",
  "dirs",
  "dtg-credentials",

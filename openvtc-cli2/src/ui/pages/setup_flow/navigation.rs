@@ -44,6 +44,9 @@ pub enum SetupEvent {
     StartExport,
     ExportComplete,
 
+    // DidGitSignSetup
+    DidGitSignDone,
+
     // Token pages (cfg-gated)
     #[cfg(feature = "openpgp-card")]
     TokenSkipped,
@@ -134,11 +137,17 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         SetupEvent::DIDKeysViewed => NavResult::GoTo(SetupPage::DidKeysExportAsk),
 
         // === DidKeysExportAsk ===
-        SetupEvent::SkipExport => NavResult::GoTo(after_export()),
+        // Both skip and complete dispatch the auto did-git-sign install;
+        // the action handler is responsible for transitioning the page
+        // and running the install.
+        SetupEvent::SkipExport => NavResult::SendAction(Action::DidGitSignInstall),
         SetupEvent::StartExport => NavResult::GoTo(SetupPage::DidKeysExportInputs),
 
         // === DidKeysExportShow ===
-        SetupEvent::ExportComplete => NavResult::GoTo(after_export()),
+        SetupEvent::ExportComplete => NavResult::SendAction(Action::DidGitSignInstall),
+
+        // === DidGitSignSetup ===
+        SetupEvent::DidGitSignDone => NavResult::GoTo(after_export()),
 
         // === Token pages ===
         #[cfg(feature = "openpgp-card")]
