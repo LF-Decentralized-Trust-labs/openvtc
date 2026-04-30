@@ -11,6 +11,75 @@ use std::path::PathBuf;
 
 use config::{SigningConfig, VtaCredentials};
 
+/// Run `provision_client::run_connection_test` against the VTA with the
+/// given setup did:key, drain its `VtaEvent` stream to stdout, and return
+/// the issued admin credential. Errors out if provisioning fails or
+/// completes without an admin VC.
+async fn run_provision(
+    vta_did: &str,
+    context: &str,
+    setup_key: &vta_sdk::provision_client::EphemeralSetupKey,
+) -> Result<vta_sdk::provision_client::AdminCredentialReply> {
+    use vta_sdk::provision_client::{
+        AdminCredentialReply, DiagStatus, ProvisionAsk, VtaEvent, VtaIntent, VtaReply,
+        run_connection_test,
+    };
+
+    println!("Bootstrapping with the VTA…");
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<VtaEvent>();
+    let ask = ProvisionAsk::vta_admin(context.to_string()).with_label("did-git-sign");
+    let setup_did = setup_key.did.clone();
+    let setup_priv = setup_key.private_key_multibase().to_string();
+    let runner_vta_did = vta_did.to_string();
+    tokio::spawn(async move {
+        run_connection_test(
+            VtaIntent::AdminOnly,
+            runner_vta_did,
+            setup_did,
+            setup_priv,
+            ask,
+            None,
+            tx,
+        )
+        .await;
+    });
+
+    let mut admin_reply: Option<AdminCredentialReply> = None;
+    let mut failure: Option<String> = None;
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            VtaEvent::CheckStart(check) => {
+                println!("  · {}…", check.label());
+            }
+            VtaEvent::CheckDone(check, status) => match status {
+                DiagStatus::Ok(detail) => println!("  ✓ {} — {detail}", check.label()),
+                DiagStatus::Skipped(detail) => {
+                    println!("  · {} (skipped: {detail})", check.label())
+                }
+                DiagStatus::Failed(detail) => println!("  ✗ {} — {detail}", check.label()),
+                DiagStatus::Pending | DiagStatus::Running => {}
+            },
+            VtaEvent::Resolved(_)
+            | VtaEvent::AttemptCompleted { .. }
+            | VtaEvent::PreflightDone { .. } => {}
+            VtaEvent::Connected { reply, .. } => {
+                if let VtaReply::AdminOnly(adm) = reply {
+                    admin_reply = Some(adm);
+                }
+            }
+            VtaEvent::Failed(reason) => {
+                failure = Some(reason);
+            }
+        }
+    }
+
+    if let Some(reason) = failure {
+        bail!("provisioning failed: {reason}");
+    }
+    admin_reply.context("provisioning ended without an admin credential")
+}
+
 /// Register the platform-specific keyring-core credential store as the
 /// process default. Must run before any `keyring_core::Entry::new` call.
 fn init_default_keyring_store() -> Result<()> {
@@ -74,15 +143,23 @@ enum Commands {
         #[arg(long)]
         global: bool,
 
-        /// Base64url-encoded VTA credential bundle
+        /// VTA DID. The service URL is discovered from the DID document
+        /// (overridable with `--vta-url`). did-git-sign mints a temporary
+        /// admin did:key for this setup session and prints a `pnm contexts
+        /// create` command for you to run before bootstrapping.
         #[arg(long)]
-        credential: String,
+        vta_did: String,
+
+        /// Context id to provision into. Pass the same value to
+        /// `pnm contexts create --id <ctx>`.
+        #[arg(long, default_value = "did-git-sign")]
+        context: String,
 
         /// Git user.name to set
         #[arg(long)]
         name: Option<String>,
 
-        /// VTA URL (overrides credential bundle)
+        /// VTA URL (overrides DID document discovery)
         #[arg(long)]
         vta_url: Option<String>,
 
@@ -93,6 +170,12 @@ enum Commands {
         /// DID#key-id to use as signing identity (skip interactive selection)
         #[arg(long)]
         did_key_id: Option<String>,
+
+        /// Skip the "press Enter once authorised" prompt — assume the PNM
+        /// ACL grant has already been registered. Useful for scripted
+        /// setups.
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Verify the signing setup by performing a test sign operation
@@ -145,12 +228,19 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Commands::Init {
             global,
-            credential,
+            vta_did,
+            context,
             name,
             vta_url,
             key_id,
             did_key_id,
-        }) => cmd_init(global, &credential, name, vta_url, key_id, did_key_id).await,
+            yes,
+        }) => {
+            cmd_init(
+                global, vta_did, context, name, vta_url, key_id, did_key_id, yes,
+            )
+            .await
+        }
         Some(Commands::Verify) => cmd_verify().await,
         Some(Commands::Health) => cmd_health().await,
         None => {
@@ -173,30 +263,71 @@ async fn main() -> Result<()> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn cmd_init(
     global: bool,
-    credential_b64: &str,
+    vta_did: String,
+    context: String,
     user_name: Option<String>,
     vta_url_override: Option<String>,
     key_id_override: Option<String>,
     did_key_id_override: Option<String>,
+    yes: bool,
 ) -> Result<()> {
-    // Parse credential bundle (JSON, post-vta-sdk-0.5).
-    let bundle: vta_sdk::credentials::CredentialBundle = serde_json::from_str(credential_b64)
-        .map_err(|e| anyhow::anyhow!("failed to decode credential bundle: {e}"))?;
+    // 1. Resolve the VTA service URL (or take the override).
+    let vta_url = if let Some(url) = vta_url_override {
+        url
+    } else {
+        println!("Resolving VTA service endpoint from {vta_did}…");
+        vta_sdk::session::resolve_vta_url(&vta_did)
+            .await
+            .map_err(|e| anyhow::anyhow!("could not resolve VTA URL from {vta_did}: {e}"))?
+    };
+    println!("VTA URL: {vta_url}");
 
-    let vta_url = vta_url_override
-        .or(bundle.vta_url.clone())
-        .context("VTA URL not found in credential bundle — provide --vta-url")?;
+    // 2. Mint a fresh ephemeral did:key as the admin identity for this
+    //    setup session. Held in memory only — if did-git-sign is rerun the
+    //    operator must re-grant the ACL for the new DID.
+    let setup_key = vta_sdk::provision_client::EphemeralSetupKey::generate()
+        .map_err(|e| anyhow::anyhow!("failed to generate setup did:key: {e}"))?;
 
-    // Authenticate with VTA
-    println!("Authenticating with VTA at {vta_url}...");
+    // 3. Show the operator the matching `pnm contexts create` command and
+    //    wait for them to confirm it has run (skippable with --yes).
+    println!();
+    println!("did-git-sign has minted a temporary admin DID for this setup session:");
+    println!("  {}", setup_key.did);
+    println!();
+    println!("Authorise it on the VTA via your Personal Network Manager (PNM):");
+    println!();
+    println!("    pnm contexts create --id {context} --name \"did-git-sign\" \\");
+    println!("        --admin-did {} --admin-expires 1h", setup_key.did);
+    println!();
+    if !yes {
+        println!("The admin grant is short-lived (1h). Once the command above has run,");
+        print!("press Enter to continue (or Ctrl+C to abort)... ");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_line(&mut buf)
+            .context("failed to read confirmation from stdin")?;
+    }
+
+    // 4. Bootstrap with the VTA. provision_client handles the resolve →
+    //    enumerate → authenticate → issue-admin-VC pipeline; we drain its
+    //    event stream into stdout so the operator can see progress.
+    let admin = run_provision(&vta_did, &context, &setup_key).await?;
+
+    // 5. Authenticate as the issued admin DID and proceed with the existing
+    //    interactive context / DID / key picker.
+    println!();
+    println!("Authenticating as {}…", admin.admin_did);
     let client = vta_sdk::client::VtaClient::new(&vta_url);
     let token = vta_sdk::session::challenge_response(
         &vta_url,
-        &bundle.did,
-        &bundle.private_key_multibase,
-        &bundle.vta_did,
+        &admin.admin_did,
+        &admin.admin_private_key_mb,
+        &vta_did,
     )
     .await
     .map_err(|e| anyhow::anyhow!("VTA authentication failed: {e}"))?;
@@ -219,12 +350,14 @@ async fn cmd_init(
         user_name,
     };
 
-    // VTA credentials and key ID go into the OS keyring
+    // VTA credentials and key ID go into the OS keyring. The credential
+    // identity is the admin DID minted by the VTA, not the ephemeral setup
+    // did:key — that one is discarded once provisioning is done.
     let vta_creds = VtaCredentials {
         vta_url,
-        vta_did: bundle.vta_did.clone(),
-        credential_did: bundle.did.clone(),
-        private_key_multibase: bundle.private_key_multibase.clone(),
+        vta_did: vta_did.clone(),
+        credential_did: admin.admin_did.clone(),
+        private_key_multibase: admin.admin_private_key_mb.clone(),
         key_id,
     };
 
