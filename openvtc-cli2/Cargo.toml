@@ -42,7 +42,7 @@ didwebvh-rs.workspace = true
 dtg-credentials.workspace = true
 ed25519-dalek-bip32.workspace = true
 hex.workspace = true
-keyring.workspace = true
+keyring-core.workspace = true
 multibase.workspace = true
 pgp.workspace = true
 rand.workspace = true
@@ -72,6 +72,18 @@ zeroize.workspace = true
 openpgp-card = { workspace = true, optional = true }
 card-backend-pcsc = { workspace = true, optional = true }
 openpgp-card-rpgp = { workspace = true, optional = true }
+
+# Per-platform keyring-core stores. Each binary registers exactly one of
+# these as the default store at startup; openvtc-lib only uses the
+# keyring-core Entry API and doesn't pin a backend.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+linux-keyutils-keyring-store.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store.workspace = true
 
 [[bin]]
 name = "openvtc2"
