@@ -24,7 +24,6 @@ use openvtc::{
     relationships::{Relationship, RelationshipRequestBody, RelationshipState},
     tasks::TaskType,
 };
-use secrecy::SecretString;
 use serde_json::json;
 use tracing::info;
 use uuid::Uuid;
@@ -288,28 +287,7 @@ pub(crate) async fn create_relationship_did(
 ) -> Result<String> {
     match &config.key_backend {
         KeyBackend::Bip32 { .. } => create_relationship_did_bip32(tdk, config, mediator).await,
-        KeyBackend::Vta {
-            vta_url,
-            credential_did,
-            credential_private_key,
-            vta_did,
-            ..
-        } => {
-            let vta_url = vta_url.clone();
-            let credential_did = credential_did.clone();
-            let credential_private_key = credential_private_key.clone();
-            let vta_did = vta_did.clone();
-            create_relationship_did_vta(
-                tdk,
-                config,
-                mediator,
-                &vta_url,
-                &credential_did,
-                &credential_private_key,
-                &vta_did,
-            )
-            .await
-        }
+        KeyBackend::Vta { .. } => create_relationship_did_vta(tdk, config, mediator).await,
     }
 }
 
@@ -415,27 +393,14 @@ async fn create_relationship_did_vta(
     tdk: &TDK,
     config: &mut Config,
     mediator: &str,
-    vta_url: &str,
-    credential_did: &str,
-    credential_private_key: &SecretString,
-    vta_did: &str,
 ) -> Result<String> {
-    use secrecy::ExposeSecret;
-    use vta_sdk::client::{CreateKeyRequest, VtaClient};
+    use vta_sdk::client::CreateKeyRequest;
     use vta_sdk::keys::KeyType;
 
-    // Authenticate with VTA
-    info!("authenticating with VTA for R-DID creation...");
-    let token = super::setup_sequence::vta::authenticate(
-        vta_url,
-        credential_did,
-        credential_private_key.expose_secret(),
-        vta_did,
-    )
-    .await?;
-
-    let client = VtaClient::new(vta_url);
-    client.set_token(token.access_token);
+    // Reuse whichever transport setup chose (DIDComm or REST). The helper
+    // handles auth for both.
+    info!("opening VTA client for R-DID creation...");
+    let client = openvtc::config::build_runtime_vta_client(&config.key_backend).await?;
 
     // Create signing key (Ed25519) for verification
     info!("creating Ed25519 signing key via VTA...");

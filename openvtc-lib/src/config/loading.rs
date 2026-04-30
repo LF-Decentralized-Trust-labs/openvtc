@@ -115,6 +115,7 @@ impl Config {
                 ),
                 vta_did: sc.vta_did.clone().unwrap_or_default(),
                 vta_url: sc.vta_url.clone().unwrap_or_default(),
+                mediator_did: sc.mediator_did.clone(),
                 encryption_seed,
             }
         } else {
@@ -167,28 +168,12 @@ impl Config {
 
         debug!("Private Config\n{:#?}", private_cfg);
 
-        // Authenticate with VTA once upfront (if VTA backend)
-        let vta_client = if let KeyBackend::Vta {
-            vta_url,
-            credential_did,
-            credential_private_key,
-            vta_did,
-            ..
-        } = &key_backend
-        {
+        // Build the VTA client once upfront (if VTA backend), reusing whichever
+        // transport setup chose: DIDComm if a mediator was advertised, REST
+        // otherwise. The helper handles auth in both directions.
+        let vta_client = if matches!(&key_backend, KeyBackend::Vta { .. }) {
             report_progress(&on_progress, "Authenticating...");
-            let token_result = vta_sdk::session::challenge_response(
-                vta_url,
-                credential_did,
-                credential_private_key.expose_secret(),
-                vta_did,
-            )
-            .await
-            .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
-
-            let client = vta_sdk::client::VtaClient::new(vta_url);
-            client.set_token(token_result.access_token);
-            Some(client)
+            Some(super::build_runtime_vta_client(&key_backend).await?)
         } else {
             None
         };

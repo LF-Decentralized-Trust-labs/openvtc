@@ -104,67 +104,50 @@ impl Config {
                 KeyTypes::PersonaEncryption => KeyPurpose::Encryption,
                 _ => continue,
             };
-            let secret = match &key_info.path {
-                KeySourceMaterial::Derived { path } => {
-                    let KeyBackend::Bip32 { root, .. } = &self.key_backend else {
-                        continue;
-                    };
-                    root.get_secret_from_path(path, kp)
-                        .map(|mut s| {
-                            s.id = key_id.clone();
-                            s
-                        })
-                        .ok()
-                }
-                KeySourceMaterial::Imported { seed } => {
-                    use secrecy::ExposeSecret;
-                    Secret::from_multibase(seed.expose_secret(), None)
-                        .map(|mut s| {
-                            s.id = key_id.clone();
-                            s
-                        })
-                        .ok()
-                }
-                KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
-                    if let KeyBackend::Vta {
-                        vta_url,
-                        credential_did,
-                        credential_private_key,
-                        vta_did,
-                        ..
-                    } = &self.key_backend
-                    {
+            let secret =
+                match &key_info.path {
+                    KeySourceMaterial::Derived { path } => {
+                        let KeyBackend::Bip32 { root, .. } = &self.key_backend else {
+                            continue;
+                        };
+                        root.get_secret_from_path(path, kp)
+                            .map(|mut s| {
+                                s.id = key_id.clone();
+                                s
+                            })
+                            .ok()
+                    }
+                    KeySourceMaterial::Imported { seed } => {
                         use secrecy::ExposeSecret;
-                        if let Ok(token) = vta_sdk::session::challenge_response(
-                            vta_url,
-                            credential_did,
-                            credential_private_key.expose_secret(),
-                            vta_did,
-                        )
-                        .await
-                        {
-                            let client = vta_sdk::client::VtaClient::new(vta_url);
-                            client.set_token(token.access_token);
-                            client
-                                .get_key_secret(vta_key_id)
-                                .await
-                                .ok()
-                                .and_then(|resp| {
-                                    crate::config::secret_from_vta_response(&resp, kp)
-                                        .map(|mut s| {
-                                            s.id = key_id.clone();
-                                            s
-                                        })
-                                        .ok()
-                                })
+                        Secret::from_multibase(seed.expose_secret(), None)
+                            .map(|mut s| {
+                                s.id = key_id.clone();
+                                s
+                            })
+                            .ok()
+                    }
+                    KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
+                        if matches!(&self.key_backend, KeyBackend::Vta { .. }) {
+                            match super::build_runtime_vta_client(&self.key_backend).await {
+                                Ok(client) => client
+                                    .get_key_secret(vta_key_id)
+                                    .await
+                                    .ok()
+                                    .and_then(|resp| {
+                                        crate::config::secret_from_vta_response(&resp, kp)
+                                            .map(|mut s| {
+                                                s.id = key_id.clone();
+                                                s
+                                            })
+                                            .ok()
+                                    }),
+                                Err(_) => None,
+                            }
                         } else {
                             None
                         }
-                    } else {
-                        None
                     }
-                }
-            };
+                };
             if let Some(s) = secret {
                 tdk.get_shared_state().secrets_resolver.insert(s).await;
             }

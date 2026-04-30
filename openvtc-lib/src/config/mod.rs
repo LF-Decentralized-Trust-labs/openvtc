@@ -172,8 +172,13 @@ pub enum KeyBackend {
         credential_private_key: SecretString,
         /// DID of the VTA service itself.
         vta_did: String,
-        /// Base URL of the VTA service.
+        /// Base URL of the VTA service. Empty for DIDComm-only VTAs.
         vta_url: String,
+        /// DIDComm mediator DID advertised by the VTA's DID document. Set
+        /// during setup when the bootstrap was reached over DIDComm; lets
+        /// runtime open new DIDComm sessions instead of falling back to
+        /// REST. `None` for REST-only VTAs.
+        mediator_did: Option<String>,
         /// SHA-256 hash of the private key multibase, used as the encryption seed
         /// for `ProtectedConfig` (replaces BIP32 `m/0'/0'/0'` in the VTA flow).
         encryption_seed: SecretBox<Vec<u8>>,
@@ -284,6 +289,74 @@ impl Config {
                 encryption_seed.expose_secret().to_vec(),
             ))),
         }
+    }
+}
+
+/// Build an authenticated [`vta_sdk::client::VtaClient`] from a `KeyBackend::Vta`,
+/// preserving whichever transport (REST or DIDComm) was selected at setup.
+///
+/// - **DIDComm** — `mediator_did` is `Some`: opens a fresh DIDComm session
+///   as the credential DID against the advertised mediator. The session
+///   itself is the authenticator; no separate token round-trip happens.
+/// - **REST** — `mediator_did` is `None`: runs a challenge-response auth
+///   against `vta_url`, then attaches the bearer token to a REST client.
+///
+/// Returns an error for non-VTA backends (callers should branch on the
+/// backend variant before calling).
+pub async fn build_runtime_vta_client(
+    backend: &KeyBackend,
+) -> Result<vta_sdk::client::VtaClient, OpenVTCError> {
+    let KeyBackend::Vta {
+        vta_url,
+        vta_did,
+        credential_did,
+        credential_private_key,
+        mediator_did,
+        ..
+    } = backend
+    else {
+        return Err(OpenVTCError::Config(
+            "build_runtime_vta_client called on a non-VTA key backend".to_string(),
+        ));
+    };
+
+    if let Some(mediator) = mediator_did {
+        // DIDComm transport: the rotated admin credential opens a fresh
+        // session against the advertised mediator. `vta_url` is passed
+        // through as a fallback for REST-only operations like /health,
+        // and is allowed to be empty for fully-DIDComm VTAs.
+        let rest_fallback = if vta_url.is_empty() {
+            None
+        } else {
+            Some(vta_url.clone())
+        };
+        vta_sdk::client::VtaClient::connect_didcomm(
+            credential_did,
+            credential_private_key.expose_secret(),
+            vta_did,
+            mediator,
+            rest_fallback,
+        )
+        .await
+        .map_err(|e| OpenVTCError::Config(format!("DIDComm session open failed: {e}")))
+    } else {
+        // REST transport: legacy challenge-response + bearer token.
+        if vta_url.is_empty() {
+            return Err(OpenVTCError::Config(
+                "REST transport selected but vta_url is empty".to_string(),
+            ));
+        }
+        let token = vta_sdk::session::challenge_response(
+            vta_url,
+            credential_did,
+            credential_private_key.expose_secret(),
+            vta_did,
+        )
+        .await
+        .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
+        let client = vta_sdk::client::VtaClient::new(vta_url);
+        client.set_token(token.access_token);
+        Ok(client)
     }
 }
 
