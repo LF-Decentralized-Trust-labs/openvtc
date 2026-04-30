@@ -218,6 +218,10 @@ pub enum Action {
     /// Export DID Private keys as PGP Armored file
     ExportDIDKeys(DIDKeysExportInputs),
 
+    /// Auto-configure did-git-sign for the freshly-provisioned persona.
+    /// Fired on entry to the `DidGitSignSetup` page.
+    DidGitSignInstall,
+
     // ************************************************************************
     // VTA Actions
     /// Submit the VTA DID. Triggers URL resolution + ephemeral setup-key mint

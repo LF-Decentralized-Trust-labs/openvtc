@@ -69,6 +69,7 @@ mod message_dispatch;
 mod relationship_actions;
 mod settings_actions;
 mod setup_did_actions;
+mod setup_did_git_sign_actions;
 pub mod setup_sequence;
 mod setup_token_actions;
 mod setup_vta_actions;
