@@ -184,7 +184,7 @@ pub async fn did_setup(
     });
     did_document
         .assertion_method
-        .push(VerificationRelationship::Reference(key_id.clone()));
+        .push(VerificationRelationship::Reference(key_id.to_string()));
 
     // Authentication Key
     property_set.insert(
@@ -202,7 +202,7 @@ pub async fn did_setup(
     });
     did_document
         .authentication
-        .push(VerificationRelationship::Reference(key_id.clone()));
+        .push(VerificationRelationship::Reference(key_id.to_string()));
 
     // Decryption Key
     property_set.insert(
@@ -220,7 +220,7 @@ pub async fn did_setup(
     });
     did_document
         .key_agreement
-        .push(VerificationRelationship::Reference(key_id.clone()));
+        .push(VerificationRelationship::Reference(key_id.to_string()));
 
     // Add a service endpoint for this persona
     // NOTE: This will use the public mediator

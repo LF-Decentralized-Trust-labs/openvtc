@@ -4,7 +4,6 @@
 use affinidi_tdk::{
     TDK,
     common::config::TDKConfig,
-    data_integrity::DataIntegrityProof,
     didcomm::Message,
     messaging::messages::compat::UnpackMetadata,
     messaging::{
@@ -465,8 +464,7 @@ async fn create_vrc(
         bail!("Couldn't find secret");
     };
 
-    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None).await?;
-    vrc.credential_mut().proof = Some(proof);
+    vrc.sign(&secret, None).await?;
 
     Ok(vrc)
 }

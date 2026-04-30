@@ -160,9 +160,9 @@ async fn cmd_init(
     key_id_override: Option<String>,
     did_key_id_override: Option<String>,
 ) -> Result<()> {
-    // Decode credential bundle
-    let bundle = vta_sdk::credentials::CredentialBundle::decode(credential_b64)
-        .map_err(|e| anyhow::anyhow!("failed to decode credential bundle: {e:?}"))?;
+    // Parse credential bundle (JSON, post-vta-sdk-0.5).
+    let bundle: vta_sdk::credentials::CredentialBundle = serde_json::from_str(credential_b64)
+        .map_err(|e| anyhow::anyhow!("failed to decode credential bundle: {e}"))?;
 
     let vta_url = vta_url_override
         .or(bundle.vta_url.clone())

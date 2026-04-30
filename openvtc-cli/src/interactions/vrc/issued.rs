@@ -1,4 +1,3 @@
-use affinidi_data_integrity::DataIntegrityProof;
 use affinidi_tdk::{TDK, didcomm::Message};
 use anyhow::{Result, anyhow, bail};
 use chrono::{DateTime, Local, Utc};
@@ -342,8 +341,10 @@ pub async fn handle_accept_vrcs_request(
 
     let secret = config.get_persona_keys(tdk).await?.signing.secret;
 
-    let proof = DataIntegrityProof::sign_jcs_data(&vrc, None, &secret, None).await?;
-    vrc.credential_mut().proof = Some(proof);
+    // Sign through dtg-credentials' helper so the proof type stays aligned
+    // with the version of affinidi-data-integrity that dtg-credentials brings
+    // in (avoids the 0.5/0.6 type mismatch in our resolver).
+    vrc.sign(&secret, None).await?;
 
     // Send VRC to the requestor
     let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
