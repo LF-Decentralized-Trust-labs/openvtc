@@ -258,7 +258,6 @@ pub async fn accept_vrc_request(
     service: &DIDCommService,
     task_id: &str,
 ) -> Result<()> {
-    use affinidi_data_integrity::DataIntegrityProof;
     use dtg_credentials::DTGCredential;
     use openvtc::vrc::DtgCredentialMessage;
 
@@ -302,11 +301,11 @@ pub async fn accept_vrc_request(
         None, // no valid_until
     );
 
-    // Sign the VRC with our persona signing key
+    // Sign the VRC with our persona signing key. Goes through dtg-credentials'
+    // own signing helper to keep the proof type aligned with the version of
+    // affinidi-data-integrity that dtg-credentials brings in.
     let persona_keys = config.get_persona_keys(tdk).await?;
-    let proof =
-        DataIntegrityProof::sign_jcs_data(&vrc, None, &persona_keys.signing.secret, None).await?;
-    vrc.credential_mut().proof = Some(proof);
+    vrc.sign(&persona_keys.signing.secret, None).await?;
 
     // Send VRC back to the requester
     let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;

@@ -46,8 +46,19 @@ impl VtaAuthenticate {
                         handle_nav_result(result, state);
                     }
                     Completion::CompletedFail => {
-                        // Retry authentication
-                        let _ = state.action_tx.send(Action::VtaAuthenticate);
+                        // Re-bootstrap via the new online flow. Reuses the
+                        // already-minted setup did:key against the same VTA
+                        // and context, so the operator doesn't have to redo
+                        // the PNM ACL grant unless that grant has actually
+                        // expired or been revoked.
+                        let context_id = state
+                            .props
+                            .state
+                            .vta
+                            .context_id
+                            .clone()
+                            .unwrap_or_else(|| "openvtc".to_string());
+                        let _ = state.action_tx.send(Action::VtaStartProvision(context_id));
                     }
                     Completion::NotFinished => {
                         // Still in progress, do nothing

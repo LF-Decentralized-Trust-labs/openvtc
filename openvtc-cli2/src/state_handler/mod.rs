@@ -152,6 +152,18 @@ impl StateHandler {
                     Ok(SetupWizardExit::Config(mut config)) => {
                         crate::apply_env_overrides(&mut config);
 
+                        // Push the main menu skeleton *before* the slow
+                        // post-setup work (keyring read, VTA round-trip,
+                        // mediator handshake) so the operator isn't stuck
+                        // on FinalPage for several seconds. The remaining
+                        // tasks update connection status as they progress.
+                        state.active_page = ActivePage::Main;
+                        state.main_page.menu_panel.selected = true;
+                        state.main_page.sync_from_config(&config);
+                        state.connection.status =
+                            state::MediatorStatus::Initializing("Loading credentials...".into());
+                        let _ = self.state_tx.send(state.clone());
+
                         // The setup wizard saved the config but the TDK secrets
                         // resolver is empty. Load persona key secrets so the
                         // DIDComm service can authenticate with the mediator.
@@ -160,11 +172,6 @@ impl StateHandler {
                                 .main_page
                                 .log_error("Warning: failed to load persona keys", &e);
                         }
-
-                        // Initialize main page state from the freshly created config
-                        state.active_page = ActivePage::Main;
-                        state.main_page.menu_panel.selected = true;
-                        state.main_page.sync_from_config(&config);
                         state.main_page.log("Setup complete — configuration loaded");
 
                         (tdk, config)

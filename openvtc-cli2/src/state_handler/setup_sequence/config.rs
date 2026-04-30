@@ -252,22 +252,31 @@ impl ConfigExtension for Config {
             },
         );
 
-        // Build VTA key backend from setup state
-        let credential_raw = state
+        // Build VTA key backend from the admin credential issued during
+        // online provisioning. The on-disk `credential_bundle` is the JSON
+        // form (post-vta-sdk-0.5); confidentiality at rest is provided by
+        // the OS keyring / secured config wrapper.
+        let admin = state
             .vta
-            .credential_bundle_raw
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("VTA credential bundle not set"))?;
-        let bundle = crate::state_handler::setup_sequence::vta::decode_credential(&credential_raw)
-            .map_err(|e| anyhow::anyhow!("Failed to decode credential bundle: {e}"))?;
+            .admin_credential
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VTA admin credential not issued"))?;
+        let bundle = vta_sdk::credentials::CredentialBundle::new(
+            admin.admin_did.clone(),
+            admin.admin_private_key_mb.clone(),
+            state.vta.vta_did.clone(),
+        )
+        .vta_url(state.vta.vta_url.clone());
+        let credential_raw = serde_json::to_string(&bundle)
+            .map_err(|e| anyhow::anyhow!("Failed to serialise VTA credential bundle: {e}"))?;
         let encryption_seed =
-            ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
+            ProtectedConfig::get_seed_from_credential(&admin.admin_private_key_mb)?;
         let key_backend = KeyBackend::Vta {
             credential_bundle: SecretString::new(credential_raw.into()),
-            credential_did: bundle.did.clone(),
-            credential_private_key: SecretString::new(bundle.private_key_multibase.clone().into()),
-            vta_did: bundle.vta_did.clone(),
-            vta_url: bundle.vta_url.clone().unwrap_or_default(),
+            credential_did: admin.admin_did.clone(),
+            credential_private_key: SecretString::new(admin.admin_private_key_mb.clone().into()),
+            vta_did: state.vta.vta_did.clone(),
+            vta_url: state.vta.vta_url.clone(),
             encryption_seed,
         };
 

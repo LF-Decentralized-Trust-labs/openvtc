@@ -220,11 +220,15 @@ pub enum Action {
 
     // ************************************************************************
     // VTA Actions
-    /// Submit a VTA credential bundle (base64 encoded)
-    VtaSubmitCredential(String),
+    /// Submit the VTA DID. Triggers URL resolution + ephemeral setup-key mint
+    /// for the new online provisioning flow.
+    VtaSubmitDid(String),
 
-    /// Authenticate with VTA service
-    VtaAuthenticate,
+    /// Operator finished the PNM ACL grant — kick off
+    /// `provision_client::run_connection_test` to bootstrap. Carries the
+    /// context id the operator typed on the AclInstructions screen so it
+    /// matches what they ran `pnm contexts create --id …` with.
+    VtaStartProvision(String),
 
     /// Create keys via VTA service
     VtaCreateKeys,

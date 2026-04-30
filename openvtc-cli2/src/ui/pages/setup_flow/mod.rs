@@ -19,8 +19,9 @@ use crate::{
             mediator_custom::MediatorCustom, start_ask::StartAskPanel,
             unlock_code_ask::UnlockCodeAsk, unlock_code_set::UnlockCodeSet,
             unlock_code_warn::UnlockCodeWarn, username::UserName,
-            vta_authenticate::VtaAuthenticate, vta_credential::VtaCredentialPaste,
-            vta_keys_fetch::VtaKeysFetch, webvh_address::WebvhAddress,
+            vta_acl_instructions::VtaAclInstructions, vta_authenticate::VtaAuthenticate,
+            vta_enter_did::VtaEnterDid, vta_keys_fetch::VtaKeysFetch,
+            vta_provisioning::VtaProvisioning, webvh_address::WebvhAddress,
             webvh_server_progress::WebvhServerProgress, webvh_server_select::WebvhServerSelect,
         },
     },
@@ -52,9 +53,11 @@ pub mod unlock_code_ask;
 pub mod unlock_code_set;
 pub mod unlock_code_warn;
 pub mod username;
+pub mod vta_acl_instructions;
 pub mod vta_authenticate;
-pub mod vta_credential;
+pub mod vta_enter_did;
 pub mod vta_keys_fetch;
+pub mod vta_provisioning;
 pub mod webvh_address;
 pub mod webvh_server_progress;
 pub mod webvh_server_select;
@@ -72,7 +75,9 @@ pub struct SetupFlow {
     pub start_ask: StartAskPanel,
     pub config_import: ConfigImport,
 
-    pub vta_credential: VtaCredentialPaste,
+    pub vta_enter_did: VtaEnterDid,
+    pub vta_acl_instructions: VtaAclInstructions,
+    pub vta_provisioning: VtaProvisioning,
     pub vta_authenticate: VtaAuthenticate,
     pub vta_keys_fetch: VtaKeysFetch,
 
@@ -136,7 +141,9 @@ impl Component for SetupFlow {
 
             start_ask: StartAskPanel::default(),
             config_import: ConfigImport::default(),
-            vta_credential: VtaCredentialPaste::default(),
+            vta_enter_did: VtaEnterDid::default(),
+            vta_acl_instructions: VtaAclInstructions::default(),
+            vta_provisioning: VtaProvisioning,
             vta_authenticate: VtaAuthenticate,
             vta_keys_fetch: VtaKeysFetch,
             did_keys_show: DIDKeysShow::default(),
@@ -191,7 +198,9 @@ impl Component for SetupFlow {
         match self.props.state.active_page {
             SetupPage::StartAsk => StartAskPanel::handle_key_event(self, key),
             SetupPage::ConfigImport => ConfigImport::handle_key_event(self, key),
-            SetupPage::VtaCredentialPaste => VtaCredentialPaste::handle_key_event(self, key),
+            SetupPage::VtaEnterDid => VtaEnterDid::handle_key_event(self, key),
+            SetupPage::VtaAclInstructions => VtaAclInstructions::handle_key_event(self, key),
+            SetupPage::VtaProvisioning => VtaProvisioning::handle_key_event(self, key),
             SetupPage::VtaAuthenticate => VtaAuthenticate::handle_key_event(self, key),
             SetupPage::VtaKeysFetch => VtaKeysFetch::handle_key_event(self, key),
             SetupPage::DIDKeysShow => DIDKeysShow::handle_key_event(self, key),
@@ -227,13 +236,9 @@ impl Component for SetupFlow {
 
     fn handle_paste_event(&mut self, text: &str) {
         // Handle paste as a single operation instead of per-character key events.
-        // This makes pasting large strings (credentials, DIDs) instant.
+        // This makes pasting large strings (DIDs) instant.
         let trimmed = text.trim().to_string();
         match self.props.state.active_page {
-            SetupPage::VtaCredentialPaste => {
-                self.vta_credential.credential_input = tui_input::Input::new(trimmed);
-                self.vta_credential.warning_msg = None;
-            }
             SetupPage::ConfigImport => {
                 let target = match self.config_import.active_input {
                     0 => &mut self.config_import.filename,
@@ -259,6 +264,12 @@ impl Component for SetupFlow {
             SetupPage::WebVHAddress => {
                 self.webvh_address.address = tui_input::Input::new(trimmed);
             }
+            SetupPage::VtaEnterDid => {
+                self.vta_enter_did.vta_did = tui_input::Input::new(trimmed);
+            }
+            SetupPage::VtaAclInstructions => {
+                self.vta_acl_instructions.context_id = tui_input::Input::new(trimmed);
+            }
             SetupPage::DidKeysExportInputs => {
                 let target = match self.did_keys_export_inputs.active_input {
                     0 => &mut self.did_keys_export_inputs.passphrase,
@@ -283,7 +294,11 @@ impl ComponentRender<()> for SetupFlow {
         match self.props.state.active_page {
             SetupPage::StartAsk => self.start_ask.render(&self.props.state, frame),
             SetupPage::ConfigImport => self.config_import.render(&self.props.state, frame),
-            SetupPage::VtaCredentialPaste => self.vta_credential.render(&self.props.state, frame),
+            SetupPage::VtaEnterDid => self.vta_enter_did.render(&self.props.state, frame),
+            SetupPage::VtaAclInstructions => {
+                self.vta_acl_instructions.render(&self.props.state, frame)
+            }
+            SetupPage::VtaProvisioning => self.vta_provisioning.render(&self.props.state, frame),
             SetupPage::VtaAuthenticate => self.vta_authenticate.render(&self.props.state, frame),
             SetupPage::VtaKeysFetch => self.vta_keys_fetch.render(&self.props.state, frame),
             SetupPage::DIDKeysShow => self.did_keys_show.render(&self.props.state, frame),
@@ -346,7 +361,9 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
 
     let is_step2_key_mgmt = matches!(
         active,
-        SetupPage::VtaCredentialPaste
+        SetupPage::VtaEnterDid
+            | SetupPage::VtaAclInstructions
+            | SetupPage::VtaProvisioning
             | SetupPage::VtaAuthenticate
             | SetupPage::VtaKeysFetch
             | SetupPage::WebvhServerSelect

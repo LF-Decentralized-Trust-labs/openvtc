@@ -8,17 +8,10 @@ use chrono::Utc;
 use openvtc::config::{KeyInfo, PersonaDIDKeys, secured_config::KeySourceMaterial};
 use vta_sdk::{
     client::{CreateDidWebvhRequest, CreateKeyRequest, VtaClient},
-    credentials::CredentialBundle,
     keys::KeyType,
     session::{TokenResult, challenge_response},
     webvh::WebvhServerRecord,
 };
-
-/// Decode a base64url credential bundle string
-pub fn decode_credential(input: &str) -> Result<CredentialBundle> {
-    CredentialBundle::decode(input)
-        .map_err(|e| anyhow::anyhow!("Failed to decode credential bundle: {:?}", e))
-}
 
 /// Authenticate with VTA using challenge-response
 pub async fn authenticate(
@@ -230,6 +223,9 @@ pub async fn create_did_via_server(
         set_primary: false,
         signing_key_id: None,
         ka_key_id: None,
+        template: None,
+        template_context: None,
+        template_vars: std::collections::HashMap::new(),
     };
 
     let result = client

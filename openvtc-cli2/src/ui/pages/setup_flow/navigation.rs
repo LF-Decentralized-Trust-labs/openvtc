@@ -105,7 +105,7 @@ pub enum NavResult {
 pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
     match event {
         // === StartAsk ===
-        SetupEvent::CreateNew => NavResult::GoTo(SetupPage::VtaCredentialPaste),
+        SetupEvent::CreateNew => NavResult::GoTo(SetupPage::VtaEnterDid),
         SetupEvent::ImportConfig => NavResult::GoTo(SetupPage::ConfigImport),
 
         // === VtaAuthenticate ===
