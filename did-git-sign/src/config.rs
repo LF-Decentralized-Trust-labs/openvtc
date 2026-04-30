@@ -23,7 +23,8 @@ pub struct SigningConfig {
 /// VTA credentials and key configuration stored securely in the OS keyring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VtaCredentials {
-    /// VTA service URL
+    /// VTA service URL. May be empty for DIDComm-only VTAs (in which case
+    /// `mediator_did` must be set).
     pub vta_url: String,
     /// VTA DID
     pub vta_did: String,
@@ -33,6 +34,15 @@ pub struct VtaCredentials {
     pub private_key_multibase: String,
     /// VTA key ID for the Ed25519 signing key
     pub key_id: String,
+    /// DIDComm mediator DID advertised by the VTA. When set, `did-git-sign`
+    /// authenticates by opening a DIDComm session against this mediator
+    /// instead of running REST challenge-response — required for VTAs that
+    /// don't expose a REST endpoint.
+    ///
+    /// `#[serde(default)]` keeps existing pre-DIDComm keyring entries
+    /// loadable as REST-only configs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mediator_did: Option<String>,
 }
 
 impl SigningConfig {
@@ -209,6 +219,7 @@ mod tests {
             credential_did: "did:key:z6Mk123".to_string(),
             private_key_multibase: "z1234".to_string(),
             key_id: "key-1".to_string(),
+            mediator_did: None,
         };
         let json = serde_json::to_string(&creds).unwrap();
         let parsed: VtaCredentials = serde_json::from_str(&json).unwrap();

@@ -10,16 +10,44 @@ use crate::config::{self, SigningConfig, VtaCredentials};
 /// Maximum number of authentication retry attempts.
 const MAX_AUTH_RETRIES: u32 = 2;
 
-/// Authenticate with VTA, using a cached token if available.
-/// Returns an authenticated VtaClient and the loaded VTA credentials.
+/// Authenticate with VTA, using whichever transport the install captured.
+/// Returns an authenticated `VtaClient` and the loaded VTA credentials.
 ///
-/// Loads VTA credentials from the OS keyring (not from the config file).
-/// On cached token failure, falls back to fresh challenge-response auth.
-/// Retries up to [`MAX_AUTH_RETRIES`] times on transient failures.
+/// - **DIDComm transport** (`mediator_did` is `Some`) — opens a fresh
+///   DIDComm session as the credential DID against the advertised
+///   mediator. The session itself is the authenticator; there is no
+///   bearer token to cache, so the keyring token cache is bypassed on
+///   this path.
+/// - **REST transport** (`mediator_did` is `None`) — original behaviour:
+///   try cached token first, fall back to challenge-response auth with
+///   retry, cache the new token for next time.
 pub async fn authenticate(cfg: &SigningConfig) -> Result<(VtaClient, VtaCredentials)> {
     let creds = config::load_vta_credentials(&cfg.did_key_id)?;
     validate_credentials(&creds)?;
 
+    if let Some(mediator) = &creds.mediator_did {
+        // DIDComm transport. Each `git commit` opens a fresh session;
+        // VtaClient::connect_didcomm handles the handshake and the
+        // resulting client routes get_key_secret over DIDComm via the
+        // SDK's built-in rpc() dispatch.
+        let rest_fallback = if creds.vta_url.is_empty() {
+            None
+        } else {
+            Some(creds.vta_url.clone())
+        };
+        let client = VtaClient::connect_didcomm(
+            &creds.credential_did,
+            &creds.private_key_multibase,
+            &creds.vta_did,
+            mediator,
+            rest_fallback,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("DIDComm session open failed: {e}"))?;
+        return Ok((client, creds));
+    }
+
+    // REST transport.
     let client = VtaClient::new(&creds.vta_url);
 
     // Try cached token first
@@ -49,7 +77,35 @@ pub async fn authenticate(cfg: &SigningConfig) -> Result<(VtaClient, VtaCredenti
 }
 
 /// Validate VTA credentials before use.
+///
+/// REST transport requires a non-empty HTTPS URL. DIDComm transport
+/// (`mediator_did` set) treats `vta_url` as optional — an empty value is
+/// fine for VTAs that publish no `#vta-rest` service at all.
 fn validate_credentials(creds: &VtaCredentials) -> Result<()> {
+    if creds.credential_did.is_empty() {
+        bail!("credential DID is empty");
+    }
+    if creds.key_id.is_empty() {
+        bail!("signing key ID is empty");
+    }
+
+    if creds.mediator_did.is_some() {
+        // DIDComm transport — the URL is optional. If it *is* set, hold
+        // it to the same HTTPS rule (it'll be passed through as a /health
+        // fallback so we don't want to risk leaking creds over plain HTTP).
+        if !creds.vta_url.is_empty()
+            && !creds.vta_url.starts_with("https://")
+            && !creds.vta_url.starts_with("http://localhost")
+        {
+            bail!(
+                "VTA URL must use HTTPS (got: {}). Use http://localhost only for local development.",
+                creds.vta_url
+            );
+        }
+        return Ok(());
+    }
+
+    // REST transport — URL is required.
     if creds.vta_url.is_empty() {
         bail!("VTA URL is empty");
     }
@@ -58,12 +114,6 @@ fn validate_credentials(creds: &VtaCredentials) -> Result<()> {
             "VTA URL must use HTTPS (got: {}). Use http://localhost only for local development.",
             creds.vta_url
         );
-    }
-    if creds.credential_did.is_empty() {
-        bail!("credential DID is empty");
-    }
-    if creds.key_id.is_empty() {
-        bail!("signing key ID is empty");
     }
     Ok(())
 }
@@ -148,6 +198,7 @@ mod tests {
             credential_did: "did:key:z6Mk123".to_string(),
             private_key_multibase: "z...".to_string(),
             key_id: "key-1".to_string(),
+            mediator_did: None,
         }
     }
 
@@ -196,5 +247,30 @@ mod tests {
         let seed = SeedMaterial([0xAB; 32]);
         assert_eq!(seed.as_bytes(), &[0xAB; 32]);
         drop(seed);
+    }
+
+    #[test]
+    fn test_validate_didcomm_only_accepts_empty_url() {
+        let mut creds = test_creds();
+        creds.vta_url = "".to_string();
+        creds.mediator_did = Some("did:peer:0z6Mkmediator".to_string());
+        assert!(validate_credentials(&creds).is_ok());
+    }
+
+    #[test]
+    fn test_validate_didcomm_with_url_still_requires_https() {
+        let mut creds = test_creds();
+        creds.vta_url = "http://example.com".to_string();
+        creds.mediator_did = Some("did:peer:0z6Mkmediator".to_string());
+        assert!(validate_credentials(&creds).is_err());
+    }
+
+    #[test]
+    fn test_validate_didcomm_still_rejects_empty_credential_did() {
+        let mut creds = test_creds();
+        creds.vta_url = "".to_string();
+        creds.mediator_did = Some("did:peer:0z6Mkmediator".to_string());
+        creds.credential_did = "".to_string();
+        assert!(validate_credentials(&creds).is_err());
     }
 }

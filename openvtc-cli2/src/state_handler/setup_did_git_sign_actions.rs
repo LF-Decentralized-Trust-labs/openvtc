@@ -105,8 +105,17 @@ fn try_install(state: &mut State) -> anyhow::Result<()> {
 
     let vta_url = state.setup.vta.vta_url.clone();
     let vta_did = state.setup.vta.vta_did.clone();
-    if vta_url.is_empty() || vta_did.is_empty() {
-        return Err(anyhow::anyhow!("VTA URL/DID not populated in setup state"));
+    let mediator_did = state.setup.vta.mediator_did.clone();
+    if vta_did.is_empty() {
+        return Err(anyhow::anyhow!("VTA DID not populated in setup state"));
+    }
+    // For REST-only VTAs we still need a URL; for DIDComm-only VTAs the
+    // signer talks to the mediator instead, so an empty URL is fine.
+    if vta_url.is_empty() && mediator_did.is_none() {
+        return Err(anyhow::anyhow!(
+            "VTA exposes neither a REST URL nor a DIDComm mediator — \
+             did-git-sign cannot reach the VTA"
+        ));
     }
 
     let user_name = if state.setup.username.is_empty() {
@@ -126,6 +135,7 @@ fn try_install(state: &mut State) -> anyhow::Result<()> {
         credential_private_key_mb: admin.admin_private_key_mb.clone(),
         vta_did,
         vta_url,
+        mediator_did,
         user_name,
         verifying_key: &verifying_key,
     })?;
