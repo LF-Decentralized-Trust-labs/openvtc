@@ -179,6 +179,29 @@ enum Commands {
 
     /// Check configuration, VTA connectivity, and show signing public key
     Health,
+
+    /// Remove this host's did-git-sign install: deletes the JSON config,
+    /// drops the keyring entries, strips the matching allowed_signers
+    /// line, and unsets the relevant git config keys. Idempotent — safe
+    /// to run on a partial / already-clean install.
+    Uninstall {
+        /// Tear down the global install (`~/.config/did-git-sign/`).
+        /// Mutually exclusive with `--local`; when neither is given, the
+        /// command auto-detects whichever install exists at the current
+        /// working directory and falls back to global.
+        #[arg(long)]
+        global: bool,
+
+        /// Tear down the repo-local install (`.did-git-sign.json`).
+        #[arg(long, conflicts_with = "global")]
+        local: bool,
+
+        /// Override the principal to remove. By default the value is read
+        /// from the SigningConfig file. Only set this when the file is
+        /// missing but you still need to clear keyring entries.
+        #[arg(long)]
+        did_key_id: Option<String>,
+    },
 }
 
 #[tokio::main]
@@ -239,6 +262,11 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Verify) => cmd_verify().await,
         Some(Commands::Health) => cmd_health().await,
+        Some(Commands::Uninstall {
+            global,
+            local,
+            did_key_id,
+        }) => cmd_uninstall(global, local, did_key_id),
         None => {
             // sign_file is only legitimate when -Y sign is set (git signing invocation).
             // If it is set without -Y, the user typed an unrecognised subcommand.
@@ -682,6 +710,76 @@ async fn cmd_health() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn cmd_uninstall(
+    global_flag: bool,
+    local_flag: bool,
+    did_key_id_override: Option<String>,
+) -> Result<()> {
+    // Decide which install scope to tear down. `--global` / `--local`
+    // pin the choice; otherwise auto-detect: prefer the repo-local
+    // install when one is present at the CWD, falling back to global.
+    let global = if global_flag {
+        true
+    } else if local_flag {
+        false
+    } else if SigningConfig::repo_local_path().exists() {
+        false
+    } else {
+        true
+    };
+
+    // Discover did_key_id: explicit override, or read from the
+    // SigningConfig file at this scope. The keyring entries are keyed
+    // by it, so we need it to clear them.
+    let config_path = if global {
+        SigningConfig::default_global_path()?
+    } else {
+        SigningConfig::repo_local_path()
+    };
+    let did_key_id = match did_key_id_override {
+        Some(id) => id,
+        None => match SigningConfig::load(&config_path) {
+            Ok(cfg) => cfg.did_key_id,
+            Err(e) => {
+                bail!(
+                    "could not read {} to discover the principal — pass --did-key-id explicitly: {e}",
+                    config_path.display()
+                );
+            }
+        },
+    };
+
+    let summary = init::uninstall(global, &did_key_id)?;
+
+    if let Some(path) = &summary.removed_config_file {
+        println!("Removed config: {}", path.display());
+    } else {
+        println!("Config file already absent");
+    }
+    if !summary.removed_keyring_entries.is_empty() {
+        for key in &summary.removed_keyring_entries {
+            println!("Removed keyring entry: {key}");
+        }
+    } else {
+        println!("Keyring entries already absent");
+    }
+    if summary.allowed_signers_entry_removed {
+        println!("Removed allowed_signers entry for {did_key_id}");
+    }
+    if !summary.git_config_keys_unset.is_empty() {
+        let scope = if global { "--global" } else { "--local" };
+        for key in &summary.git_config_keys_unset {
+            println!("Unset git config {scope} {key}");
+        }
+    }
+    for w in &summary.warnings {
+        eprintln!("warning: {w}");
+    }
+    println!();
+    println!("did-git-sign install removed.");
     Ok(())
 }
 

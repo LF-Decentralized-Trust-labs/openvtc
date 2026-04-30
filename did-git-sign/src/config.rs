@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const KEYRING_SERVICE: &str = "did-git-sign";
+/// Keyring service name under which all `did-git-sign` credentials are
+/// stored. `pub(crate)` so the `init::uninstall` helper can look up the
+/// same entries to remove them.
+pub(crate) const KEYRING_SERVICE: &str = "did-git-sign";
 
 /// Configuration stored in .did-git-sign.json
 ///
