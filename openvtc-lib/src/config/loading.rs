@@ -101,9 +101,9 @@ impl Config {
             }
         } else if let Some(ref credential_bundle) = sc.credential_bundle {
             // VTA-managed config — expose only at the point of decoding.
-            let bundle =
-                CredentialBundle::decode(credential_bundle.expose_secret()).map_err(|e| {
-                    OpenVTCError::Config(format!("Couldn't decode VTA credential bundle: {:?}", e))
+            let bundle: CredentialBundle = serde_json::from_str(credential_bundle.expose_secret())
+                .map_err(|e| {
+                    OpenVTCError::Config(format!("Couldn't decode VTA credential bundle: {e}"))
                 })?;
             let encryption_seed =
                 ProtectedConfig::get_seed_from_credential(&bundle.private_key_multibase)?;
