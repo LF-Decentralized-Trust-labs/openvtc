@@ -1,4 +1,3 @@
-use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent};
 use openvtc::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_DARK_PURPLE, COLOR_ORANGE, COLOR_SUCCESS,
@@ -41,34 +40,29 @@ impl DIDKeysShow {
             }
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 if let Some(did_keys) = &state.props.state.did_keys {
-                    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-                        let mut clipboard = Clipboard::new()?;
+                    let built = (|| -> Result<String, String> {
                         let signing_key = did_keys
                             .signing
                             .secret
                             .get_public_keymultibase()
-                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                            .map_err(|e| format!("{e}"))?;
                         let auth_key = did_keys
                             .authentication
                             .secret
                             .get_public_keymultibase()
-                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+                            .map_err(|e| format!("{e}"))?;
                         let decrypt_key = did_keys
                             .decryption
                             .secret
                             .get_public_keymultibase()
-                            .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
-
-                        let clipboard_text = format!(
-                            "Signing Key (Ed25519): {}\n\nAuthentication Key (Ed25519): {}\n\nDecryption Key (X25519): {}",
-                            signing_key, auth_key, decrypt_key
-                        );
-
-                        clipboard.set_text(clipboard_text)?;
-                        Ok(())
+                            .map_err(|e| format!("{e}"))?;
+                        Ok(format!(
+                            "Signing Key (Ed25519): {signing_key}\n\nAuthentication Key (Ed25519): {auth_key}\n\nDecryption Key (X25519): {decrypt_key}",
+                        ))
                     })();
-
-                    if result.is_ok() {
+                    if let Ok(text) = built
+                        && crate::clipboard::copy_to_clipboard(&text).is_ok()
+                    {
                         state.did_keys_show.cc_copy = true;
                     }
                 }

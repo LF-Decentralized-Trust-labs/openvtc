@@ -1498,28 +1498,19 @@ fn copy_to_clipboard(
     label: &str,
     action_tx: &tokio::sync::mpsc::UnboundedSender<Action>,
 ) {
-    match arboard::Clipboard::new() {
-        Ok(mut clipboard) => match clipboard.set_text(text) {
-            Ok(()) => {
-                tracing::info!(label, "copied to clipboard");
-                // Update the settings status_message so it shows on the Help panel
-                let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(format!(
-                    "✓ {} copied to clipboard",
-                    label
-                ))));
-            }
-            Err(e) => {
-                tracing::warn!(label, error = %e, "failed to copy to clipboard");
-                let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(format!(
-                    "✗ Copy failed: {e}"
-                ))));
-            }
-        },
+    match crate::clipboard::copy_to_clipboard(text) {
+        Ok(method) => {
+            tracing::info!(label, method = method.label(), "copied to clipboard");
+            let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(format!(
+                "✓ {label} copied via {}",
+                method.label()
+            ))));
+        }
         Err(e) => {
-            tracing::warn!(error = %e, "clipboard not available");
-            let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(
-                "✗ Clipboard not available".to_string(),
-            )));
+            tracing::warn!(label, error = %e, "failed to copy to clipboard");
+            let _ = action_tx.send(Action::Settings(SettingsAction::ClipboardCopied(format!(
+                "✗ Copy failed: {e}"
+            ))));
         }
     }
 }
