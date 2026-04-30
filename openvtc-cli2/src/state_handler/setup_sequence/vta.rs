@@ -9,11 +9,16 @@ use openvtc::config::{KeyInfo, PersonaDIDKeys, secured_config::KeySourceMaterial
 use vta_sdk::{
     client::{CreateDidWebvhRequest, CreateKeyRequest, VtaClient},
     keys::KeyType,
+    provision_client::Protocol,
     session::{TokenResult, challenge_response},
     webvh::WebvhServerRecord,
 };
 
-/// Authenticate with VTA using challenge-response
+use crate::state_handler::setup_sequence::VtaSetupState;
+
+/// Authenticate with VTA using REST challenge-response. Only valid for the
+/// REST transport — DIDComm-only VTAs authenticate implicitly when the
+/// session opens.
 pub async fn authenticate(
     vta_url: &str,
     credential_did: &str,
@@ -23,6 +28,55 @@ pub async fn authenticate(
     challenge_response(vta_url, credential_did, private_key_multibase, vta_did)
         .await
         .map_err(|e| anyhow::anyhow!("VTA authentication failed: {e}"))
+}
+
+/// Build a [`VtaClient`] using whichever transport bootstrap selected.
+///
+/// REST path: requires `vta_url` + `access_token` already populated.
+/// DIDComm path: opens a fresh DIDComm session as the rotated admin DID
+/// against the advertised mediator. The session itself is the auth, so
+/// no separate token is needed.
+pub async fn build_vta_client(setup: &VtaSetupState) -> Result<VtaClient> {
+    match setup.protocol {
+        Some(Protocol::DidComm) => {
+            let mediator = setup
+                .mediator_did
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("DIDComm transport: mediator_did not captured"))?;
+            let admin = setup
+                .admin_credential
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("DIDComm transport: admin_credential missing"))?;
+            let rest_fallback = if setup.vta_url.is_empty() {
+                None
+            } else {
+                Some(setup.vta_url.clone())
+            };
+            VtaClient::connect_didcomm(
+                &admin.admin_did,
+                &admin.admin_private_key_mb,
+                &setup.vta_did,
+                mediator,
+                rest_fallback,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("DIDComm session open failed: {e}"))
+        }
+        // REST (or unset — falls through to REST for compatibility with
+        // any pre-protocol-tracked state).
+        _ => {
+            let token = setup
+                .access_token
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("REST transport: access_token missing"))?;
+            if setup.vta_url.is_empty() {
+                return Err(anyhow::anyhow!("REST transport: vta_url is empty"));
+            }
+            let client = VtaClient::new(&setup.vta_url);
+            client.set_token(token);
+            Ok(client)
+        }
+    }
 }
 
 /// Create persona keys via VTA service

@@ -12,7 +12,7 @@ use std::fmt;
 use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
 use tokio::sync::Mutex;
-use vta_sdk::provision_client::{AdminCredentialReply, DiagEntry, EphemeralSetupKey};
+use vta_sdk::provision_client::{AdminCredentialReply, DiagEntry, EphemeralSetupKey, Protocol};
 use vta_sdk::webvh::WebvhServerRecord;
 
 pub mod config;
@@ -157,6 +157,15 @@ pub struct VtaSetupState {
     /// `admin_did` becomes the new `credential_did` and the matching private
     /// key is what `challenge_response` re-authenticates with.
     pub admin_credential: Option<AdminCredentialReply>,
+    /// Transport the bootstrap actually used. `Some(Protocol::DidComm)` means
+    /// downstream calls must reuse DIDComm (the VTA may not advertise REST at
+    /// all); `Some(Protocol::Rest)` means REST. `None` until provisioning
+    /// completes.
+    pub protocol: Option<Protocol>,
+    /// DIDComm mediator DID, captured from `VtaEvent::Connected` when the
+    /// chosen transport is DIDComm. Required to open further DIDComm sessions
+    /// post-bootstrap.
+    pub mediator_did: Option<String>,
 }
 
 impl fmt::Debug for VtaSetupState {
@@ -198,6 +207,8 @@ impl fmt::Debug for VtaSetupState {
                     .as_ref()
                     .map(|a| format!("<admin_did={}>", a.admin_did)),
             )
+            .field("protocol", &self.protocol)
+            .field("mediator_did", &self.mediator_did)
             .finish()
     }
 }

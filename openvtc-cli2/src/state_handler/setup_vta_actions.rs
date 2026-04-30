@@ -5,8 +5,8 @@ use crate::state_handler::{
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use vta_sdk::provision_client::{
-    DiagStatus, EphemeralSetupKey, ProvisionAsk, VtaEvent, VtaIntent, VtaReply, apply_update,
-    pending_list, run_connection_test,
+    DiagStatus, EphemeralSetupKey, Protocol, ProvisionAsk, VtaEvent, VtaIntent, VtaReply,
+    apply_update, pending_list, run_connection_test,
 };
 
 /// Handle the `VtaSubmitDid` action: resolve the VTA service URL from the
@@ -133,6 +133,7 @@ pub(crate) async fn handle_vta_start_provision(
     let mut admin_reply: Option<vta_sdk::provision_client::AdminCredentialReply> = None;
     let mut connect_rest_url: Option<String> = None;
     let mut connect_mediator_did: Option<String> = None;
+    let mut connect_protocol: Option<Protocol> = None;
 
     while let Some(ev) = rx.recv().await {
         match ev {
@@ -155,11 +156,12 @@ pub(crate) async fn handle_vta_start_provision(
                 // AdminOnly intent never reaches preflight — FullSetup-only.
             }
             VtaEvent::Connected {
+                protocol,
                 rest_url,
                 mediator_did,
                 reply,
-                ..
             } => {
+                connect_protocol = Some(protocol);
                 connect_rest_url = rest_url;
                 connect_mediator_did = mediator_did;
                 if let VtaReply::AdminOnly(adm) = reply {
@@ -196,73 +198,138 @@ pub(crate) async fn handle_vta_start_provision(
     if let Some(rest) = connect_rest_url {
         state.setup.vta.vta_url = rest;
     }
-    if let Some(mediator) = connect_mediator_did
+    if let Some(ref mediator) = connect_mediator_did
         && state.setup.custom_mediator.is_none()
     {
-        state.setup.custom_mediator = Some(mediator);
+        state.setup.custom_mediator = Some(mediator.clone());
     }
-    state
-        .setup
-        .vta
-        .messages
-        .push(MessageType::Info("Authenticating with VTA…".to_string()));
-    let _ = state_tx.send(state.clone());
+    state.setup.vta.protocol = connect_protocol;
+    state.setup.vta.mediator_did = connect_mediator_did;
 
-    let vta_url = state.setup.vta.vta_url.clone();
-    match vta::authenticate(
-        &vta_url,
-        &admin.admin_did,
-        &admin.admin_private_key_mb,
-        &vta_did,
-    )
-    .await
-    {
-        Ok(token_result) => {
-            state.setup.vta.access_token = Some(token_result.access_token.clone());
-            state.setup.vta.authenticated = true;
-            state.setup.vta.admin_credential = Some(admin);
+    // Build the post-bootstrap VtaClient on the same transport the bootstrap
+    // chose. REST → challenge-response auth + bearer token. DIDComm → open a
+    // fresh DIDComm session as the rotated admin DID; the session itself is
+    // the auth, so no separate token round-trip is needed (and indeed there
+    // may be no REST endpoint at all on a DIDComm-only VTA).
+    let client = match connect_protocol {
+        Some(Protocol::DidComm) => {
+            let mediator = match state.setup.vta.mediator_did.clone() {
+                Some(m) => m,
+                None => {
+                    state.setup.vta.messages.push(MessageType::Error(
+                        "DIDComm transport selected but no mediator DID was advertised."
+                            .to_string(),
+                    ));
+                    state.setup.vta.completed = Completion::CompletedFail;
+                    let _ = state_tx.send(state.clone());
+                    return Ok(());
+                }
+            };
             state.setup.vta.messages.push(MessageType::Info(
-                "VTA authentication successful.".to_string(),
+                "Opening DIDComm session as rotated admin DID…".to_string(),
             ));
+            let _ = state_tx.send(state.clone());
 
-            // Discover available WebVH servers (context is already known, so
-            // skip the ACL-based context discovery path).
-            let client = VtaClient::new(&vta_url);
-            client.set_token(token_result.access_token);
-            match vta::list_webvh_servers(&client).await {
-                Ok(servers) => {
-                    if !servers.is_empty() {
-                        state.setup.vta.messages.push(MessageType::Info(format!(
-                            "Found {} WebVH server(s) available for DID hosting.",
-                            servers.len()
-                        )));
-                    }
-                    state.setup.vta.webvh_servers = servers;
+            let rest_fallback = if state.setup.vta.vta_url.is_empty() {
+                None
+            } else {
+                Some(state.setup.vta.vta_url.clone())
+            };
+            match VtaClient::connect_didcomm(
+                &admin.admin_did,
+                &admin.admin_private_key_mb,
+                &vta_did,
+                &mediator,
+                rest_fallback,
+            )
+            .await
+            {
+                Ok(c) => {
+                    state.setup.vta.authenticated = true;
+                    state.setup.vta.admin_credential = Some(admin.clone());
+                    state.setup.vta.messages.push(MessageType::Info(
+                        "DIDComm session established with VTA.".to_string(),
+                    ));
+                    c
                 }
                 Err(e) => {
-                    state.setup.vta.messages.push(MessageType::Info(format!(
-                        "Could not list WebVH servers: {e}"
+                    state.setup.vta.messages.push(MessageType::Error(format!(
+                        "DIDComm session open failed: {e}"
                     )));
-                    state.setup.vta.webvh_servers = vec![];
+                    state.setup.vta.completed = Completion::CompletedFail;
+                    let _ = state_tx.send(state.clone());
+                    return Ok(());
                 }
             }
-
-            state.setup.vta.completed = Completion::CompletedOK;
-            // Stay on VtaProvisioning so the operator can see the admin DID
-            // rotation result (ephemeral setup DID → long-term admin DID)
-            // before advancing on Enter.
-            let _ = state_tx.send(state.clone());
         }
-        Err(e) => {
+        _ => {
             state
                 .setup
                 .vta
                 .messages
-                .push(MessageType::Error(format!("Authentication failed: {e}")));
-            state.setup.vta.completed = Completion::CompletedFail;
+                .push(MessageType::Info("Authenticating with VTA…".to_string()));
             let _ = state_tx.send(state.clone());
+
+            let vta_url = state.setup.vta.vta_url.clone();
+            match vta::authenticate(
+                &vta_url,
+                &admin.admin_did,
+                &admin.admin_private_key_mb,
+                &vta_did,
+            )
+            .await
+            {
+                Ok(token_result) => {
+                    state.setup.vta.access_token = Some(token_result.access_token.clone());
+                    state.setup.vta.authenticated = true;
+                    state.setup.vta.admin_credential = Some(admin.clone());
+                    state.setup.vta.messages.push(MessageType::Info(
+                        "VTA authentication successful.".to_string(),
+                    ));
+                    let client = VtaClient::new(&vta_url);
+                    client.set_token(token_result.access_token);
+                    client
+                }
+                Err(e) => {
+                    state
+                        .setup
+                        .vta
+                        .messages
+                        .push(MessageType::Error(format!("Authentication failed: {e}")));
+                    state.setup.vta.completed = Completion::CompletedFail;
+                    let _ = state_tx.send(state.clone());
+                    return Ok(());
+                }
+            }
+        }
+    };
+
+    // Discover available WebVH servers (context is already known, so skip
+    // the ACL-based context discovery path). The SDK's list_webvh_servers
+    // routes through the chosen transport automatically.
+    match vta::list_webvh_servers(&client).await {
+        Ok(servers) => {
+            if !servers.is_empty() {
+                state.setup.vta.messages.push(MessageType::Info(format!(
+                    "Found {} WebVH server(s) available for DID hosting.",
+                    servers.len()
+                )));
+            }
+            state.setup.vta.webvh_servers = servers;
+        }
+        Err(e) => {
+            state.setup.vta.messages.push(MessageType::Info(format!(
+                "Could not list WebVH servers: {e}"
+            )));
+            state.setup.vta.webvh_servers = vec![];
         }
     }
+
+    state.setup.vta.completed = Completion::CompletedOK;
+    // Stay on VtaProvisioning so the operator can see the admin DID rotation
+    // result (ephemeral setup DID → long-term admin DID) before advancing on
+    // Enter.
+    let _ = state_tx.send(state.clone());
 
     Ok(())
 }
@@ -274,7 +341,6 @@ pub(crate) async fn handle_vta_create_keys(
     state_tx: &watch::Sender<State>,
 ) -> anyhow::Result<bool> {
     use crate::state_handler::setup_sequence::vta;
-    use vta_sdk::client::VtaClient;
 
     state.setup.vta.messages.clear();
     state.setup.vta.completed = Completion::NotFinished;
@@ -284,19 +350,18 @@ pub(crate) async fn handle_vta_create_keys(
     ));
     let _ = state_tx.send(state.clone());
 
-    let access_token = match state.setup.vta.access_token.clone() {
-        Some(t) => t,
-        None => {
-            state.setup.vta.messages.push(MessageType::Error(
-                "VTA access token not available. Please authenticate first.".to_string(),
-            ));
+    let client = match vta::build_vta_client(&state.setup.vta).await {
+        Ok(c) => c,
+        Err(e) => {
+            state
+                .setup
+                .vta
+                .messages
+                .push(MessageType::Error(format!("VTA client unavailable: {e}")));
             state.setup.vta.completed = Completion::CompletedFail;
             return Ok(true);
         }
     };
-    let vta_url = state.setup.vta.vta_url.clone();
-    let client = VtaClient::new(&vta_url);
-    client.set_token(access_token);
 
     // Create persona keys (signing, authentication, encryption)
     let context_id = state.setup.vta.context_id.as_deref();

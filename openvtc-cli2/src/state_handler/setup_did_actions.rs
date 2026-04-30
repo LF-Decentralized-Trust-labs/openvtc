@@ -90,7 +90,7 @@ pub(crate) async fn handle_webvh_server_create_did(
     server_id: String,
     custom_path: Option<String>,
 ) -> anyhow::Result<bool> {
-    use vta_sdk::client::VtaClient;
+    use crate::state_handler::setup_sequence::vta;
 
     state.setup.vta.use_webvh_server = true;
     state.setup.active_page = SetupPage::WebvhServerProgress;
@@ -101,19 +101,18 @@ pub(crate) async fn handle_webvh_server_create_did(
     ));
     let _ = state_tx.send(state.clone());
 
-    let access_token = match state.setup.vta.access_token.clone() {
-        Some(t) => t,
-        None => {
-            state.setup.webvh_server.messages.push(MessageType::Error(
-                "VTA access token not available.".to_string(),
-            ));
+    let client = match vta::build_vta_client(&state.setup.vta).await {
+        Ok(c) => c,
+        Err(e) => {
+            state
+                .setup
+                .webvh_server
+                .messages
+                .push(MessageType::Error(format!("VTA client unavailable: {e}")));
             state.setup.webvh_server.completed = Completion::CompletedFail;
             return Ok(true);
         }
     };
-    let vta_url = state.setup.vta.vta_url.clone();
-    let client = VtaClient::new(&vta_url);
-    client.set_token(access_token);
 
     let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
 
@@ -135,7 +134,7 @@ pub(crate) async fn handle_custom_mediator_webvh(
     state_tx: &watch::Sender<State>,
     tdk: &TDK,
 ) -> anyhow::Result<bool> {
-    use vta_sdk::client::VtaClient;
+    use crate::state_handler::setup_sequence::vta;
 
     state.setup.active_page = SetupPage::WebvhServerProgress;
     state.setup.webvh_server.messages.clear();
@@ -145,19 +144,18 @@ pub(crate) async fn handle_custom_mediator_webvh(
     ));
     let _ = state_tx.send(state.clone());
 
-    let access_token = match state.setup.vta.access_token.clone() {
-        Some(t) => t,
-        None => {
-            state.setup.webvh_server.messages.push(MessageType::Error(
-                "VTA access token not available.".to_string(),
-            ));
+    let client = match vta::build_vta_client(&state.setup.vta).await {
+        Ok(c) => c,
+        Err(e) => {
+            state
+                .setup
+                .webvh_server
+                .messages
+                .push(MessageType::Error(format!("VTA client unavailable: {e}")));
             state.setup.webvh_server.completed = Completion::CompletedFail;
             return Ok(true);
         }
     };
-    let vta_url = state.setup.vta.vta_url.clone();
-    let client = VtaClient::new(&vta_url);
-    client.set_token(access_token);
 
     let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
     let server_id = state.setup.webvh_server.selected_server_id.clone();
