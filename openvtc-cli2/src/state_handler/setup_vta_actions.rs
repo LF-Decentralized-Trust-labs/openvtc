@@ -109,13 +109,17 @@ pub(crate) async fn handle_vta_start_provision(
     let _ = state_tx.send(state.clone());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<VtaEvent>();
-    let ask = ProvisionAsk::vta_admin(context_id.clone()).with_label("openvtc");
+    // AdminRotated mints a fresh long-term admin DID on the VTA side; the
+    // ephemeral setup did:key is only used to authenticate the bootstrap
+    // call. The reply still arrives as `VtaReply::AdminOnly`, so the rest
+    // of this handler is unchanged.
+    let ask = ProvisionAsk::vta_admin_rotated(context_id.clone()).with_label("openvtc");
     let setup_did = setup_key.did.clone();
     let setup_priv = setup_key.private_key_multibase().to_string();
     let runner_vta_did = vta_did.clone();
     tokio::spawn(async move {
         run_connection_test(
-            VtaIntent::AdminOnly,
+            VtaIntent::AdminRotated,
             runner_vta_did,
             setup_did,
             setup_priv,
