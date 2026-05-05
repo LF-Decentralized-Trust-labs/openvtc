@@ -36,9 +36,6 @@ pub mod public_config;
 pub mod saving;
 pub mod secured_config;
 
-// Re-export from sub-modules so external import paths remain unchanged
-pub use keys::secret_from_vta_response;
-
 /// Derives a 32-byte key from a user-provided passphrase using Argon2id.
 ///
 /// Uses Argon2id (RFC 9106) with a domain-specific salt derived from `info`.

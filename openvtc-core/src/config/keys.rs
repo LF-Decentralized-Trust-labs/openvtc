@@ -134,7 +134,7 @@ impl Config {
                                     .await
                                     .ok()
                                     .and_then(|resp| {
-                                        crate::config::secret_from_vta_response(&resp, kp)
+                                        secret_from_vta_response(&resp, kp)
                                             .map(|mut s| {
                                                 s.id = key_id.clone();
                                                 s
@@ -243,7 +243,7 @@ impl Config {
 ///
 /// Returns [`OpenVTCError::Secret`] if the private key multibase cannot be decoded
 /// or the secret cannot be constructed from the decoded material.
-pub fn secret_from_vta_response(
+pub(crate) fn secret_from_vta_response(
     resp: &vta_sdk::client::GetKeySecretResponse,
     _purpose: KeyPurpose,
 ) -> Result<Secret, OpenVTCError> {

@@ -31,9 +31,9 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 const SERVICE: &str = "openvtc";
 
 /// Returns the `keyring` service name openvtc stores its `SecuredConfig`
-/// under. Exposed for cleanup helpers that need to address the same entry.
+/// under. Used by sibling modules that need to address the same entry.
 #[must_use]
-pub fn service_name() -> &'static str {
+pub(crate) fn service_name() -> &'static str {
     SERVICE
 }
 

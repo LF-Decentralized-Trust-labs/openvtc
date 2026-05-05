@@ -313,7 +313,7 @@ impl Relationships {
                 match handle.await {
                     Ok(Ok(resp)) => {
                         if let Ok(mut s) =
-                            crate::config::secret_from_vta_response(&resp, fetch.purpose)
+                            crate::config::keys::secret_from_vta_response(&resp, fetch.purpose)
                         {
                             s.id = fetch.secret_id.clone();
                             all_secrets.push(s);
