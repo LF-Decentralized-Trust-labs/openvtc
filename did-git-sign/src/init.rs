@@ -510,6 +510,7 @@ mod tests {
         // Move into the temp repo so that `git config --local` targets it.
         // The inner block ensures CwdGuard is dropped (and CWD restored) before
         // the assertions run, keeping the verify step independent of CWD.
+        let original_cwd = std::env::current_dir().unwrap();
         {
             let _cwd = CwdGuard::change_to(dir.path());
             let config_path = dir.path().join(".did-git-sign.json");
@@ -520,6 +521,15 @@ mod tests {
             setup_git(&config_path, &cfg, false).unwrap();
             // _cwd drops here: original directory is restored
         }
+        // Pin the invariant explicitly so a future edit that moves the
+        // verify command inside the guard's scope (or drops the guard) is
+        // caught loudly rather than silently regressing the CWD-independence
+        // promise the inner block makes.
+        assert_eq!(
+            std::env::current_dir().unwrap(),
+            original_cwd,
+            "CwdGuard must restore the original directory on drop"
+        );
 
         // Verify with an explicit -C so the check is not sensitive to the current CWD.
         let out = std::process::Command::new("git")

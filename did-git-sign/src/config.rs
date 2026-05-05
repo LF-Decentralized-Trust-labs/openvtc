@@ -13,7 +13,13 @@ pub(crate) const KEYRING_SERVICE: &str = "did-git-sign";
 /// All VTA credentials and key identifiers are stored in the OS keyring.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SigningConfig {
-    /// The DID#key-id to use as git user.email (e.g., did:webvh:abc:example.com#key-0)
+    /// The signing DID + key fragment, e.g. `did:webvh:abc:example.com#key-0`.
+    ///
+    /// This is the public identity recorded in the SSH signature's
+    /// `Signed-By` principal (via `allowed_signers`); it is **not** written
+    /// to git's `user.email`. Setup deliberately leaves `user.email` alone
+    /// so a DID-shaped value doesn't collide with real email-shaped expectations
+    /// in third-party tooling.
     pub did_key_id: String,
     /// Git user.name to set during init
     #[serde(skip_serializing_if = "Option::is_none")]

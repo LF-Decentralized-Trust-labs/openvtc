@@ -239,9 +239,17 @@ async fn main() -> Result<()> {
                 // to ssh-keygen. did-git-sign only intercepts signing — everything else
                 // requires no VTA authentication and is handled natively by ssh-keygen.
                 let code = delegate_to_ssh_keygen(op, &cli)?;
-                // NOTE: process::exit skips tokio runtime shutdown. Safe here because no
-                // async work is performed in this branch after delegation. If async work
-                // is ever added above this line, switch to a clean return from main instead.
+                // NOTE: process::exit skips tokio runtime shutdown AND any
+                // `Drop` impls on stack-resident values. Safe here because:
+                //   1. no async work happens in this branch after delegation;
+                //   2. inherited stdio (stdout/stderr) doesn't buffer
+                //      in-process — bytes have already crossed the syscall
+                //      boundary by the time we reach this line, so there's
+                //      nothing to flush.
+                // If a future edit introduces `println!`/`eprintln!` between
+                // the delegation and this exit, point (2) no longer holds —
+                // switch to a clean `return Ok(())` from main and propagate
+                // the exit code via the `Result` instead.
                 std::process::exit(code);
             }
         }
@@ -271,16 +279,20 @@ async fn main() -> Result<()> {
             did_key_id,
         }) => cmd_uninstall(global, local, did_key_id),
         None => {
-            // sign_file is only legitimate when -Y sign is set (git signing invocation).
-            // If it is set without -Y, the user typed an unrecognised subcommand.
-            // Without this guard, typos like `did-git-sign verfy` silently fall through to help.
+            // `sign_file` is only legitimate when `-Y sign` is set (git signing
+            // invocation), which is handled in the early-return block above. If
+            // we reach this arm with `sign_file` populated, the user typed an
+            // unrecognised subcommand — without this guard, typos like
+            // `did-git-sign verfy` silently fall through to help.
+            //
+            // (No nested `cli.operation.is_none()` check: the early-return
+            // block consumes any `-Y` operation before we get here, so it's
+            // always `None` in this arm.)
             if let Some(f) = &cli.sign_file {
-                if cli.operation.is_none() {
-                    anyhow::bail!(
-                        "unrecognised subcommand {:?}\n\nUsage: did-git-sign [COMMAND]\n\nRun 'did-git-sign --help' for available commands.",
-                        f.display()
-                    );
-                }
+                anyhow::bail!(
+                    "unrecognised subcommand {:?}\n\nUsage: did-git-sign [COMMAND]\n\nRun 'did-git-sign --help' for available commands.",
+                    f.display()
+                );
             }
             use clap::CommandFactory;
             Cli::command().print_help()?;

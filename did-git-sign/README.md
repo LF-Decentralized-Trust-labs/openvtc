@@ -118,6 +118,14 @@ did-git-sign status
   safety margin before reuse.
 - **Zeroization** — signing key material is zeroized immediately after use via
   the `zeroize` crate.
+- **`DID_GIT_SIGN_SSH_KEYGEN` override is test-only.** The path to `ssh-keygen`
+  used for the verify / find-principals / check-novalidate delegation paths
+  can be overridden via this environment variable so test fixtures can point
+  at a mock binary. **Do not set it in production.** An attacker with write
+  access to your environment could redirect signature verification to a
+  binary that always returns success and silently accept forged signatures.
+  The override has no effect on the *signing* path, which never invokes
+  `ssh-keygen`.
 
 ## Architecture
 
