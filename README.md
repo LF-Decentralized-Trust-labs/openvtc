@@ -1,6 +1,6 @@
 # Open Verifiable Trust Community (OpenVTC) with First Person Protocol
 
-[![Rust](https://img.shields.io/badge/rust-1.91.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/openvtc)
+[![Rust](https://img.shields.io/badge/rust-1.94.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/openvtc)
 
 A CLI tool for establishing verifiable trust relationships within developer
 communities using Decentralised Identifiers (DIDs) and Verifiable Credentials
@@ -201,7 +201,7 @@ For more details, refer to the [Secured Configuration Management](./docs/secured
 
 ## Prerequisites
 
-1. Rust version 1.91.0 or higher (Install [Rust](https://rust-lang.org/learn/get-started/))
+1. Rust version 1.94.0 or higher (Install [Rust](https://rust-lang.org/learn/get-started/))
 2. Publicly accessible domain to host your DID document.
 3. **Optional:** DIDComm mediator to send messages. OpenVTC provides a default DIDComm mediator.
 4. **Optional:** Set environment variables.
@@ -234,6 +234,7 @@ This repository is a Cargo workspace. The root `Cargo.toml` defines the followin
 | `openvtc-core` | Core library — config, storage, cryptography, DID logic |
 | `openvtc` | Terminal UI (TUI) interface |
 | `openvtc-service` | Background service component |
+| `did-git-sign` | Git commit signing proxy using DID Ed25519 keys |
 | `robotic-maintainers` | Automated maintenance tooling |
 
 ### Building

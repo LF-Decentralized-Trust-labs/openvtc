@@ -6,11 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-04-17
+## [0.2.0] - 2026-05-05
 
 ### Added
 
-- **Full TUI main menu panels** in `openvtc-cli2` — 8 panels: Inbox, Relationships, Credentials, Settings, VTA Service, Logs, Help/Status, Quit
+- **Full TUI main menu panels** in `openvtc` — 8 panels: Inbox, Relationships, Credentials, Settings, VTA Service, Logs, Help/Status, Quit
 - **Inbox panel** with real-time task processing: auto-handles trust-pongs, relationship finalization, and rejections; queues interactive tasks; detail views for all task types (inbound/outbound requests, VRCs, pings, informational)
 - **Relationships panel** with list/detail/new-request views, inline alias editing ('e' key), R-DID privacy toggle, trust-ping with RTT latency
 - **Credentials panel** with Received/Issued tabs, raw VRC JSON in detail view, clipboard copy ('c' key), VRC request and removal
@@ -56,12 +56,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Backspace to empty** in relationship form fields
 - **Tab after backspace fix** — dedicated `FocusField` action for field switching
 - **DIDComm listener secrets** — pass DID secrets to listeners for mediator authentication
-- **Mediator delete IDs** in `openvtc-cli` — `fetch_tasks` no longer pushes the DIDComm protocol id (`unpacked_msg.id`) into the bulk delete list; only the mediator‑native `msg.msg_id` is used. Mixing the two ID domains left messages in the queue and caused duplicate processing on the next fetch (refs #44)
 - All `.unwrap()`/`.expect()` replaced with proper error propagation
 - Clipboard graceful degradation, `sanitize_display` ANSI stripping order
 
 ### Changed
 
+- **Workspace consolidation** — renamed the active CLI package and binary `openvtc-cli2` → `openvtc`, and renamed the supporting library `openvtc-lib` → `openvtc-core`. The unsuffixed name now belongs to the user-facing binary, matching the convention used by uv, ruff, deno, and cargo. The library is `publish = false`, so no external consumers are affected.
+- **`vta-sdk` 0.5** consumed from crates.io — dropped the temporary `../verifiable-trust-infrastructure/vta-sdk` path pin so the workspace no longer requires a sibling checkout to build.
 - **Replaced manual messaging layer** with `affinidi-messaging-didcomm-service` — deleted messaging/mod.rs (~280 lines) and outbound_queue.rs (~90 lines), added didcomm.rs (~260 lines) with Router, listeners, and send_message_with_retry
 - Grouped ~65-variant Action enum into 5 domain sub-enums
 - `tokio::sync::watch` replaces mpsc for State updates
@@ -71,6 +72,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Explicit `Arc::clone()`, `#[must_use]` on pure functions, doc comments on State types
 - `VecDeque<String>` for O(1) bounded activity log
 - `RelationshipRequestBody.name` protocol field for friendly names
+
+### Removed
+
+- **Legacy `openvtc-cli` crate** — the original prompt-driven CLI was phased out in favour of the TUI. All ongoing work lives in `openvtc`.
+- **Dead `VtaAuthenticate` setup page** — online provisioning emits `VtaAuthCompleted` directly from `VtaProvisioning`, so the legacy authenticate screen was unreachable.
 
 ## [0.1.5] - 2026-04-14
 

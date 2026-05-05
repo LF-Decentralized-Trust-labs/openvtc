@@ -75,7 +75,7 @@ Generated new Relationship DID for contact FrancisP2 :: did:peer:2.Vz6Mkkop...
 ✅ Successfully sent Relationship Request to did:webvh:QmQzm...
 ```
 
-For more details, see the [CLI documentation](./openvtc-tool-commands.md/#openvtc-relationships).
+For more details, see the [CLI documentation](./openvtc-tool-commands.md#openvtc-relationships).
 
 ### 2. Accept Relationship Request (Respondent)
 
