@@ -71,3 +71,157 @@ pub fn remove_vrc(config: &mut Config, vrc_id: &str) -> Result<()> {
     debug!(vrc_id = %vrc_id, "VRC removed");
     Ok(())
 }
+
+// ============================================================
+// State-handler dispatch wrappers
+// ============================================================
+
+use crate::state_handler::{
+    actions::CredentialAction,
+    log_did,
+    main_page::content::{CredentialTab, CredentialsMode},
+    settings_actions,
+    state::State,
+};
+
+fn handle_switch_tab(state: &mut State) {
+    state.main_page.content_panel.credentials.selected_tab =
+        match state.main_page.content_panel.credentials.selected_tab {
+            CredentialTab::Received => CredentialTab::Issued,
+            CredentialTab::Issued => CredentialTab::Received,
+        };
+    state.main_page.content_panel.credentials.selected_index = 0;
+}
+
+fn handle_open_detail(state: &mut State, index: usize) {
+    state.main_page.content_panel.credentials.selected_index = index;
+    state.main_page.content_panel.credentials.mode = CredentialsMode::Detail { index };
+}
+
+fn handle_back(state: &mut State) {
+    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+    state.main_page.content_panel.credentials.selected_index = 0;
+}
+
+fn handle_start_new_request(state: &mut State) {
+    state.main_page.content_panel.credentials.mode = CredentialsMode::NewRequest {
+        relationship_index: 0,
+        reason_input: String::new(),
+    };
+}
+
+fn handle_select_relationship(state: &mut State, index: usize) {
+    if let CredentialsMode::NewRequest {
+        ref mut relationship_index,
+        ..
+    } = state.main_page.content_panel.credentials.mode
+    {
+        let established_count = state
+            .main_page
+            .content_panel
+            .relationships
+            .relationships
+            .iter()
+            .filter(|r| r.state == "Established")
+            .count();
+        if index < established_count {
+            *relationship_index = index;
+        }
+    }
+}
+
+fn handle_reason_update(state: &mut State, value: String) {
+    if let CredentialsMode::NewRequest {
+        ref mut reason_input,
+        ..
+    } = state.main_page.content_panel.credentials.mode
+    {
+        *reason_input = value;
+    }
+}
+
+async fn handle_submit_request(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &DIDCommService,
+    state: &mut State,
+    profile: &str,
+    relationship_p_did: &str,
+    reason: Option<&str>,
+) {
+    match send_vrc_request(config, tdk, service, relationship_p_did, reason).await {
+        Ok(()) => {
+            state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+            state.main_page.content_panel.credentials.status_message = Some(format!(
+                "VRC request sent to {}",
+                log_did(relationship_p_did)
+            ));
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state.main_page.log_error("Failed to save config", &e);
+            }
+            state.main_page.sync_from_config(config);
+            state.main_page.log(format!(
+                "VRC request sent to {}",
+                log_did(relationship_p_did)
+            ));
+        }
+        Err(e) => {
+            state.main_page.content_panel.credentials.status_message =
+                Some(format!("Error: {e:#}"));
+            state.main_page.log_error("Failed to send VRC request", &e);
+        }
+    }
+}
+
+fn handle_remove(config: &mut Box<Config>, state: &mut State, profile: &str, vrc_id: &str) {
+    if let Err(e) = remove_vrc(config, vrc_id) {
+        state.main_page.log_error("Failed to remove VRC", &e);
+        return;
+    }
+    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+    state.main_page.content_panel.credentials.selected_index = 0;
+    state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
+    if let Err(e) = settings_actions::save_config(config, profile) {
+        state.main_page.log_error("Failed to save config", &e);
+    }
+    state.main_page.sync_from_config(config);
+    state.main_page.log("VRC removed");
+}
+
+/// Dispatch a single `CredentialAction` to its handler.
+pub(crate) async fn dispatch(
+    action: CredentialAction,
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    service: &DIDCommService,
+    state: &mut State,
+    profile: &str,
+) {
+    match action {
+        CredentialAction::SwitchTab => handle_switch_tab(state),
+        CredentialAction::Select(index) => {
+            state.main_page.content_panel.credentials.selected_index = index;
+        }
+        CredentialAction::OpenDetail(index) => handle_open_detail(state, index),
+        CredentialAction::Back | CredentialAction::CancelNewRequest => handle_back(state),
+        CredentialAction::StartNewRequest => handle_start_new_request(state),
+        CredentialAction::SelectRelationship(index) => handle_select_relationship(state, index),
+        CredentialAction::ReasonUpdate(value) => handle_reason_update(state, value),
+        CredentialAction::SubmitRequest {
+            relationship_p_did,
+            reason,
+        } => {
+            handle_submit_request(
+                config,
+                tdk,
+                service,
+                state,
+                profile,
+                &relationship_p_did,
+                reason.as_deref(),
+            )
+            .await
+        }
+        CredentialAction::Remove { vrc_id } => handle_remove(config, state, profile, &vrc_id),
+    }
+}

@@ -1,7 +1,7 @@
 use crate::{
     Interrupted, Terminator,
     state_handler::{
-        actions::{Action, ContactAction, CredentialAction, SettingsAction},
+        actions::{Action, ContactAction, SettingsAction},
         main_page::MainPanel,
         state::{ActivePage, State},
     },
@@ -517,34 +517,16 @@ impl StateHandler {
                         )
                         .await;
                     },
-                    Action::Credential(ca) => match ca {
-                        CredentialAction::SwitchTab => {
-                            handle_credential_switch_tab(&mut state);
-                        },
-                        CredentialAction::Select(index) => {
-                            state.main_page.content_panel.credentials.selected_index = index;
-                        },
-                        CredentialAction::OpenDetail(index) => {
-                            handle_credential_open_detail(&mut state, index);
-                        },
-                        CredentialAction::Back | CredentialAction::CancelNewRequest => {
-                            handle_credential_back(&mut state);
-                        },
-                        CredentialAction::StartNewRequest => {
-                            handle_credential_start_new_request(&mut state);
-                        },
-                        CredentialAction::SelectRelationship(index) => {
-                            handle_credential_select_relationship(&mut state, index);
-                        },
-                        CredentialAction::ReasonUpdate(value) => {
-                            handle_credential_reason_update(&mut state, value);
-                        },
-                        CredentialAction::SubmitRequest { relationship_p_did, reason } => {
-                            handle_credential_submit_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &relationship_p_did, reason.as_deref()).await;
-                        },
-                        CredentialAction::Remove { vrc_id } => {
-                            handle_credential_remove(&mut config, &mut state, &self.profile, &vrc_id);
-                        },
+                    Action::Credential(ca) => {
+                        credential_actions::dispatch(
+                            ca,
+                            &mut config,
+                            &tdk,
+                            &didcomm_service,
+                            &mut state,
+                            &self.profile,
+                        )
+                        .await;
                     },
                     Action::Contact(ca) => match ca {
                         ContactAction::Add { did, alias } => {
@@ -950,129 +932,6 @@ impl StateHandler {
 // Inbox action handlers — implementation lives in
 // `state_handler::inbox_actions`; the main loop calls
 // `inbox_actions::dispatch` to route the sub-enum.
-
-// ============================================================
-// Credential action handlers
-// ============================================================
-
-fn handle_credential_switch_tab(state: &mut State) {
-    use main_page::content::CredentialTab;
-    state.main_page.content_panel.credentials.selected_tab =
-        match state.main_page.content_panel.credentials.selected_tab {
-            CredentialTab::Received => CredentialTab::Issued,
-            CredentialTab::Issued => CredentialTab::Received,
-        };
-    state.main_page.content_panel.credentials.selected_index = 0;
-}
-
-fn handle_credential_open_detail(state: &mut State, index: usize) {
-    use main_page::content::CredentialsMode;
-    state.main_page.content_panel.credentials.selected_index = index;
-    state.main_page.content_panel.credentials.mode = CredentialsMode::Detail { index };
-}
-
-fn handle_credential_back(state: &mut State) {
-    use main_page::content::CredentialsMode;
-    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-    state.main_page.content_panel.credentials.selected_index = 0;
-}
-
-fn handle_credential_start_new_request(state: &mut State) {
-    use main_page::content::CredentialsMode;
-    state.main_page.content_panel.credentials.mode = CredentialsMode::NewRequest {
-        relationship_index: 0,
-        reason_input: String::new(),
-    };
-}
-
-fn handle_credential_select_relationship(state: &mut State, index: usize) {
-    use main_page::content::CredentialsMode;
-    if let CredentialsMode::NewRequest {
-        ref mut relationship_index,
-        ..
-    } = state.main_page.content_panel.credentials.mode
-    {
-        let established_count = state
-            .main_page
-            .content_panel
-            .relationships
-            .relationships
-            .iter()
-            .filter(|r| r.state == "Established")
-            .count();
-        if index < established_count {
-            *relationship_index = index;
-        }
-    }
-}
-
-fn handle_credential_reason_update(state: &mut State, value: String) {
-    use main_page::content::CredentialsMode;
-    if let CredentialsMode::NewRequest {
-        ref mut reason_input,
-        ..
-    } = state.main_page.content_panel.credentials.mode
-    {
-        *reason_input = value;
-    }
-}
-
-async fn handle_credential_submit_request(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    relationship_p_did: &str,
-    reason: Option<&str>,
-) {
-    use main_page::content::CredentialsMode;
-    match credential_actions::send_vrc_request(config, tdk, service, relationship_p_did, reason)
-        .await
-    {
-        Ok(()) => {
-            state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-            state.main_page.content_panel.credentials.status_message = Some(format!(
-                "VRC request sent to {}",
-                log_did(relationship_p_did)
-            ));
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            state.main_page.sync_from_config(config);
-            state.main_page.log(format!(
-                "VRC request sent to {}",
-                log_did(relationship_p_did)
-            ));
-        }
-        Err(e) => {
-            state.main_page.content_panel.credentials.status_message =
-                Some(format!("Error: {e:#}"));
-            state.main_page.log_error("Failed to send VRC request", &e);
-        }
-    }
-}
-
-fn handle_credential_remove(
-    config: &mut Box<Config>,
-    state: &mut State,
-    profile: &str,
-    vrc_id: &str,
-) {
-    use main_page::content::CredentialsMode;
-    if let Err(e) = credential_actions::remove_vrc(config, vrc_id) {
-        state.main_page.log_error("Failed to remove VRC", &e);
-        return;
-    }
-    state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-    state.main_page.content_panel.credentials.selected_index = 0;
-    state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log("VRC removed");
-}
 
 // ============================================================
 // Contact action handlers
