@@ -24,7 +24,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use std::collections::HashMap;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Constants for storing secure info in the OS Secure Store
@@ -90,14 +90,31 @@ impl From<SecuredConfigFormat> for ProtectionMethod {
     }
 }
 
-/// Three possible formats to store [SecuredConfig]
-/// 1. TokenEncrypted - Encrypted using a hardware token
-/// 2. PasswordEncrypted - Encrypted from a derived key from a password/PIN
-/// 3. PlainText - No Encryption at all - USE AT YOUR OWN RISK!
+/// Three possible formats to store [SecuredConfig]:
+/// 1. TokenEncrypted — encrypted using a hardware token
+/// 2. PasswordEncrypted — encrypted from a key derived from a password/PIN
+/// 3. PlainText — no encryption at all (use at your own risk)
 ///
-/// NOTE: All strings are BASE64 encoded
+/// All string payloads are BASE64URL (no-pad) encoded.
+///
+/// # Security: tagged-variant downgrade defence
+///
+/// The format is `#[serde(tag = "format")]` so every blob carries an
+/// explicit `"format"` discriminator. Without that tag (the historical
+/// `#[serde(untagged)]` shape), an attacker with write access to the
+/// OS keychain — or any caller fed a crafted blob — could substitute a
+/// `PasswordEncrypted` blob with `{"text": "<plaintext>"}` and serde
+/// would silently match it as `PlainText`, bypassing AES-256-GCM.
+///
+/// With the tag, any blob lacking `"format"` is rejected at parse time.
+/// Layer 2 of the same defence is [`assert_format_matches_intent`],
+/// which refuses to proceed if the stored variant doesn't match the
+/// protection level the caller's credentials imply.
+///
+/// Old (untagged) blobs are migrated transparently in [`SecuredConfig::load`]
+/// via [`LegacySecuredConfigFormat`].
 #[derive(Serialize, Deserialize, Debug, Zeroize)]
-#[serde(untagged)]
+#[serde(tag = "format")]
 enum SecuredConfigFormat {
     /// Hardware token encrypted data
     TokenEncrypted {
@@ -118,6 +135,87 @@ enum SecuredConfigFormat {
         /// Plaintext data that can be Serialized into [SecuredConfig]
         text: String,
     },
+}
+
+/// Legacy untagged format — used **only** for one-time migration of
+/// blobs written before the `#[serde(tag = "format")]` change.
+///
+/// Old blobs have no `"format"` key, so the new tagged enum rejects
+/// them. We try this enum on parse-failure of the new shape, then
+/// promote to [`SecuredConfigFormat`] and re-save in the tagged form.
+#[derive(Deserialize, Zeroize)]
+#[serde(untagged)]
+enum LegacySecuredConfigFormat {
+    TokenEncrypted { esk: String, data: String },
+    PasswordEncrypted { data: String },
+    PlainText { text: String },
+}
+
+impl From<LegacySecuredConfigFormat> for SecuredConfigFormat {
+    fn from(legacy: LegacySecuredConfigFormat) -> Self {
+        match legacy {
+            LegacySecuredConfigFormat::TokenEncrypted { esk, data } => {
+                SecuredConfigFormat::TokenEncrypted { esk, data }
+            }
+            LegacySecuredConfigFormat::PasswordEncrypted { data } => {
+                SecuredConfigFormat::PasswordEncrypted { data }
+            }
+            LegacySecuredConfigFormat::PlainText { text } => {
+                SecuredConfigFormat::PlainText { text }
+            }
+        }
+    }
+}
+
+/// Cross-validates the stored [`SecuredConfigFormat`] variant against
+/// the protection level the caller's supplied credentials imply.
+///
+/// This is **Layer 2** of the downgrade-attack defence (Layer 1 is the
+/// internally-tagged serde format). Even if an attacker manages to
+/// write a syntactically valid but weaker variant into the keychain —
+/// e.g. a correctly-tagged `PlainText` blob where `PasswordEncrypted`
+/// is expected — this gate refuses to proceed, turning a silent
+/// data-exfiltration into a loud, logged error.
+///
+/// Mapping from caller intent to expected format:
+/// - `has_token == true`               → must be [`SecuredConfigFormat::TokenEncrypted`]
+/// - `has_unlock == true`              → must be [`SecuredConfigFormat::PasswordEncrypted`]
+/// - neither token nor unlock present  → must be [`SecuredConfigFormat::PlainText`]
+fn assert_format_matches_intent(
+    format: &SecuredConfigFormat,
+    has_token: bool,
+    has_unlock: bool,
+) -> Result<(), OpenVTCError> {
+    if matches!(
+        (format, has_token, has_unlock),
+        (SecuredConfigFormat::TokenEncrypted { .. }, true, _)
+            | (SecuredConfigFormat::PasswordEncrypted { .. }, false, true)
+            | (SecuredConfigFormat::PlainText { .. }, false, false)
+    ) {
+        return Ok(());
+    }
+
+    let stored = match format {
+        SecuredConfigFormat::TokenEncrypted { .. } => "token-encrypted",
+        SecuredConfigFormat::PasswordEncrypted { .. } => "password-encrypted",
+        SecuredConfigFormat::PlainText { .. } => "plaintext",
+    };
+    let expected = if has_token {
+        "token-encrypted"
+    } else if has_unlock {
+        "password-encrypted"
+    } else {
+        "plaintext"
+    };
+
+    error!(
+        "SECURITY ALERT: stored config format ({stored}) does not match expected \
+         protection level ({expected}). Possible downgrade attack or config corruption."
+    );
+    Err(OpenVTCError::Config(format!(
+        "Security violation: stored config format '{stored}' does not match \
+         expected protection level '{expected}'. Refusing to load."
+    )))
 }
 
 impl SecuredConfigFormat {
@@ -363,18 +461,8 @@ impl SecuredConfig {
             ))
         })?;
 
-        let raw_secured_config: SecuredConfigFormat = match entry.get_secret() {
-            Ok(secret) => match serde_json::from_slice(secret.as_slice()) {
-                Ok(format) => format,
-                Err(e) => {
-                    error!(
-                        "ERROR: Format of SecuredConfig in OS Secure store is invalid! Reason: {e}"
-                    );
-                    return Err(OpenVTCError::Config(format!(
-                        "Couldn't load openvtc secured configuration. Reason: {e}"
-                    )));
-                }
-            },
+        let secret = match entry.get_secret() {
+            Ok(s) => s,
             Err(e) => {
                 error!("Couldn't find Secure Config in the OS Secret Store. Fatal Error: {e}");
                 return Err(OpenVTCError::Config(format!(
@@ -383,14 +471,67 @@ impl SecuredConfig {
             }
         };
 
-        raw_secured_config.unlock(
+        // Try the current tagged format first. If parsing fails, fall back to
+        // the legacy untagged shape and flag the blob for migration. Anything
+        // that fails both is genuinely invalid.
+        let (raw_secured_config, needs_migration) = match serde_json::from_slice::<
+            SecuredConfigFormat,
+        >(secret.as_slice())
+        {
+            Ok(format) => (format, false),
+            Err(tagged_err) => {
+                match serde_json::from_slice::<LegacySecuredConfigFormat>(secret.as_slice()) {
+                    Ok(legacy) => {
+                        warn!(
+                            "Tagged SecuredConfig parse failed ({tagged_err}); migrating legacy untagged blob"
+                        );
+                        (SecuredConfigFormat::from(legacy), true)
+                    }
+                    Err(legacy_err) => {
+                        error!(
+                            "Format of SecuredConfig in OS Secure store is invalid! \
+                             Tagged: {tagged_err}; legacy: {legacy_err}"
+                        );
+                        return Err(OpenVTCError::Config(format!(
+                            "Couldn't load openvtc secured configuration. Reason: {tagged_err}"
+                        )));
+                    }
+                }
+            }
+        };
+
+        // Layer-2 downgrade defence: cross-check the stored variant against
+        // the caller's credentials before any decryption or re-save.
+        assert_format_matches_intent(&raw_secured_config, token.is_some(), unlock.is_some())?;
+
+        let sc = raw_secured_config.unlock(
             #[cfg(feature = "openpgp-card")]
             user_pin,
             token,
             unlock,
             #[cfg(feature = "openpgp-card")]
             touch_prompt,
-        )
+        )?;
+
+        // If we just loaded a legacy untagged blob, re-save it in the tagged
+        // format so future loads take the fast path. Failures are logged but
+        // not fatal — the in-memory config is already valid.
+        if needs_migration {
+            let unlock_vec = unlock.map(|uc| uc.0.expose_secret().clone());
+            if let Err(e) = sc.save(
+                profile,
+                token,
+                unlock_vec.as_ref(),
+                #[cfg(feature = "openpgp-card")]
+                &|| {},
+            ) {
+                warn!("Auto-migration: failed to re-save SecuredConfig in tagged format: {e}");
+            } else {
+                info!("Migrated legacy SecuredConfig blob to tagged format");
+            }
+        }
+
+        Ok(sc)
     }
 }
 
@@ -566,6 +707,73 @@ pub fn passphrase_decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Tagged-format downgrade defence ───────────────────────────────────────
+
+    /// Every variant must serialise with an explicit `"format"` discriminator
+    /// so that a blob lacking the tag (the historical untagged shape) is
+    /// rejected at parse time rather than silently matching a weaker variant.
+    #[test]
+    fn tagged_format_writes_explicit_discriminator() {
+        let token_enc = SecuredConfigFormat::TokenEncrypted {
+            esk: "abc".into(),
+            data: "xyz".into(),
+        };
+        let pass_enc = SecuredConfigFormat::PasswordEncrypted { data: "xyz".into() };
+        let plain = SecuredConfigFormat::PlainText { text: "xyz".into() };
+        assert!(
+            serde_json::to_string(&token_enc)
+                .unwrap()
+                .contains(r#""format":"TokenEncrypted""#)
+        );
+        assert!(
+            serde_json::to_string(&pass_enc)
+                .unwrap()
+                .contains(r#""format":"PasswordEncrypted""#)
+        );
+        assert!(
+            serde_json::to_string(&plain)
+                .unwrap()
+                .contains(r#""format":"PlainText""#)
+        );
+    }
+
+    /// Old (untagged) blobs must fail the tagged parse but succeed against
+    /// `LegacySecuredConfigFormat` so they take the migration path.
+    #[test]
+    fn legacy_untagged_blobs_round_trip_through_legacy_enum() {
+        let plain = r#"{"text":"dGVzdA"}"#;
+        let pass = r#"{"data":"dGVzdA"}"#;
+        let token = r#"{"esk":"e","data":"d"}"#;
+        for blob in [plain, pass, token] {
+            assert!(serde_json::from_str::<SecuredConfigFormat>(blob).is_err());
+            assert!(serde_json::from_str::<LegacySecuredConfigFormat>(blob).is_ok());
+        }
+    }
+
+    /// Layer-2 gate: a tagged-but-weaker blob (e.g. PlainText where
+    /// PasswordEncrypted is expected) must be refused before any decrypt.
+    #[test]
+    fn intent_gate_rejects_plaintext_when_password_expected() {
+        let plain = SecuredConfigFormat::PlainText {
+            text: BASE64_URL_SAFE_NO_PAD.encode(b"{}"),
+        };
+        let err = assert_format_matches_intent(&plain, false, true).unwrap_err();
+        assert!(err.to_string().contains("Security violation"));
+    }
+
+    #[test]
+    fn intent_gate_accepts_matching_combinations() {
+        let token = SecuredConfigFormat::TokenEncrypted {
+            esk: "e".into(),
+            data: "d".into(),
+        };
+        let pass = SecuredConfigFormat::PasswordEncrypted { data: "d".into() };
+        let plain = SecuredConfigFormat::PlainText { text: "p".into() };
+        assert!(assert_format_matches_intent(&token, true, false).is_ok());
+        assert!(assert_format_matches_intent(&pass, false, true).is_ok());
+        assert!(assert_format_matches_intent(&plain, false, false).is_ok());
+    }
 
     #[test]
     fn test_encrypt_decrypt_roundtrip() {

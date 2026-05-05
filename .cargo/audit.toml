@@ -1,4 +1,9 @@
-# Advisories to ignore (transitive dependencies we cannot easily update)
+# Advisories to ignore (transitive dependencies we cannot directly update).
+#
+# All entries below are in crates pulled transitively through affinidi-tdk,
+# vta-sdk, didwebvh-rs, and other third-party workspace dependencies — not
+# in anything openvtc depends on directly. Each entry is reviewed when a
+# fix becomes available upstream.
 [advisories]
 ignore = [
     # rsa: Marvin Attack timing sidechannel — no patch available yet.
@@ -9,4 +14,14 @@ ignore = [
     # Pinned to 0.8 because aes-gcm 0.10 requires rand_core 0.6.
     # We do not use a custom logger that calls rand::rng().
     "RUSTSEC-2026-0097",
+
+    # proc-macro-error: unmaintained.
+    # Pulled via static-regular-grammar → xsd-types → ssi-caips → affinidi
+    # crates. No security impact; awaiting upstream migration to
+    # proc-macro-error2.
+    "RUSTSEC-2024-0370",
+
+    # rustls-pemfile: unmaintained (both 1.x via reqwest 0.11 and 2.x via
+    # tonic). No security impact identified; purely a maintenance advisory.
+    "RUSTSEC-2025-0134",
 ]
