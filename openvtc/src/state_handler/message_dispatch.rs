@@ -162,6 +162,36 @@ mod tests {
         // expires_time in the past
         assert!(check_message_age(&msg("id", Some(now), Some(now - 60))).is_err());
     }
+
+    #[test]
+    fn validate_did_accepts_well_formed_dids() {
+        assert!(validate_did("did:web:example.com").is_ok());
+        assert!(validate_did("did:webvh:abcdef0123:example.com").is_ok());
+        assert!(validate_did("did:peer:2.Vz6Mk-something").is_ok());
+        assert!(validate_did("did:key:z6MkpzExampleKey").is_ok());
+        assert!(validate_did("did:web:example.com%3A8080:path").is_ok());
+    }
+
+    #[test]
+    fn validate_did_rejects_old_prefix_loophole() {
+        // The previous validator accepted these — current one must not.
+        assert!(validate_did("did:").is_err());
+        assert!(validate_did("did:abc").is_err()); // no msi
+        assert!(validate_did("did::abc").is_err()); // empty method
+        assert!(validate_did("not-a-did").is_err());
+        assert!(validate_did("").is_err());
+    }
+
+    #[test]
+    fn validate_did_rejects_uppercase_method() {
+        assert!(validate_did("did:WEB:example.com").is_err());
+    }
+
+    #[test]
+    fn validate_did_rejects_msi_with_invalid_chars() {
+        assert!(validate_did("did:web:exam ple.com").is_err()); // space
+        assert!(validate_did("did:web:exam\u{200E}ple.com").is_err()); // LRM
+    }
 }
 
 /// Validate the message timestamps. Returns `Err(reason)` if the message
@@ -677,12 +707,55 @@ fn require_thid(message: &Message) -> Result<Arc<String>, anyhow::Error> {
         .ok_or_else(|| anyhow::anyhow!("message missing required 'thid' header"))
 }
 
-/// Basic validation that a string looks like a DID.
+/// Validate that a string conforms to the DID Core 1.0 syntax.
+///
+///   did = "did:" method-name ":" method-specific-id
+///   method-name = 1*( %x61-7A / DIGIT )
+///   method-specific-id = *( *idchar ":" ) 1*idchar
+///   idchar = ALPHA / DIGIT / "." / "-" / "_" / pct-encoded
+///
+/// The previous version was a `did:` prefix check, which let through
+/// strings like `did:` followed by anything — including newlines and
+/// zero-width characters that downstream code treated as routing
+/// identities. We don't ship the full DID resolver here, but a strict
+/// syntactic gate is cheap insurance against malformed payloads.
 fn validate_did(did: &str) -> Result<(), anyhow::Error> {
-    if !did.starts_with("did:") || did.len() < 8 {
-        anyhow::bail!("invalid DID format: '{}'", &did[..did.len().min(32)]);
+    let bail = || -> anyhow::Error {
+        anyhow::anyhow!("invalid DID format: '{}'", &did[..did.len().min(64)])
+    };
+
+    let rest = did.strip_prefix("did:").ok_or_else(bail)?;
+    let (method, msi) = rest.split_once(':').ok_or_else(bail)?;
+    if method.is_empty()
+        || !method
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+    {
+        return Err(bail());
+    }
+    if msi.is_empty() {
+        return Err(bail());
+    }
+    // method-specific-id segments separated by `:`; each segment must
+    // contain only idchar (ALPHA / DIGIT / "." / "-" / "_") or
+    // pct-encoded triplets, and the final segment must be non-empty.
+    let mut segments = msi.split(':');
+    let last_segment_nonempty = msi.split(':').next_back().is_some_and(|s| !s.is_empty());
+    if !last_segment_nonempty {
+        return Err(bail());
+    }
+    if !segments.all(|seg| seg.chars().all(is_did_msi_char)) {
+        return Err(bail());
     }
     Ok(())
+}
+
+/// Returns true for any character allowed in a DID method-specific-id.
+/// Pct-encoded triplets (`%XX`) are accepted as `%`+hex+hex sequences,
+/// validated character-by-character — a bad sequence shows up as a `%`
+/// followed by a non-hex char and gets rejected at the boundary check.
+fn is_did_msi_char(c: char) -> bool {
+    matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' | '%')
 }
 
 /// Build a DIDComm finalize message for relationship establishment.

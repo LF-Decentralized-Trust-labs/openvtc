@@ -50,7 +50,15 @@ pub async fn accept_relationship_request(
             .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
         match &task.type_ {
             TaskType::RelationshipRequestInbound { from, request, .. } => {
-                (Arc::clone(from), request.did.clone(), request.name.clone())
+                // Sanitize the sender-supplied name before it persists as a
+                // contact alias — strips ANSI / control chars / bidi-overrides
+                // / zero-width chars. Hard-cap at 64 chars so a hostile peer
+                // can't dominate the relationships list.
+                let sanitized_name = request
+                    .name
+                    .as_deref()
+                    .map(|n| super::main_page::sanitize_display(n, 64));
+                (Arc::clone(from), request.did.clone(), sanitized_name)
             }
             _ => anyhow::bail!("task {} is not an inbound relationship request", task_id),
         }

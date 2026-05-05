@@ -371,14 +371,35 @@ fn collect_vrcs(vrcs: &openvtc_core::vrc::Vrcs, config: &Config) -> Vec<VrcSumma
     result
 }
 
-/// Sanitize a string from an untrusted source for safe terminal display.
-/// Strips ANSI escape codes and control characters, truncates to max_len.
+/// Returns true for unicode codepoints that can spoof or mangle TUI
+/// display when rendered: bidirectional overrides, isolates, zero-width
+/// spaces/joiners, BOM. These are silently stripped by [`sanitize_display`].
+fn is_dangerous_format_char(c: char) -> bool {
+    matches!(
+        c as u32,
+        // Bidi marks, embeddings, overrides
+        0x200E | 0x200F |               // LRM, RLM
+        0x202A..=0x202E |               // LRE, RLE, PDF, LRO, RLO
+        0x2066..=0x2069 |               // LRI, RLI, FSI, PDI
+        // Zero-width space / joiner / non-joiner
+        0x200B..=0x200D |
+        0xFEFF                          // BOM / zero-width non-breaking space
+    )
+}
+
+/// Sanitize a string from an untrusted source for safe terminal display
+/// and persistence (e.g. contact aliases captured from inbound messages).
 ///
-/// ANSI escape sequences are stripped first so that the bracket-parameter
-/// remnants (e.g. `[31m`) are not left behind when the ESC byte is removed.
+/// Strips, in order:
+///   1. ANSI CSI escape sequences (ESC `[` … letter pattern)
+///   2. Other ASCII control characters, keeping space
+///   3. Bidi-override / zero-width / BOM characters that allow visual
+///      spoofing (e.g. RLO-flipping a contact alias to display text the
+///      operator didn't approve).
+///
+/// Truncates to `max_len` *characters* (not bytes).
 #[must_use]
 pub fn sanitize_display(input: &str, max_len: usize) -> String {
-    // Pass 1: strip ANSI escape sequences (ESC [ ... letter pattern)
     let mut stripped = String::with_capacity(input.len());
     let mut in_escape = false;
     for c in input.chars() {
@@ -394,10 +415,9 @@ pub fn sanitize_display(input: &str, max_len: usize) -> String {
         }
         stripped.push(c);
     }
-    // Pass 2: remove remaining control characters (keep spaces), then truncate
     stripped
         .chars()
-        .filter(|c| !c.is_control() || *c == ' ')
+        .filter(|c| (!c.is_control() || *c == ' ') && !is_dangerous_format_char(*c))
         .take(max_len)
         .collect()
 }

@@ -186,33 +186,17 @@ impl Relationships {
             self.relationships.len()
         );
 
-        // Use provided VTA client, or create one as fallback for backward compat
+        // Use the provided VTA client, or build one via the canonical
+        // helper (which knows how to do DIDComm-only VTAs as well as REST).
+        // The previous fallback hand-rolled `challenge_response` against
+        // `vta_url` and silently broke for DIDComm-only VTAs whose
+        // `vta_url` is empty.
         let owned_vta_client;
         let vta_client: Option<&vta_sdk::client::VtaClient> = match vta_client {
             Some(client) => Some(client),
             None => {
-                if let KeyBackend::Vta {
-                    credential_private_key,
-                    credential_did,
-                    vta_did,
-                    vta_url,
-                    ..
-                } = key_backend
-                {
-                    let token_result = vta_sdk::session::challenge_response(
-                        vta_url,
-                        credential_did,
-                        credential_private_key.expose_secret(),
-                        vta_did,
-                    )
-                    .await
-                    .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
-
-                    owned_vta_client = {
-                        let c = vta_sdk::client::VtaClient::new(vta_url);
-                        c.set_token(token_result.access_token);
-                        c
-                    };
+                if matches!(key_backend, KeyBackend::Vta { .. }) {
+                    owned_vta_client = super::config::build_runtime_vta_client(key_backend).await?;
                     Some(&owned_vta_client)
                 } else {
                     None
