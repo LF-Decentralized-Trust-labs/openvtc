@@ -76,11 +76,17 @@ pub fn derive_passphrase_key(passphrase: &[u8], info: &[u8]) -> Result<[u8; 32],
     // keys for different purposes, while remaining deterministic for the same inputs.
     let salt = Sha256::digest(info);
     let mut key = [0u8; 32];
-    // Argon2id with explicit hardened parameters (OWASP recommendations):
-    // - 64 MiB memory cost (strong GPU resistance)
-    // - 3 iterations (increased from default 2)
-    // - 1 lane (single-threaded, acceptable for interactive use)
-    let params = Params::new(64 * 1024, 3, 1, Some(32))
+    // Argon2id parameters tuned for an offline-attack-resistant KEK.
+    // The KEK protects an exported config blob, so the relevant cost is
+    // per-guess on attacker hardware, not user-perceived latency. OWASP's
+    // "high-value KEK" guidance suggests m >= 128 MiB; we use:
+    //   m = 128 MiB (GPU-resistant; fits comfortably on 4 GiB devices)
+    //   t = 4 iterations
+    //   p = 1 lane (single-threaded — argon2id parallelism doesn't help
+    //              users much and increases attacker advantage marginally)
+    // A stale Argon2id verification is fine because the params aren't
+    // stored on disk; we always derive with the current values.
+    let params = Params::new(128 * 1024, 4, 1, Some(32))
         .map_err(|e| OpenVTCError::Config(format!("Invalid Argon2 parameters: {e}")))?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(passphrase, &salt, &mut key)
