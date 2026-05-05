@@ -3,10 +3,7 @@ use std::sync::Arc;
 use crate::{
     Interrupted, Terminator,
     state_handler::{
-        actions::{
-            Action, ContactAction, CredentialAction, InboxAction, RelationshipAction,
-            SettingsAction,
-        },
+        actions::{Action, ContactAction, CredentialAction, RelationshipAction, SettingsAction},
         main_page::MainPanel,
         state::{ActivePage, State},
     },
@@ -497,37 +494,17 @@ impl StateHandler {
                             }
                         }
                     },
-                    Action::Inbox(ia) => match ia {
-                        InboxAction::SelectTask(index) => {
-                            handle_inbox_select(&mut state, index);
-                        },
-                        InboxAction::OpenDetail(index) => {
-                            handle_inbox_open_detail(&mut state, index);
-                        },
-                        InboxAction::Back => {
-                            state.main_page.content_panel.inbox.active_task = None;
-                        },
-                        InboxAction::AcceptRelationship { task_id, generate_r_did } => {
-                            handle_inbox_accept_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.state_tx, &self.profile, &task_id, generate_r_did).await;
-                        },
-                        InboxAction::RejectRelationship { task_id, reason } => {
-                            handle_inbox_reject_relationship(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
-                        },
-                        InboxAction::AcceptVrc { task_id } => {
-                            handle_inbox_accept_vrc(&mut config, &mut state, &self.profile, &task_id);
-                        },
-                        InboxAction::AcceptVrcRequest { task_id } => {
-                            handle_inbox_accept_vrc_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id).await;
-                        },
-                        InboxAction::RejectVrcRequest { task_id, reason } => {
-                            handle_inbox_reject_vrc_request(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &task_id, reason.as_deref()).await;
-                        },
-                        InboxAction::DismissTask { task_id } => {
-                            handle_inbox_dismiss_task(&mut config, &mut state, &self.profile, &task_id);
-                        },
-                        InboxAction::ClearAll => {
-                            handle_inbox_clear_all(&mut config, &mut state, &self.profile);
-                        },
+                    Action::Inbox(ia) => {
+                        inbox_actions::dispatch(
+                            ia,
+                            &mut config,
+                            &tdk,
+                            &didcomm_service,
+                            &mut state,
+                            &self.state_tx,
+                            &self.profile,
+                        )
+                        .await;
                     },
                     Action::Relationship(ra) => match ra {
                         RelationshipAction::Select(index) => {
@@ -1018,234 +995,9 @@ impl StateHandler {
     }
 }
 
-// ============================================================
-// Inbox action handlers
-// ============================================================
-
-fn handle_inbox_select(state: &mut State, index: usize) {
-    state.main_page.content_panel.inbox.selected_index = index;
-}
-
-fn handle_inbox_open_detail(state: &mut State, index: usize) {
-    use main_page::content::{ActiveTaskView, TaskKind};
-
-    state.main_page.content_panel.inbox.selected_index = index;
-    if let Some(task) = state.main_page.content_panel.inbox.tasks.get(index) {
-        let view = match &task.kind {
-            TaskKind::RelationshipRequestInbound {
-                from_did,
-                their_did,
-                reason,
-                name,
-            } => Some(ActiveTaskView::RelationshipRequestInbound {
-                task_id: task.id.clone(),
-                from_did: from_did.clone(),
-                their_did: their_did.clone(),
-                reason: reason.clone(),
-                name: name.clone(),
-            }),
-            TaskKind::VRCRequestInbound { reason } => Some(ActiveTaskView::VRCRequestInbound {
-                task_id: task.id.clone(),
-                from_did: task.remote_did.clone(),
-                reason: reason.clone(),
-            }),
-            TaskKind::VRCIssued => Some(ActiveTaskView::VRCIssued {
-                task_id: task.id.clone(),
-                issuer: task.remote_did.clone(),
-            }),
-            TaskKind::RelationshipRequestOutbound { our_did } => {
-                Some(ActiveTaskView::RelationshipRequestOutbound {
-                    task_id: task.id.clone(),
-                    to_did: task.remote_did.clone(),
-                    our_did: our_did.clone(),
-                    state: "Request Sent".to_string(),
-                })
-            }
-            TaskKind::VRCRequestOutbound => Some(ActiveTaskView::VRCRequestOutbound {
-                task_id: task.id.clone(),
-                remote_did: task.remote_did.clone(),
-            }),
-            TaskKind::TrustPing | TaskKind::Informational(_) => Some(ActiveTaskView::Info {
-                task_id: task.id.clone(),
-                type_display: task.type_display.clone(),
-                remote_did: task.remote_did.clone(),
-            }),
-        };
-        state.main_page.content_panel.inbox.active_task = view;
-    }
-}
-
-/// Helper: save config after an inbox action, sync UI state, and log messages.
-fn inbox_save_and_sync(
-    config: &Config,
-    state: &mut State,
-    profile: &str,
-    success_status: &str,
-    success_log: &str,
-) {
-    state.main_page.content_panel.inbox.active_task = None;
-    state.main_page.content_panel.inbox.status_message = Some(success_status.to_string());
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log(success_log);
-}
-
-fn inbox_error(state: &mut State, context: &str, err: &anyhow::Error) {
-    state.main_page.content_panel.inbox.status_message = Some(format!("Error: {err:#}"));
-    state.main_page.log_error(context, err);
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_inbox_accept_relationship(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    state_tx: &tokio::sync::watch::Sender<State>,
-    profile: &str,
-    task_id: &str,
-    generate_r_did: bool,
-) {
-    // Show immediate feedback
-    if generate_r_did {
-        state.main_page.content_panel.inbox.status_message =
-            Some("Accepting with R-DID — creating keys...".to_string());
-        state
-            .main_page
-            .log("Accepting relationship request (creating R-DID)...");
-    } else {
-        state.main_page.content_panel.inbox.status_message =
-            Some("Accepting relationship request...".to_string());
-        state.main_page.log("Accepting relationship request...");
-    }
-    let _ = state_tx.send(state.clone());
-
-    match inbox_actions::accept_relationship_request(config, tdk, service, task_id, generate_r_did)
-        .await
-    {
-        Ok(()) => inbox_save_and_sync(
-            config,
-            state,
-            profile,
-            "Relationship request accepted",
-            "Accepted relationship request",
-        ),
-        Err(e) => inbox_error(state, "Failed to accept relationship", &e),
-    }
-}
-
-async fn handle_inbox_reject_relationship(
-    config: &mut Box<Config>,
-    _tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    task_id: &str,
-    reason: Option<&str>,
-) {
-    match inbox_actions::reject_relationship_request(config, service, task_id, reason).await {
-        Ok(()) => inbox_save_and_sync(
-            config,
-            state,
-            profile,
-            "Relationship request rejected",
-            "Rejected relationship request",
-        ),
-        Err(e) => inbox_error(state, "Failed to reject relationship", &e),
-    }
-}
-
-fn handle_inbox_accept_vrc(
-    config: &mut Box<Config>,
-    state: &mut State,
-    profile: &str,
-    task_id: &str,
-) {
-    match inbox_actions::accept_vrc(config, task_id) {
-        Ok(()) => inbox_save_and_sync(
-            config,
-            state,
-            profile,
-            "VRC accepted and stored",
-            "VRC accepted and stored",
-        ),
-        Err(e) => inbox_error(state, "Failed to accept VRC", &e),
-    }
-}
-
-async fn handle_inbox_accept_vrc_request(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    task_id: &str,
-) {
-    match inbox_actions::accept_vrc_request(config, tdk, service, task_id).await {
-        Ok(()) => inbox_save_and_sync(
-            config,
-            state,
-            profile,
-            "VRC issued and sent",
-            "VRC issued and sent",
-        ),
-        Err(e) => inbox_error(state, "Failed to issue VRC", &e),
-    }
-}
-
-async fn handle_inbox_reject_vrc_request(
-    config: &mut Box<Config>,
-    _tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    task_id: &str,
-    reason: Option<&str>,
-) {
-    match inbox_actions::reject_vrc_request(config, service, task_id, reason).await {
-        Ok(()) => inbox_save_and_sync(
-            config,
-            state,
-            profile,
-            "VRC request rejected",
-            "Rejected VRC request",
-        ),
-        Err(e) => inbox_error(state, "Failed to reject VRC request", &e),
-    }
-}
-
-fn handle_inbox_dismiss_task(
-    config: &mut Box<Config>,
-    state: &mut State,
-    profile: &str,
-    task_id: &str,
-) {
-    if let Err(e) = inbox_actions::dismiss_task(config, task_id) {
-        state.main_page.log_error("Failed to dismiss task", &e);
-        return;
-    }
-    state.main_page.content_panel.inbox.active_task = None;
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log("Task dismissed");
-}
-
-fn handle_inbox_clear_all(config: &mut Box<Config>, state: &mut State, profile: &str) {
-    if let Err(e) = inbox_actions::clear_all_tasks(config) {
-        state.main_page.log_error("Failed to clear inbox", &e);
-        return;
-    }
-    state.main_page.content_panel.inbox.active_task = None;
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log("All inbox tasks cleared");
-}
+// Inbox action handlers — implementation lives in
+// `state_handler::inbox_actions`; the main loop calls
+// `inbox_actions::dispatch` to route the sub-enum.
 
 // ============================================================
 // Relationship action handlers
