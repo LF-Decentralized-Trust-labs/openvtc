@@ -112,3 +112,86 @@ fn too_short_ciphertext_fails() {
         "Empty input should fail"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tampering tests — the AEAD must reject any modification to the stored
+// ciphertext, including bit-flips in the nonce, ciphertext body, and
+// authentication tag. These are the cheap-and-loud failure modes that
+// catch silent corruption / on-disk-data-edit attacks.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn tamper_with_nonce_byte_fails_decryption() {
+    let key = derive_passphrase_key(b"passphrase", b"info").unwrap();
+    let mut encrypted = unlock_code_encrypt(&key, b"my secret").expect("encrypt");
+    // First 12 bytes are the AES-GCM nonce.
+    encrypted[0] ^= 0x01;
+    assert!(
+        unlock_code_decrypt(&key, &encrypted).is_err(),
+        "flipping a nonce byte must fail decryption"
+    );
+}
+
+#[test]
+fn tamper_with_ciphertext_byte_fails_decryption() {
+    let key = derive_passphrase_key(b"passphrase", b"info").unwrap();
+    let mut encrypted = unlock_code_encrypt(&key, b"my secret payload").expect("encrypt");
+    // Flip a byte in the middle of the ciphertext (skip 12-byte nonce).
+    let mid = 12 + (encrypted.len() - 12) / 2;
+    encrypted[mid] ^= 0x80;
+    assert!(
+        unlock_code_decrypt(&key, &encrypted).is_err(),
+        "flipping a ciphertext byte must fail authentication"
+    );
+}
+
+#[test]
+fn tamper_with_tag_byte_fails_decryption() {
+    let key = derive_passphrase_key(b"passphrase", b"info").unwrap();
+    let mut encrypted = unlock_code_encrypt(&key, b"x").expect("encrypt");
+    // Last 16 bytes are the GCM tag.
+    let tag_idx = encrypted.len() - 1;
+    encrypted[tag_idx] ^= 0xFF;
+    assert!(
+        unlock_code_decrypt(&key, &encrypted).is_err(),
+        "flipping the GCM tag must fail authentication"
+    );
+}
+
+#[test]
+fn truncated_tag_fails_decryption() {
+    let key = derive_passphrase_key(b"passphrase", b"info").unwrap();
+    let encrypted = unlock_code_encrypt(&key, b"y").expect("encrypt");
+    // Drop one byte off the end — partial tag.
+    let truncated = &encrypted[..encrypted.len() - 1];
+    assert!(
+        unlock_code_decrypt(&key, truncated).is_err(),
+        "truncating any byte off the ciphertext must fail"
+    );
+}
+
+#[test]
+fn appended_byte_fails_decryption() {
+    let key = derive_passphrase_key(b"passphrase", b"info").unwrap();
+    let mut encrypted = unlock_code_encrypt(&key, b"z").expect("encrypt");
+    encrypted.push(0x42);
+    assert!(
+        unlock_code_decrypt(&key, &encrypted).is_err(),
+        "appending an extra byte must fail authentication"
+    );
+}
+
+#[test]
+fn swapped_ciphertexts_fail_decryption() {
+    let key = derive_passphrase_key(b"passphrase", b"info").unwrap();
+    let enc1 = unlock_code_encrypt(&key, b"first message").expect("encrypt 1");
+    let enc2 = unlock_code_encrypt(&key, b"second message").expect("encrypt 2");
+    // Splice the nonce of #1 onto the body+tag of #2 — must fail; the
+    // (key, nonce) pair won't authenticate the substituted body.
+    let mut frankenstein = enc1[..12].to_vec();
+    frankenstein.extend_from_slice(&enc2[12..]);
+    assert!(
+        unlock_code_decrypt(&key, &frankenstein).is_err(),
+        "splicing nonce from one ciphertext onto another's body must fail"
+    );
+}
