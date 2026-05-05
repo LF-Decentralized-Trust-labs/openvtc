@@ -134,8 +134,8 @@ async fn connect_alice_and_bob(
     String,
     mpsc::UnboundedReceiver<Message>,
 ) {
-    let alice = mediator.make_profile("alice").expect("alice profile");
-    let bob = mediator.make_profile("bob").expect("bob profile");
+    let alice = mediator.profile("alice").expect("alice profile");
+    let bob = mediator.profile("bob").expect("bob profile");
     let alice_did = alice.did.clone();
     let bob_did = bob.did.clone();
 
@@ -269,8 +269,8 @@ async fn vrc_request_and_reject_round_trip() {
     init_test_tracing();
     let mediator = MockMediator::start().await.expect("mediator start");
 
-    let alice = mediator.make_profile("alice").expect("alice");
-    let bob = mediator.make_profile("bob").expect("bob");
+    let alice = mediator.profile("alice").expect("alice");
+    let bob = mediator.profile("bob").expect("bob");
     let alice_did = alice.did.clone();
     let bob_did = bob.did.clone();
 

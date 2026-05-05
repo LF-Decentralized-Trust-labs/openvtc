@@ -20,19 +20,20 @@ async fn mediator_starts_and_serves_well_known() {
     let mediator = MockMediator::start().await.expect("mediator start");
 
     // Sanity: the handle should report a real bound port.
-    assert_ne!(mediator.handle.bound_addr.port(), 0);
+    assert_ne!(mediator.handle.bound_addr().port(), 0);
     assert!(
-        mediator.http_url.starts_with("http://127.0.0.1:"),
+        mediator.mediator_url.starts_with("http://127.0.0.1:"),
         "expected loopback HTTP url, got {}",
-        mediator.http_url
+        mediator.mediator_url
     );
 
-    // Reach the well-known DID document. The mediator publishes its own
-    // did:peer document under `/.well-known/did.json` per DIDComm v2.
+    // Reach the well-known DID document. 200 means it's published;
+    // 404 means a different discovery scheme — either way the server
+    // is up. Anything 5xx means the mediator broke at startup.
     let well_known = format!(
         "{}.well-known/did.json",
         mediator
-            .http_url
+            .mediator_url
             .trim_end_matches('/')
             .trim_end_matches("mediator/v1")
     );
@@ -45,20 +46,18 @@ async fn mediator_starts_and_serves_well_known() {
         .send()
         .await
         .expect("well-known request");
-    // 200 means well-known is published; 404 means the mediator chose a
-    // different discovery scheme — either way the server is up. Anything
-    // 5xx means the mediator broke at startup.
     assert!(
         resp.status().is_success() || resp.status() == reqwest::StatusCode::NOT_FOUND,
         "mediator HTTP not reachable: {}",
         resp.status()
     );
 
-    // mediator_did must be a real did:peer string.
     assert!(
         mediator.mediator_did.starts_with("did:peer:"),
         "mediator DID looks wrong: {}",
         mediator.mediator_did
     );
-    assert!(mediator.admin_did.starts_with("did:peer:"));
+    // Pre-registered profiles should also have did:peer identifiers.
+    assert!(mediator.alice.did.starts_with("did:peer:"));
+    assert!(mediator.bob.did.starts_with("did:peer:"));
 }

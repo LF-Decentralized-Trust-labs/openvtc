@@ -64,21 +64,25 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # no on-disk fixtures — so `cargo test` stays self-contained. Slow tests
 # that spawn the mediator are marked `#[ignore]`; run them with
 # `cargo test -- --ignored`.
-affinidi-messaging-mediator = { version = "0.14", default-features = false, features = ["didcomm", "memory-backend"] }
-affinidi-messaging-didcomm-service = { workspace = true }
-# Lower-level DID-method primitives so the mock mediator's did:peer can
-# publish both `dm` and `#auth` services. The TDK 0.6 helper exposes
-# only the single-service shortcut; we reach into affinidi-did-common
-# directly to build the two-service form the SDK auth code requires.
-affinidi-did-common = "0.3"
+# Test-mediator fixture: spawns a real `affinidi-messaging-mediator`
+# embedded in the test process with the JWT keys, DID document, ACL
+# defaults, and local-DID whitelisting set up. Replaces the hand-rolled
+# harness that did the same dance manually.
+affinidi-messaging-test-mediator = "0.1"
+# `MemoryStore` + `MediatorStore` trait + `MediatorACLSet`: needed because
+# user DIDs must be generated AFTER the mediator boots (so they can pick
+# up the mediator's DID as their service endpoint, which is what makes
+# routing/2.0 forwards short-circuit to local delivery instead of being
+# enqueued to FORWARD_Q for external HTTP forwarding). That rules out
+# the test-mediator's `local_dids(...)` builder hook, so we register
+# Alice + Bob through the shared store directly.
+affinidi-messaging-mediator = "0.14"
+affinidi-messaging-mediator-common = "0.13"
 affinidi-messaging-sdk = "0.17"
-affinidi-secrets-resolver = "0.5"
-# Used to generate the JWT signing keypair for the embedded mediator —
-# headless config ships zero-byte placeholders that must be overwritten.
-jsonwebtoken = "10"
-ring = "0.17"
+affinidi-messaging-didcomm-service = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
+sha256 = "1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true }
