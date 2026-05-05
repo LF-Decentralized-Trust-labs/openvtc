@@ -68,25 +68,39 @@ pub mod secured_config;
 /// assert_eq!(key1, key3);
 /// ```
 pub fn derive_passphrase_key(passphrase: &[u8], info: &[u8]) -> Result<[u8; 32], OpenVTCError> {
-    // Use a deterministic salt derived from the info label.
-    // This provides domain separation so the same passphrase produces different
-    // keys for different purposes, while remaining deterministic for the same inputs.
+    // Legacy v1 KDF: deterministic salt derived from the info label.
+    //
+    // This is kept for backwards-compatible decryption of v1 ciphertext
+    // (data written before the per-entry random salt migration). The
+    // deterministic salt means two users with the same passphrase produce
+    // the same key, and rainbow-table attacks parallelise across all
+    // OpenVTC users — which is the H2 finding from the v0.2.0 review.
+    //
+    // New ciphertext is always written via `derive_passphrase_key_v2`
+    // (random per-entry salt) and the v2 magic-prefix format. The
+    // unlock-code path auto-detects the format and reaches for this
+    // legacy KDF only when consuming pre-migration data.
     let salt = Sha256::digest(info);
+    derive_argon2_key(passphrase, &salt)
+}
+
+/// Derive a 32-byte AEAD key from `passphrase` using a per-entry random
+/// `salt`. Pair with the v2 ciphertext format so the salt stored
+/// alongside the ciphertext is what gets fed back here at decrypt time.
+pub fn derive_passphrase_key_v2(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], OpenVTCError> {
+    derive_argon2_key(passphrase, salt)
+}
+
+/// Shared Argon2id derivation. OWASP "high-value KEK" profile:
+///   m = 128 MiB (GPU-resistant; fits comfortably on 4 GiB devices)
+///   t = 4 iterations
+///   p = 1 lane (parallelism helps attackers more than users at this cost)
+fn derive_argon2_key(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 32], OpenVTCError> {
     let mut key = [0u8; 32];
-    // Argon2id parameters tuned for an offline-attack-resistant KEK.
-    // The KEK protects an exported config blob, so the relevant cost is
-    // per-guess on attacker hardware, not user-perceived latency. OWASP's
-    // "high-value KEK" guidance suggests m >= 128 MiB; we use:
-    //   m = 128 MiB (GPU-resistant; fits comfortably on 4 GiB devices)
-    //   t = 4 iterations
-    //   p = 1 lane (single-threaded — argon2id parallelism doesn't help
-    //              users much and increases attacker advantage marginally)
-    // A stale Argon2id verification is fine because the params aren't
-    // stored on disk; we always derive with the current values.
     let params = Params::new(128 * 1024, 4, 1, Some(32))
         .map_err(|e| OpenVTCError::Config(format!("Invalid Argon2 parameters: {e}")))?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(passphrase, &salt, &mut key)
+        .hash_password_into(passphrase, salt, &mut key)
         .map_err(|e| OpenVTCError::Config(format!("Argon2 key derivation failed: {e}")))?;
     Ok(key)
 }

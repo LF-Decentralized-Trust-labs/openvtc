@@ -2,9 +2,9 @@
 
 use crate::{
     config::{
-        Config, ConfigProtectionType, ExportedConfig, derive_passphrase_key,
+        Config, ConfigProtectionType, ExportedConfig,
         public_config::PublicConfig,
-        secured_config::{SecuredConfig, unlock_code_encrypt},
+        secured_config::{SecuredConfig, passphrase_encrypt_v2},
     },
     errors::OpenVTCError,
     logs::LogFamily,
@@ -65,11 +65,17 @@ impl Config {
         let pc = PublicConfig::from(self);
         let sc = SecuredConfig::from(self);
 
-        let seed_bytes =
-            derive_passphrase_key(passphrase.expose_secret().as_bytes(), b"openvtc-export-v1")?;
-
         let serialized = serde_json::to_vec(&ExportedConfig { pc, sc })?;
-        let secured = unlock_code_encrypt(&seed_bytes, &serialized)?;
+        // v2: per-export random Argon2 salt, embedded in the magic-prefixed
+        // blob so two operators with the same passphrase produce
+        // independent ciphertexts (and the same operator exporting twice
+        // does too). Decrypt path auto-detects v1/v2 for backward compat
+        // with previously-exported files.
+        let secured = passphrase_encrypt_v2(
+            passphrase.expose_secret().as_bytes(),
+            b"openvtc-export-v1",
+            &serialized,
+        )?;
 
         fs::write(file, BASE64_URL_SAFE_NO_PAD.encode(&secured)).map_err(|e| {
             OpenVTCError::Config(format!("Couldn't write to file ({file}). Reason: {e}"))

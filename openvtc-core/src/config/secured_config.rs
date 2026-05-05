@@ -494,6 +494,75 @@ pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
     })
 }
 
+// ---------------------------------------------------------------------------
+// v2 passphrase-AEAD format with random per-entry Argon2 salt
+//
+// The legacy `unlock_code_encrypt` / `unlock_code_decrypt` API takes a
+// pre-derived AEAD key. Migrating to a per-entry random Argon2 salt
+// requires the salt to travel with the ciphertext, so the encrypt/decrypt
+// pair below take the *passphrase* directly and produce / consume a
+// versioned blob:
+//
+//   v1 (legacy):  [nonce(12) | ciphertext+tag(N)]
+//   v2 (current): [magic(4)="OPV2" | salt(16) | nonce(12) | ciphertext+tag(N)]
+//
+// `passphrase_decrypt_with_info` auto-detects the format. Encrypted blobs
+// in keyring entries / on disk roll forward to v2 the next time the
+// caller writes them — transparent migration for the user.
+// ---------------------------------------------------------------------------
+
+const V2_MAGIC: &[u8; 4] = b"OPV2";
+const V2_SALT_SIZE: usize = 16;
+const V2_HEADER_SIZE: usize = V2_MAGIC.len() + V2_SALT_SIZE;
+
+/// Encrypt `plaintext` under `passphrase` using a fresh random Argon2id
+/// salt and AES-256-GCM nonce. `info` provides domain separation in the
+/// KDF so the same passphrase produces different keys for, e.g., the
+/// SecuredConfig keyring entry vs. an exported config blob.
+///
+/// Output is a v2 blob: `[OPV2 | salt(16) | nonce(12) | ct+tag]`.
+pub fn passphrase_encrypt_v2(
+    passphrase: &[u8],
+    _info: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, OpenVTCError> {
+    use rand::RngCore;
+    let mut salt = [0u8; V2_SALT_SIZE];
+    OsRng.fill_bytes(&mut salt);
+
+    let key = crate::config::derive_passphrase_key_v2(passphrase, &salt)?;
+    let inner = unlock_code_encrypt(&key, plaintext)?;
+
+    let mut out = Vec::with_capacity(V2_HEADER_SIZE + inner.len());
+    out.extend_from_slice(V2_MAGIC);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&inner);
+    Ok(out)
+}
+
+/// Decrypt a passphrase-protected blob written by either:
+///   * `passphrase_encrypt_v2` (v2: random salt embedded in the blob), or
+///   * the legacy v1 path where the caller derived a key with the
+///     deterministic info-based salt and called `unlock_code_encrypt`.
+///
+/// Format selection is by magic prefix: blobs that start with `b"OPV2"`
+/// are decoded as v2, anything else falls back to v1.
+pub fn passphrase_decrypt(
+    passphrase: &[u8],
+    info: &[u8],
+    blob: &[u8],
+) -> Result<Vec<u8>, OpenVTCError> {
+    if blob.len() >= V2_HEADER_SIZE && &blob[..V2_MAGIC.len()] == V2_MAGIC {
+        let salt = &blob[V2_MAGIC.len()..V2_HEADER_SIZE];
+        let inner = &blob[V2_HEADER_SIZE..];
+        let key = crate::config::derive_passphrase_key_v2(passphrase, salt)?;
+        return unlock_code_decrypt(&key, inner);
+    }
+    // Legacy v1 — deterministic Argon2 salt derived from `info`.
+    let key = crate::config::derive_passphrase_key(passphrase, info)?;
+    unlock_code_decrypt(&key, blob)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
