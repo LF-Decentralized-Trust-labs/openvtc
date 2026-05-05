@@ -75,7 +75,13 @@ pub enum DIDCommEvent {
 /// Trust pings are handled automatically via the built-in handler.
 /// All OpenVTC protocol messages and trust pongs are forwarded as
 /// `DIDCommEvent::InboundMessage` for the state handler to process.
-pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
+///
+/// Returns an error if any route or regex registration fails. Routes
+/// are otherwise stable — only the OpenVTC protocol regex can fail at
+/// runtime if it ever becomes invalid.
+pub fn build_router(
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
+) -> Result<Router, anyhow::Error> {
     let openvtc_handler = handler_fn({
         let tx = event_tx.clone();
         move |ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
@@ -98,7 +104,7 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
         }
     });
 
-    Router::new()
+    let router = Router::new()
         // Trust ping — forward to state handler for relationship verification
         // before responding. Only respond to pings from established relationships.
         .route(
@@ -120,8 +126,7 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
                     }
                 }
             }),
-        )
-        .expect("valid route")
+        )?
         // Trust pong — notify state handler for logging and task removal
         .route(
             affinidi_messaging_didcomm_service::TRUST_PONG_TYPE,
@@ -142,14 +147,12 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
                     }
                 }
             }),
-        )
-        .expect("valid route")
+        )?
         // Catch-all for OpenVTC protocol messages
         .route_regex(
             "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*",
             openvtc_handler,
-        )
-        .expect("valid route")
+        )?
         // Message pickup status — silently drop
         .route(
             openvtc_core::protocol_urls::MESSAGEPICKUP_STATUS,
@@ -158,15 +161,15 @@ pub fn build_router(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Router {
                     Ok(None)
                 },
             ),
-        )
-        .expect("valid route")
+        )?
         // Fallback for unknown message types
         .fallback(handler_fn(
             |_ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| async move {
                 debug!(typ = %msg.typ, "unhandled message type — dropped");
                 Ok(None)
             },
-        ))
+        ));
+    Ok(router)
 }
 
 /// Extract secrets for a DID from the TDK's secrets resolver.
@@ -444,7 +447,8 @@ pub async fn start_service(
     event_tx: mpsc::UnboundedSender<DIDCommEvent>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<DIDCommService, DIDCommServiceError> {
-    let router = build_router(event_tx);
+    let router = build_router(event_tx)
+        .map_err(|e| DIDCommServiceError::Internal(format!("router init failed: {e}")))?;
     let listener_configs = build_listener_configs(config, tdk).await;
 
     DIDCommService::start(

@@ -666,8 +666,12 @@ impl StateHandler {
                                 state.connection.messaging_active = false;
                                 state.main_page.log("Reconnecting to mediator...");
 
-                                // Replace the persona listener with the new mediator DID
-                                let _ = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await;
+                                // Replace the persona listener with the new mediator DID.
+                                // ListenerNotFound is expected if the previous reconnect
+                                // failed before adding; anything else is logged at debug.
+                                if let Err(e) = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await {
+                                    debug!("remove_listener (mediator change): {e}");
+                                }
                                 let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                                 if let Err(e) = didcomm_service.add_listener(new_config).await {
                                     state.connection.status =
@@ -750,8 +754,12 @@ impl StateHandler {
                             state.connection.messaging_active = false;
                             state.main_page.log("Reconnecting to mediator...");
 
-                            // Replace the persona listener
-                            let _ = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await;
+                            // Replace the persona listener. ListenerNotFound is expected
+                            // when the previous attempt never registered; anything else
+                            // is logged at debug so the reconnect can still proceed.
+                            if let Err(e) = didcomm_service.remove_listener(didcomm::PERSONA_LISTENER_ID).await {
+                                debug!("remove_listener (manual reconnect): {e}");
+                            }
                             let new_config = didcomm::persona_listener_config(&config, &tdk).await;
                             if let Err(e) = didcomm_service.add_listener(new_config).await {
                                 state.connection.status =
@@ -1210,7 +1218,10 @@ fn handle_inbox_dismiss_task(
     profile: &str,
     task_id: &str,
 ) {
-    let _ = inbox_actions::dismiss_task(config, task_id);
+    if let Err(e) = inbox_actions::dismiss_task(config, task_id) {
+        state.main_page.log_error("Failed to dismiss task", &e);
+        return;
+    }
     state.main_page.content_panel.inbox.active_task = None;
     if let Err(e) = settings_actions::save_config(config, profile) {
         state.main_page.log_error("Failed to save config", &e);
@@ -1220,7 +1231,10 @@ fn handle_inbox_dismiss_task(
 }
 
 fn handle_inbox_clear_all(config: &mut Box<Config>, state: &mut State, profile: &str) {
-    let _ = inbox_actions::clear_all_tasks(config);
+    if let Err(e) = inbox_actions::clear_all_tasks(config) {
+        state.main_page.log_error("Failed to clear inbox", &e);
+        return;
+    }
     state.main_page.content_panel.inbox.active_task = None;
     if let Err(e) = settings_actions::save_config(config, profile) {
         state.main_page.log_error("Failed to save config", &e);
@@ -1452,7 +1466,12 @@ async fn handle_relationship_remove(
     remote_p_did: &str,
 ) {
     use main_page::content::RelationshipsMode;
-    let _ = relationship_actions::remove_relationship(config, service, remote_p_did).await;
+    if let Err(e) = relationship_actions::remove_relationship(config, service, remote_p_did).await {
+        state
+            .main_page
+            .log_error("Failed to remove relationship", &e);
+        return;
+    }
     state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
     state.main_page.content_panel.relationships.status_message =
         Some("Relationship removed".to_string());
@@ -1676,7 +1695,10 @@ fn handle_credential_remove(
     vrc_id: &str,
 ) {
     use main_page::content::CredentialsMode;
-    let _ = credential_actions::remove_vrc(config, vrc_id);
+    if let Err(e) = credential_actions::remove_vrc(config, vrc_id) {
+        state.main_page.log_error("Failed to remove VRC", &e);
+        return;
+    }
     state.main_page.content_panel.credentials.mode = CredentialsMode::List;
     state.main_page.content_panel.credentials.selected_index = 0;
     state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
@@ -1920,7 +1942,11 @@ fn handle_settings_export_config(
                 .public
                 .logs
                 .insert(LogFamily::Config, format!("Config exported to {}", path));
-            let _ = settings_actions::save_config(config, profile);
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state
+                    .main_page
+                    .log_error("Failed to persist export-log entry", &e);
+            }
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             state.main_page.content_panel.settings.status_message =
                 Some(format!("Config exported to {}", path));
@@ -1948,7 +1974,11 @@ fn handle_settings_import_config(
                 .public
                 .logs
                 .insert(LogFamily::Config, format!("Config imported from {}", path));
-            let _ = settings_actions::save_config(config, profile);
+            if let Err(e) = settings_actions::save_config(config, profile) {
+                state
+                    .main_page
+                    .log_error("Failed to persist import-log entry", &e);
+            }
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             state.main_page.content_panel.settings.status_message = Some(msg.clone());
             state.main_page.log(msg);

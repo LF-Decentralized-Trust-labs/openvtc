@@ -15,6 +15,7 @@ use didwebvh_rs::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::path::Path;
 use url::Url;
 
 use crate::{config::PersonaDIDKeys, errors::OpenVTCError};
@@ -35,17 +36,19 @@ use crate::{config::PersonaDIDKeys, errors::OpenVTCError};
 /// - `mediator_did`: The DID of the mediator used as the DIDComm service endpoint.
 /// - `update_secret`: The Ed25519 secret used to authorize this initial DID log entry.
 /// - `next_update_secret`: The Ed25519 secret whose hash is committed for key pre-rotation.
+/// - `did_log_path`: Where to write the resulting DID log (`did.jsonl`). Should
+///   be inside the active profile directory — see [`crate::config::public_config::profile_dir`].
 ///
 /// # Returns
 /// A tuple of `(did_id, Document)` where `did_id` is the fully-qualified `did:webvh:...`
 /// string and `Document` is the resolved DID Document produced by the creation process.
-/// The DID log is also saved to `did.jsonl` in the current working directory.
 pub async fn create_initial_webvh_did(
     raw_url: &str,
     keys: &mut PersonaDIDKeys,
     mediator_did: &str,
     update_secret: Secret,
     next_update_secret: Secret,
+    did_log_path: &Path,
 ) -> Result<(String, Document), OpenVTCError> {
     // Normalize and validate the URL, then derive the placeholder DID using
     // the didwebvh-rs library so that URL path components (e.g. "/custom/path")
@@ -224,8 +227,23 @@ pub async fn create_initial_webvh_did(
     keys.authentication.secret.id = [did_id, "#key-2"].concat();
     keys.decryption.secret.id = [did_id, "#key-3"].concat();
 
-    // Save the DID to local file
-    result.log_entry().save_to_file("did.jsonl")?;
+    // Persist the DID log alongside the active profile config. didwebvh-rs
+    // truncates on the v1 entry and appends thereafter — the path is the
+    // caller's contract; we just ensure the parent directory exists.
+    if let Some(parent) = did_log_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            OpenVTCError::Config(format!(
+                "couldn't create DID log directory {}: {e}",
+                parent.display()
+            ))
+        })?;
+    }
+    let did_log_path_str = did_log_path
+        .to_str()
+        .ok_or_else(|| OpenVTCError::Config("DID log path contains invalid UTF-8".to_string()))?;
+    result.log_entry().save_to_file(did_log_path_str)?;
 
     Ok((
         did_id.to_string(),

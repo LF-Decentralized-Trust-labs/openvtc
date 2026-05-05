@@ -1,5 +1,8 @@
 use affinidi_tdk::TDK;
-use openvtc_core::{LF_PUBLIC_MEDIATOR_DID, config::did::create_initial_webvh_did};
+use openvtc_core::{
+    LF_PUBLIC_MEDIATOR_DID,
+    config::{did::create_initial_webvh_did, public_config::profile_dir},
+};
 use pgp::composed::ArmorOptions;
 use secrecy::SecretString;
 
@@ -216,6 +219,7 @@ async fn apply_server_create_result(
 /// Returns `true` if the caller should `continue`.
 pub(crate) async fn handle_create_webvh_did(
     state: &mut State,
+    profile: &str,
     webvh_address: String,
 ) -> anyhow::Result<bool> {
     let mut keys = match state.setup.did_keys.clone() {
@@ -250,6 +254,20 @@ pub(crate) async fn handle_create_webvh_did(
             return Ok(true);
         }
     };
+    let did_log_path = match profile_dir(profile) {
+        Ok(dir) => dir.join("did.jsonl"),
+        Err(e) => {
+            state.setup.webvh_address.completed = Completion::CompletedFail;
+            state
+                .setup
+                .webvh_address
+                .messages
+                .push(MessageType::Error(format!(
+                    "couldn't resolve profile dir for DID log: {e}"
+                )));
+            return Ok(true);
+        }
+    };
     match create_initial_webvh_did(
         &webvh_address,
         &mut keys,
@@ -260,6 +278,7 @@ pub(crate) async fn handle_create_webvh_did(
             .unwrap_or(&LF_PUBLIC_MEDIATOR_DID.to_string()),
         update_secret,
         next_update_secret,
+        &did_log_path,
     )
     .await
     {

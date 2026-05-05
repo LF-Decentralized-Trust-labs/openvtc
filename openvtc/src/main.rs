@@ -65,16 +65,23 @@ async fn main() -> Result<()> {
     //   OPENVTC_DEBUG_LOG=/tmp/openvtc.log cargo run -p openvtc
     // Log level defaults to "debug" but can be overridden with RUST_LOG.
     if let Ok(log_path) = env::var("OPENVTC_DEBUG_LOG") {
-        let log_file = std::fs::File::create(&log_path)
-            .unwrap_or_else(|e| panic!("Cannot create log file {log_path}: {e}"));
-        let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
-        tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .with_writer(std::sync::Mutex::new(log_file))
-            .with_ansi(false)
-            .init();
-        tracing::info!("Debug logging enabled → {log_path}");
+        match std::fs::File::create(&log_path) {
+            Ok(log_file) => {
+                let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
+                tracing_subscriber::fmt()
+                    .with_env_filter(filter)
+                    .with_writer(std::sync::Mutex::new(log_file))
+                    .with_ansi(false)
+                    .init();
+                tracing::info!("Debug logging enabled → {log_path}");
+            }
+            Err(e) => {
+                eprintln!(
+                    "warning: OPENVTC_DEBUG_LOG={log_path} could not be opened ({e}); continuing without file logging"
+                );
+            }
+        }
     }
 
     // Register the platform's keyring-core credential store. keyring-core 1.0

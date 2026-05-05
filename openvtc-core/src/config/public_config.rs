@@ -11,7 +11,11 @@ use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{env, fs, path::Path, sync::Arc};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tracing::warn;
 
 /// Current config format version. Increment when the format changes.
@@ -86,30 +90,35 @@ pub fn validate_profile_name(profile: &str) -> Result<(), OpenVTCError> {
     Ok(())
 }
 
+/// Resolve the directory that holds OpenVTC profile data — config files,
+/// the did.jsonl log, etc. Honours `OPENVTC_CONFIG_PATH`, falling back to
+/// `~/.config/openvtc/`. Validates the profile name as a side effect.
+pub fn profile_dir(profile: &str) -> Result<PathBuf, OpenVTCError> {
+    validate_profile_name(profile)?;
+    if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
+        Ok(PathBuf::from(config_path))
+    } else if let Some(home) = dirs::home_dir() {
+        Ok(home.join(".config").join("openvtc"))
+    } else {
+        Err(OpenVTCError::Config(
+            "Couldn't determine Home directory".to_string(),
+        ))
+    }
+}
+
 /// Private helper to determine where the config file is located
 fn get_config_path(profile: &str) -> Result<String, OpenVTCError> {
-    validate_profile_name(profile)?;
-    let path = if let Ok(config_path) = env::var("OPENVTC_CONFIG_PATH") {
-        if config_path.ends_with('/') {
-            config_path
-        } else {
-            [&config_path, "/"].concat()
-        }
-    } else if let Some(home) = dirs::home_dir()
-        && let Some(home_str) = home.to_str()
-    {
-        [home_str, "/.config/openvtc/"].concat()
+    let dir = profile_dir(profile)?;
+    let file_name = if profile == "default" {
+        "config.json".to_string()
     } else {
-        return Err(OpenVTCError::Config(
-            "Couldn't determine Home directory".to_string(),
-        ));
+        format!("config-{profile}.json")
     };
-
-    if profile == "default" {
-        Ok([&path, "config.json"].concat())
-    } else {
-        Ok([&path, "config-", profile, ".json"].concat())
-    }
+    let mut path = dir;
+    path.push(file_name);
+    path.into_os_string()
+        .into_string()
+        .map_err(|_| OpenVTCError::Config("config path contains invalid UTF-8".to_string()))
 }
 
 impl PublicConfig {

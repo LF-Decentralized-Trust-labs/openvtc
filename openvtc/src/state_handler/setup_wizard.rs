@@ -146,7 +146,7 @@ impl StateHandler {
                     }
                 },
                 Action::CreateWebVHDID(webvh_address) => {
-                    if setup_did_actions::handle_create_webvh_did(state, webvh_address).await? {
+                    if setup_did_actions::handle_create_webvh_did(state, &self.profile, webvh_address).await? {
                         continue;
                     }
                 },
