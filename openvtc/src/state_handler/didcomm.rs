@@ -77,6 +77,41 @@ pub enum DIDCommEvent {
 /// operator activity doesn't ever overflow.
 pub const DIDCOMM_EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Reason string included in a "Reconnect failed" log entry, plus the
+/// updated MediatorStatus the caller should drive into the connection
+/// state. Returned to the caller so it can update the State accordingly
+/// without this helper having to know about the outer state shape.
+pub enum ReconnectOutcome {
+    Connected,
+    Failed(String),
+}
+
+/// Replace the persona listener and wait for it to come up. Used by the
+/// mediator-change branch of SubmitEdit and by the manual ReconnectMediator
+/// settings action — both did the same dance inline. Returns:
+///   * `Connected` once the listener reaches the connected state, or
+///   * `Failed(reason)` on any error during the replace / connect path.
+pub async fn reconnect_persona_listener(
+    service: &DIDCommService,
+    config: &Config,
+    tdk: &affinidi_tdk::TDK,
+) -> ReconnectOutcome {
+    if let Err(e) = service.remove_listener(PERSONA_LISTENER_ID).await {
+        debug!("remove_listener during reconnect: {e}");
+    }
+    let new_config = persona_listener_config(config, tdk).await;
+    if let Err(e) = service.add_listener(new_config).await {
+        return ReconnectOutcome::Failed(format!("{e:#}"));
+    }
+    match service
+        .wait_connected(PERSONA_LISTENER_ID, std::time::Duration::from_secs(30))
+        .await
+    {
+        Ok(()) => ReconnectOutcome::Connected,
+        Err(e) => ReconnectOutcome::Failed(format!("{e:#}")),
+    }
+}
+
 /// Build the DIDComm message router.
 ///
 /// Trust pings are handled automatically via the built-in handler.
