@@ -34,6 +34,9 @@ sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 dialoguer = { workspace = true }
+sysinfo = { workspace = true }
+chrono = { workspace = true }
+hex = { workspace = true }
 
 # Per-platform keyring-core stores. did-git-sign uses the same backend as
 # openvtc on each platform so credentials line up.

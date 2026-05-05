@@ -5,6 +5,7 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::config::SigningConfig;
+use crate::policy;
 use crate::vta;
 
 /// Magic preamble for SSH signatures (PROTOCOL.sshsig)
@@ -32,6 +33,24 @@ pub async fn handle_sign(
             .context("failed to read data from stdin")?;
         buf
     };
+
+    // Policy gate: parent process must look like git, audit every attempt.
+    // The audit log is append-only and records both accepted and denied
+    // signing attempts so a user can detect anomalous activity after a
+    // local-account compromise.
+    let decision = policy::evaluate(namespace, sign_file, &data);
+    policy::write_audit(&decision);
+    if !decision.allowed {
+        anyhow::bail!(
+            "did-git-sign: signing refused by policy (parent process {:?} not in allow-list; \
+             set DID_GIT_SIGN_BYPASS_POLICY=1 to override). \
+             Attempt recorded in {}.",
+            decision.parent_name.as_deref().unwrap_or("<unknown>"),
+            policy::audit_log_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| "<audit log unavailable>".to_string())
+        );
+    }
 
     // Load config
     let cfg = SigningConfig::load(config_path)?;
