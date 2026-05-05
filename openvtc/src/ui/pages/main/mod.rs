@@ -1,3 +1,6 @@
+use crate::colors::{
+    COLOR_BORDER, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
+};
 use crate::{
     state_handler::{
         actions::{Action, CredentialAction, InboxAction, RelationshipAction, SettingsAction},
@@ -10,9 +13,6 @@ use crate::{
     },
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
-use openvtc_core::colors::{
-    COLOR_BORDER, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
-};
 use ratatui::{
     Frame,
     layout::{

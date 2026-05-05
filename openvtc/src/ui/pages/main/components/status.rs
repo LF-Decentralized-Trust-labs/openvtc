@@ -4,7 +4,7 @@
 //! multi-cause error chains) must be word-wrapped manually before being
 //! pushed as `Line`s or they get clipped at the panel width.
 
-use openvtc_core::colors::{COLOR_SUCCESS, COLOR_WARNING_ACCESSIBLE_RED};
+use crate::colors::{COLOR_SUCCESS, COLOR_WARNING_ACCESSIBLE_RED};
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},

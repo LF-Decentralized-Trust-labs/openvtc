@@ -100,7 +100,7 @@ impl ComponentRender<()> for AppRouter {
 /// Renders a centered popup overlay prompting the user to touch their hardware token.
 #[cfg(feature = "openpgp-card")]
 fn render_touch_overlay(frame: &mut Frame) {
-    use openvtc_core::colors::{COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_TEXT_DEFAULT};
+    use crate::colors::{COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_TEXT_DEFAULT};
     use ratatui::{
         layout::{Constraint, Flex, Layout},
         style::Style,

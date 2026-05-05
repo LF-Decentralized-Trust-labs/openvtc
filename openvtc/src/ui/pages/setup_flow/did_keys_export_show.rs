@@ -1,7 +1,7 @@
-use crossterm::event::{KeyCode, KeyEvent};
-use openvtc_core::colors::{
+use crate::colors::{
     COLOR_BORDER, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
 };
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{

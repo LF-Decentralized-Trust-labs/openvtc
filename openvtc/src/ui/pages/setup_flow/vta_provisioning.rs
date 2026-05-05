@@ -5,11 +5,11 @@
 //! flow takes over. On failure we surface the reason and let the operator
 //! press Enter to retry (which loops back to the ACL instructions screen).
 
-use crossterm::event::{KeyCode, KeyEvent};
-use openvtc_core::colors::{
+use crate::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
     COLOR_WARNING_ACCESSIBLE_RED,
 };
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{

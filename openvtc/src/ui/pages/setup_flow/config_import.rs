@@ -1,3 +1,7 @@
+use crate::colors::{
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
+};
 use crate::{
     state_handler::{
         actions::Action,
@@ -6,10 +10,6 @@ use crate::{
     ui::pages::setup_flow::{SetupFlow, render_setup_header},
 };
 use crossterm::event::{Event, KeyCode, KeyEvent};
-use openvtc_core::colors::{
-    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-    COLOR_WARNING_ACCESSIBLE_RED,
-};
 use ratatui::{
     Frame,
     layout::{

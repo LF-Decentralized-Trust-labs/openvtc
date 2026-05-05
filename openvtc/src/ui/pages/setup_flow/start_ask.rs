@@ -1,5 +1,5 @@
+use crate::colors::{COLOR_BORDER, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use crossterm::event::{KeyCode, KeyEvent};
-use openvtc_core::colors::{COLOR_BORDER, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use ratatui::{
     Frame,
     layout::{

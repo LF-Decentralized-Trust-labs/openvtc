@@ -1,3 +1,6 @@
+use crate::colors::{
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+};
 #[cfg(feature = "openpgp-card")]
 use crate::ui::pages::setup_flow::pgp_token::{
     token_factory_reset::TokenFactoryReset, token_select::TokenSelect,
@@ -28,9 +31,6 @@ use crate::{
     },
 };
 use crossterm::event::{KeyEvent, KeyEventKind};
-use openvtc_core::colors::{
-    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},

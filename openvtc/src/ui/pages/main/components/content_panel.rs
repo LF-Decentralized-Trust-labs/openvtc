@@ -1,3 +1,7 @@
+use crate::colors::{
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
+};
 use crate::state_handler::{
     main_page::{
         ActivityLogEntry,
@@ -5,10 +9,6 @@ use crate::state_handler::{
         menu::{MainMenu, MenuPanelState},
     },
     state::{ConnectionState, MediatorStatus},
-};
-use openvtc_core::colors::{
-    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-    COLOR_WARNING_ACCESSIBLE_RED,
 };
 use ratatui::{
     Frame,

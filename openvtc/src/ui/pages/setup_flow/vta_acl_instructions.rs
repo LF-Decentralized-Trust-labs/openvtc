@@ -7,11 +7,11 @@
 //! reflects the live input value, so what's on screen is what they paste into
 //! their PNM session.
 
-use crossterm::event::{Event, KeyCode, KeyEvent};
-use openvtc_core::colors::{
+use crate::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
     COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
 };
+use crossterm::event::{Event, KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{

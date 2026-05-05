@@ -98,7 +98,7 @@ fn validate_file_path(path: &str) -> Result<()> {
 pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()> {
     validate_file_path(path)?;
     let secret = SecretString::new(passphrase.to_string().into());
-    config.export(Some(secret), path)?;
+    config.export(secret, path)?;
     info!(path = %path, "config exported");
     Ok(())
 }

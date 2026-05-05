@@ -1,8 +1,8 @@
 //! Logs panel — scrollable activity log with selection and clipboard copy.
 
 use super::status::wrap_text;
+use crate::colors::{COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use crate::state_handler::main_page::{ActivityLogEntry, content::LogsState};
-use openvtc_core::colors::{COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},

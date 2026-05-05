@@ -1,12 +1,12 @@
 use super::panel::Panel;
 use super::status::push_status;
+use crate::colors::{
+    COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
+};
 use crate::state_handler::{
     main_page::content::{ContentPanelState, SettingsMode, SettingsState},
     state::ConnectionState,
-};
-use openvtc_core::colors::{
-    COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-    COLOR_WARNING_ACCESSIBLE_RED,
 };
 use ratatui::{
     style::{Style, Stylize},

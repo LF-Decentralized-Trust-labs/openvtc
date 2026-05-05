@@ -6,8 +6,8 @@
 //! No  → skip directly to whatever comes after the git-signing step
 //!       (`after_export()` in the navigation module).
 
+use crate::colors::{COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use crossterm::event::{KeyCode, KeyEvent};
-use openvtc_core::colors::{COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
 use ratatui::{
     Frame,
     layout::{

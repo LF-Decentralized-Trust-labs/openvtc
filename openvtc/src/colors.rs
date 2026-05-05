@@ -1,13 +1,11 @@
 use ratatui::style::Color;
 
 // Basic Terminal Colors
-// CLI Color codes
+// CLI Color codes (used by the pre-TUI startup output)
 pub const CLI_BLUE: u8 = 69; // Use for general information
-pub const CLI_GREEN: u8 = 34; // Use for Successful text
 pub const CLI_RED: u8 = 9; // Use for Error messages
 pub const CLI_ORANGE: u8 = 214; // Use for cautionary data
 pub const CLI_PURPLE: u8 = 165; // Use for Example data
-pub const CLI_WHITE: u8 = 15;
 
 // ****************************************************************************
 

@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
 pub mod bip32;
-pub mod colors;
 pub mod config;
 pub mod errors;
 pub mod logs;

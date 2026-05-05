@@ -1,5 +1,6 @@
 #[cfg(feature = "openpgp-card")]
 use crate::cli::get_user_pin;
+use crate::colors::{CLI_BLUE, CLI_ORANGE, CLI_PURPLE, CLI_RED};
 use crate::{
     cli::cli,
     state_handler::{DeferredLoad, StartingMode, StateHandler},
@@ -9,7 +10,6 @@ use anyhow::{Result, bail};
 use console::style;
 use dialoguer::{Password, theme::ColorfulTheme};
 use openvtc_core::{
-    colors::{CLI_BLUE, CLI_ORANGE, CLI_PURPLE, CLI_RED},
     config::{Config, ConfigProtectionType, UnlockCode},
     errors::OpenVTCError,
     process_lock::{check_duplicate_instance, remove_lock_file},
@@ -23,6 +23,7 @@ use tokio::sync::broadcast;
 
 mod cli;
 mod clipboard;
+mod colors;
 mod state_handler;
 mod ui;
 

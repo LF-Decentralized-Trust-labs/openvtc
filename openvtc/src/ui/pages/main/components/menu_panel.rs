@@ -1,7 +1,7 @@
-use crate::state_handler::main_page::menu::{MainMenu, MenuPanelState};
-use openvtc_core::colors::{
+use crate::colors::{
     COLOR_BORDER, COLOR_SUCCESS, COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
 };
+use crate::state_handler::main_page::menu::{MainMenu, MenuPanelState};
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},

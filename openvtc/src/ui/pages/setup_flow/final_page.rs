@@ -1,11 +1,9 @@
-use crossterm::event::{KeyCode, KeyEvent};
-use openvtc_core::{
-    LF_PUBLIC_MEDIATOR_DID,
-    colors::{
-        COLOR_BORDER, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-        COLOR_WARNING_ACCESSIBLE_RED,
-    },
+use crate::colors::{
+    COLOR_BORDER, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
 };
+use crossterm::event::{KeyCode, KeyEvent};
+use openvtc_core::LF_PUBLIC_MEDIATOR_DID;
 use ratatui::{
     Frame,
     layout::{

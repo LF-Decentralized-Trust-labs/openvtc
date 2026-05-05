@@ -10,7 +10,6 @@ use crate::{
     logs::LogFamily,
 };
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
-use dialoguer::{Password, theme::ColorfulTheme};
 use secrecy::{ExposeSecret, SecretString};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -52,27 +51,22 @@ impl Config {
 
     /// Exports the full configuration (public + secured) to an encrypted file.
     ///
-    /// - `passphrase`: Optional passphrase; if `None`, the user is prompted interactively.
+    /// - `passphrase`: Passphrase used to derive the export key. The caller
+    ///   is responsible for collecting it; this function is non-interactive
+    ///   so it can be used from any binary (TUI, daemon, tests) without
+    ///   pulling in a CLI prompt library.
     /// - `file`: Destination file path for the base64url-encoded ciphertext.
     ///
     /// # Errors
     ///
     /// Returns an error if passphrase derivation fails, serialization fails,
     /// encryption fails, or the file cannot be written.
-    pub fn export(&self, passphrase: Option<SecretString>, file: &str) -> Result<(), OpenVTCError> {
+    pub fn export(&self, passphrase: SecretString, file: &str) -> Result<(), OpenVTCError> {
         let pc = PublicConfig::from(self);
         let sc = SecuredConfig::from(self);
 
-        let seed_bytes = if let Some(passphrase) = passphrase {
-            derive_passphrase_key(passphrase.expose_secret().as_bytes(), b"openvtc-export-v1")?
-        } else {
-            let input = Password::with_theme(&ColorfulTheme::default())
-                .with_prompt("Enter passphrase to encrypt exported configuration")
-                .with_confirmation("Confirm passphrase", "Passphrases do not match")
-                .interact()
-                .map_err(|e| OpenVTCError::Config(format!("Failed to read passphrase: {e}")))?;
-            derive_passphrase_key(input.as_bytes(), b"openvtc-export-v1")?
-        };
+        let seed_bytes =
+            derive_passphrase_key(passphrase.expose_secret().as_bytes(), b"openvtc-export-v1")?;
 
         let serialized = serde_json::to_vec(&ExportedConfig { pc, sc })?;
         let secured = unlock_code_encrypt(&seed_bytes, &serialized)?;

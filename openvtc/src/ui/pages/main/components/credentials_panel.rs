@@ -1,13 +1,13 @@
 use super::panel::Panel;
+use crate::colors::{
+    COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
+};
 use crate::state_handler::{
     main_page::content::{
         ContentPanelState, CredentialTab, CredentialsMode, CredentialsState, RelationshipsState,
     },
     state::ConnectionState,
-};
-use openvtc_core::colors::{
-    COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-    COLOR_WARNING_ACCESSIBLE_RED,
 };
 use ratatui::{
     style::{Style, Stylize},
