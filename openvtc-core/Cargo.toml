@@ -59,6 +59,16 @@ openpgp-card-rpgp = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+# In-process mediator for integration tests. `memory-backend` keeps the
+# whole mediator (config + queue + secrets) in RAM — no Redis sidecar,
+# no on-disk fixtures — so `cargo test` stays self-contained. Slow tests
+# that spawn the mediator are marked `#[ignore]`; run them with
+# `cargo test -- --ignored`.
+affinidi-messaging-mediator = { version = "0.14", default-features = false, features = ["didcomm", "memory-backend"] }
+affinidi-secrets-resolver = "0.5"
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio-util = { workspace = true }
 
 [[bench]]
 name = "crypto"
