@@ -20,10 +20,10 @@ use crate::{
             mediator_custom::MediatorCustom, start_ask::StartAskPanel,
             unlock_code_ask::UnlockCodeAsk, unlock_code_set::UnlockCodeSet,
             unlock_code_warn::UnlockCodeWarn, username::UserName,
-            vta_acl_instructions::VtaAclInstructions, vta_authenticate::VtaAuthenticate,
-            vta_enter_did::VtaEnterDid, vta_keys_fetch::VtaKeysFetch,
-            vta_provisioning::VtaProvisioning, webvh_address::WebvhAddress,
-            webvh_server_progress::WebvhServerProgress, webvh_server_select::WebvhServerSelect,
+            vta_acl_instructions::VtaAclInstructions, vta_enter_did::VtaEnterDid,
+            vta_keys_fetch::VtaKeysFetch, vta_provisioning::VtaProvisioning,
+            webvh_address::WebvhAddress, webvh_server_progress::WebvhServerProgress,
+            webvh_server_select::WebvhServerSelect,
         },
     },
 };
@@ -57,7 +57,6 @@ pub mod unlock_code_set;
 pub mod unlock_code_warn;
 pub mod username;
 pub mod vta_acl_instructions;
-pub mod vta_authenticate;
 pub mod vta_enter_did;
 pub mod vta_keys_fetch;
 pub mod vta_provisioning;
@@ -81,7 +80,6 @@ pub struct SetupFlow {
     pub vta_enter_did: VtaEnterDid,
     pub vta_acl_instructions: VtaAclInstructions,
     pub vta_provisioning: VtaProvisioning,
-    pub vta_authenticate: VtaAuthenticate,
     pub vta_keys_fetch: VtaKeysFetch,
 
     pub did_keys_show: DIDKeysShow,
@@ -149,7 +147,6 @@ impl Component for SetupFlow {
             vta_enter_did: VtaEnterDid::default(),
             vta_acl_instructions: VtaAclInstructions::default(),
             vta_provisioning: VtaProvisioning,
-            vta_authenticate: VtaAuthenticate,
             vta_keys_fetch: VtaKeysFetch,
             did_keys_show: DIDKeysShow::default(),
             did_keys_export_ask: DIDKeysExportAsk::default(),
@@ -208,7 +205,6 @@ impl Component for SetupFlow {
             SetupPage::VtaEnterDid => VtaEnterDid::handle_key_event(self, key),
             SetupPage::VtaAclInstructions => VtaAclInstructions::handle_key_event(self, key),
             SetupPage::VtaProvisioning => VtaProvisioning::handle_key_event(self, key),
-            SetupPage::VtaAuthenticate => VtaAuthenticate::handle_key_event(self, key),
             SetupPage::VtaKeysFetch => VtaKeysFetch::handle_key_event(self, key),
             SetupPage::DIDKeysShow => DIDKeysShow::handle_key_event(self, key),
             SetupPage::DidKeysExportAsk => DIDKeysExportAsk::handle_key_event(self, key),
@@ -308,7 +304,6 @@ impl ComponentRender<()> for SetupFlow {
                 self.vta_acl_instructions.render(&self.props.state, frame)
             }
             SetupPage::VtaProvisioning => self.vta_provisioning.render(&self.props.state, frame),
-            SetupPage::VtaAuthenticate => self.vta_authenticate.render(&self.props.state, frame),
             SetupPage::VtaKeysFetch => self.vta_keys_fetch.render(&self.props.state, frame),
             SetupPage::DIDKeysShow => self.did_keys_show.render(&self.props.state, frame),
             SetupPage::DidKeysExportAsk => {
@@ -375,7 +370,6 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
         SetupPage::VtaEnterDid
             | SetupPage::VtaAclInstructions
             | SetupPage::VtaProvisioning
-            | SetupPage::VtaAuthenticate
             | SetupPage::VtaKeysFetch
             | SetupPage::WebvhServerSelect
             | SetupPage::WebvhServerProgress

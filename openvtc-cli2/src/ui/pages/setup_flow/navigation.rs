@@ -20,7 +20,7 @@ pub enum SetupEvent {
     CreateNew,
     ImportConfig,
 
-    // VtaAuthenticate
+    // VtaProvisioning
     VtaAuthCompleted,
 
     // WebvhServerSelect
@@ -115,7 +115,7 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         SetupEvent::CreateNew => NavResult::GoTo(SetupPage::VtaEnterDid),
         SetupEvent::ImportConfig => NavResult::GoTo(SetupPage::ConfigImport),
 
-        // === VtaAuthenticate ===
+        // === VtaProvisioning ===
         SetupEvent::VtaAuthCompleted => {
             if !state.vta.webvh_servers.is_empty() {
                 NavResult::GoTo(SetupPage::WebvhServerSelect)

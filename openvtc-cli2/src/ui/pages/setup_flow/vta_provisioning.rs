@@ -1,10 +1,9 @@
 //! Online VTA provisioning — step 3: live diagnostics while
 //! `provision_client::run_connection_test` runs against the VTA.
 //!
-//! On success we transition to the legacy `VtaAuthenticate` page so the
-//! existing keys-fetch / webvh-server-pick flow takes over unchanged.
-//! On failure we surface the reason and let the operator press Enter to
-//! retry (which loops back to the ACL instructions screen).
+//! On success we emit `VtaAuthCompleted` so the keys-fetch / webvh-server-pick
+//! flow takes over. On failure we surface the reason and let the operator
+//! press Enter to retry (which loops back to the ACL instructions screen).
 
 use crossterm::event::{KeyCode, KeyEvent};
 use openvtc::colors::{
