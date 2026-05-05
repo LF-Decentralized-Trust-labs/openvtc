@@ -258,3 +258,223 @@ pub fn handle_nav_result(result: NavResult, flow: &mut SetupFlow) {
         NavResult::None => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Table-driven tests for the central navigation function. The pure
+    //! `(SetupEvent, &SetupState) -> NavResult` shape makes this exhaustive
+    //! coverage cheap, and locks in the flow before the larger state-handler
+    //! split refactor that's coming next.
+
+    use super::*;
+
+    fn empty_state() -> SetupState {
+        SetupState::default()
+    }
+
+    fn webvh_state() -> SetupState {
+        let mut s = SetupState::default();
+        s.vta.use_webvh_server = true;
+        s
+    }
+
+    fn matches_goto(result: &NavResult, expected: SetupPage) -> bool {
+        matches!(result, NavResult::GoTo(p) if std::mem::discriminant(p) == std::mem::discriminant(&expected))
+    }
+
+    fn is_send_action(result: &NavResult) -> bool {
+        matches!(result, NavResult::SendAction(_))
+    }
+
+    fn is_send_then_complete(result: &NavResult) -> bool {
+        matches!(result, NavResult::SendActionThenCompleteSetup(_))
+    }
+
+    fn is_complete(result: &NavResult) -> bool {
+        matches!(result, NavResult::CompleteSetup)
+    }
+
+    #[test]
+    fn create_new_routes_to_vta_enter_did() {
+        let r = navigate(SetupEvent::CreateNew, &empty_state());
+        assert!(matches_goto(&r, SetupPage::VtaEnterDid));
+    }
+
+    #[test]
+    fn import_config_routes_to_config_import() {
+        let r = navigate(SetupEvent::ImportConfig, &empty_state());
+        assert!(matches_goto(&r, SetupPage::ConfigImport));
+    }
+
+    #[test]
+    fn vta_auth_completed_routes_to_webvh_when_servers_advertised() {
+        use chrono::Utc;
+        use vta_sdk::webvh::WebvhServerRecord;
+        let mut state = empty_state();
+        state.vta.webvh_servers = vec![WebvhServerRecord {
+            id: "test-id".to_string(),
+            did: "did:webvh:test".to_string(),
+            label: Some("test".to_string()),
+            access_token: None,
+            access_expires_at: None,
+            refresh_token: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }];
+        let r = navigate(SetupEvent::VtaAuthCompleted, &state);
+        assert!(matches_goto(&r, SetupPage::WebvhServerSelect));
+    }
+
+    #[test]
+    fn vta_auth_completed_falls_back_to_create_keys_when_no_server() {
+        let r = navigate(SetupEvent::VtaAuthCompleted, &empty_state());
+        assert!(is_send_action(&r));
+    }
+
+    #[test]
+    fn use_webvh_server_emits_create_did_action() {
+        let r = navigate(
+            SetupEvent::UseWebvhServer {
+                server_id: "id".to_string(),
+                custom_path: None,
+            },
+            &empty_state(),
+        );
+        assert!(is_send_action(&r));
+    }
+
+    #[test]
+    fn vta_keys_ready_routes_to_did_keys_show() {
+        let r = navigate(SetupEvent::VtaKeysReady, &empty_state());
+        assert!(matches_goto(&r, SetupPage::DIDKeysShow));
+    }
+
+    #[test]
+    fn webvh_did_created_routes_to_did_keys_show() {
+        let r = navigate(SetupEvent::WebvhDIDCreated, &empty_state());
+        assert!(matches_goto(&r, SetupPage::DIDKeysShow));
+    }
+
+    #[test]
+    fn did_keys_viewed_routes_to_export_ask() {
+        let r = navigate(SetupEvent::DIDKeysViewed, &empty_state());
+        assert!(matches_goto(&r, SetupPage::DidKeysExportAsk));
+    }
+
+    #[test]
+    fn skip_export_lands_on_did_git_sign_ask() {
+        let r = navigate(SetupEvent::SkipExport, &empty_state());
+        assert!(matches_goto(&r, SetupPage::DidGitSignAsk));
+    }
+
+    #[test]
+    fn start_export_routes_to_export_inputs() {
+        let r = navigate(SetupEvent::StartExport, &empty_state());
+        assert!(matches_goto(&r, SetupPage::DidKeysExportInputs));
+    }
+
+    #[test]
+    fn export_complete_lands_on_did_git_sign_ask() {
+        let r = navigate(SetupEvent::ExportComplete, &empty_state());
+        assert!(matches_goto(&r, SetupPage::DidGitSignAsk));
+    }
+
+    #[test]
+    fn did_git_sign_accept_emits_install_action() {
+        let r = navigate(SetupEvent::DidGitSignAccept, &empty_state());
+        assert!(is_send_action(&r));
+    }
+
+    #[test]
+    fn want_unlock_code_routes_to_unlock_code_set() {
+        let r = navigate(SetupEvent::WantUnlockCode, &empty_state());
+        assert!(matches_goto(&r, SetupPage::UnlockCodeSet));
+    }
+
+    #[test]
+    fn skip_unlock_code_routes_to_warn() {
+        let r = navigate(SetupEvent::SkipUnlockCode, &empty_state());
+        assert!(matches_goto(&r, SetupPage::UnlockCodeWarn));
+    }
+
+    #[test]
+    fn return_to_set_code_routes_back_to_unlock_set() {
+        let r = navigate(SetupEvent::ReturnToSetCode, &empty_state());
+        assert!(matches_goto(&r, SetupPage::UnlockCodeSet));
+    }
+
+    #[test]
+    fn accept_no_code_risk_in_webvh_state_lands_on_username() {
+        let r = navigate(SetupEvent::AcceptNoCodeRisk, &webvh_state());
+        assert!(matches_goto(&r, SetupPage::UserName));
+    }
+
+    #[test]
+    fn accept_no_code_risk_in_manual_state_lands_on_mediator() {
+        let r = navigate(SetupEvent::AcceptNoCodeRisk, &empty_state());
+        assert!(matches_goto(&r, SetupPage::MediatorAsk));
+    }
+
+    #[test]
+    fn use_default_mediator_routes_to_username() {
+        let r = navigate(SetupEvent::UseDefaultMediator, &empty_state());
+        assert!(matches_goto(&r, SetupPage::UserName));
+    }
+
+    #[test]
+    fn use_custom_mediator_routes_to_custom_form() {
+        let r = navigate(SetupEvent::UseCustomMediator, &empty_state());
+        assert!(matches_goto(&r, SetupPage::MediatorCustom));
+    }
+
+    #[test]
+    fn custom_mediator_set_emits_action() {
+        let r = navigate(
+            SetupEvent::CustomMediatorSet {
+                mediator_did: "did:web:test".to_string(),
+            },
+            &empty_state(),
+        );
+        assert!(is_send_action(&r));
+    }
+
+    #[test]
+    fn username_set_in_webvh_state_completes_setup() {
+        let r = navigate(
+            SetupEvent::UsernameSet {
+                username: "alice".to_string(),
+            },
+            &webvh_state(),
+        );
+        assert!(is_send_then_complete(&r));
+    }
+
+    #[test]
+    fn username_set_in_manual_state_only_sends_action() {
+        let r = navigate(
+            SetupEvent::UsernameSet {
+                username: "alice".to_string(),
+            },
+            &empty_state(),
+        );
+        assert!(is_send_action(&r));
+    }
+
+    #[test]
+    fn webvh_complete_completes_setup() {
+        let r = navigate(SetupEvent::WebVHComplete, &empty_state());
+        assert!(is_complete(&r));
+    }
+
+    #[test]
+    fn setup_done_emits_activate_main_menu() {
+        let r = navigate(SetupEvent::SetupDone, &empty_state());
+        assert!(is_send_action(&r));
+    }
+
+    #[test]
+    fn create_manually_emits_create_keys_action() {
+        let r = navigate(SetupEvent::CreateManually, &empty_state());
+        assert!(is_send_action(&r));
+    }
+}
