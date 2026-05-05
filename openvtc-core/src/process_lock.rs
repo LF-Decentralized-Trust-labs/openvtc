@@ -17,7 +17,7 @@ use crate::errors::OpenVTCError;
 use std::{
     fs::{self, OpenOptions},
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     process,
     str::FromStr,
 };
@@ -36,12 +36,11 @@ use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
 ///
 /// - [`OpenVTCError::DuplicateInstance`] — another live process holds the lock.
 /// - [`OpenVTCError::LockFile`] — the lock file could not be read or created.
-pub fn check_duplicate_instance(profile: &str) -> Result<String, OpenVTCError> {
+pub fn check_duplicate_instance(profile: &str) -> Result<PathBuf, OpenVTCError> {
     let lock_file = get_lock_file(profile)?;
 
     // Ensure parent directory exists
-    let dir_path = Path::new(&lock_file);
-    if let Some(parent) = dir_path.parent()
+    if let Some(parent) = lock_file.parent()
         && !parent.exists()
     {
         fs::create_dir_all(parent)
@@ -94,34 +93,42 @@ pub fn check_duplicate_instance(profile: &str) -> Result<String, OpenVTCError> {
 
 /// Returns the canonical path to the lock file for `profile`.
 ///
-/// Respects the `OPENVTC_CONFIG_PATH` environment variable if set, otherwise
-/// defaults to `~/.config/openvtc/`.
+/// Honours `OPENVTC_CONFIG_PATH`. Falls back to `~/.config/openvtc/` on
+/// Unix/macOS, and to the platform's AppData location
+/// (`%APPDATA%\openvtc`, via `dirs::config_dir()`) on Windows.
 ///
 /// # Errors
 ///
-/// Returns [`OpenVTCError::LockFile`] if the home directory cannot be determined.
-pub(crate) fn get_lock_file(profile: &str) -> Result<String, OpenVTCError> {
-    let path = if let Ok(config_path) = std::env::var("OPENVTC_CONFIG_PATH") {
-        if config_path.ends_with('/') {
-            config_path
-        } else {
-            format!("{config_path}/")
-        }
-    } else if let Some(home) = dirs::home_dir()
-        && let Some(home_str) = home.to_str()
-    {
-        format!("{home_str}/.config/openvtc/")
+/// Returns [`OpenVTCError::LockFile`] if the configuration directory
+/// cannot be determined.
+pub(crate) fn get_lock_file(profile: &str) -> Result<PathBuf, OpenVTCError> {
+    let mut path = if let Ok(config_path) = std::env::var("OPENVTC_CONFIG_PATH") {
+        PathBuf::from(config_path)
     } else {
-        return Err(OpenVTCError::LockFile(
-            "couldn't determine home directory".to_string(),
-        ));
+        #[cfg(windows)]
+        {
+            dirs::config_dir()
+                .map(|p| p.join("openvtc"))
+                .ok_or_else(|| {
+                    OpenVTCError::LockFile("couldn't determine configuration directory".to_string())
+                })?
+        }
+        #[cfg(not(windows))]
+        {
+            dirs::home_dir()
+                .map(|p| p.join(".config").join("openvtc"))
+                .ok_or_else(|| {
+                    OpenVTCError::LockFile("couldn't determine home directory".to_string())
+                })?
+        }
     };
 
     if profile == "default" {
-        Ok(format!("{path}config.lock"))
+        path.push("config.lock");
     } else {
-        Ok(format!("{path}config-{profile}.lock"))
+        path.push(format!("config-{profile}.lock"));
     }
+    Ok(path)
 }
 
 /// Writes a lock file at `lock_file` containing the current process PID.
@@ -131,9 +138,9 @@ pub(crate) fn get_lock_file(profile: &str) -> Result<String, OpenVTCError> {
 /// # Errors
 ///
 /// Returns [`OpenVTCError::LockFile`] on any I/O failure.
-pub(crate) fn create_lock_file(lock_file: &str) -> Result<(), OpenVTCError> {
-    let dir_path = Path::new(lock_file);
-    if let Some(parent) = dir_path.parent()
+pub(crate) fn create_lock_file<P: AsRef<Path>>(lock_file: P) -> Result<(), OpenVTCError> {
+    let lock_file = lock_file.as_ref();
+    if let Some(parent) = lock_file.parent()
         && !parent.exists()
     {
         fs::create_dir_all(parent)
@@ -141,7 +148,10 @@ pub(crate) fn create_lock_file(lock_file: &str) -> Result<(), OpenVTCError> {
     }
 
     fs::write(lock_file, process::id().to_string()).map_err(|e| {
-        OpenVTCError::LockFile(format!("couldn't write lock file '{lock_file}': {e}"))
+        OpenVTCError::LockFile(format!(
+            "couldn't write lock file '{}': {e}",
+            lock_file.to_string_lossy()
+        ))
     })?;
     Ok(())
 }
@@ -150,6 +160,6 @@ pub(crate) fn create_lock_file(lock_file: &str) -> Result<(), OpenVTCError> {
 ///
 /// Errors are silently discarded because this is always called during
 /// application shutdown, where there is no meaningful recovery path.
-pub fn remove_lock_file(lock_file: &str) {
+pub fn remove_lock_file<P: AsRef<Path>>(lock_file: P) {
     let _ = fs::remove_file(lock_file);
 }
