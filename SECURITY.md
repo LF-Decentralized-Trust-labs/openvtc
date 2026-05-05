@@ -32,7 +32,7 @@ Include the following in your report:
 
 The following are in scope:
 
-- All crates in the `openvtc` workspace (`openvtc-lib`, `openvtc-cli`, `openvtc-cli2`, `openvtc-service`, `did-git-sign`, `robotic-maintainers`)
+- All crates in the `openvtc` workspace (`openvtc-core`, `openvtc`, `openvtc-service`, `did-git-sign`, `robotic-maintainers`)
 - Cryptographic operations (key derivation, encryption, signing)
 - Secret handling and memory management
 - DIDComm protocol implementation

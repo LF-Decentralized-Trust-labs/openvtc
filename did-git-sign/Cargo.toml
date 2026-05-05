@@ -36,7 +36,7 @@ tracing-subscriber = { workspace = true }
 dialoguer = { workspace = true }
 
 # Per-platform keyring-core stores. did-git-sign uses the same backend as
-# openvtc-cli2 on each platform so credentials line up.
+# openvtc on each platform so credentials line up.
 [target.'cfg(target_os = "macos")'.dependencies]
 apple-native-keyring-store = { workspace = true }
 

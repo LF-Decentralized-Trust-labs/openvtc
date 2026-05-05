@@ -82,14 +82,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The workspace is organized as a layered architecture:
 
-- **`openvtc-lib`** — Core library: cryptography, DID management, configuration, protocol logic. No UI dependencies.
-- **`openvtc-cli`** / **`openvtc-cli2`** — CLI/TUI binaries that consume `openvtc-lib`
+- **`openvtc-core`** — Core library: cryptography, DID management, configuration, protocol logic. No UI dependencies.
+- **`openvtc`** — TUI binary that consumes `openvtc-core`
 - **`openvtc-service`** — Background messaging daemon
-- **`did-git-sign`** — Standalone git signing proxy (intentionally independent from `openvtc-lib`)
+- **`did-git-sign`** — Standalone git signing proxy (intentionally independent from `openvtc-core`)
 - **`robotic-maintainers`** — Automated VRC issuance service
 
 Key design principles:
-- Crypto and protocol logic stays in `openvtc-lib` — binary crates are pure consumers
+- Crypto and protocol logic stays in `openvtc-core` — binary crates are pure consumers
 - Secrets are handled with `secrecy`/`zeroize` — never log, serialize, or expose key material
 - Error handling uses `thiserror` in the library and `anyhow` in binaries
 

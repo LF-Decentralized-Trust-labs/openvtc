@@ -11,7 +11,7 @@ use affinidi_tdk::{
 };
 use anyhow::{Result, bail};
 use clap::Parser;
-use openvtc::{MessageType, maintainers::create_send_maintainers_list, protocol_urls};
+use openvtc_core::{MessageType, maintainers::create_send_maintainers_list, protocol_urls};
 use tracing::{info, warn};
 use tracing_subscriber::filter;
 
@@ -148,7 +148,7 @@ async fn handle_message(
         bail!("Couldn't get a valid to: address from message");
     };
 
-    let from_did = match openvtc::require_from(msg) {
+    let from_did = match openvtc_core::require_from(msg) {
         Ok(did) => did,
         Err(_) => {
             warn!("Message received had no from: address! Ignoring...");

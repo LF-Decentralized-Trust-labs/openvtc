@@ -1,10 +1,9 @@
 [workspace]
 members = [
-  "openvtc-lib",
-  "openvtc-cli",
+  "openvtc-core",
   "robotic-maintainers",
   "openvtc-service",
-  "openvtc-cli2",
+  "openvtc",
   "did-git-sign",
 ]
 resolver = "3"
@@ -21,7 +20,7 @@ license = "Apache-2.0"
 repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
 
 [workspace.dependencies]
-openvtc = { version = "0.2", path = "openvtc-lib", default-features = false }
+openvtc-core = { version = "0.2", path = "openvtc-core", default-features = false }
 
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1"

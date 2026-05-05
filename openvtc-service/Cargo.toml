@@ -12,7 +12,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-openvtc.workspace = true
+openvtc-core.workspace = true
 affinidi-tdk.workspace = true
 
 anyhow.workspace = true

@@ -3,14 +3,10 @@
 ## Project overview
 
 OpenVTC (Open Verifiable Trust Communities) is a reference implementation
-on top of the verifiable trust infrastructure. This repository currently
-hosts two CLI tools and supporting libraries:
+on top of the verifiable trust infrastructure. This repository hosts:
 
-- `openvtc-cli` — **being phased out.** Do not add new features here.
-  Bug fixes only if strictly necessary.
-- `openvtc-cli2` — the active, supported CLI (ratatui TUI). New work and
-  feature development happen here.
-- `openvtc-lib` — shared library code used by both CLIs.
+- `openvtc` — the CLI (ratatui TUI). Primary user-facing tool.
+- `openvtc-core` — shared library code used by the CLI.
 - `did-git-sign` — standalone DID-based git commit signing proxy.
 
 The heavy lifting of the verifiable trust infrastructure (VTA, key
@@ -43,7 +39,7 @@ Hand-rolling these conversions has already caused one bug: a manual
 `format!("{host}{path}")` left a URL path slash inside the DID
 (`did:webvh:{SCID}:r2.ic3.dev/vincent`) where the spec requires a colon,
 producing a DID that resolved to the wrong URL. See
-`openvtc-lib/src/config/did.rs::normalize_webvh_url` for the canonical
+`openvtc-core/src/config/did.rs::normalize_webvh_url` for the canonical
 entry point that now delegates to the library.
 
 If the library appears to be missing a capability, prefer opening an issue
