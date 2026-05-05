@@ -27,9 +27,9 @@ dtg-credentials = "0.1"
 
 aes-gcm = "0.10"
 argon2 = "0.5"
-affinidi-tdk = "0.6"
+affinidi-tdk = "0.7"
 affinidi-data-integrity = "0.6"
-affinidi-messaging-didcomm-service = "0.2"
+affinidi-messaging-didcomm-service = "0.3"
 anyhow = "1.0"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22"

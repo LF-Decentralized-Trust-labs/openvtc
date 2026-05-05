@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::Config;
 use affinidi_tdk::{
-    common::TDKSharedState,
+    common::{TDKSharedState, config::TDKConfig},
     didcomm::Message,
     messaging::messages::compat::UnpackMetadata,
     messaging::{ATM, config::ATMConfig, profiles::ATMProfile},
@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
     // Create a basic ATM instance
     let atm = ATM::new(
         ATMConfig::builder().build()?,
-        Arc::new(TDKSharedState::default().await),
+        Arc::new(TDKSharedState::new(TDKConfig::headless()?).await?),
     )
     .await?;
 
@@ -62,7 +62,7 @@ async fn main() -> Result<()> {
 
     // Add secrets to ATM
     atm.get_tdk()
-        .secrets_resolver
+        .secrets_resolver()
         .insert_vec(&config.secrets)
         .await;
 

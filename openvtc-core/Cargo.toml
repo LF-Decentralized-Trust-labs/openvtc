@@ -68,21 +68,10 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # embedded in the test process with the JWT keys, DID document, ACL
 # defaults, and local-DID whitelisting set up. Replaces the hand-rolled
 # harness that did the same dance manually.
-affinidi-messaging-test-mediator = "0.1"
-# `MemoryStore` + `MediatorStore` trait + `MediatorACLSet`: needed because
-# user DIDs must be generated AFTER the mediator boots (so they can pick
-# up the mediator's DID as their service endpoint, which is what makes
-# routing/2.0 forwards short-circuit to local delivery instead of being
-# enqueued to FORWARD_Q for external HTTP forwarding). That rules out
-# the test-mediator's `local_dids(...)` builder hook, so we register
-# Alice + Bob through the shared store directly.
-affinidi-messaging-mediator = "0.14"
-affinidi-messaging-mediator-common = "0.13"
-affinidi-messaging-sdk = "0.17"
+affinidi-messaging-test-mediator = "0.2"
 affinidi-messaging-didcomm-service = { workspace = true }
 reqwest = { workspace = true }
 serde_json = { workspace = true }
-sha256 = "1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-util = { workspace = true }
 tracing-subscriber = { workspace = true }

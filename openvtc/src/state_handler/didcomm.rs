@@ -228,7 +228,7 @@ async fn get_secrets_for_did(
     config: &Config,
     did: &str,
 ) -> Vec<affinidi_tdk::secrets_resolver::secrets::Secret> {
-    let resolver = &tdk.get_shared_state().secrets_resolver;
+    let resolver = tdk.shared().secrets_resolver();
 
     let mut secrets = vec![];
     for key_id in config.key_info.keys() {

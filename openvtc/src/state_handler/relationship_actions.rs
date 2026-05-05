@@ -374,11 +374,11 @@ async fn create_relationship_did_bip32(
 
     // Add the secrets to the TDK secret resolver
     tdk.get_shared_state()
-        .secrets_resolver
+        .secrets_resolver()
         .insert(v_secret)
         .await;
     tdk.get_shared_state()
-        .secrets_resolver
+        .secrets_resolver()
         .insert(e_secret)
         .await;
 
@@ -486,11 +486,11 @@ async fn create_relationship_did_vta(
 
     // Register secrets in TDK resolver
     tdk.get_shared_state()
-        .secrets_resolver
+        .secrets_resolver()
         .insert(v_secret)
         .await;
     tdk.get_shared_state()
-        .secrets_resolver
+        .secrets_resolver()
         .insert(e_secret)
         .await;
 

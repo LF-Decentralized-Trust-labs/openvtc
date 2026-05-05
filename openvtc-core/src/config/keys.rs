@@ -31,7 +31,7 @@ async fn resolve_key_from_document(
     })?;
     let secret = tdk
         .get_shared_state()
-        .secrets_resolver
+        .secrets_resolver()
         .get_secret(vm.get_id())
         .await
         .ok_or_else(|| {
@@ -149,7 +149,7 @@ impl Config {
                     }
                 };
             if let Some(s) = secret {
-                tdk.get_shared_state().secrets_resolver.insert(s).await;
+                tdk.get_shared_state().secrets_resolver().insert(s).await;
             }
         }
         Ok(())
@@ -229,7 +229,10 @@ impl Config {
             secret.id = vm.id.to_string();
 
             // Load the secret into the TDK Secrets resolver
-            tdk.get_shared_state().secrets_resolver.insert(secret).await;
+            tdk.get_shared_state()
+                .secrets_resolver()
+                .insert(secret)
+                .await;
         }
         Ok(())
     }

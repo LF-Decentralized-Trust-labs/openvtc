@@ -316,7 +316,7 @@ impl Relationships {
         // Insert all secrets at once
         if !all_secrets.is_empty() {
             tdk.get_shared_state()
-                .secrets_resolver
+                .secrets_resolver()
                 .insert_vec(&all_secrets)
                 .await;
         }
