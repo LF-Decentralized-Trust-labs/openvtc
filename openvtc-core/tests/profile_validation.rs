@@ -31,6 +31,25 @@ fn profile_name_with_special_chars_rejected() {
     assert!(validate_profile_name("name!").is_err());
 }
 
+#[test]
+fn whitespace_only_profile_name_rejected() {
+    assert!(validate_profile_name("   ").is_err());
+    assert!(validate_profile_name(" ").is_err());
+    assert!(validate_profile_name("\t").is_err());
+}
+
+#[test]
+fn padded_default_profile_name_accepted() {
+    assert!(validate_profile_name(" default ").is_ok());
+    assert!(validate_profile_name("  default  ").is_ok());
+}
+
+#[test]
+fn padded_valid_profile_name_accepted() {
+    assert!(validate_profile_name(" my-profile ").is_ok());
+    assert!(validate_profile_name("  Profile123  ").is_ok());
+}
+
 // --- Passphrase validation ---
 
 #[test]
