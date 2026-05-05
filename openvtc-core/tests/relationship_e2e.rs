@@ -3,22 +3,19 @@
 //! Uses the [`MockMediator`] harness to spin up the real
 //! `affinidi-messaging-mediator` server, registers two DIDComm
 //! profiles (Alice + Bob) through `DIDCommService`, and verifies
-//! that a message Alice sends through the mediator is delivered to
-//! Bob's handler.
+//! that messages Alice sends through the mediator are delivered to
+//! Bob's handler. Two scenarios:
 //!
-//! Status: the mediator boots and binds, both profiles construct,
-//! and `DIDCommService::start` returns successfully. The connect
-//! step then loops on `AuthenticationAbort("No service endpoint
-//! found. DID doesn't contain a #auth service")` — the SDK requires
-//! the mediator's DID document to publish a service whose id ends
-//! in `#auth`, which `affinidi-tdk 0.6`'s `generate_did_peer` helper
-//! doesn't expose. `affinidi-tdk 0.7` exposes
-//! `generate_did_peer_with_services` for exactly this case; bumping
-//! the workspace TDK or going through `affinidi-did-common` directly
-//! is the next step. The body below is intentionally compiled and
-//! linked so the API stays current; it runs only under
-//! `cargo test -- --ignored` and currently fails the assertion at
-//! the `wait_connected` line.
+//!   * `alice_sends_to_bob_via_mediator` — generic test-protocol
+//!     payload, asserts the message lands at Bob's router.
+//!   * `relationship_request_round_trip` — sends a real openvtc-core
+//!     `RelationshipRequestBody` and asserts Bob can deserialise it,
+//!     proving the harness drives the actual production protocol
+//!     types and not just opaque JSON.
+//!
+//! All `#[ignore]`'d because the mediator boot + auth handshake +
+//! WS connect adds ~1s. CI's coverage job runs them via
+//! `cargo llvm-cov ... -- --include-ignored`.
 
 mod common;
 
@@ -31,6 +28,8 @@ use affinidi_messaging_didcomm_service::{
 };
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::didcomm::Message;
+use openvtc_core::protocol_urls::RELATIONSHIP_REQUEST;
+use openvtc_core::relationships::RelationshipRequestBody;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
@@ -39,11 +38,12 @@ use common::{MockMediator, TestProfile};
 const TEST_MESSAGE_TYPE: &str = "https://example.com/openvtc-test/1.0/echo";
 
 /// Build a `DIDCommService` for `profile` with a router that captures
-/// any inbound `TEST_MESSAGE_TYPE` payload into `inbound_tx`. Returns
-/// the running service plus the cancellation token guarding its
-/// background tasks.
+/// any inbound message in `routes` into `inbound_tx`. Returns the
+/// running service plus the cancellation token guarding its background
+/// tasks.
 async fn start_profile_service(
     profile: TestProfile,
+    routes: &[&'static str],
     inbound_tx: mpsc::UnboundedSender<Message>,
 ) -> Result<(DIDCommService, CancellationToken), Box<dyn std::error::Error + Send + Sync>> {
     let TestProfile {
@@ -69,15 +69,18 @@ async fn start_profile_service(
         }],
     };
 
-    let capture_handler = handler_fn(move |_ctx: HandlerContext, msg: Message| {
+    let make_capture = || {
         let tx = inbound_tx.clone();
-        async move {
-            let _ = tx.send(msg);
-            Ok::<Option<DIDCommResponse>, DIDCommServiceError>(None)
-        }
-    });
+        handler_fn(move |_ctx: HandlerContext, msg: Message| {
+            let tx = tx.clone();
+            async move {
+                let _ = tx.send(msg);
+                Ok::<Option<DIDCommResponse>, DIDCommServiceError>(None)
+            }
+        })
+    };
 
-    let router = Router::new()
+    let mut router = Router::new()
         // Built-in trust-ping responder so the mediator sees a connected
         // and well-behaved listener.
         .route(
@@ -89,10 +92,10 @@ async fn start_profile_service(
         .route(
             affinidi_messaging_didcomm_service::MESSAGE_PICKUP_STATUS_TYPE,
             handler_fn(ignore_handler),
-        )?
-        // Capture our test-protocol message into the channel so the
-        // test harness can assert on it.
-        .route(TEST_MESSAGE_TYPE, capture_handler)?;
+        )?;
+    for type_url in routes {
+        router = router.route(*type_url, make_capture())?;
+    }
 
     let shutdown = CancellationToken::new();
     let service = DIDCommService::start(config, router, shutdown.clone()).await?;
@@ -112,37 +115,34 @@ fn init_test_tracing() {
         .try_init();
 }
 
-#[tokio::test(flavor = "multi_thread")]
-#[ignore = "WIP: needs `#auth` service entry on the mediator's DID document — see module docs"]
-async fn alice_sends_to_bob_via_mediator() {
-    init_test_tracing();
-    let mediator = MockMediator::start().await.expect("mediator start");
-
+/// Connect both profiles to the mediator and wait for them to settle.
+/// Bob's listener comes up first so his pickup queue is ready when
+/// Alice pushes; both routers register handlers for `routes`.
+async fn connect_alice_and_bob(
+    mediator: &MockMediator,
+    routes: &[&'static str],
+) -> (
+    DIDCommService,
+    DIDCommService,
+    String,
+    String,
+    mpsc::UnboundedReceiver<Message>,
+) {
     let alice = mediator.make_profile("alice").expect("alice profile");
     let bob = mediator.make_profile("bob").expect("bob profile");
-
-    // Capture both DIDs before the profiles get moved into their
-    // respective service configs.
     let alice_did = alice.did.clone();
     let bob_did = bob.did.clone();
 
-    // Bob comes up first so his pickup queue is ready when Alice
-    // pushes to the mediator.
-    let (bob_inbound_tx, mut bob_inbound_rx) = mpsc::unbounded_channel::<Message>();
-    let (bob_service, _bob_shutdown) = start_profile_service(bob, bob_inbound_tx)
+    let (bob_inbound_tx, bob_inbound_rx) = mpsc::unbounded_channel::<Message>();
+    let (bob_service, _bob_shutdown) = start_profile_service(bob, routes, bob_inbound_tx)
         .await
         .expect("bob service");
 
-    // Alice's inbound channel is unused for this direction — we only
-    // assert delivery on Bob's side — but the service still needs it.
     let (alice_inbound_tx, _alice_inbound_rx) = mpsc::unbounded_channel::<Message>();
-    let (alice_service, _alice_shutdown) = start_profile_service(alice, alice_inbound_tx)
+    let (alice_service, _alice_shutdown) = start_profile_service(alice, routes, alice_inbound_tx)
         .await
         .expect("alice service");
 
-    // Wait for both listeners to settle into Connected state. The
-    // SDK's wait_connected drains pickup-status, completes auth, and
-    // resolves once messages can flow.
     bob_service
         .wait_connected("bob", Duration::from_secs(15))
         .await
@@ -152,9 +152,23 @@ async fn alice_sends_to_bob_via_mediator() {
         .await
         .expect("alice connect");
 
-    // Build a plaintext DIDComm message from Alice to Bob in our
-    // test protocol. The DIDCommService send path packs (encrypts)
-    // it for the recipient and routes it through the mediator.
+    (
+        alice_service,
+        bob_service,
+        alice_did,
+        bob_did,
+        bob_inbound_rx,
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: spawns mediator + two DIDCommService listeners (~1s)"]
+async fn alice_sends_to_bob_via_mediator() {
+    init_test_tracing();
+    let mediator = MockMediator::start().await.expect("mediator start");
+    let (alice_service, bob_service, alice_did, bob_did, mut bob_rx) =
+        connect_alice_and_bob(&mediator, &[TEST_MESSAGE_TYPE]).await;
+
     let payload = serde_json::json!({"hello": "from-alice"});
     let msg = Message::build(
         uuid::Uuid::new_v4().to_string(),
@@ -170,10 +184,7 @@ async fn alice_sends_to_bob_via_mediator() {
         .await
         .expect("alice send");
 
-    // Mediator picks it up, queues for Bob, Bob's listener pulls it
-    // and dispatches to our capture handler. Allow a generous timeout
-    // for the round-trip through the message-pickup protocol.
-    let received = tokio::time::timeout(Duration::from_secs(15), bob_inbound_rx.recv())
+    let received = tokio::time::timeout(Duration::from_secs(15), bob_rx.recv())
         .await
         .expect("bob received within 15s")
         .expect("inbound channel still open");
@@ -184,8 +195,57 @@ async fn alice_sends_to_bob_via_mediator() {
         Some("from-alice")
     );
 
-    // Tear down — handles drop on scope exit; explicit cancellation
-    // would race the background flush.
+    let _ = (alice_service, bob_service);
+    drop(mediator);
+}
+
+/// Drives a real openvtc-core `RelationshipRequestBody` through the
+/// mediator and asserts that Bob can deserialise the payload back into
+/// the same protocol type. Same connect / wait / send / receive shape
+/// as the basic round-trip, but the message body is the production
+/// `relationships::RelationshipRequestBody` instead of opaque JSON —
+/// so a future serde change on either side trips this test.
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "slow: spawns mediator + two DIDCommService listeners (~1s)"]
+async fn relationship_request_round_trip() {
+    init_test_tracing();
+    let mediator = MockMediator::start().await.expect("mediator start");
+    let (alice_service, bob_service, alice_did, bob_did, mut bob_rx) =
+        connect_alice_and_bob(&mediator, &[RELATIONSHIP_REQUEST]).await;
+
+    // Use the openvtc-core protocol body shape so a serde regression on
+    // either field name (`reason`, `did`, `name`) is caught here too.
+    let body = RelationshipRequestBody {
+        reason: Some("integration test".to_string()),
+        did: alice_did.clone(),
+        name: Some("Alice".to_string()),
+    };
+    let msg = Message::build(
+        uuid::Uuid::new_v4().to_string(),
+        RELATIONSHIP_REQUEST.to_string(),
+        serde_json::to_value(&body).expect("serialise body"),
+    )
+    .from(alice_did)
+    .to(bob_did.clone())
+    .finalize();
+
+    alice_service
+        .send_message_with_retry("alice", msg, &bob_did, 3, Duration::from_secs(2))
+        .await
+        .expect("alice send");
+
+    let received = tokio::time::timeout(Duration::from_secs(15), bob_rx.recv())
+        .await
+        .expect("bob received within 15s")
+        .expect("inbound channel still open");
+
+    assert_eq!(received.typ, RELATIONSHIP_REQUEST);
+    let parsed: RelationshipRequestBody =
+        serde_json::from_value(received.body.clone()).expect("deserialise body");
+    assert_eq!(parsed.reason.as_deref(), Some("integration test"));
+    assert_eq!(parsed.name.as_deref(), Some("Alice"));
+    assert!(parsed.did.starts_with("did:peer:"));
+
     let _ = (alice_service, bob_service);
     drop(mediator);
 }
