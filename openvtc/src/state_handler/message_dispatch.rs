@@ -3,7 +3,9 @@
 //! Messages that don't need human input are auto-processed.
 //! Messages requiring user decisions are queued as tasks in the inbox.
 
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{TDK, didcomm::Message};
@@ -26,6 +28,161 @@ const MAX_TASKS: usize = 10_000;
 
 /// Maximum number of relationships allowed before rejecting new requests.
 const MAX_RELATIONSHIPS: usize = 5_000;
+
+/// Reject inbound messages whose `created_time` is older than this. The
+/// outbound side stamps a 48-hour expiry, so a 48-hour replay window is
+/// the same horizon — anything older is either a replay or a clock skew
+/// pathology and is safer to drop.
+const MAX_MESSAGE_AGE_SECS: u64 = 48 * 60 * 60;
+
+/// How far in the future a `created_time` may be before we treat it as
+/// invalid (clock skew tolerance).
+const MAX_FUTURE_SKEW_SECS: u64 = 5 * 60;
+
+/// Bounded LRU of recently-seen message IDs used to deduplicate replays.
+/// 1024 entries is comfortable for an active operator without bloating
+/// memory; entries are O(36) bytes each (UUID).
+pub struct SeenMessages {
+    cap: usize,
+    order: VecDeque<String>,
+    set: HashSet<String>,
+}
+
+impl SeenMessages {
+    /// New LRU with the default 1024-entry capacity.
+    pub fn new() -> Self {
+        Self::with_capacity(1024)
+    }
+
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            cap,
+            order: VecDeque::with_capacity(cap),
+            set: HashSet::with_capacity(cap),
+        }
+    }
+
+    /// Returns `true` if `id` was already present (i.e. caller should
+    /// reject as a replay). Otherwise records `id` and returns `false`.
+    pub fn observe(&mut self, id: &str) -> bool {
+        if self.set.contains(id) {
+            return true;
+        }
+        if self.order.len() == self.cap
+            && let Some(evicted) = self.order.pop_front()
+        {
+            self.set.remove(&evicted);
+        }
+        self.order.push_back(id.to_string());
+        self.set.insert(id.to_string());
+        false
+    }
+}
+
+impl Default for SeenMessages {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(id: &str, created: Option<u64>, expires: Option<u64>) -> Message {
+        let mut m =
+            Message::build(id.to_string(), "test".to_string(), serde_json::json!({})).finalize();
+        m.created_time = created;
+        m.expires_time = expires;
+        m
+    }
+
+    #[test]
+    fn seen_messages_marks_first_observation_unseen() {
+        let mut seen = SeenMessages::with_capacity(4);
+        assert!(!seen.observe("a"));
+    }
+
+    #[test]
+    fn seen_messages_detects_replay() {
+        let mut seen = SeenMessages::with_capacity(4);
+        assert!(!seen.observe("a"));
+        assert!(seen.observe("a"));
+    }
+
+    #[test]
+    fn seen_messages_evicts_oldest_at_capacity() {
+        let mut seen = SeenMessages::with_capacity(2);
+        assert!(!seen.observe("a"));
+        assert!(!seen.observe("b"));
+        // "b" still in cache.
+        assert!(seen.observe("b"));
+        // "c" pushes "a" out.
+        assert!(!seen.observe("c"));
+        // "a" was evicted — observing again should report unseen.
+        assert!(!seen.observe("a"));
+    }
+
+    #[test]
+    fn check_message_age_accepts_message_with_no_timestamps() {
+        assert!(check_message_age(&msg("id", None, None)).is_ok());
+    }
+
+    #[test]
+    fn check_message_age_rejects_old_messages() {
+        let now = unix_now();
+        let too_old = now - MAX_MESSAGE_AGE_SECS - 60;
+        assert!(check_message_age(&msg("id", Some(too_old), None)).is_err());
+    }
+
+    #[test]
+    fn check_message_age_rejects_future_messages() {
+        let now = unix_now();
+        let too_future = now + MAX_FUTURE_SKEW_SECS + 60;
+        assert!(check_message_age(&msg("id", Some(too_future), None)).is_err());
+    }
+
+    #[test]
+    fn check_message_age_accepts_within_skew() {
+        let now = unix_now();
+        // 1 minute in the future is fine.
+        assert!(check_message_age(&msg("id", Some(now + 60), None)).is_ok());
+    }
+
+    #[test]
+    fn check_message_age_rejects_expired_messages() {
+        let now = unix_now();
+        // expires_time in the past
+        assert!(check_message_age(&msg("id", Some(now), Some(now - 60))).is_err());
+    }
+}
+
+/// Validate the message timestamps. Returns `Err(reason)` if the message
+/// should be dropped as too old, expired, or implausibly future-dated.
+fn check_message_age(message: &Message) -> Result<(), &'static str> {
+    let now = unix_now();
+    if let Some(created) = message.created_time {
+        if created > now.saturating_add(MAX_FUTURE_SKEW_SECS) {
+            return Err("created_time too far in future");
+        }
+        if now.saturating_sub(created) > MAX_MESSAGE_AGE_SECS {
+            return Err("created_time older than replay window");
+        }
+    }
+    if let Some(expires) = message.expires_time
+        && expires < now
+    {
+        return Err("message already expired");
+    }
+    Ok(())
+}
 
 /// Check that a new task can be created: no ID collision and under capacity limits.
 /// Returns Ok(()) or logs a warning and returns Err(()).
@@ -58,8 +215,31 @@ pub async fn process_inbound_message(
     config: &mut Config,
     _tdk: &TDK,
     service: &DIDCommService,
+    seen: &mut SeenMessages,
     message: &Message,
 ) -> Result<bool, anyhow::Error> {
+    // Drop messages outside the replay / freshness window before doing
+    // any state-mutating work. Saves us from acting on stale captures
+    // and from clock-skew–induced retries.
+    if let Err(reason) = check_message_age(message) {
+        warn!(
+            id = %message.id,
+            typ = %message.typ,
+            from = ?message.from,
+            "dropping inbound message: {reason}",
+        );
+        return Ok(false);
+    }
+
+    // Drop messages whose ID we've already seen this session. The TDK
+    // already guards against unpack-level duplicates, but the LRU is a
+    // belt-and-braces defense for mediator pickup retries and replay
+    // attempts.
+    if seen.observe(&message.id) {
+        debug!(id = %message.id, typ = %message.typ, "dropping replayed message ID");
+        return Ok(false);
+    }
+
     // Validate sender — trust-pong messages may omit `from` (the thid
     // linkage to our outbound ping is sufficient for task cleanup).
     let from_did = match &message.from {

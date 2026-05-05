@@ -418,6 +418,10 @@ impl StateHandler {
             }
         };
 
+        // Process-lifetime LRU of inbound message IDs. Backstop for replay
+        // and mediator-pickup duplicates beyond what the TDK already filters.
+        let mut seen_messages = message_dispatch::SeenMessages::new();
+
         // Forward lifecycle events (connect/disconnect/restart) to the activity log
         let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
         let _lifecycle_handle = didcomm::spawn_lifecycle_logger(&didcomm_service, lifecycle_log_tx);
@@ -796,6 +800,7 @@ impl StateHandler {
                                 &mut config,
                                 &tdk,
                                 &didcomm_service,
+                                &mut seen_messages,
                                 &message,
                             )
                             .await
