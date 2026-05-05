@@ -387,8 +387,12 @@ impl StateHandler {
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());
 
-        // Start the DIDComm service (connection lifecycle, message dispatch, sending)
-        let (didcomm_event_tx, mut didcomm_event_rx) = mpsc::unbounded_channel();
+        // Start the DIDComm service (connection lifecycle, message dispatch, sending).
+        // Bounded so a misbehaving mediator can't grow our memory without limit;
+        // overflows surface as `try_send` warnings and the message is dropped
+        // (the mediator pickup protocol will redeliver once we drain).
+        let (didcomm_event_tx, mut didcomm_event_rx) =
+            mpsc::channel(didcomm::DIDCOMM_EVENT_CHANNEL_CAPACITY);
         let shutdown_token = tokio_util::sync::CancellationToken::new();
 
         let didcomm_service = match didcomm::start_service(

@@ -70,6 +70,13 @@ pub enum DIDCommEvent {
     TrustPongReceived { from: Option<String> },
 }
 
+/// Capacity of the DIDComm event channel. Backpressure target: a
+/// pathological mediator pushing messages faster than the state handler
+/// can drain them gets `try_send` failures (logged + dropped), instead
+/// of growing memory without bound. 256 is enough headroom that normal
+/// operator activity doesn't ever overflow.
+pub const DIDCOMM_EVENT_CHANNEL_CAPACITY: usize = 256;
+
 /// Build the DIDComm message router.
 ///
 /// Trust pings are handled automatically via the built-in handler.
@@ -79,9 +86,7 @@ pub enum DIDCommEvent {
 /// Returns an error if any route or regex registration fails. Routes
 /// are otherwise stable — only the OpenVTC protocol regex can fail at
 /// runtime if it ever becomes invalid.
-pub fn build_router(
-    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
-) -> Result<Router, anyhow::Error> {
+pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyhow::Error> {
     let openvtc_handler = handler_fn({
         let tx = event_tx.clone();
         move |ctx: affinidi_messaging_didcomm_service::HandlerContext, msg: Message| {
@@ -95,10 +100,12 @@ pub fn build_router(
                     thid = ?msg.thid,
                     "inbound OpenVTC message received"
                 );
-                let _ = tx.send(DIDCommEvent::InboundMessage {
+                if let Err(e) = tx.try_send(DIDCommEvent::InboundMessage {
                     from: msg.from.clone(),
                     message: Box::new(msg),
-                });
+                }) {
+                    tracing::warn!(error = %e, "DIDComm event channel saturated — dropping inbound message");
+                }
                 Ok(None)
             }
         }
@@ -115,11 +122,13 @@ pub fn build_router(
                     let tx = tx.clone();
                     let listener_id = ctx.listener_id.clone();
                     async move {
-                        let _ = tx.send(DIDCommEvent::TrustPingReceived {
+                        if let Err(e) = tx.try_send(DIDCommEvent::TrustPingReceived {
                             from: msg.from.clone(),
                             listener_id,
                             message_id: msg.id.clone(),
-                        });
+                        }) {
+                            tracing::warn!(error = %e, "DIDComm event channel saturated — dropping trust-ping");
+                        }
                         // Do NOT auto-respond — state handler will send pong
                         // only after verifying the sender has a relationship.
                         Ok(None)
@@ -137,12 +146,15 @@ pub fn build_router(
                     async move {
                         let from = msg.from.clone();
                         // Forward the pong as InboundMessage for task removal
-                        let _ = tx.send(DIDCommEvent::InboundMessage {
+                        if let Err(e) = tx.try_send(DIDCommEvent::InboundMessage {
                             from: from.clone(),
                             message: Box::new(msg),
-                        });
-                        // Also send specific pong event for logging
-                        let _ = tx.send(DIDCommEvent::TrustPongReceived { from });
+                        }) {
+                            tracing::warn!(error = %e, "DIDComm event channel saturated — dropping trust-pong");
+                            return Ok(None);
+                        }
+                        // Also send specific pong event for logging — best-effort.
+                        let _ = tx.try_send(DIDCommEvent::TrustPongReceived { from });
                         Ok(None)
                     }
                 }
@@ -447,7 +459,7 @@ pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -
 pub async fn start_service(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
-    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
+    event_tx: mpsc::Sender<DIDCommEvent>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<DIDCommService, DIDCommServiceError> {
     let router = build_router(event_tx)
