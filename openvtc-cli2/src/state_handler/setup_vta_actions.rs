@@ -108,9 +108,9 @@ pub(crate) async fn handle_vta_submit_did(
 
 /// Handle the `VtaStartProvision` action: spawn `run_connection_test` against
 /// the VTA, drain its `VtaEvent` stream into the diagnostics list, and on
-/// success store the issued admin VC + access token before transitioning to
-/// the existing `VtaAuthenticate` screen so the keys-fetch / webvh-server
-/// pick flow takes over unchanged.
+/// success store the issued admin VC + access token. The provisioning page
+/// itself emits `VtaAuthCompleted` once the operator confirms, which routes
+/// into the keys-fetch / webvh-server pick flow.
 pub(crate) async fn handle_vta_start_provision(
     state: &mut State,
     state_tx: &watch::Sender<State>,

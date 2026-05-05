@@ -33,7 +33,6 @@ pub enum SetupPage {
     VtaAclInstructions,
     /// Live diagnostics list while `provision_client::run_connection_test` runs.
     VtaProvisioning,
-    VtaAuthenticate,
     VtaKeysFetch,
     DIDKeysShow,
     DidKeysExportAsk,
