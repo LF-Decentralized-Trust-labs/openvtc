@@ -293,7 +293,10 @@ pub async fn build_listener_configs(
             profile: make_profile(
                 our_did,
                 &config.public.mediator_did,
-                &format!("R-DID for {}", truncate_did_display(remote_p_did)),
+                &format!(
+                    "R-DID for {}",
+                    openvtc_core::display::truncate_did(remote_p_did, 32)
+                ),
                 r_did_secrets,
             ),
             restart_policy: restart.clone(),
@@ -471,12 +474,6 @@ fn short_did_id(did: &str) -> String {
     hex::encode(&hash[..8])
 }
 
-/// Truncate a DID for human-readable display (not for unique identification).
-fn truncate_did_display(did: &str) -> &str {
-    let end = did.len().min(32);
-    &did[..end]
-}
-
 /// Create a `ListenerConfig` for a relationship R-DID.
 pub async fn relationship_listener_config(
     config: &Config,
@@ -491,7 +488,10 @@ pub async fn relationship_listener_config(
         profile: make_profile(
             our_did,
             mediator_did,
-            &format!("R-DID for {}", truncate_did_display(remote_p_did)),
+            &format!(
+                "R-DID for {}",
+                openvtc_core::display::truncate_did(remote_p_did, 32)
+            ),
             secrets,
         ),
         restart_policy: default_listener_restart_policy(),

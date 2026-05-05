@@ -7,12 +7,10 @@ use crate::{
         main_page::{MainPageState, MainPanel, content::ActiveTaskView, menu::MainMenu},
         state::{ConnectionState, MediatorStatus, State},
     },
-    ui::{
-        component::{Component, ComponentRender},
-        shorten_did,
-    },
+    ui::component::{Component, ComponentRender},
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use openvtc_core::display::truncate_did_centered;
 use ratatui::{
     Frame,
     layout::{
@@ -1578,8 +1576,10 @@ impl ComponentRender<()> for MainPage {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(self.props.main_page.config.name.to_string()).fg(COLOR_SUCCESS),
-                Line::from(shorten_did(&self.props.main_page.config.did, 30))
-                    .fg(COLOR_TEXT_DEFAULT),
+                Line::from(
+                    truncate_did_centered(&self.props.main_page.config.did, 30).into_owned(),
+                )
+                .fg(COLOR_TEXT_DEFAULT),
             ])
             .alignment(Alignment::Right),
             top[2],

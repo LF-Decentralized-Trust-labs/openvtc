@@ -15,6 +15,7 @@ use std::{fmt, sync::Arc};
 
 pub mod bip32;
 pub mod config;
+pub mod display;
 pub mod errors;
 pub mod logs;
 pub mod maintainers;

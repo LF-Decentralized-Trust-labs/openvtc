@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::{
@@ -15,6 +14,7 @@ use crate::{
 use affinidi_tdk::{TDK, common::config::TDKConfig};
 use anyhow::Result;
 use openvtc_core::config::{Config, UnlockCode, public_config::PublicConfig};
+use openvtc_core::display::truncate_did;
 use openvtc_core::logs::LogFamily;
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
@@ -24,14 +24,9 @@ use tokio::sync::{
 };
 use tracing::{debug, info};
 
-/// Truncate a DID string for display in activity log messages.
-#[must_use]
-fn truncate_did(did: &str) -> Cow<'_, str> {
-    if did.len() > 30 {
-        Cow::Owned(format!("{}...", &did[..27]))
-    } else {
-        Cow::Borrowed(did)
-    }
+/// Tail-truncate a DID for log-message display, fixed at 30 chars.
+fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
+    truncate_did(did, 30)
 }
 
 /// Resolve a DID to a human-readable display name.
@@ -55,9 +50,9 @@ fn resolve_did_to_display(config: &openvtc_core::config::Config, did: &str) -> S
         {
             return alias.clone();
         }
-        return truncate_did(&p_did).into_owned();
+        return log_did(&p_did).into_owned();
     }
-    truncate_did(did).into_owned()
+    log_did(did).into_owned()
 }
 
 pub mod actions;
@@ -889,7 +884,7 @@ impl StateHandler {
                                 );
                             } else {
                                 state.main_page.log_detailed(
-                                    format!("Ping from {} — ignored", truncate_did(sender)),
+                                    format!("Ping from {} — ignored", log_did(sender)),
                                     format!(
                                         "Trust-Ping Rejected\n\
                                          ───────────────────\n\
@@ -1344,7 +1339,7 @@ async fn handle_relationship_submit(
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
             state.main_page.content_panel.relationships.status_message =
-                Some(format!("Request sent to {}", truncate_did(did)));
+                Some(format!("Request sent to {}", log_did(did)));
             if let Err(e) = settings_actions::save_config(config, profile) {
                 state.main_page.log_error("Failed to save config", &e);
             }
@@ -1376,7 +1371,7 @@ async fn handle_relationship_submit(
             };
             state.main_page.sync_from_config(config);
             state.main_page.log_detailed(
-                format!("Relationship request sent to {}", truncate_did(did)),
+                format!("Relationship request sent to {}", log_did(did)),
                 detail,
             );
         }
@@ -1669,7 +1664,7 @@ async fn handle_credential_submit_request(
             state.main_page.content_panel.credentials.mode = CredentialsMode::List;
             state.main_page.content_panel.credentials.status_message = Some(format!(
                 "VRC request sent to {}",
-                truncate_did(relationship_p_did)
+                log_did(relationship_p_did)
             ));
             if let Err(e) = settings_actions::save_config(config, profile) {
                 state.main_page.log_error("Failed to save config", &e);
@@ -1677,7 +1672,7 @@ async fn handle_credential_submit_request(
             state.main_page.sync_from_config(config);
             state.main_page.log(format!(
                 "VRC request sent to {}",
-                truncate_did(relationship_p_did)
+                log_did(relationship_p_did)
             ));
         }
         Err(e) => {
@@ -1725,7 +1720,7 @@ fn handle_contact_add(
             state.main_page.sync_from_config(config);
             state
                 .main_page
-                .log(format!("Contact added: {}", truncate_did(did)));
+                .log(format!("Contact added: {}", log_did(did)));
         }
         Err(e) => {
             state.main_page.log_error("Failed to add contact", &e);
@@ -1739,7 +1734,7 @@ fn handle_contact_remove(config: &mut Box<Config>, state: &mut State, profile: &
             state.main_page.sync_from_config(config);
             state
                 .main_page
-                .log(format!("Contact removed: {}", truncate_did(did)));
+                .log(format!("Contact removed: {}", log_did(did)));
         }
         Err(e) => {
             state.main_page.log_error("Failed to remove contact", &e);

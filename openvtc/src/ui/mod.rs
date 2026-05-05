@@ -20,23 +20,6 @@ use tokio_stream::StreamExt;
 pub mod component;
 pub mod pages;
 
-#[must_use]
-pub fn shorten_did(did: &str, max_len: usize) -> String {
-    let char_count = did.chars().count();
-
-    if char_count <= max_len {
-        return did.to_string();
-    }
-
-    let ellipsis = "...";
-    let keep = (max_len - ellipsis.len()) / 2;
-
-    let start: String = did.chars().take(keep).collect();
-    let end: String = did.chars().skip(char_count - keep).collect();
-
-    format!("{}...{}", start, end)
-}
-
 pub struct UiManager {
     action_tx: mpsc::UnboundedSender<Action>,
 }

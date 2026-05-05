@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use openvtc_core::{
     config::{Config, KeyBackend},
+    display::truncate_did,
     tasks::TaskType,
 };
 
@@ -443,17 +444,12 @@ fn detect_did_git_sign_info(persona_did: &str) -> Option<DidGitSignInfo> {
 }
 
 /// Shortens a DID for display, fitting within `max_width` characters.
-/// Shows the full DID if it fits, otherwise truncates with "...".
+/// Sanitises first to drop ANSI / control bytes from untrusted input,
+/// then delegates to the canonical tail-truncate helper.
 #[must_use]
 fn shorten_did(did: &str, max_width: usize) -> String {
     let sanitized = sanitize_display(did, 256);
-    if sanitized.len() <= max_width {
-        sanitized
-    } else if max_width > 3 {
-        format!("{}...", &sanitized[..max_width - 3])
-    } else {
-        sanitized[..max_width].to_string()
-    }
+    truncate_did(&sanitized, max_width).into_owned()
 }
 
 /// Contains config information that is shown in the main menu header
