@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
 use crate::{
     Interrupted, Terminator,
     state_handler::{
-        actions::{Action, ContactAction, CredentialAction, RelationshipAction, SettingsAction},
+        actions::{Action, ContactAction, CredentialAction, SettingsAction},
         main_page::MainPanel,
         state::{ActivePage, State},
     },
@@ -22,14 +20,14 @@ use tokio::sync::{
 use tracing::{debug, info};
 
 /// Tail-truncate a DID for log-message display, fixed at 30 chars.
-fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
     truncate_did(did, 30)
 }
 
 /// Resolve a DID to a human-readable display name.
 ///
 /// Tries: contact alias by DID → R-DID relationship → persona contact alias → truncated DID.
-fn resolve_did_to_display(config: &openvtc_core::config::Config, did: &str) -> String {
+pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did: &str) -> String {
     // Direct contact lookup
     if let Some(contact) = config.private.contacts.find_contact(did)
         && let Some(alias) = &contact.alias
@@ -506,64 +504,18 @@ impl StateHandler {
                         )
                         .await;
                     },
-                    Action::Relationship(ra) => match ra {
-                        RelationshipAction::Select(index) => {
-                            state.main_page.content_panel.relationships.selected_index = index;
-                        },
-                        RelationshipAction::OpenDetail(index) => {
-                            handle_relationship_open_detail(&mut state, index);
-                        },
-                        RelationshipAction::StartNewRequest => {
-                            handle_relationship_start_new_request(&mut state);
-                        },
-                        RelationshipAction::CancelNewRequest | RelationshipAction::Back => {
-                            handle_relationship_cancel_or_back(&mut state);
-                        },
-                        RelationshipAction::InputUpdate { field, value } => {
-                            handle_relationship_input_update(&mut state, field, value);
-                        },
-                        RelationshipAction::ToggleRDid => {
-                            handle_relationship_toggle_r_did(&mut state);
-                        },
-                        RelationshipAction::FocusField(field) => {
-                            use main_page::content::RelationshipsMode;
-                            if let RelationshipsMode::NewRequest { active_field, .. } =
-                                &mut state.main_page.content_panel.relationships.mode
-                            {
-                                *active_field = field;
-                            }
-                        },
-                        RelationshipAction::SubmitRequest { did, alias, reason, generate_r_did } => {
-                            handle_relationship_submit(&mut config, &tdk, &didcomm_service, &mut state, &self.state_tx, &self.profile, &did, &alias, reason.as_deref(), generate_r_did).await;
-                        },
-                        RelationshipAction::Ping { remote_p_did } => {
-                            handle_relationship_ping(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
-                            ping_sent_at = Some(std::time::Instant::now());
-                        },
-                        RelationshipAction::Remove { remote_p_did } => {
-                            handle_relationship_remove(&mut config, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
-                        },
-                        RelationshipAction::StartEditAlias { index, current_alias } => {
-                            state.main_page.content_panel.relationships.mode =
-                                main_page::content::RelationshipsMode::EditAlias { index, alias_input: current_alias };
-                        },
-                        RelationshipAction::EditAliasUpdate(value) => {
-                            if let main_page::content::RelationshipsMode::EditAlias { ref mut alias_input, .. } =
-                                state.main_page.content_panel.relationships.mode
-                            {
-                                *alias_input = value;
-                            }
-                        },
-                        RelationshipAction::EditAlias { remote_p_did, alias } => {
-                            handle_relationship_edit_alias(&mut config, &mut state, &self.profile, &remote_p_did, &alias);
-                        },
-                        RelationshipAction::CancelEditAlias { index } => {
-                            state.main_page.content_panel.relationships.mode =
-                                main_page::content::RelationshipsMode::Detail { index, selected_vrc: None };
-                        },
-                        RelationshipAction::RequestVrc { remote_p_did } => {
-                            handle_relationship_request_vrc(&mut config, &tdk, &didcomm_service, &mut state, &self.profile, &remote_p_did).await;
-                        },
+                    Action::Relationship(ra) => {
+                        relationship_actions::dispatch(
+                            ra,
+                            &mut config,
+                            &tdk,
+                            &didcomm_service,
+                            &mut state,
+                            &self.state_tx,
+                            &self.profile,
+                            &mut ping_sent_at,
+                        )
+                        .await;
                     },
                     Action::Credential(ca) => match ca {
                         CredentialAction::SwitchTab => {
@@ -998,349 +950,6 @@ impl StateHandler {
 // Inbox action handlers — implementation lives in
 // `state_handler::inbox_actions`; the main loop calls
 // `inbox_actions::dispatch` to route the sub-enum.
-
-// ============================================================
-// Relationship action handlers
-// ============================================================
-
-fn handle_relationship_open_detail(state: &mut State, index: usize) {
-    use main_page::content::RelationshipsMode;
-    state.main_page.content_panel.relationships.selected_index = index;
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
-        index,
-        selected_vrc: None,
-    };
-}
-
-fn handle_relationship_start_new_request(state: &mut State) {
-    use main_page::content::RelationshipsMode;
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::NewRequest {
-        did_input: String::new(),
-        alias_input: String::new(),
-        reason_input: String::new(),
-        generate_r_did: false,
-        active_field: 0,
-    };
-}
-
-fn handle_relationship_cancel_or_back(state: &mut State) {
-    use main_page::content::RelationshipsMode;
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-    state.main_page.content_panel.relationships.status_message = None;
-}
-
-fn handle_relationship_input_update(state: &mut State, field: usize, value: String) {
-    use main_page::content::RelationshipsMode;
-    if let RelationshipsMode::NewRequest {
-        ref mut did_input,
-        ref mut alias_input,
-        ref mut reason_input,
-        ..
-    } = state.main_page.content_panel.relationships.mode
-    {
-        match field {
-            0 => *did_input = value,
-            1 => *alias_input = value,
-            _ => *reason_input = value,
-        }
-    }
-}
-
-fn handle_relationship_toggle_r_did(state: &mut State) {
-    use main_page::content::RelationshipsMode;
-    if let RelationshipsMode::NewRequest {
-        ref mut generate_r_did,
-        ..
-    } = state.main_page.content_panel.relationships.mode
-    {
-        *generate_r_did = !*generate_r_did;
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_relationship_submit(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    state_tx: &tokio::sync::watch::Sender<State>,
-    profile: &str,
-    did: &str,
-    alias: &str,
-    reason: Option<&str>,
-    generate_r_did: bool,
-) {
-    use main_page::content::RelationshipsMode;
-
-    // Show progress immediately if R-DID generation will involve network calls
-    if generate_r_did {
-        state.main_page.content_panel.relationships.status_message =
-            Some("Creating relationship DID...".to_string());
-        state
-            .main_page
-            .log("Creating relationship DID via key backend...");
-        let _ = state_tx.send(state.clone());
-    } else {
-        state.main_page.content_panel.relationships.status_message =
-            Some("Sending request...".to_string());
-        let _ = state_tx.send(state.clone());
-    }
-
-    match relationship_actions::send_relationship_request(
-        config,
-        tdk,
-        service,
-        did,
-        alias,
-        reason,
-        generate_r_did,
-    )
-    .await
-    {
-        Ok(()) => {
-            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("Request sent to {}", log_did(did)));
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            // Look up the relationship we just created for detail info
-            let detail = {
-                let rel_key = std::sync::Arc::new(did.to_string());
-                if let Some(rel_arc) = config.private.relationships.get(&rel_key)
-                    && let Ok(r) = rel_arc.lock()
-                {
-                    format!(
-                        "Relationship Request Sent\n\
-                         ─────────────────────────\n\
-                         To (persona):  {}\n\
-                         Our DID:       {}\n\
-                         R-DID used:    {}\n\
-                         Task ID:       {}",
-                        r.remote_p_did,
-                        r.our_did,
-                        if *r.our_did != *config.public.persona_did {
-                            "yes"
-                        } else {
-                            "no"
-                        },
-                        r.task_id,
-                    )
-                } else {
-                    String::new()
-                }
-            };
-            state.main_page.sync_from_config(config);
-            state.main_page.log_detailed(
-                format!("Relationship request sent to {}", log_did(did)),
-                detail,
-            );
-        }
-        Err(e) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("Error: {e:#}"));
-            state
-                .main_page
-                .log_error("Failed to send relationship request", &e);
-        }
-    }
-}
-
-async fn handle_relationship_ping(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    remote_p_did: &str,
-) {
-    use main_page::content::RelationshipsMode;
-    // Capture relationship DIDs for logging before the call
-    let rel_key = std::sync::Arc::new(remote_p_did.to_string());
-    let (our_did_str, remote_did_str) = if let Some(rel_arc) =
-        config.private.relationships.get(&rel_key)
-        && let Ok(r) = rel_arc.lock()
-    {
-        (r.our_did.to_string(), r.remote_did.to_string())
-    } else {
-        (String::new(), String::new())
-    };
-    let display_name = resolve_did_to_display(config, remote_p_did);
-
-    match relationship_actions::ping_relationship(config, tdk, service, remote_p_did).await {
-        Ok(()) => {
-            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-            state.main_page.content_panel.relationships.status_message =
-                Some("Ping sent".to_string());
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            state.main_page.sync_from_config(config);
-            let using_rdid = our_did_str != *config.public.persona_did;
-            state.main_page.log_detailed(
-                format!(
-                    "Trust-ping sent to {display_name}{}",
-                    if using_rdid { " (via R-DID)" } else { "" }
-                ),
-                format!(
-                    "Trust-Ping Sent\n\
-                     ───────────────\n\
-                     To:              {display_name}\n\
-                     Sent to DID:     {remote_did_str}\n\
-                     Sent from DID:   {our_did_str}\n\
-                     Remote persona:  {remote_p_did}\n\
-                     Using R-DIDs:    {}\n\
-                     Routed via:      mediator",
-                    if using_rdid { "yes" } else { "no" },
-                ),
-            );
-        }
-        Err(e) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("Ping failed: {e:#}"));
-            state.main_page.log_detailed(
-                format!("Ping to {display_name} failed: {e}"),
-                format!(
-                    "Trust-Ping Failed\n\
-                     ─────────────────\n\
-                     To (persona):    {remote_p_did}\n\
-                     To (R-DID):      {remote_did_str}\n\
-                     From (our DID):  {our_did_str}\n\
-                     Error:           {e:#}\n\n\
-                     Debug:\n{e:?}",
-                ),
-            );
-        }
-    }
-}
-
-async fn handle_relationship_remove(
-    config: &mut Box<Config>,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    remote_p_did: &str,
-) {
-    use main_page::content::RelationshipsMode;
-    if let Err(e) = relationship_actions::remove_relationship(config, service, remote_p_did).await {
-        state
-            .main_page
-            .log_error("Failed to remove relationship", &e);
-        return;
-    }
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-    state.main_page.content_panel.relationships.status_message =
-        Some("Relationship removed".to_string());
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log("Relationship removed");
-}
-
-fn handle_relationship_edit_alias(
-    config: &mut Box<Config>,
-    state: &mut State,
-    profile: &str,
-    remote_p_did: &str,
-    alias: &str,
-) {
-    use main_page::content::RelationshipsMode;
-    use openvtc_core::config::protected_config::Contact;
-
-    // Remove old contact entry (clears old alias mapping too)
-    config
-        .private
-        .contacts
-        .remove_contact(&mut config.public.logs, remote_p_did);
-
-    // Re-add with the new alias
-    let alias_opt = if alias.trim().is_empty() {
-        None
-    } else {
-        Some(alias.trim().to_string())
-    };
-    let contact_did = Arc::new(remote_p_did.to_string());
-    let contact = Arc::new(Contact {
-        did: contact_did.clone(),
-        alias: alias_opt.clone(),
-    });
-    config
-        .private
-        .contacts
-        .contacts
-        .insert(contact_did, contact.clone());
-    if let Some(ref a) = alias_opt {
-        config.private.contacts.aliases.insert(a.clone(), contact);
-    }
-
-    config.public.logs.insert(
-        openvtc_core::logs::LogFamily::Config,
-        format!(
-            "Alias updated for {}: {}",
-            remote_p_did,
-            alias_opt.as_deref().unwrap_or("(removed)")
-        ),
-    );
-
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    // Return to detail view — find the index for this remote_p_did
-    let index = state
-        .main_page
-        .content_panel
-        .relationships
-        .relationships
-        .iter()
-        .position(|r| r.remote_p_did == remote_p_did)
-        .unwrap_or(0);
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
-        index,
-        selected_vrc: None,
-    };
-    state.main_page.content_panel.relationships.status_message = Some("Alias updated".to_string());
-    state.main_page.log("Alias updated");
-}
-
-async fn handle_relationship_request_vrc(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    state: &mut State,
-    profile: &str,
-    remote_p_did: &str,
-) {
-    let display_name = resolve_did_to_display(config, remote_p_did);
-
-    match credential_actions::send_vrc_request(config, tdk, service, remote_p_did, None).await {
-        Ok(()) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("VRC requested from {display_name}"));
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            state.main_page.sync_from_config(config);
-            state.main_page.log_detailed(
-                format!("VRC requested from {display_name}"),
-                format!(
-                    "VRC Request Sent\n\
-                     ────────────────\n\
-                     To:      {display_name}\n\
-                     DID:     {remote_p_did}",
-                ),
-            );
-        }
-        Err(e) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("VRC request failed: {e:#}"));
-            state
-                .main_page
-                .log_error(format!("VRC request to {display_name} failed"), &e);
-        }
-    }
-}
 
 // ============================================================
 // Credential action handlers
