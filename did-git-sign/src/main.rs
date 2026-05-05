@@ -215,7 +215,7 @@ async fn main() -> Result<()> {
         .init();
 
     // Register the platform's keyring-core credential store before any
-    // Entry::new call. Same backend choice as openvtc-cli2 so credential
+    // Entry::new call. Same backend choice as openvtc so credential
     // namespaces line up across both binaries.
     init_default_keyring_store()?;
 
@@ -389,8 +389,8 @@ async fn cmd_init(
         credential_private_key_mb: admin.admin_private_key_mb.clone(),
         vta_did: vta_did.clone(),
         vta_url,
-        // Standalone CLI install path uses REST today; the openvtc-cli2
-        // setup flow populates this via its own InstallArgs construction.
+        // Standalone CLI install path uses REST today; the openvtc setup
+        // flow populates this via its own InstallArgs construction.
         // A follow-up could plumb DIDComm into this path too.
         mediator_did: None,
         user_name,

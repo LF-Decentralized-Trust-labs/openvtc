@@ -21,7 +21,7 @@ use std::{collections::HashMap, env, sync::Arc};
 use anyhow::{Result, bail};
 use chrono::{DateTime, Utc};
 use clap::Parser;
-use openvtc::{
+use openvtc_core::{
     MessageType, protocol_urls,
     relationships::{
         RelationshipRequestBody, create_send_message_accepted, create_send_message_rejected,
@@ -223,7 +223,7 @@ async fn handle_message(
         );
     }
 
-    let from_did = match openvtc::require_from(message) {
+    let from_did = match openvtc_core::require_from(message) {
         Ok(did) => did,
         Err(_) => {
             warn!(

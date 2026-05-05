@@ -15,9 +15,8 @@ Personhood Credentials (PHCs) and Verifiable Relationship Credentials (VRCs).
 
 | Crate | Description |
 |-------|-------------|
-| `openvtc-cli` | Original CLI tool with interactive setup wizard |
-| `openvtc-cli2` | TUI-based CLI with ratatui interface |
-| `openvtc-lib` | Shared library for configuration, DID management, and crypto |
+| `openvtc` | TUI-based CLI with ratatui interface |
+| `openvtc-core` | Shared library for configuration, DID management, and crypto |
 | `openvtc-service` | Background service for DIDComm messaging |
 | `did-git-sign` | [Git commit signing proxy](./did-git-sign/) using DID Ed25519 keys via VTA |
 | `robotic-maintainers` | Automated VRC issuance for robotic maintainers |
@@ -232,9 +231,8 @@ This repository is a Cargo workspace. The root `Cargo.toml` defines the followin
 
 | Crate | Role |
 |---|---|
-| `openvtc-lib` | Core library — config, storage, cryptography, DID logic |
-| `openvtc-cli` | Primary command-line interface |
-| `openvtc-cli2` | Terminal UI (TUI) interface |
+| `openvtc-core` | Core library — config, storage, cryptography, DID logic |
+| `openvtc` | Terminal UI (TUI) interface |
 | `openvtc-service` | Background service component |
 | `robotic-maintainers` | Automated maintenance tooling |
 
@@ -261,7 +259,7 @@ cargo test
 For a specific crate:
 
 ```bash
-cargo test -p openvtc-lib
+cargo test -p openvtc-core
 ```
 
 ### PR Guidelines

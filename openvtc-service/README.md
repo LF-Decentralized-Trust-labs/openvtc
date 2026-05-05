@@ -124,7 +124,7 @@ configuration.
 
 ## Protocol Context
 
-The service uses protocol message type URIs defined as constants in `openvtc-lib`:
+The service uses protocol message type URIs defined as constants in `openvtc-core`:
 
 - **Request:** `https://kernel.org/maintainers/1.0/list`
 - **Response:** `https://kernel.org/maintainers/1.0/list/response`

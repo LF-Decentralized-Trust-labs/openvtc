@@ -1,6 +1,6 @@
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use anyhow::{Context, Result, bail};
-use openvtc::maintainers::Maintainer;
+use openvtc_core::maintainers::Maintainer;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use tracing::error;
