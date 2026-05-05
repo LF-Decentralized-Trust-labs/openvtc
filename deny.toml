@@ -1,0 +1,91 @@
+# cargo-deny configuration
+#
+# Run with `cargo deny check` (or the per-section variants:
+#   `cargo deny check advisories`
+#   `cargo deny check licenses`
+#   `cargo deny check bans`
+#   `cargo deny check sources`
+# )
+#
+# CI runs all four. Locally, advisories drift fastest — re-run after
+# `cargo update` if you start seeing new warnings.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack — timing sidechannel in the `rsa`
+    # crate's RSA key operations. There is no upstream patch yet; the
+    # affected code is reachable only through `pgp`/`openpgp-card-rpgp`/
+    # `ssh-key`. We don't perform RSA operations against attacker-observable
+    # network timing — the relevant call sites are local OpenPGP card
+    # unlock and SSH key parsing — so the residual exposure is limited.
+    # Re-evaluate when the `rsa` crate ships a constant-time implementation.
+    "RUSTSEC-2023-0071",
+    # RUSTSEC-2024-0370: proc-macro-error is unmaintained. Pulled in
+    # transitively via the json-ld stack inside the affinidi DID resolver.
+    # Build-time only (proc macros), no runtime impact. Will fall off as
+    # the json-ld upstream migrates to proc-macro-error2 / manyhow.
+    "RUSTSEC-2024-0370",
+]
+
+[licenses]
+version = 2
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "CC0-1.0",
+    "OpenSSL",
+    "BSL-1.0",
+    "0BSD",
+    # bzip2-1.0.6: permissive non-copyleft license used by libbz2-rs-sys
+    # (transitive via pgp -> bzip2). Equivalent in practice to BSD/MIT.
+    "bzip2-1.0.6",
+    # CDLA-Permissive-2.0: permissive Linux Foundation data license used
+    # by webpki-roots / webpki-root-certs (transitive via rustls / reqwest).
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[[licenses.clarify]]
+name = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+allow = []
+deny = []
+# Crates that legitimately ship multiple versions because the ecosystem
+# hasn't fully moved off the older API yet. Add to skip-tree (not skip)
+# so we suppress the warning for the whole subtree.
+skip = []
+skip-tree = [
+    # Crypto stack still bridges rand 0.8 + rand 0.9 + rand 0.10 (see
+    # workspace Cargo.toml for the rationale; revisit when aes-gcm /
+    # ed25519-dalek-bip32 / pgp move off rand_core 0.6).
+    { name = "rand", version = "0.8" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
