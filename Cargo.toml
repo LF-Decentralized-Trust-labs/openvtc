@@ -78,10 +78,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng"] }
-# Pinned to local checkout for the new online provisioning APIs
-# (provision_client / provision_integration). Switch back to a published
-# version once vta-sdk 0.5 is on crates.io.
-vta-sdk = { path = "../verifiable-trust-infrastructure/vta-sdk", features = [
+vta-sdk = { version = "0.5", features = [
   "session",
   "client",
   "didcomm",
