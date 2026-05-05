@@ -1,6 +1,6 @@
 # OpenVTC Core Library
 
-[![Rust](https://img.shields.io/badge/rust-1.91.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/openvtc)
+[![Rust](https://img.shields.io/badge/rust-1.94.0%2B-blue.svg?maxAge=3600)](https://github.com/OpenVTC/openvtc)
 
 Core library for the OpenVTC ecosystem. Provides configuration management,
 DID-based identity operations, encrypted storage, peer-to-peer relationship
