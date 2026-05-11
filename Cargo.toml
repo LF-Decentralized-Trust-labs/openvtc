@@ -14,7 +14,7 @@ version = "0.2.0"
 edition = "2024"
 publish = false
 authors = ["Glenn Gore <glenn@affinidi.com>"]
-rust-version = "1.94.0"
+rust-version = "1.95.0"
 readme = "README.md"
 license = "Apache-2.0"
 repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
@@ -67,7 +67,7 @@ serde_json_canonicalizer = "0.3"
 sha2 = "0.11"
 strum = "0.28"
 strum_macros = "0.28"
-sysinfo = "0.38"
+sysinfo = "0.39"
 thiserror = "2.0"
 tokio = "1.52"
 tokio-stream = "0.1"
@@ -77,7 +77,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng"] }
-vta-sdk = { version = "0.5", features = [
+vta-sdk = { version = "0.6", features = [
   "session",
   "client",
   "didcomm",
