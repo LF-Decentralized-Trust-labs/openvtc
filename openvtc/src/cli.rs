@@ -15,15 +15,12 @@ pub fn cli() -> Command {
         .arg_required_else_help(false)
         .allow_external_subcommands(true)
         .args([
-            Arg::new("unlock-code")
-                .short('u')
-                .long("unlock-code")
-                .help(
-                    "Unlock passphrase for the encrypted config. \
+            Arg::new("unlock-code").short('u').long("unlock-code").help(
+                "Unlock passphrase for the encrypted config. \
                      WARNING: command-line arguments are visible to other \
                      local users via the process list (`ps`, /proc); prefer \
                      the interactive prompt on shared systems.",
-                ),
+            ),
             Arg::new("profile")
                 .short('p')
                 .long("profile")
