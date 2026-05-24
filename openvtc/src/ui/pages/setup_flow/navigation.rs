@@ -315,9 +315,6 @@ mod tests {
             id: "test-id".to_string(),
             did: "did:webvh:test".to_string(),
             label: Some("test".to_string()),
-            access_token: None,
-            access_expires_at: None,
-            refresh_token: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }];
