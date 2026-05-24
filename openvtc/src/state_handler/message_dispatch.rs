@@ -92,7 +92,6 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-
 /// Validate the message timestamps. Returns `Err(reason)` if the message
 /// should be dropped as too old, expired, or implausibly future-dated.
 fn check_message_age(message: &Message) -> Result<(), &'static str> {
