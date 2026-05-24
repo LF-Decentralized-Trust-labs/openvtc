@@ -122,19 +122,15 @@ impl Component for MainPage {
             KeyCode::F(10) => {
                 let _ = self.action_tx.send(Action::Exit);
             }
-            KeyCode::Up => {
-                if self.props.main_page.menu_panel.selected {
-                    let _ = self.action_tx.send(Action::MainMenuSelected(
-                        self.props.main_page.menu_panel.selected_menu.prev(),
-                    ));
-                }
+            KeyCode::Up if self.props.main_page.menu_panel.selected => {
+                let _ = self.action_tx.send(Action::MainMenuSelected(
+                    self.props.main_page.menu_panel.selected_menu.prev(),
+                ));
             }
-            KeyCode::Down => {
-                if self.props.main_page.menu_panel.selected {
-                    let _ = self.action_tx.send(Action::MainMenuSelected(
-                        self.props.main_page.menu_panel.selected_menu.next(),
-                    ));
-                }
+            KeyCode::Down if self.props.main_page.menu_panel.selected => {
+                let _ = self.action_tx.send(Action::MainMenuSelected(
+                    self.props.main_page.menu_panel.selected_menu.next(),
+                ));
             }
             KeyCode::Tab | KeyCode::Left | KeyCode::Right => {
                 let next_panel = match self.props.main_page.menu_panel.selected {

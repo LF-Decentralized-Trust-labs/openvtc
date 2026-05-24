@@ -153,7 +153,7 @@ impl Component for SetupFlow {
             did_keys_export_inputs: DIDKeysExportInputs::default(),
             did_keys_export_show: DIDKeysExportShow::default(),
             did_git_sign_ask: DidGitSignAsk::default(),
-            did_git_sign_setup: DidGitSignSetup::default(),
+            did_git_sign_setup: DidGitSignSetup,
 
             #[cfg(feature = "openpgp-card")]
             token_start: TokenStart::default(),

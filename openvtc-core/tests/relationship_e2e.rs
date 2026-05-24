@@ -100,7 +100,7 @@ async fn start_profile_service(
             handler_fn(ignore_handler),
         )?;
     for type_url in routes {
-        router = router.route(*type_url, make_capture())?;
+        router = router.route(type_url, make_capture())?;
     }
 
     let shutdown = CancellationToken::new();

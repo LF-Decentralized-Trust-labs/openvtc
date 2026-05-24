@@ -232,10 +232,10 @@ fn handle_field_update(state: &mut State, value: String) {
 fn handle_form_field_update(state: &mut State, field: usize, value: String) {
     match &mut state.main_page.content_panel.settings.mode {
         SettingsMode::ExportConfig { path_input, .. }
-        | SettingsMode::ImportConfig { path_input, .. } => {
-            if field == 0 {
-                *path_input = value;
-            }
+        | SettingsMode::ImportConfig { path_input, .. }
+            if field == 0 =>
+        {
+            *path_input = value;
         }
         _ => {}
     }

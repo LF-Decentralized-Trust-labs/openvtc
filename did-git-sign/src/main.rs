@@ -742,12 +742,8 @@ fn cmd_uninstall(
     // install when one is present at the CWD, falling back to global.
     let global = if global_flag {
         true
-    } else if local_flag {
-        false
-    } else if SigningConfig::repo_local_path().exists() {
-        false
     } else {
-        true
+        !(local_flag || SigningConfig::repo_local_path().exists())
     };
 
     // Discover did_key_id: explicit override, or read from the

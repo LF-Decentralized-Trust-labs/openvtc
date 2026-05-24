@@ -92,107 +92,6 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn msg(id: &str, created: Option<u64>, expires: Option<u64>) -> Message {
-        let mut m =
-            Message::build(id.to_string(), "test".to_string(), serde_json::json!({})).finalize();
-        m.created_time = created;
-        m.expires_time = expires;
-        m
-    }
-
-    #[test]
-    fn seen_messages_marks_first_observation_unseen() {
-        let mut seen = SeenMessages::with_capacity(4);
-        assert!(!seen.observe("a"));
-    }
-
-    #[test]
-    fn seen_messages_detects_replay() {
-        let mut seen = SeenMessages::with_capacity(4);
-        assert!(!seen.observe("a"));
-        assert!(seen.observe("a"));
-    }
-
-    #[test]
-    fn seen_messages_evicts_oldest_at_capacity() {
-        let mut seen = SeenMessages::with_capacity(2);
-        assert!(!seen.observe("a"));
-        assert!(!seen.observe("b"));
-        // "b" still in cache.
-        assert!(seen.observe("b"));
-        // "c" pushes "a" out.
-        assert!(!seen.observe("c"));
-        // "a" was evicted — observing again should report unseen.
-        assert!(!seen.observe("a"));
-    }
-
-    #[test]
-    fn check_message_age_accepts_message_with_no_timestamps() {
-        assert!(check_message_age(&msg("id", None, None)).is_ok());
-    }
-
-    #[test]
-    fn check_message_age_rejects_old_messages() {
-        let now = unix_now();
-        let too_old = now - MAX_MESSAGE_AGE_SECS - 60;
-        assert!(check_message_age(&msg("id", Some(too_old), None)).is_err());
-    }
-
-    #[test]
-    fn check_message_age_rejects_future_messages() {
-        let now = unix_now();
-        let too_future = now + MAX_FUTURE_SKEW_SECS + 60;
-        assert!(check_message_age(&msg("id", Some(too_future), None)).is_err());
-    }
-
-    #[test]
-    fn check_message_age_accepts_within_skew() {
-        let now = unix_now();
-        // 1 minute in the future is fine.
-        assert!(check_message_age(&msg("id", Some(now + 60), None)).is_ok());
-    }
-
-    #[test]
-    fn check_message_age_rejects_expired_messages() {
-        let now = unix_now();
-        // expires_time in the past
-        assert!(check_message_age(&msg("id", Some(now), Some(now - 60))).is_err());
-    }
-
-    #[test]
-    fn validate_did_accepts_well_formed_dids() {
-        assert!(validate_did("did:web:example.com").is_ok());
-        assert!(validate_did("did:webvh:abcdef0123:example.com").is_ok());
-        assert!(validate_did("did:peer:2.Vz6Mk-something").is_ok());
-        assert!(validate_did("did:key:z6MkpzExampleKey").is_ok());
-        assert!(validate_did("did:web:example.com%3A8080:path").is_ok());
-    }
-
-    #[test]
-    fn validate_did_rejects_old_prefix_loophole() {
-        // The previous validator accepted these — current one must not.
-        assert!(validate_did("did:").is_err());
-        assert!(validate_did("did:abc").is_err()); // no msi
-        assert!(validate_did("did::abc").is_err()); // empty method
-        assert!(validate_did("not-a-did").is_err());
-        assert!(validate_did("").is_err());
-    }
-
-    #[test]
-    fn validate_did_rejects_uppercase_method() {
-        assert!(validate_did("did:WEB:example.com").is_err());
-    }
-
-    #[test]
-    fn validate_did_rejects_msi_with_invalid_chars() {
-        assert!(validate_did("did:web:exam ple.com").is_err()); // space
-        assert!(validate_did("did:web:exam\u{200E}ple.com").is_err()); // LRM
-    }
-}
 
 /// Validate the message timestamps. Returns `Err(reason)` if the message
 /// should be dropped as too old, expired, or implausibly future-dated.
@@ -771,4 +670,106 @@ fn create_finalize_message(
         to,
         Some(task_id.as_str()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(id: &str, created: Option<u64>, expires: Option<u64>) -> Message {
+        let mut m =
+            Message::build(id.to_string(), "test".to_string(), serde_json::json!({})).finalize();
+        m.created_time = created;
+        m.expires_time = expires;
+        m
+    }
+
+    #[test]
+    fn seen_messages_marks_first_observation_unseen() {
+        let mut seen = SeenMessages::with_capacity(4);
+        assert!(!seen.observe("a"));
+    }
+
+    #[test]
+    fn seen_messages_detects_replay() {
+        let mut seen = SeenMessages::with_capacity(4);
+        assert!(!seen.observe("a"));
+        assert!(seen.observe("a"));
+    }
+
+    #[test]
+    fn seen_messages_evicts_oldest_at_capacity() {
+        let mut seen = SeenMessages::with_capacity(2);
+        assert!(!seen.observe("a"));
+        assert!(!seen.observe("b"));
+        // "b" still in cache.
+        assert!(seen.observe("b"));
+        // "c" pushes "a" out.
+        assert!(!seen.observe("c"));
+        // "a" was evicted — observing again should report unseen.
+        assert!(!seen.observe("a"));
+    }
+
+    #[test]
+    fn check_message_age_accepts_message_with_no_timestamps() {
+        assert!(check_message_age(&msg("id", None, None)).is_ok());
+    }
+
+    #[test]
+    fn check_message_age_rejects_old_messages() {
+        let now = unix_now();
+        let too_old = now - MAX_MESSAGE_AGE_SECS - 60;
+        assert!(check_message_age(&msg("id", Some(too_old), None)).is_err());
+    }
+
+    #[test]
+    fn check_message_age_rejects_future_messages() {
+        let now = unix_now();
+        let too_future = now + MAX_FUTURE_SKEW_SECS + 60;
+        assert!(check_message_age(&msg("id", Some(too_future), None)).is_err());
+    }
+
+    #[test]
+    fn check_message_age_accepts_within_skew() {
+        let now = unix_now();
+        // 1 minute in the future is fine.
+        assert!(check_message_age(&msg("id", Some(now + 60), None)).is_ok());
+    }
+
+    #[test]
+    fn check_message_age_rejects_expired_messages() {
+        let now = unix_now();
+        // expires_time in the past
+        assert!(check_message_age(&msg("id", Some(now), Some(now - 60))).is_err());
+    }
+
+    #[test]
+    fn validate_did_accepts_well_formed_dids() {
+        assert!(validate_did("did:web:example.com").is_ok());
+        assert!(validate_did("did:webvh:abcdef0123:example.com").is_ok());
+        assert!(validate_did("did:peer:2.Vz6Mk-something").is_ok());
+        assert!(validate_did("did:key:z6MkpzExampleKey").is_ok());
+        assert!(validate_did("did:web:example.com%3A8080:path").is_ok());
+    }
+
+    #[test]
+    fn validate_did_rejects_old_prefix_loophole() {
+        // The previous validator accepted these — current one must not.
+        assert!(validate_did("did:").is_err());
+        assert!(validate_did("did:abc").is_err()); // no msi
+        assert!(validate_did("did::abc").is_err()); // empty method
+        assert!(validate_did("not-a-did").is_err());
+        assert!(validate_did("").is_err());
+    }
+
+    #[test]
+    fn validate_did_rejects_uppercase_method() {
+        assert!(validate_did("did:WEB:example.com").is_err());
+    }
+
+    #[test]
+    fn validate_did_rejects_msi_with_invalid_chars() {
+        assert!(validate_did("did:web:exam ple.com").is_err()); // space
+        assert!(validate_did("did:web:exam\u{200E}ple.com").is_err()); // LRM
+    }
 }

@@ -87,10 +87,10 @@ impl StateHandler {
                 Action::VtaStartProvision(context_id) => {
                     setup_vta_actions::handle_vta_start_provision(state, &self.state_tx, context_id).await?;
                 },
-                Action::VtaCreateKeys => {
-                    if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? {
-                        continue;
-                    }
+                Action::VtaCreateKeys
+                    if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? =>
+                {
+                    continue;
                 },
                 Action::ExportDIDKeys(export_inputs) => {
                     setup_did_actions::handle_export_did_keys(state, &self.state_tx, export_inputs).await;
@@ -123,6 +123,9 @@ impl StateHandler {
                     setup_token_actions::handle_set_token_name(state, &self.state_tx, token, &name);
                 },
                 Action::WebvhServerCreateDid(server_id, custom_path) => {
+                    // Cannot move owned bound vars into a match guard, so the
+                    // collapsible_match form clippy suggests doesn't compile.
+                    #[allow(clippy::collapsible_match)]
                     if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id, custom_path).await? {
                         continue;
                     }
@@ -146,6 +149,7 @@ impl StateHandler {
                     }
                 },
                 Action::CreateWebVHDID(webvh_address) => {
+                    #[allow(clippy::collapsible_match)]
                     if setup_did_actions::handle_create_webvh_did(state, &self.profile, webvh_address).await? {
                         continue;
                     }

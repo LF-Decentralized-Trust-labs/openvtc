@@ -359,21 +359,19 @@ impl StateHandler {
         if matches!(
             &config.key_backend,
             openvtc_core::config::KeyBackend::Vta { .. }
-        ) {
-            if let Ok(client) =
-                openvtc_core::config::build_runtime_vta_client(&config.key_backend).await
-                && let Ok(resp) = client.list_contexts().await
+        ) && let Ok(client) =
+            openvtc_core::config::build_runtime_vta_client(&config.key_backend).await
+            && let Ok(resp) = client.list_contexts().await
+        {
+            if let Some(ctx) = resp
+                .contexts
+                .iter()
+                .find(|c| c.did.as_deref() == Some(config.public.persona_did.as_str()))
             {
-                if let Some(ctx) = resp
-                    .contexts
-                    .iter()
-                    .find(|c| c.did.as_deref() == Some(config.public.persona_did.as_str()))
-                {
-                    state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
-                } else if let Some(ctx) = resp.contexts.first() {
-                    // Fallback to first context
-                    state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
-                }
+                state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+            } else if let Some(ctx) = resp.contexts.first() {
+                // Fallback to first context
+                state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
             }
         }
 
