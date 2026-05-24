@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-24
+
+### Security
+
+- **Derive unlock key via Argon2id in non-openpgp import path** — the non-`openpgp-card` build was passing the raw passphrase to `SecuredConfig::save()` as the AES-256 key, bypassing the Argon2id KDF and making the saved config unrecoverable since `UnlockCode::from_string()` always applies Argon2id at load time
+- **Reject path-traversal characters in profile name** — `--profile` and `OPENVTC_CONFIG_PROFILE` were spliced verbatim into lock-file paths, config paths, and OS keyring account names; now restricted to `[A-Za-z0-9._-]` with no `..` component
+- **Redact armored private key block in `DIDKeysExportState` `Debug`** — the derived `Debug` impl could dump the full PGP-armored private key through any `{:?}` of `State` (panic backtrace, tracing, debug print)
+- **Warn that `--unlock-code` is visible in the process list** — the flag exposes the passphrase via `ps`/`/proc/<pid>/cmdline` and shell history; help text now documents this and a runtime warning nudges users toward the interactive prompt
+- **Restore terminal on panic via panic hook** — panics inside the render loop, key handlers, or spawned tasks no longer leave the TTY in raw mode on the alternate screen
+- **Drop exported private-key armor from `State` after use** — the armored PGP private key block was cloned through the state broadcast channel on every tick for the remainder of the setup wizard
+- **Avoid OOB panic on stale token-list index** — unplugging or re-enumerating tokens no longer panics the TUI when a retained selection index exceeds the new bounds
+- **Clear private-key clipboard when leaving export page** — the ASCII-armored PGP private key block placed on the OS clipboard by `[C]` is now cleared on continue (unless the user has copied something else in the meantime)
+- **Clear `ConfigImport` passphrase `Input` buffers after dispatch** — both passphrase inputs are now reset once wrapped in `SecretString` and dispatched, matching the other secret-input pages
+
 ## [0.2.0] - 2026-05-05
 
 ### Added
