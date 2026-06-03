@@ -84,9 +84,7 @@ The workspace is organized as a layered architecture:
 
 - **`openvtc-core`** — Core library: cryptography, DID management, configuration, protocol logic. No UI dependencies.
 - **`openvtc`** — TUI binary that consumes `openvtc-core`
-- **`openvtc-service`** — Background messaging daemon
 - **`did-git-sign`** — Standalone git signing proxy (intentionally independent from `openvtc-core`)
-- **`robotic-maintainers`** — Automated VRC issuance service
 
 Key design principles:
 - Crypto and protocol logic stays in `openvtc-core` — binary crates are pure consumers
