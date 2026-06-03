@@ -17,9 +17,7 @@ Personhood Credentials (PHCs) and Verifiable Relationship Credentials (VRCs).
 |-------|-------------|
 | `openvtc` | TUI-based CLI with ratatui interface |
 | `openvtc-core` | Shared library for configuration, DID management, and crypto |
-| `openvtc-service` | Background service for DIDComm messaging |
 | `did-git-sign` | [Git commit signing proxy](./did-git-sign/) using DID Ed25519 keys via VTA |
-| `robotic-maintainers` | Automated VRC issuance for robotic maintainers |
 
 ## Table of Contents
 
@@ -233,9 +231,7 @@ This repository is a Cargo workspace. The root `Cargo.toml` defines the followin
 |---|---|
 | `openvtc-core` | Core library — config, storage, cryptography, DID logic |
 | `openvtc` | Terminal UI (TUI) interface |
-| `openvtc-service` | Background service component |
 | `did-git-sign` | Git commit signing proxy using DID Ed25519 keys |
-| `robotic-maintainers` | Automated maintenance tooling |
 
 ### Building
 

@@ -1,8 +1,6 @@
 [workspace]
 members = [
   "openvtc-core",
-  "robotic-maintainers",
-  "openvtc-service",
   "openvtc",
   "did-git-sign",
 ]

@@ -5239,21 +5239,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "openvtc-service"
-version = "0.2.1"
-dependencies = [
- "affinidi-tdk",
- "anyhow",
- "clap",
- "openvtc-core",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6454,24 +6439,6 @@ dependencies = [
  "block-buffer 0.9.0",
  "digest 0.9.0",
  "opaque-debug",
-]
-
-[[package]]
-name = "robotic-maintainers"
-version = "0.2.1"
-dependencies = [
- "affinidi-tdk",
- "anyhow",
- "chrono",
- "clap",
- "dtg-credentials",
- "openvtc-core",
- "rand 0.8.6",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]
