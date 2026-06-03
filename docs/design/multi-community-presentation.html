@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenVTC · Multi-Community Design</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#30363d;
+    --ink:#e6edf3; --muted:#8b949e; --teal:#5eead4; --teal2:#2dd4bf;
+    --green:#34d399; --amber:#fbbf24; --red:#f87171; --violet:#a78bfa; --blue:#60a5fa;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; overflow:hidden; }
+  .viewport { width:100vw; height:100vh; overflow:hidden; }
+  .deck { display:flex; height:100%; transition:transform .35s cubic-bezier(.4,0,.2,1); will-change:transform; }
+  .slide { min-width:100vw; width:100vw; height:100vh; overflow-y:auto; padding:48px 64px 96px; }
+  .slide-inner { max-width:1080px; margin:0 auto; }
+  h1 { font-size:46px; line-height:1.1; margin:0 0 8px; letter-spacing:-.02em; }
+  h2 { font-size:30px; margin:0 0 6px; letter-spacing:-.01em; }
+  h2 .num { color:var(--teal2); font-variant-numeric:tabular-nums; margin-right:12px; font-size:20px;
+    border:1px solid var(--line); border-radius:8px; padding:2px 10px; vertical-align:middle; }
+  .sub { color:var(--muted); font-size:17px; margin:0 0 28px; }
+  .lead { font-size:20px; color:var(--ink); }
+  p { line-height:1.55; }
+  ul { line-height:1.7; padding-left:22px; } li { margin:4px 0; }
+  .kicker { color:var(--teal2); font-weight:600; letter-spacing:.14em; text-transform:uppercase; font-size:13px; }
+  code { font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    background:#22272e; padding:1px 6px; border-radius:5px; font-size:.9em; color:#c9d1d9; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:24px; align-items:start; }
+  .col3 { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:20px 22px; }
+  .card h3 { margin:0 0 10px; font-size:18px; }
+  .card.before { border-top:3px solid var(--red); }
+  .card.after  { border-top:3px solid var(--green); }
+  .tag { display:inline-block; font-size:12px; font-weight:700; letter-spacing:.06em; padding:3px 9px;
+    border-radius:999px; text-transform:uppercase; }
+  .tag.before { background:rgba(248,113,113,.15); color:var(--red); }
+  .tag.after  { background:rgba(52,211,153,.15); color:var(--green); }
+  .muted { color:var(--muted); }
+  .pill { display:inline-block; border:1px solid var(--line); border-radius:999px; padding:3px 11px; font-size:13px; margin:3px 4px 3px 0; color:var(--ink); }
+  .pill.warn { border-color:rgba(251,191,36,.5); color:var(--amber); }
+  table { border-collapse:collapse; width:100%; font-size:14.5px; }
+  th,td { text-align:left; padding:9px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:600; font-size:12.5px; text-transform:uppercase; letter-spacing:.05em; }
+  td code { font-size:.85em; }
+  .mermaid { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:18px; margin-top:6px; }
+  /* terminal mockups */
+  .tui { font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; font-size:14px; line-height:1.5;
+    background:#0a0e14; border:1px solid var(--line); border-radius:12px; padding:18px 20px; color:#cdd6e4;
+    box-shadow:0 18px 40px rgba(0,0,0,.45); white-space:pre; overflow-x:auto; }
+  .tui .ok{color:var(--green);} .tui .pend{color:var(--amber);} .tui .off{color:var(--muted);}
+  .tui .star{color:var(--amber);} .tui .warn{color:var(--red);} .tui .acc{color:var(--teal2);} .tui .vio{color:var(--violet);}
+  .caption { color:var(--muted); font-size:13px; margin-top:8px; font-style:italic; }
+  .note { background:rgba(94,234,212,.07); border:1px solid rgba(94,234,212,.3); border-radius:12px; padding:14px 18px; color:var(--ink); }
+  .danger { background:rgba(248,113,113,.07); border-color:rgba(248,113,113,.35); }
+  /* nav */
+  .nav { position:fixed; bottom:0; left:0; right:0; height:56px; display:flex; align-items:center; justify-content:space-between;
+    padding:0 22px; background:linear-gradient(to top,rgba(13,17,23,.96),rgba(13,17,23,.4)); backdrop-filter:blur(6px);
+    border-top:1px solid var(--line); font-size:14px; }
+  .nav .brand { color:var(--muted); } .nav .brand b{ color:var(--teal2); }
+  .nav .ctrls { display:flex; gap:10px; align-items:center; }
+  .btn { background:var(--panel2); border:1px solid var(--line); color:var(--ink); border-radius:8px;
+    padding:7px 14px; cursor:pointer; font-size:14px; } .btn:hover{ border-color:var(--teal2); }
+  .counter { color:var(--muted); min-width:64px; text-align:center; font-variant-numeric:tabular-nums; }
+  .progress { position:fixed; top:0; left:0; height:3px; background:var(--teal2); transition:width .35s ease; z-index:10; }
+  .titlewrap { height:calc(100vh - 96px); display:flex; flex-direction:column; justify-content:center; }
+  .badges .pill{ font-size:13px; }
+  .arrow { color:var(--teal2); font-weight:700; }
+  .deferred li::marker{ color:var(--muted); }
+  kbd{ background:#22272e;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:1px 7px;font-family:ui-monospace,monospace;font-size:12px;}
+</style>
+</head>
+<body>
+<div class="progress" id="progress"></div>
+<div class="viewport">
+<div class="deck" id="deck">
+
+<!-- 1 TITLE -->
+<section class="slide"><div class="slide-inner titlewrap">
+  <div class="kicker">OpenVTC · Design Review</div>
+  <h1>Multi-Community Support</h1>
+  <p class="lead" style="max-width:760px">From a single-identity tool to joining and operating in <b>many Verifiable Trust Communities</b> at once — split setup, per-community identities, a Communities hub, and concurrent live sessions.</p>
+  <div class="badges" style="margin-top:18px">
+    <span class="pill">Spec: docs/design/multi-community-support.md · DRAFT v4</span>
+    <span class="pill">Plan: tasks/plan.md · 9 tasks</span>
+    <span class="pill">Decisions D1–D17</span>
+  </div>
+  <p class="muted" style="margin-top:26px"><kbd>←</kbd> <kbd>→</kbd> or <kbd>Space</kbd> to navigate · mockups are illustrative, not screenshots</p>
+</div></section>
+
+<!-- 2 TL;DR -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">The shift in one slide</div>
+  <h2>What changes</h2>
+  <div class="cols" style="margin-top:18px">
+    <div class="card before"><span class="tag before">Today</span>
+      <ul>
+        <li><b>Profile-singleton:</b> one persona DID, one VTA, one mediator, one flat context.</li>
+        <li>One monolithic ~19-step setup that creates <i>everything</i> up front.</li>
+        <li>A single DIDComm session / message loop.</li>
+        <li>No notion of communities, joining, or membership.</li>
+      </ul>
+    </div>
+    <div class="card after"><span class="tag after">After</span>
+      <ul>
+        <li><b>Account → many personas → many communities.</b></li>
+        <li>Setup splits: <b>State A</b> bootstrap (no DID) + <b>State B</b> join.</li>
+        <li><b>Concurrent</b> live sessions — one supervised task per community.</li>
+        <li>A <b>Communities hub</b>; the main page is community-scoped with a switcher.</li>
+        <li>VTA is the <b>store</b> of keys/credentials; local config is metadata.</li>
+      </ul>
+    </div>
+  </div>
+  <p class="note" style="margin-top:20px"><b>Deferred on purpose:</b> Verifiable Presentation construction (join step submits a <i>stub</i> VP) and the VTA-side sub-context authorization model.</p>
+</div></section>
+
+<!-- 3 TODAY -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Starting point</div>
+  <h2>Today: one identity, one authority</h2>
+  <p class="sub">Each profile is a closed singleton. Useful, but it can't represent belonging to more than one community.</p>
+  <div class="mermaid">
+flowchart LR
+  U([User profile]) --> P[1 persona did:webvh]
+  P --> V[1 VTA]
+  P --> M[1 mediator session]
+  P --> C[1 flat context_id]
+  classDef one fill:#1c2330,stroke:#f87171,color:#e6edf3;
+  class P,V,M,C one;
+  </p>
+  <p class="muted">Pain points: no multi-membership, identity is reused everywhere (linkable), and setup forces DID + mediator + hosting before you've done anything useful.</p>
+</div></section>
+
+<!-- 4 SETUP BEFORE -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Before / After · Setup</div>
+  <h2>Setup flow — before</h2>
+  <p class="sub">One linear wizard that provisions an identity, a mediator, and a hosted DID in a single pass.</p>
+  <div class="mermaid">
+flowchart TD
+  A[Enter VTA DID] --> B[ACL / admin rotate] --> C[Fetch persona keys]
+  C --> D[Show / export keys] --> E[did-git-sign] --> F[Unlock code]
+  F --> G[Mediator select] --> H[WebVH server: create did:webvh]
+  H --> I[Username] --> J[Done]
+  classDef m fill:#1c2330,stroke:#f87171,color:#e6edf3; class A,B,C,D,E,F,G,H,I,J m;
+  </p>
+  <p class="muted">Everything is mandatory and front-loaded — including a <code>did:webvh</code> you may not need yet.</p>
+</div></section>
+
+<!-- 5 SETUP AFTER -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Before / After · Setup</div>
+  <h2>Setup flow — after</h2>
+  <p class="sub">Split into <b>State A</b> (bootstrap an account — no DID) and <b>State B</b> (join a community), both routed through the Communities hub.</p>
+  <div class="mermaid">
+flowchart TD
+  S{Config exists?}
+  S -- No --> A1[State A: enter VTA DID]
+  A1 --> A2[ACL / admin rotate] --> A3[Create top-level context] --> A4[Protection] --> HUB
+  S -- Yes --> HUB[(Communities hub)]
+  HUB --> B1[State B: enter VTC DID]
+  B1 --> B2{New or reuse persona?}
+  B2 -- New --> B3[Mint did:webvh + sub-context]
+  B2 -- Reuse --> B4[Reference existing persona]
+  B3 --> B5[Bring up live session]
+  B4 --> B5 --> B6[Submit join + stub VP] --> B7{Receipt}
+  B7 -- pending --> P[[Pending]]
+  B7 -- accept --> AC[[Active]]
+  classDef a fill:#13241d,stroke:#34d399,color:#e6edf3;
+  classDef b fill:#1c2330,stroke:#5eead4,color:#e6edf3;
+  class A1,A2,A3,A4 a; class B1,B2,B3,B4,B5,B6,B7 b;
+  </p>
+  <p class="muted">No persona DID is created at bootstrap (<code>D5</code>); identity is minted lazily, per community.</p>
+</div></section>
+
+<!-- 6 DATA MODEL -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Before / After · Data model</div>
+  <h2>From singleton to account graph</h2>
+  <div class="cols" style="margin-top:8px">
+    <div class="card before"><span class="tag before">Today</span>
+      <div class="tui" style="box-shadow:none;font-size:13px">Config
+  persona_did      <span class="off">// one</span>
+  mediator_did     <span class="off">// one</span>
+  key_backend::Vta <span class="off">// one VTA</span>
+  context_id       <span class="off">// flat string</span></div>
+    </div>
+    <div class="card after"><span class="tag after">After (config v2)</span>
+      <p class="muted" style="margin:0 0 10px">VTA stores keys/credentials; local holds metadata + refs.</p>
+    </div>
+  </div>
+  <div class="mermaid">
+classDiagram
+  class Account {
+    vta_did
+    vta_url
+    admin_credential_LOCAL
+    top_context_id
+  }
+  class Persona {
+    persona_id
+    did_webvh
+    key_refs_at_VTA
+    mediator_did
+  }
+  class Community {
+    vtc_did
+    sub_context_id
+    persona_ref
+    status
+    favourite_archived
+  }
+  Account "1" o-- "0..*" Persona : personas
+  Account "1" o-- "0..*" Community : communities
+  Community ..> Persona : persona_ref
+  </p>
+  <p class="muted">Personas are <b>account-level</b> and reusable — a community references one (<code>D1/D6</code>). VTA = system of record (<code>D12</code>).</p>
+</div></section>
+
+<!-- 7 JOIN SEQUENCE -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Flow · Join a community (State B)</div>
+  <h2>Joining a VTC</h2>
+  <p class="sub">Persona + live session come up <b>before</b> submit so the VTC's async reply is receivable (<code>D16</code>).</p>
+  <div class="mermaid">
+sequenceDiagram
+  actor U as User
+  participant CLI as OpenVTC
+  participant VTA
+  participant VTC
+  U->>CLI: Enter VTC DID
+  CLI->>VTC: Resolve DID document
+  U->>CLI: Choose / mint persona
+  CLI->>VTA: create_context (sub-context)
+  CLI->>VTA: create did:webvh (if minting)
+  CLI->>VTA: register live DIDComm session
+  CLI->>VTC: join-requests/submit (stub VP)
+  VTC-->>CLI: receipt = pending
+  Note over CLI: status Pending · 7-day client timeout
+  VTC-->>CLI: accept / reject / more-info
+  CLI-->>U: Active / Rejected / needs info
+  </p>
+</div></section>
+
+<!-- 8 LIFECYCLE -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Flow · Membership lifecycle</div>
+  <h2>Community states</h2>
+  <p class="sub">Only <span style="color:var(--green)">Active</span> is live; every other state is read-only (<code>D14</code>) and can be archived or deleted.</p>
+  <div class="mermaid">
+stateDiagram-v2
+  [*] --> Pending: submit join
+  Pending --> Active: accepted
+  Pending --> Rejected: denied
+  Pending --> Expired: 7 days, no reply
+  Active --> Left: self-remove
+  Active --> Removed: removed by VTC
+  Left --> Pending: re-join
+  Rejected --> Pending: re-join
+  Expired --> Pending: re-join
+  Removed --> Pending: re-join
+  Rejected --> [*]: delete
+  Left --> [*]: delete
+  Removed --> [*]: delete
+  Expired --> [*]: delete
+  </p>
+  <p class="muted"><span style="color:var(--amber)">Rejected · Removed · Expired · more-info</span> raise the actions-required badge until acknowledged (<code>R-S-2</code>).</p>
+</div></section>
+
+<!-- 9 RUNTIME -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Before / After · Runtime</div>
+  <h2>Single loop → supervised multi-session manager</h2>
+  <div class="cols">
+    <div class="card before"><span class="tag before">Today</span>
+      <div class="mermaid">
+flowchart TB
+  L[Single message loop] --> S[(one mediator session)]
+      </div>
+    </div>
+    <div class="card after"><span class="tag after">After · D11/D15</span>
+      <div class="mermaid">
+flowchart TB
+  MGR[Multi-session manager] --> A[task: Acme]
+  MGR --> B[task: City DAO]
+  MGR --> C[task: WG]
+  A -. retry/recover .-> A
+  B -. isolated .-> B
+      </div>
+    </div>
+  </div>
+  <p class="muted">One supervised task per active community: independently recoverable, bounded concurrency, partial-failure-tolerant launch. A mediator outage on one community never blocks the others.</p>
+</div></section>
+
+<!-- 10 MOCKUP: overview -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Mockup · The hub</div>
+  <h2>Communities overview</h2>
+<pre class="tui">┌ OpenVTC ───────────────────────────────── Account: <span class="acc">alice@vta</span> ┐
+│ <span class="acc">Communities</span>                                  [+] Join   <span class="warn">(2) ⚠</span> │
+├──────────────────────────────────────────────────────────────┤
+│ <span class="star">★</span> Acme Robotics       <span class="ok">● Active</span>      since 2026-03-01      ▸ │
+│   Open Source WG      <span class="pend">◔ Pending</span>     requested 2d ago    <span class="warn">⚠</span> ▸ │
+│ <span class="star">★</span> City DAO            <span class="ok">● Active</span>      since 2025-11-12      ▸ │
+│   Old Guild           <span class="off">○ Left</span>        (read-only)           ▸ │
+│   Trial Net           <span class="warn">✗ Rejected</span>    <span class="warn">acknowledge?</span>          ▸ │
+├──────────────────────────────────────────────────────────────┤
+│ <span class="off">↑/↓</span> select  <span class="off">⏎</span> open  <span class="off">s</span> star  <span class="off">j</span> join  <span class="off">a</span> archive  <span class="off">d</span> delete │
+└──────────────────────────────────────────────────────────────┘</pre>
+  <p class="caption">Favourites (★) sort to top · status + member-since per row · actions-required badge counts communities needing attention.</p>
+</div></section>
+
+<!-- 11 MOCKUP: empty + switcher -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Mockup · Empty state &amp; switcher</div>
+  <h2>First run &amp; switching context</h2>
+  <div class="cols">
+    <div>
+<pre class="tui" style="font-size:13px">┌ OpenVTC ──────────── <span class="acc">alice@vta</span> ┐
+│ <span class="acc">Communities</span>                        │
+│                                  │
+│         <span class="ok">🌱  nothing here yet</span>         │
+│                                  │
+│   Your trust graph is empty —    │
+│   go find a community and        │
+│        <span class="vio">put down roots!</span>           │
+│                                  │
+│      [ <span class="acc">j</span> ]  Join a community      │
+└──────────────────────────────────┘</pre>
+      <p class="caption">Playful empty state (<code>R-C-5</code>), not a dry "no items".</p>
+    </div>
+    <div>
+<pre class="tui" style="font-size:13px">┌ <span class="acc">▾ Acme Robotics</span> ─────────────────┐
+│  <span class="star">★</span> Acme Robotics  <span class="ok">●</span>  <span class="acc">◀ current</span>   │
+│  <span class="star">★</span> City DAO       <span class="ok">●</span>             │
+│    Open Source WG <span class="pend">◔</span> pending      │
+│  ─────────────────────────────   │
+│    [+] Join another…             │
+└──────────────────────────────────┘</pre>
+      <p class="caption">Active-community dropdown (<code>R-C-7</code>) — pick the community you want to work in.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- 12 MOCKUP: per-community main + identity choice -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Mockup · Working context &amp; join</div>
+  <h2>Per-community main page · identity choice</h2>
+  <div class="cols">
+    <div>
+<pre class="tui" style="font-size:12.5px">┌ <span class="acc">Acme Robotics ▾</span> ── persona: <span class="vio">…webvh:acme</span> ┐
+│ <span class="acc">Messages</span> Relationships Contacts Creds │
+├────────────────────────────────────────┤
+│ ▸ bob@acme        last seen 2h ago      │
+│ ▸ carol@acme      <span class="warn">new message ⚠</span>        │
+│ ▸ dave@acme       online <span class="ok">●</span>             │
+└────────────────────────────────────────┘</pre>
+      <p class="caption">The existing main page, now <b>scoped to the selected community</b> (<code>R-C-6</code>).</p>
+    </div>
+    <div>
+<pre class="tui" style="font-size:12.5px">┌ Join · <span class="acc">did:webvh:vtc.acme…</span> ───────────┐
+│ How do you want to appear here?        │
+│                                        │
+│  <span class="ok">(•)</span> Create a new identity            │
+│        <span class="off">best for privacy</span>                │
+│  ( ) Reuse an existing persona         │
+│        <span class="warn">⚠ links you across communities</span>  │
+│        › City DAO  (<span class="vio">…webvh:city</span>)        │
+│                                        │
+│        [Esc] back     [⏎] continue     │
+└────────────────────────────────────────┘</pre>
+      <p class="caption">Per-join choice (<code>D1</code>) with the linkability warning on reuse.</p>
+    </div>
+  </div>
+</div></section>
+
+<!-- 13 DECISIONS -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Decisions of record</div>
+  <h2>D1–D17 at a glance</h2>
+  <table>
+    <tr><th>#</th><th>Decision</th></tr>
+    <tr><td><code>D1</code></td><td>Per-join: mint a new persona <i>or</i> reuse an existing one (user chooses)</td></tr>
+    <tr><td><code>D5/D6</code></td><td>No DID at bootstrap; personas are self-contained &amp; context-independent</td></tr>
+    <tr><td><code>D2/D9</code></td><td>Hierarchy via <code>&lt;top&gt;/&lt;slug&gt;</code> convention behind one <code>context_path</code> module</td></tr>
+    <tr><td><code>D7</code></td><td>Mediator defaults to the VTA's; optional per-DID override</td></tr>
+    <tr><td><code>D8/D14</code></td><td>States: Pending · Active · Left · Rejected · Removed · Expired — non-Active = read-only (archive/delete)</td></tr>
+    <tr><td><code>D10/D13</code></td><td>Full refactor, no shim; old config = breaking reset (warn + delete), not migration</td></tr>
+    <tr><td><code>D11/D15</code></td><td>Concurrent live sessions; one supervised, isolated task per community</td></tr>
+    <tr><td><code>D12</code></td><td>VTA is the store of persona DIDs / keys / credentials</td></tr>
+    <tr><td><code>D16</code></td><td>Persona+session before submit; 7-day pending timeout; VTC may reject / request more info</td></tr>
+    <tr><td><code>D17</code></td><td>did-git-sign selects the signing persona via env var / per-repo git config</td></tr>
+  </table>
+</div></section>
+
+<!-- 14 PLAN -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Delivery</div>
+  <h2>Implementation plan — 9 tasks, 4 phases</h2>
+  <div class="mermaid">
+flowchart LR
+  subgraph P0[Phase 0 · foundation]
+    T1[T1 config v2 + reset +<br/>refactor + session mgr]
+    T2[T2 context_path]
+  end
+  subgraph P1[Phase 1]
+    T3[T3 State A bootstrap]
+  end
+  subgraph P2[Phase 2]
+    T4[T4 Communities + switcher]
+  end
+  subgraph P3[Phase 3 · join &amp; lifecycle]
+    T5[T5 Join + stub VP]
+    T6[T6 lifecycle/timeout]
+    T7[T7 leave/archive/delete]
+  end
+  T1 --> T3
+  T2 --> T3 --> T4 --> T5
+  T5 --> T6
+  T5 --> T7
+  T1 --> T8[T8 did-git-sign]
+  T5 --> T9[T9 mock harness · nice-to-have]
+  classDef found fill:#13241d,stroke:#34d399,color:#e6edf3; class T1,T2 found;
+  </p>
+  <p class="muted">Checkpoints gate each phase. <b>T1 is the heavy one</b> — landed as reviewable commits; everything after is additive.</p>
+</div></section>
+
+<!-- 15 CLOSING -->
+<section class="slide"><div class="slide-inner">
+  <div class="kicker">Status &amp; what's next</div>
+  <h2>Deferred, open, and the ask</h2>
+  <div class="cols">
+    <div class="card">
+      <h3>Deliberately deferred</h3>
+      <ul class="deferred">
+        <li>Verifiable Presentation construction (join uses a stub VP)</li>
+        <li>Real hierarchical context API (<code>parent_id</code>)</li>
+        <li>New per-community capabilities beyond porting today's main page</li>
+        <li>Persona key rotation</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Open — external dependencies</h3>
+      <ul>
+        <li><b>VP requirement discovery</b> — how a VTC advertises required credentials</li>
+        <li><b>Sub-context authorization</b> — to be designed at the VTA layer</li>
+      </ul>
+      <h3 style="margin-top:16px">The ask</h3>
+      <p class="muted">Sign off on D1–D17 &amp; the plan, then start <b>T1</b> (with an active-identity API sketch for review first).</p>
+    </div>
+  </div>
+  <p class="note" style="margin-top:20px">Source of truth: <code>docs/design/multi-community-support.md</code> · <code>tasks/plan.md</code> · <code>tasks/todo.md</code></p>
+</div></section>
+
+</div></div>
+
+<div class="nav">
+  <div class="brand"><b>OpenVTC</b> · Multi-Community Design</div>
+  <div class="ctrls">
+    <button class="btn" id="prev">‹ Prev</button>
+    <span class="counter" id="counter">1 / 15</span>
+    <button class="btn" id="next">Next ›</button>
+  </div>
+</div>
+
+<!-- Mermaid vendored locally (offline) — see docs/design/vendor/ -->
+<script src="vendor/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad:true, theme:'dark', securityLevel:'loose',
+    themeVariables:{ fontFamily:'ui-monospace,SFMono-Regular,Menlo,monospace',
+      primaryColor:'#1c2330', primaryBorderColor:'#30363d', primaryTextColor:'#e6edf3',
+      lineColor:'#5eead4', secondaryColor:'#161b22', tertiaryColor:'#161b22' }
+  });
+</script>
+<script>
+  const deck=document.getElementById('deck');
+  const slides=[...document.querySelectorAll('.slide')];
+  const counter=document.getElementById('counter');
+  const progress=document.getElementById('progress');
+  let i=0;
+  function show(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    deck.style.transform=`translateX(-${i*100}vw)`;
+    counter.textContent=`${i+1} / ${slides.length}`;
+    progress.style.width=`${((i+1)/slides.length)*100}%`;
+    slides[i].scrollTop=0;
+  }
+  document.getElementById('next').onclick=()=>show(i+1);
+  document.getElementById('prev').onclick=()=>show(i-1);
+  window.addEventListener('keydown',e=>{
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){e.preventDefault();show(i+1);}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){e.preventDefault();show(i-1);}
+    else if(e.key==='Home'){show(0);} else if(e.key==='End'){show(slides.length-1);}
+  });
+  show(0);
+</script>
+</body>
+</html>
