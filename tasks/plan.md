@@ -140,7 +140,7 @@ which may land in parallel.
 | Full config refactor (D10) is large — many read sites of `persona_did`, `key_backend`. | All consumers routed through one **active-identity abstraction**; landed as reviewable commits; grep-clean of removed fields is an acceptance gate; full CI must be green. A fresh single-persona bootstrap exercises every refactored path. |
 | Old config handled wrong (lockout / silent loss). | **No migration (D13):** v1 is detected and reset behind an explicit user-confirmed warning; tests cover detect→warn→delete→fresh-setup and the new-install path. The VTA is the store (D12), so the durable material isn't in the deleted local config. |
 | Concurrent live sessions (D11) are a large runtime change to today's single loop. | The multi-session manager is built in T1 running **N=1** (identical behavior, unit-tested with ≥2 simulated sessions); join/leave register/deregister sessions; real N>1 concurrency is first exercised by T5. Avoids a later loop rewrite ("right from the start"). |
-| Interim slug convention paints us into a corner vs real `parent_id` API. | All path logic confined to `context_path` (T2); swap point is one module + the `create_context` call site. |
+| Context-path rules drift from the VTA's enforcement. | Hierarchy is VTA-enforced (VTI #257); `context_path` (T2) mirrors `vti-common::context_path` (reuse if consumable) and the VTA re-validates server-side. No `vta-sdk` change needed. |
 | VTC join requirements unknown (VP). | D4 stubbed; T5 isolates the VP into a single function returning a placeholder. |
 | Setup wizard refactor is large and entangled. | T3 splits entry points but reuses existing step handlers; bootstrap is a *subset* of today's flow (drops persona/mediator/webvh steps), not a rewrite. |
 
@@ -148,7 +148,6 @@ which may land in parallel.
 
 ## 6. Deferred (tracked, not in this plan)
 - **D4 / VP construction** and **VP requirement discovery** (spec §8, §10.1).
-- **Real hierarchical context API** (`parent_id`) — infra/SDK change.
 - Rich per-community detail UX beyond status/persona/leave (R-C-6 keeps the
   page extensible).
 

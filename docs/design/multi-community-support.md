@@ -1,10 +1,10 @@
 # SPEC — Multi-Community Support for the OpenVTC CLI
 
-> Status: **DRAFT v4** — decisions D1–D17 settled (VTA-as-store, breaking reset,
-> per-community main page, read-only/archive/delete, supervised sessions,
-> join timeout, did-git-sign selection). Open: VP discovery (deferred) +
-> sub-context authorization (infra-side). Task breakdown in `tasks/plan.md` +
-> `tasks/todo.md`.
+> Status: **DRAFT v5** — decisions D1–D17 settled. **Hierarchical contexts are
+> now real and VTA-enforced** (VTI #257): D2/D9 updated, sub-context
+> authorization resolved (ancestry ACL), and a real **MockVta** harness exists
+> for T9 (VTI #256). Only open item: VP discovery (deferred, D4). Task breakdown
+> in `tasks/plan.md` + `tasks/todo.md`.
 > Scope: the `openvtc` CLI (ratatui TUI) and `openvtc-core` config model. No
 > changes to the verifiable-trust-infrastructure repo are in scope here; where
 > infra/SDK changes are required they are called out as **external
@@ -40,14 +40,14 @@ with live status, on a Communities overview page.
 | # | Decision | Choice |
 |---|----------|--------|
 | D1 | Persona DID per community vs shared | **User chooses per join.** Personas are account-level resources referenced by communities. |
-| D2 | Context hierarchy mechanism | **Path-naming convention now, migrate later.** Isolated behind one `context_path` module. |
+| D2 | Context hierarchy mechanism | **Real hierarchical contexts — VTA-enforced (VTI #257).** A context id *is* its `/`-separated path (`<top>/<community>`); the VTA validates depth/segments and enforces **ancestry-aware ACL** (a parent-context admin covers the whole subtree). No longer a migrate-later convention. Path logic lives in one `context_path` module mirroring `vti-common::context_path`; **no `vta-sdk` change needed** (`create_context` already takes a path id). |
 | D3 | Join semantics | **VP-based with pending-approval state** … |
 | D4 | VP construction (join step 4) | **…but deferred.** Stub the presentation; land everything around it. |
 | D5 | Persona creation timing | **Lazy.** No `did:webvh` at bootstrap; first persona minted on first join. |
 | D6 | Persona ↔ context coupling | **Self-contained persona.** A persona is a complete `did:webvh` + its own keys, independent of context. Reuse presents the *same* DID/keys to multiple communities; a sub-context is purely VTA-side organisation. `origin_context_id` is provenance only. |
 | D7 | Mediator / routing | **Default to the VTA mediator, optionally overridable per DID/persona.** Each persona's DIDComm service endpoint (its mediator) defaults to the VTA-provided mediator; at mint time the user may opt to use a different mediator instead. The mediator is a property of the DID document, so the choice is **per-DID** — which, because a fresh DID is typically minted per community (D1), reads as per-community in the common case. A *reused* persona keeps the mediator baked into its DID doc. |
 | D8 | Community lifecycle states | **Pending, Active, Left, Rejected, Removed** (see §5.6). |
-| D9 | Sub-context id derivation | **`<top>/<slug-from-name>`** — human-readable slug from the VTC display name, with a collision-suffix rule, under the top context. |
+| D9 | Sub-context id derivation | **`<top>/<slug-from-name>`** — slug from the VTC display name, with a collision-suffix rule, under the top context. Each segment must be a valid context identifier (`vti-common` rules); **max depth 8** (top/community = depth 2). |
 | D10 | Migration strategy | **Full refactor, no compatibility shim.** Replace the singleton with an explicit active-identity abstraction everywhere; core model + `openvtc` consumer refactor land in one PR. |
 | D11 | Runtime session model | **Concurrent live sessions.** Each active community's persona holds its own live DIDComm/mediator session simultaneously. The single message loop becomes a **multi-session manager** (built in T1, running N=1 at first); joining registers a new session, leaving deregisters one. |
 | D12 | System of record | **The VTA stores persona DIDs, key info, and credentials.** Local config holds only the account **admin credential** (bootstrap secret), community-membership metadata, persona *references*, and UX prefs (favourites). This is the backup/restore story — the VTA is the store, not a local export. Aligns with the existing `KeySourceMaterial::VtaManaged { key_id }` model. |
@@ -76,9 +76,12 @@ with live status, on a Communities overview page.
   (`setup_vta_actions.rs:135`), passed to VTA `create_key` / provisioning.
 - **vta-sdk 0.9.6 already provides:**
   - Context CRUD — `create_context`, `list_contexts`, `get_context`,
-    `update_context_did`, `delete_context`. **Flat** (`ContextResponse { id,
-    name, did, base_path, … }`, no `parent_id`). Each context has its own
-    BIP32 `base_path` and optional `did`.
+    `update_context_did`, `delete_context`. The `ContextResponse` has no
+    `parent_id` field because **hierarchy is encoded in the id itself** — a
+    context id *is* its `/`-separated path (VTI #257). The VTA validates the
+    path (depth/segments) and enforces ancestry-aware ACL server-side, so
+    `create_context` with a path id like `<top>/<community>` is all the CLI
+    needs. Each context also has a BIP32 `base_path` and optional `did`.
   - **VTC join protocol** — `vta_sdk::protocols::join_requests`:
     `JOIN_REQUEST_SUBMIT_TYPE`, a submit receipt with `status` (e.g.
     `"pending"`), and `MEMBER_SELF_REMOVE`. Submit body carries a Verifiable
@@ -280,13 +283,17 @@ read-only, D14):
 
 ## 6. Architecture & project structure
 
-- **`context_path` module (new)** — single source of truth for the hierarchy
-  convention (D2). Responsibilities: build a sub-context id from
-  `(top_context_id, vtc)`, parse one, render for display. Every
-  `create_context` / `context_id` call site routes through it. Swapping to a
-  real `parent_id` API later changes only this module + the create call site.
-  - Proposed location: `openvtc-core/src/config/context_path.rs` (or a small
-    `openvtc-core/src/context/` module) — to be confirmed in task breakdown.
+- **`context_path` module** — the hierarchy is **real and VTA-enforced** now
+  (`vti-common::context_path`: `/`-separated paths, `MAX_CONTEXT_DEPTH = 8`,
+  segment-aware ancestry, parent-admin-covers-subtree ACL — pure, store-free).
+  The CLI module builds/validates sub-context paths from `(top_context_id, vtc)`
+  (`child_path`, `validate_context_path`) and renders them for display; the
+  **VTA is the enforcement source of truth** (it re-validates). **Reuse
+  `vti-common`'s helpers if consumable, otherwise mirror them** (CLAUDE.md:
+  prefer existing libs; raise re-exporting them from `vta-sdk` to avoid drift on
+  the security-critical rules). `create_context` is unchanged — it already takes
+  a path id, so **no `vta-sdk` API change is required**.
+  - Proposed location: `openvtc-core/src/config/context_path.rs`.
 - **Config types** — extend `openvtc-core/src/config/`:
   - New `account` / `Persona` / `Community` types; `personas` and `communities`
     collections. **No migration (D13):** detect a v1 `config_version`, warn +
@@ -350,9 +357,6 @@ read-only, D14):
 - **VP requirement discovery** — how a VTC advertises which credentials its VP
   must contain (DID-doc service entry? discovery message? out-of-band?) is
   **undecided / infra-side** and blocks D4. Tracked as an open question (§10).
-- Real hierarchical context API (`parent_id`) — infra/SDK change; CLI uses the
-  interim convention until then.
-- Sub-context authorization at the VTA layer (§10.5) — owner-driven infra design.
 - *New* per-community capabilities beyond porting today's main page
   (relationships/contacts/VRCs/messaging) to the community scope. Persona key
   rotation (R-P-3).
@@ -386,13 +390,6 @@ read-only, D14):
 1. **VP requirement discovery** (blocks D4) — where do a VTC's join requirements
    come from (DID-doc service entry? discovery message? out-of-band)? Deferred
    with D4; does not block this spec.
-5. **Sub-context authorization (infra-side)** — whether the VTA authorizes a
-   path-style flat context (`<top>/<slug>`) under the top-context admin
-   credential, and enforces the hierarchy, is **to be designed at the VTA layer
-   separately** (per owner). The CLI proceeds with the convention (D2); State A
-   top-context creation and State B sub-context creation depend on this landing
-   server-side. Tracked as an external dependency, not a CLI blocker for the
-   model/UX work.
 
 ### Locked (proposed defaults — override anytime)
 2. **Config tier placement** — `Community` records (vtc_did, sub_context_id,
@@ -410,7 +407,10 @@ read-only, D14):
    trim leading/trailing `-`; cap at 32 chars. On collision within the top
    context, append `-2`, `-3`, … When the VTC DID doc has no usable name, fall
    back to a short stable token derived from the VTC DID via `didwebvh-rs`
-   (no hand-rolled string surgery — per `CLAUDE.md`).
+   (no hand-rolled string surgery — per `CLAUDE.md`). The slug must be a valid
+   **context identifier** (`vti-common::validate_identifier`) and the full
+   `<top>/<slug>` path must satisfy `validate_context_path` (depth ≤ 8); the VTA
+   re-validates server-side.
 
 ### Resolved (folded into decisions)
 - ~~Backup/restore~~ → **D12**: the VTA is the store of persona DIDs/keys/
@@ -425,5 +425,11 @@ read-only, D14):
 - ~~Persona key derivation on reuse~~ → **D6**: personas are self-contained and
   context-independent; reuse presents the same DID/keys.
 - ~~Slug vs hash vs label for sub-context id~~ → **D9**: slug-from-name.
+- ~~Sub-context authorization (infra-side)~~ → **resolved by VTI #257**: the VTA
+  enforces ancestry-aware ACL — admin of the top context automatically covers
+  its subtree, so per-community sub-context creation is authorized. Hierarchy
+  validation (depth, segments) is server-enforced.
+- ~~Real hierarchical context API~~ → **shipped (VTI #257)**: contexts are
+  `/`-separated paths; no `vta-sdk` change needed (path ids via `create_context`).
 - ~~Mediator selection~~ → **D7**: defaults to the VTA mediator, optionally
   overridable per DID/persona at mint time.
