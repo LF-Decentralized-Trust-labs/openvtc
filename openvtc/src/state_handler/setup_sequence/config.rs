@@ -9,11 +9,13 @@ use openvtc_core::{
     LF_ORG_DID, LF_PUBLIC_MEDIATOR_DID,
     config::{
         Config, ConfigProtectionType, ExportedConfig, KeyBackend, KeyTypes, PersonaDID,
+        account::{Account, KeyRef, PersonaId, PersonaRecord},
         derive_passphrase_key,
         protected_config::ProtectedConfig,
         public_config::PublicConfig,
         secured_config::{KeyInfoConfig, ProtectionMethod, unlock_code_decrypt},
     },
+    identity::IdentityContext,
     logs::{LogFamily, LogMessage, Logs},
 };
 use secrecy::{ExposeSecret, SecretBox, SecretString};
@@ -287,13 +289,60 @@ impl ConfigExtension for Config {
             encryption_seed,
         };
 
+        // T1: build the v2 account + runtime identity for this single persona,
+        // mirroring `load_step2` so `active_identity()` is consistent whether the
+        // Config came from setup or from a load.
+        let persona_did_str = state.webvh_address.did.to_string();
+        let document = state.webvh_address.document.clone();
+        let persona_profile = Arc::new(
+            ATMProfile::new(
+                tdk.atm
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("TDK ATM not initialized"))?,
+                Some("Persona DID".to_string()),
+                persona_did_str.clone(),
+                Some(mediator_did.clone()),
+            )
+            .await?,
+        );
+        let persona_id = PersonaId::new();
+        let persona_record = PersonaRecord {
+            persona_id,
+            did: persona_did_str.clone(),
+            key_refs: key_info
+                .iter()
+                .map(|(id, info)| KeyRef {
+                    key_id: id.clone(),
+                    purpose: info.purpose.clone(),
+                    created_at: info.create_time,
+                })
+                .collect(),
+            mediator_did: Some(mediator_did.clone()),
+            origin_context_id: String::new(),
+            created_at: Utc::now(),
+            label: Some(setup_flow.username.username.value().to_string()),
+        };
+        let mut account = Account {
+            vta_did: state.vta.vta_did.clone(),
+            vta_url: state.vta.vta_url.clone(),
+            ..Account::default()
+        };
+        account.personas.insert(persona_id, persona_record);
+        let mut identities = HashMap::new();
+        identities.insert(
+            persona_id,
+            IdentityContext {
+                persona_id,
+                did: persona_did_str.clone(),
+                document: document.clone(),
+                profile: persona_profile.clone(),
+                mediator_did: Some(mediator_did.clone()),
+            },
+        );
+
         let config = Config {
-            // T1 (transitional): the wizard still emits the singleton shape; the
-            // v2 account is populated natively when State A/B land. Default for now.
-            account: openvtc_core::config::account::Account::default(),
-            // Runtime identities are rebuilt on the next load; empty immediately
-            // post-setup while the TUI still reads the singleton persona_did.
-            identities: std::collections::HashMap::new(),
+            account,
+            identities,
             key_backend,
             public: PublicConfig {
                 config_version: openvtc_core::config::public_config::CONFIG_VERSION,
@@ -314,18 +363,8 @@ impl ConfigExtension for Config {
             },
             private: ProtectedConfig::default(),
             persona_did: PersonaDID {
-                document: state.webvh_address.document.clone(),
-                profile: Arc::new(
-                    ATMProfile::new(
-                        tdk.atm
-                            .as_ref()
-                            .ok_or_else(|| anyhow::anyhow!("TDK ATM not initialized"))?,
-                        Some("Persona DID".to_string()),
-                        state.webvh_address.did.to_string(),
-                        Some(mediator_did.clone()),
-                    )
-                    .await?,
-                ),
+                document,
+                profile: persona_profile,
             },
             key_info,
             #[cfg(feature = "openpgp-card")]
