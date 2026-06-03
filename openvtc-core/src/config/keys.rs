@@ -64,7 +64,10 @@ impl Config {
     /// Returns an error if the DID document is missing any required verification
     /// method, or if the corresponding secret or key info cannot be found.
     pub async fn get_persona_keys(&self, tdk: &TDK) -> Result<PersonaDIDKeys, OpenVTCError> {
-        let doc = &self.persona_did.document;
+        let doc = self
+            .active_identity()
+            .ok_or_else(|| OpenVTCError::Config("No active persona identity".to_string()))?
+            .document();
         let signing = resolve_key_from_document(
             &doc.assertion_method,
             "assertion methods",

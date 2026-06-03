@@ -2,7 +2,7 @@
 
 use crate::{
     config::{
-        Config, ConfigProtectionType, KeyBackend, PersonaDID, UnlockCode,
+        Config, ConfigProtectionType, KeyBackend, UnlockCode,
         account::{Account, KeyRef, PersonaId, PersonaRecord},
         protected_config::ProtectedConfig,
         public_config::PublicConfig,
@@ -290,8 +290,8 @@ impl Config {
             crate::identity::IdentityContext {
                 persona_id,
                 did: public_config.persona_did.to_string(),
-                document: rr.doc.clone(),
-                profile: persona_profile.clone(),
+                document: rr.doc,
+                profile: persona_profile,
                 mediator_did: Some(public_config.mediator_did.clone()),
             },
         );
@@ -300,10 +300,6 @@ impl Config {
             account,
             identities,
             key_backend,
-            persona_did: PersonaDID {
-                document: rr.doc,
-                profile: persona_profile,
-            },
             public: public_config,
             private: private_cfg,
             key_info: sc.key_info.clone(),

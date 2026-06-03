@@ -16,9 +16,7 @@ use crate::{
     },
     errors::OpenVTCError,
 };
-use affinidi_tdk::{
-    did_common::Document, messaging::profiles::ATMProfile, secrets_resolver::secrets::Secret,
-};
+use affinidi_tdk::{messaging::profiles::ATMProfile, secrets_resolver::secrets::Secret};
 use argon2::{Algorithm, Argon2, Params, Version};
 use chrono::{DateTime, TimeDelta, Utc};
 use dtg_credentials::DTGCredential;
@@ -241,9 +239,6 @@ pub struct Config {
     /// Where did the key values come from? Derived or Imported?
     pub key_info: HashMap<String, KeyInfoConfig>,
 
-    /// Persona DID and Document
-    pub persona_did: PersonaDID,
-
     // *********************************************
     // Temporary Config values
     /// What protection method is being used for the secured config.
@@ -298,16 +293,6 @@ pub struct ExportedConfig {
     pub pc: public_config::PublicConfig,
     /// The secured (secret key material) portion of the configuration.
     pub sc: secured_config::SecuredConfig,
-}
-
-/// Our public Persona DID used to identify ourselves within the Linux Foundation ecosystem
-#[derive(Clone, Debug)]
-pub struct PersonaDID {
-    /// Resolved DID Document for this DID
-    pub document: Document,
-
-    /// Messaging Profile representing this DID within the TDK
-    pub profile: Arc<ATMProfile>,
 }
 
 impl Config {

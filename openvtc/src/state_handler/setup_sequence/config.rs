@@ -8,7 +8,7 @@ use ed25519_dalek_bip32::ExtendedSigningKey;
 use openvtc_core::{
     LF_ORG_DID, LF_PUBLIC_MEDIATOR_DID,
     config::{
-        Config, ConfigProtectionType, ExportedConfig, KeyBackend, KeyTypes, PersonaDID,
+        Config, ConfigProtectionType, ExportedConfig, KeyBackend, KeyTypes,
         account::{Account, KeyRef, PersonaId, PersonaRecord},
         derive_passphrase_key,
         protected_config::ProtectedConfig,
@@ -334,8 +334,8 @@ impl ConfigExtension for Config {
             IdentityContext {
                 persona_id,
                 did: persona_did_str.clone(),
-                document: document.clone(),
-                profile: persona_profile.clone(),
+                document,
+                profile: persona_profile,
                 mediator_did: Some(mediator_did.clone()),
             },
         );
@@ -362,10 +362,6 @@ impl ConfigExtension for Config {
                 lk_did: LF_ORG_DID.to_string(),
             },
             private: ProtectedConfig::default(),
-            persona_did: PersonaDID {
-                document,
-                profile: persona_profile,
-            },
             key_info,
             #[cfg(feature = "openpgp-card")]
             token_admin_pin: None,
