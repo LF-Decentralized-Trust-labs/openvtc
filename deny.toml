@@ -31,12 +31,6 @@ ignore = [
     # Build-time only (proc macros), no runtime impact. Will fall off as
     # the json-ld upstream migrates to proc-macro-error2 / manyhow.
     "RUSTSEC-2024-0370",
-    # RUSTSEC-2025-0134: rustls-pemfile is unmaintained. Pulled via both
-    # reqwest 0.11 (1.x) and tonic (2.x) inside the affinidi messaging
-    # stack. No security impact identified — purely a maintenance
-    # advisory. Will fall off when the upstream chains migrate to
-    # rustls-pki-types/rustls-types.
-    "RUSTSEC-2025-0134",
 ]
 
 [licenses]
