@@ -17,6 +17,7 @@ pub mod bip32;
 pub mod config;
 pub mod display;
 pub mod errors;
+pub mod identity;
 pub mod logs;
 pub mod maintainers;
 #[cfg(feature = "openpgp-card")]

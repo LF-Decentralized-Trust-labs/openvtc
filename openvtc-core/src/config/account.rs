@@ -147,6 +147,15 @@ impl CommunityStatus {
                 | CommunityStatus::Expired
         )
     }
+
+    /// True when the membership needs a live DIDComm session: `Active` (to
+    /// operate) and `Pending` (so the VTC's join reply is receivable, D16).
+    pub fn requires_live_session(&self) -> bool {
+        matches!(
+            self,
+            CommunityStatus::Active | CommunityStatus::Pending { .. }
+        )
+    }
 }
 
 /// A community membership — one per State-B join, referencing an account persona.
