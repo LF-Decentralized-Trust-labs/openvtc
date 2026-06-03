@@ -222,7 +222,9 @@ impl Config {
         let persona_profile = atm.profile_add(&persona_profile, false).await?;
 
         report_progress(&on_progress, "Loading relationships...");
-        let atm_profiles = private_cfg
+        // Registers each relationship profile with the ATM service as a
+        // side-effect; the returned map is no longer stored on `Config`.
+        private_cfg
             .relationships
             .generate_profiles(
                 tdk,
@@ -310,7 +312,6 @@ impl Config {
             protection_method: sc.protection_method.clone(),
             unlock_code: unlock_passphrase
                 .map(|uc| SecretBox::new(Box::new(uc.0.expose_secret().to_owned()))),
-            atm_profiles,
             vrcs,
         })
     }

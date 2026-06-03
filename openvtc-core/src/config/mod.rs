@@ -16,7 +16,7 @@ use crate::{
     },
     errors::OpenVTCError,
 };
-use affinidi_tdk::{messaging::profiles::ATMProfile, secrets_resolver::secrets::Secret};
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use argon2::{Algorithm, Argon2, Params, Version};
 use chrono::{DateTime, TimeDelta, Utc};
 use dtg_credentials::DTGCredential;
@@ -259,21 +259,16 @@ pub struct Config {
     /// user provides an unlock passphrase; `None` for plaintext or token flows.
     pub unlock_code: Option<SecretBox<Vec<u8>>>,
 
-    /// Holds ATM profiles for relationships
-    /// Key: Our local DID for the relationship
-    /// NOTE: Does not hold the persona DID profile!
-    pub atm_profiles: HashMap<Arc<String>, Arc<ATMProfile>>,
-
     /// All VRC's issued and received by VRC ID
     /// Key: VRC ID
     pub vrcs: HashMap<Arc<String>, Arc<DTGCredential>>,
 
     /// Config v2 multi-community account model (personas + communities).
     ///
-    /// T1 migration (transitional): currently populated alongside the singleton
-    /// fields above (`persona_did`, `key_backend`, `key_info`, `atm_profiles`,
-    /// `vrcs`). Consumers are being moved onto `account`; the singleton fields
-    /// are removed in the final T1 slice once nothing reads them.
+    /// T1 migration (transitional): populated alongside the remaining singleton
+    /// fields (`key_backend`, `key_info`, `vrcs`, and `public.persona_did` /
+    /// `mediator_did` / `lk_did`). Consumers are being moved onto `account`;
+    /// the singleton fields are removed field-by-field as their readers migrate.
     pub account: account::Account,
 
     /// Runtime-resolved identities (resolved DID document + ATM profile),
