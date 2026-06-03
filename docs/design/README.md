@@ -18,3 +18,4 @@ changes is discoverable alongside the code.
 |----------|--------|---------|
 | [multi-community-support.md](./multi-community-support.md) | DRAFT v4 | Split setup into account bootstrap + per-community join; join multiple VTCs (concurrent live sessions); account-level personas; Communities overview page; VTA-as-store; breaking config reset. |
 | [multi-community-presentation.html](./multi-community-presentation.html) | Deck | Visual before/after walkthrough of the multi-community design — Mermaid flows + TUI mockups. Open in a browser; `←`/`→` to navigate. |
+| [t1-active-identity-api.md](./t1-active-identity-api.md) | For review | T1 foundation API sketch — config v2 model, `IdentityContext`/`IdentityRegistry`, persona-keyed session manager, consumer-refactor pattern, resolved forks. |
