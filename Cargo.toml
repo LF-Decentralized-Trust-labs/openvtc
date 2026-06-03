@@ -54,7 +54,12 @@ multibase = "0.9"
 pgp = "0.19"
 # Stays on 0.8 until pgp 0.19 / aes-gcm 0.10 / ed25519-dalek-bip32 0.3
 # move off rand_core 0.6 — they all sit on the old trait set and rand 0.10
-# drops `OsRng`. Bump together when the crypto stack is refreshed.
+# drops `OsRng`. Our `OsRng` call sites feed those crates directly
+# (pgp key gen + encrypt, aes-gcm `generate_nonce`), so they must share the
+# crate's RNG trait set. Re-evaluated 2026-06-03: pgp 0.19.0 and
+# ed25519-dalek-bip32 0.3.0 are still the latest releases and remain on
+# rand_core 0.6; aes-gcm 0.11 (rand_core 0.9) is still only a release
+# candidate. Bump together when the crypto stack is refreshed.
 rand = "0.8"
 ratatui = "0.30"
 regex = "1.12"
@@ -75,7 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng"] }
-vta-sdk = { version = "0.7", features = [
+vta-sdk = { version = "0.9", features = [
   "session",
   "client",
   "didcomm",

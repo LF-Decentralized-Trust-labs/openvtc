@@ -267,6 +267,9 @@ pub async fn create_did_via_server(
         server_id: Some(server_id.to_string()),
         url: None,
         path,
+        // No explicit hosting-domain override: the server determines the
+        // domain from the selected `server_id`.
+        domain: None,
         label: None,
         portable: true,
         add_mediator_service: true,
