@@ -19,12 +19,11 @@ use crate::{
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use argon2::{Algorithm, Argon2, Params, Version};
 use chrono::{DateTime, TimeDelta, Utc};
-use dtg_credentials::DTGCredential;
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, fmt::Display, sync::Arc};
+use std::{collections::HashMap, fmt::Display};
 
 pub mod account;
 pub mod did;
@@ -259,14 +258,10 @@ pub struct Config {
     /// user provides an unlock passphrase; `None` for plaintext or token flows.
     pub unlock_code: Option<SecretBox<Vec<u8>>>,
 
-    /// All VRC's issued and received by VRC ID
-    /// Key: VRC ID
-    pub vrcs: HashMap<Arc<String>, Arc<DTGCredential>>,
-
     /// Config v2 multi-community account model (personas + communities).
     ///
     /// T1 migration (transitional): populated alongside the remaining singleton
-    /// fields (`key_backend`, `key_info`, `vrcs`, and `public.persona_did` /
+    /// fields (`key_backend`, `key_info`, and `public.persona_did` /
     /// `mediator_did` / `lk_did`). Consumers are being moved onto `account`;
     /// the singleton fields are removed field-by-field as their readers migrate.
     pub account: account::Account,

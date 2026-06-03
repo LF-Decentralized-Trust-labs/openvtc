@@ -369,7 +369,6 @@ impl ConfigExtension for Config {
             token_user_pin: SecretString::new(String::new().into()),
             protection_method: ProtectionMethod::default(),
             unlock_code,
-            vrcs: HashMap::new(),
         };
 
         config.save(

@@ -236,19 +236,6 @@ impl Config {
             )
             .await?;
 
-        // Add all VRC's to the top level list
-        let mut vrcs = HashMap::new();
-        for relationship in private_cfg.vrcs_issued.values() {
-            for (vrc_id, vrc) in relationship.iter() {
-                vrcs.insert(vrc_id.clone(), vrc.clone());
-            }
-        }
-        for relationship in private_cfg.vrcs_received.values() {
-            for (vrc_id, vrc) in relationship.iter() {
-                vrcs.insert(vrc_id.clone(), vrc.clone());
-            }
-        }
-
         // T1 (transitional): derive the v2 account from the loaded singleton —
         // one persona (the current persona DID + its keys), no communities yet
         // (the singleton has no community concept). Consumers are migrating onto
@@ -312,7 +299,6 @@ impl Config {
             protection_method: sc.protection_method.clone(),
             unlock_code: unlock_passphrase
                 .map(|uc| SecretBox::new(Box::new(uc.0.expose_secret().to_owned()))),
-            vrcs,
         })
     }
 }
