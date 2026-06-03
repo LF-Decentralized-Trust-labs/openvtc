@@ -58,7 +58,7 @@ card-backend-pcsc = { workspace = true, optional = true }
 openpgp-card-rpgp = { workspace = true, optional = true }
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 # In-process mediator for integration tests. `memory-backend` keeps the
 # whole mediator (config + queue + secrets) in RAM — no Redis sidecar,
 # no on-disk fixtures — so `cargo test` stays self-contained. Slow tests

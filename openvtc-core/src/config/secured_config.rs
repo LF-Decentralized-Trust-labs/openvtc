@@ -624,7 +624,10 @@ pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
     }
 
     let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
-    let nonce = aes_gcm::Nonce::from_slice(nonce_bytes);
+    // `nonce_bytes` is exactly NONCE_SIZE long (checked above + split_at), so
+    // the infallible slice→GenericArray conversion is safe. Using `.into()`
+    // avoids naming the now-deprecated `GenericArray::from_slice` path.
+    let nonce: &aes_gcm::Nonce<_> = nonce_bytes.into();
     let cipher = derive_key(unlock, nonce_bytes)?;
 
     cipher.decrypt(nonce, ciphertext).map_err(|e| {
