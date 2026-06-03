@@ -3,13 +3,16 @@
 use crate::{
     config::{
         Config, ConfigProtectionType, KeyBackend, PersonaDID, UnlockCode,
-        protected_config::ProtectedConfig, public_config::PublicConfig,
+        account::{Account, KeyRef, PersonaId, PersonaRecord},
+        protected_config::ProtectedConfig,
+        public_config::PublicConfig,
         secured_config::SecuredConfig,
     },
     errors::OpenVTCError,
 };
 use affinidi_tdk::{TDK, messaging::profiles::ATMProfile};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
+use chrono::Utc;
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::HashMap;
@@ -244,7 +247,45 @@ impl Config {
             }
         }
 
+        // T1 (transitional): derive the v2 account from the loaded singleton —
+        // one persona (the current persona DID + its keys), no communities yet
+        // (the singleton has no community concept). Consumers are migrating onto
+        // `config.account`; the native multi-persona load replaces this derive
+        // in the final T1 slice.
+        let persona_record = PersonaRecord {
+            persona_id: PersonaId::new(),
+            did: public_config.persona_did.to_string(),
+            key_refs: sc
+                .key_info
+                .iter()
+                .map(|(id, info)| KeyRef {
+                    key_id: id.clone(),
+                    purpose: info.purpose.clone(),
+                    created_at: info.create_time,
+                })
+                .collect(),
+            mediator_did: Some(public_config.mediator_did.clone()),
+            origin_context_id: String::new(),
+            created_at: Utc::now(),
+            label: Some(public_config.friendly_name.clone()),
+        };
+        let mut account = Account {
+            vta_did: match &key_backend {
+                KeyBackend::Vta { vta_did, .. } => vta_did.clone(),
+                KeyBackend::Bip32 { .. } => String::new(),
+            },
+            vta_url: match &key_backend {
+                KeyBackend::Vta { vta_url, .. } => vta_url.clone(),
+                KeyBackend::Bip32 { .. } => String::new(),
+            },
+            ..Account::default()
+        };
+        account
+            .personas
+            .insert(persona_record.persona_id, persona_record);
+
         Ok(Config {
+            account,
             key_backend,
             persona_did: PersonaDID {
                 document: rr.doc,

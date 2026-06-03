@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Verifiable Trust Communities — From Credentials to Communities</title>
+<style>
+  :root{
+    --bg:#0b1020; --bg2:#121a33; --panel:#16203f; --panel2:#1b2750;
+    --ink:#e8edff; --muted:#9aa7d4; --line:#2b3766;
+    --a:#5eead4;     /* teal   */
+    --b:#a78bfa;     /* violet */
+    --c:#fbbf24;     /* amber  */
+    --d:#60a5fa;     /* blue   */
+    --e:#fb7185;     /* rose   */
+    --ok:#34d399; --warn:#fbbf24; --gate:#fb7185; --plan:#9aa7d4;
+    --r:14px; --shadow:0 18px 50px rgba(0,0,0,.45);
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Inter,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:radial-gradient(1200px 700px at 80% -10%,#1a244a 0%,var(--bg) 55%) fixed;
+    color:var(--ink); font-family:var(--sans); -webkit-font-smoothing:antialiased;
+  }
+  .deck{height:100vh;width:100vw;overflow:hidden;position:relative}
+  .slide{
+    position:absolute;inset:0;display:none;flex-direction:column;
+    padding:50px 6.5vw 84px; overflow:auto;
+    animation:fade .45s ease both;
+  }
+  .slide.on{display:flex}
+  @keyframes fade{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+  h1,h2,h3{margin:0;line-height:1.1;font-weight:800;letter-spacing:-.02em}
+  h1{font-size:clamp(32px,4.8vw,64px)}
+  h2{font-size:clamp(24px,3.2vw,42px)}
+  .kicker{font-family:var(--mono);font-size:13px;letter-spacing:.22em;text-transform:uppercase;color:var(--a);margin-bottom:12px}
+  .sub{color:var(--muted);font-size:clamp(15px,1.5vw,20px);max-width:64ch;margin-top:14px;line-height:1.5}
+  p{line-height:1.55}
+  .grid{display:grid;gap:16px}
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:var(--r);padding:18px 20px;box-shadow:var(--shadow)}
+  .card h3{font-size:18px;margin-bottom:8px}
+  .card p,.card li{color:var(--muted);font-size:14px;line-height:1.5}
+  .tag{display:inline-block;font-family:var(--mono);font-size:11.5px;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:#0e1530}
+  .pill{display:inline-flex;align-items:center;gap:7px;font-family:var(--mono);font-size:12px;padding:5px 11px;border-radius:999px;border:1px solid var(--line)}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .accent-a{color:var(--a)} .accent-b{color:var(--b)} .accent-c{color:var(--c)} .accent-d{color:var(--d)} .accent-e{color:var(--e)}
+  .b-a{border-color:rgba(94,234,212,.5)} .b-b{border-color:rgba(167,139,250,.5)} .b-c{border-color:rgba(251,191,36,.5)} .b-d{border-color:rgba(96,165,250,.5)} .b-e{border-color:rgba(251,113,133,.5)}
+  code,.mono{font-family:var(--mono)}
+  .muted{color:var(--muted)}
+  /* nav */
+  .nav{position:fixed;bottom:20px;left:0;right:0;display:flex;justify-content:center;align-items:center;gap:18px;z-index:20}
+  .nav button{background:var(--panel2);color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:8px 14px;font-size:14px;cursor:pointer;font-family:var(--mono)}
+  .nav button:hover{border-color:var(--a)}
+  .count{font-family:var(--mono);font-size:13px;color:var(--muted);min-width:62px;text-align:center}
+  .progress{position:fixed;top:0;left:0;height:3px;background:linear-gradient(90deg,var(--a),var(--b),var(--c));z-index:30;transition:width .35s}
+  .foot{position:fixed;bottom:22px;right:26px;font-family:var(--mono);font-size:11px;color:var(--muted);z-index:20;letter-spacing:.1em}
+  .hint{position:fixed;bottom:22px;left:26px;font-family:var(--mono);font-size:11px;color:var(--muted);z-index:20}
+  /* journey */
+  .journey{display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin-top:26px;align-items:stretch}
+  .step{position:relative;padding:20px 18px;border:1px solid var(--line);background:linear-gradient(180deg,var(--panel),var(--bg2));margin-right:-1px}
+  .step:first-child{border-radius:var(--r) 0 0 var(--r)}
+  .step:last-child{border-radius:0 var(--r) var(--r) 0;margin-right:0}
+  .step .n{font-family:var(--mono);font-size:12px;color:var(--bg);font-weight:800;width:26px;height:26px;border-radius:50%;display:grid;place-items:center}
+  .step h3{font-size:19px;margin:11px 0 6px}
+  .step p{font-size:13px;color:var(--muted)}
+  .step .role{font-family:var(--mono);font-size:11px;margin-top:11px;color:var(--ink)}
+  /* before/after */
+  .ba{display:grid;grid-template-columns:1fr 56px 1fr;gap:0;align-items:stretch;margin-top:22px}
+  .ba .col{border:1px solid var(--line);border-radius:var(--r);padding:22px;background:linear-gradient(180deg,var(--panel),var(--bg2))}
+  .ba .mid{display:grid;place-items:center;font-size:32px;color:var(--a)}
+  .ba h3{font-size:15px;text-transform:uppercase;letter-spacing:.12em;margin-bottom:14px}
+  .ba ul{margin:0;padding-left:18px}
+  .ba li{margin:8px 0;color:var(--muted);font-size:14px;line-height:1.45}
+  .before h3{color:var(--muted)} .after h3{color:var(--a)}
+  /* sequence */
+  .seq{margin-top:22px;border:1px solid var(--line);border-radius:var(--r);padding:22px 18px;background:#0d1430;overflow:auto}
+  .lanes{display:grid;gap:0;font-family:var(--mono);font-size:12.5px}
+  .lanes .actors{display:grid;margin-bottom:6px}
+  .lanes .actors span{text-align:center;font-weight:700;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);margin:0 6px}
+  .msg{display:grid;align-items:center;margin:0;padding:7px 0;border-bottom:1px dashed #233063}
+  .msg:last-child{border-bottom:0}
+  .msg .lbl{grid-column:1/-1;color:var(--muted);font-size:11.5px;padding:2px 8px}
+  .msg .arrow{height:2px;background:var(--d);position:relative;align-self:center;margin:0 8px}
+  .msg .arrow.rev{background:var(--a)}
+  .msg .arrow::after{content:"";position:absolute;right:-1px;top:-4px;border:5px solid transparent;border-left-color:var(--d)}
+  .msg .arrow.rev::after{right:auto;left:-1px;border-left-color:transparent;border-right-color:var(--a)}
+  .msg .arrow.gate{background:var(--gate)} .msg .arrow.gate::after{border-left-color:var(--gate)}
+  /* table */
+  table{border-collapse:collapse;width:100%;margin-top:20px;font-size:14px}
+  th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-family:var(--mono);font-size:11.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+  td .st{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:6px;white-space:nowrap}
+  .live{background:rgba(52,211,153,.15);color:var(--ok);border:1px solid rgba(52,211,153,.4)}
+  .gated{background:rgba(251,113,133,.13);color:var(--gate);border:1px solid rgba(251,113,133,.4)}
+  .planned{background:rgba(251,191,36,.12);color:var(--warn);border:1px solid rgba(251,191,36,.4)}
+  /* chips */
+  .chips{display:flex;flex-wrap:wrap;gap:11px;margin-top:22px}
+  .chip{border:1px solid var(--line);border-radius:12px;padding:13px 15px;background:linear-gradient(180deg,var(--panel),var(--bg2));min-width:190px;flex:1 1 210px}
+  .chip .s{font-family:var(--mono);font-size:11px;color:var(--a);letter-spacing:.12em}
+  .chip .t{font-weight:700;margin-top:5px;font-size:15px}
+  .chip .d{color:var(--muted);font-size:12.5px;margin-top:4px}
+  /* roadmap */
+  .road{display:flex;gap:0;margin-top:26px;align-items:stretch}
+  .phase{flex:1;border:1px solid var(--line);padding:16px 14px;background:linear-gradient(180deg,var(--panel),var(--bg2));margin-right:-1px}
+  .phase:first-child{border-radius:var(--r) 0 0 var(--r)}
+  .phase:last-child{border-radius:0 var(--r) var(--r) 0;margin-right:0}
+  .phase .ph{font-family:var(--mono);font-size:11px;color:var(--c);letter-spacing:.12em}
+  .phase h3{font-size:15px;margin:8px 0 8px}
+  .phase ul{margin:0;padding-left:15px} .phase li{color:var(--muted);font-size:12px;margin:5px 0}
+  .barwrap{margin-top:8px}
+  .bar{height:9px;border-radius:6px;background:#0e1530;overflow:hidden;border:1px solid var(--line)}
+  .bar > span{display:block;height:100%;background:linear-gradient(90deg,var(--a),var(--b))}
+  .lead{font-size:clamp(17px,1.8vw,22px);line-height:1.5;max-width:66ch}
+  .two{grid-template-columns:1fr 1fr}
+  .three{grid-template-columns:1fr 1fr 1fr}
+  .four{grid-template-columns:repeat(4,1fr)}
+  .card.center{display:grid;place-content:center;text-align:center}
+  .slide.closing{justify-content:center;align-items:center;text-align:center}
+  .slide.closing h1,.slide.closing .sub{margin-left:auto;margin-right:auto}
+  .big-num{font-size:50px;font-weight:800;font-family:var(--mono)}
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;font-size:12.5px;color:var(--muted)}
+  .legend span{display:inline-flex;align-items:center;gap:7px}
+  a{color:var(--a)}
+  /* layer model */
+  .layers{display:grid;gap:14px;margin-top:24px}
+  .layer{display:grid;grid-template-columns:200px 1fr;gap:18px;align-items:center;border:1px solid var(--line);border-radius:var(--r);padding:18px 22px;background:linear-gradient(180deg,var(--panel),var(--bg2))}
+  .layer .who{font-weight:800;font-size:19px}
+  .layer .who .role{display:block;font-family:var(--mono);font-size:11px;color:var(--muted);font-weight:500;margin-top:5px;letter-spacing:.04em}
+  .layer .what{color:var(--muted);font-size:14.5px;line-height:1.5}
+  .layer.la{border-left:4px solid var(--a)} .layer.lb{border-left:4px solid var(--b)} .layer.ld{border-left:4px solid var(--d)}
+  /* pipeline strip */
+  .pipe{display:flex;flex-wrap:wrap;gap:0;margin-top:24px;align-items:stretch}
+  .pstage{flex:1;min-width:110px;border:1px solid var(--line);padding:14px 12px;background:linear-gradient(180deg,var(--panel),var(--bg2));margin-right:-1px;text-align:center}
+  .pstage:first-child{border-radius:var(--r) 0 0 var(--r)}
+  .pstage:last-child{border-radius:0 var(--r) var(--r) 0;margin-right:0}
+  .pstage .pn{font-family:var(--mono);font-size:10.5px;color:var(--muted);letter-spacing:.1em}
+  .pstage .pt{font-weight:700;margin-top:6px;font-size:14.5px}
+  .pstage .pd{color:var(--muted);font-size:11.5px;margin-top:5px;line-height:1.4}
+  .verdicts{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  .verdict{border:1px solid var(--line);border-radius:10px;padding:10px 14px;flex:1 1 150px}
+  .verdict .vt{font-family:var(--mono);font-weight:700;font-size:13px}
+  .verdict .vd{color:var(--muted);font-size:12px;margin-top:3px}
+  /* TUI mockup */
+  .tui{font-family:var(--mono);font-size:13px;line-height:1.5;background:#070b16;border:1px solid var(--line);
+    border-radius:12px;padding:16px 18px;color:#cdd6e4;box-shadow:var(--shadow);white-space:pre;overflow-x:auto;margin-top:18px}
+  .tui .ok{color:var(--ok)} .tui .pend{color:var(--warn)} .tui .off{color:var(--muted)}
+  .tui .warn{color:var(--gate)} .tui .acc{color:var(--a)} .tui .vio{color:var(--b)} .tui .blu{color:var(--d)}
+  .caption{color:var(--muted);font-size:12.5px;margin-top:10px;font-style:italic}
+  .note{background:rgba(94,234,212,.07);border:1px solid rgba(94,234,212,.3);border-radius:12px;padding:13px 17px;color:var(--ink);font-size:14.5px;margin-top:18px}
+  /* act divider */
+  .slide.act{justify-content:center}
+  .actnum{font-family:var(--mono);font-size:15px;letter-spacing:.3em;color:var(--b)}
+  .actline{height:1px;background:linear-gradient(90deg,transparent,var(--line),transparent);margin:26px 0;max-width:560px}
+  @media (max-width:900px){
+    .journey,.road,.pipe{grid-template-columns:1fr;display:grid}
+    .ba{grid-template-columns:1fr}.ba .mid{transform:rotate(90deg)}
+    .two,.three,.four{grid-template-columns:1fr}
+    .layer{grid-template-columns:1fr}
+  }
+  @media print{
+    .slide{display:flex!important;position:relative;height:auto;page-break-after:always;animation:none}
+    .nav,.foot,.hint,.progress{display:none}
+    body,.deck{height:auto;overflow:visible}
+  }
+</style>
+</head>
+<body>
+<div class="progress" id="bar"></div>
+<div class="deck" id="deck">
+
+  <!-- 1 — TITLE -->
+  <section class="slide on">
+    <div class="kicker">OpenVTC · Verifiable Trust Infrastructure · Combined Design Review</div>
+    <h1>From Credentials to Communities</h1>
+    <h2 style="margin-top:10px;color:var(--muted);font-weight:600">One trust fabric — held, presented, governed, and lived across many communities</h2>
+    <p class="sub">Three layers, one story. A member <strong class="accent-a">holds</strong> and <strong class="accent-a">presents</strong> verifiable credentials (VTA); a community <strong class="accent-b">governs</strong> every state transition through one policy pipeline you can <strong class="accent-b">simulate live</strong> (VTC); and a person <strong class="accent-d">joins and operates</strong> in many communities at once (OpenVTC).</p>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--ok)"></i>Shipped &amp; live</span>
+      <span><i class="dot" style="background:var(--gate)"></i>Gated (audit / Phase-0)</span>
+      <span><i class="dot" style="background:var(--warn)"></i>Planned</span>
+    </div>
+    <div style="margin-top:30px;display:flex;gap:10px;flex-wrap:wrap">
+      <span class="pill b-a"><i class="dot" style="background:var(--a)"></i>VTA = credential agent · hold + present</span>
+      <span class="pill b-b"><i class="dot" style="background:var(--b)"></i>VTC = issuer · verifier · governed ceremonies</span>
+      <span class="pill b-d"><i class="dot" style="background:var(--d)"></i>OpenVTC = multi-community member experience</span>
+    </div>
+    <p class="muted mono" style="margin-top:24px;font-size:11.5px">← → · Space · Home/End · mockups are illustrative, not screenshots</p>
+  </section>
+
+  <!-- 1a — A WEEK AGO (BASELINE) -->
+  <section class="slide">
+    <div class="kicker">Where we were · ~one week ago</div>
+    <h2>The baseline — start of the sprint</h2>
+    <p class="sub">As of late May 2026, the three components were solid but conventional: keys, ACLs, roles, and a single identity. None of the credential-centric machinery, governed ceremonies, or multi-community model existed yet.</p>
+    <div class="grid three" style="margin-top:22px">
+      <div class="card" style="border-top:3px solid var(--gate)">
+        <h3 class="accent-a">VTA</h3>
+        <ul style="padding-left:17px">
+          <li>Key manager + signing oracle (BIP-32), ACL keyspace</li>
+          <li>A <em>secrets</em> vault just taking shape (M1/M2: upsert · get · proxy-login / SIOP)</li>
+          <li>did-management 0.1, per-DID hosting domains</li>
+          <li><span class="accent-e">No credential vault · no OID4VCI/VP · no DCQL</span></li>
+        </ul>
+      </div>
+      <div class="card" style="border-top:3px solid var(--gate)">
+        <h3 class="accent-b">VTC</h3>
+        <ul style="padding-left:17px">
+          <li>Community service: ACL, members, join-requests, audit, status lists</li>
+          <li>Policy via <code>regorus</code> — but raw-Rego upload, flat status enum</li>
+          <li>Accept-any default posture</li>
+          <li><span class="accent-e">No decision pipeline · no ceremonies · no simulator</span></li>
+        </ul>
+      </div>
+      <div class="card" style="border-top:3px solid var(--gate)">
+        <h3 class="accent-d">OpenVTC</h3>
+        <ul style="padding-left:17px">
+          <li>Single-identity CLI / TUI · v0.2.1 (nine security fixes)</li>
+          <li>One persona, one VTA, one mediator, one flat context</li>
+          <li>Monolithic ~19-step setup</li>
+          <li><span class="accent-e">No communities · no multi-membership</span></li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:14px;font-size:13px">Good foundations — but trust was still “a row in an ACL + a role in a JWT,” and belonging was singular.</p>
+  </section>
+
+  <!-- 1b — THIS WEEK (THE SPRINT) -->
+  <section class="slide">
+    <div class="kicker">What we've been building · 2026-05-29 → 06-04</div>
+    <h2>Seven days, three layers — nothing to largely live</h2>
+    <p class="sub">In one week the trust fabric was rebuilt around credentials, governed ceremonies, and multi-community membership. The rest of this deck is that work, in depth.</p>
+    <div class="grid three" style="margin-top:22px">
+      <div class="card b-a">
+        <h3 class="accent-a">VTA → credential agent</h3>
+        <ul style="padding-left:17px">
+          <li>Format-agnostic vault: receive · match · mint · present · status</li>
+          <li>SD-JWT-VC + W3C Data-Integrity, encrypted at rest</li>
+          <li>OID4VCI issuance + OID4VP/DCQL presentation over DIDComm</li>
+          <li>Consent records (ISO/IEC 27560 + DPV); ZKP Phase-0 gate</li>
+        </ul>
+      </div>
+      <div class="card b-b">
+        <h3 class="accent-b">VTC → governed ceremonies</h3>
+        <ul style="padding-left:17px">
+          <li>One decision pipeline + four ceremonies <strong>live</strong></li>
+          <li>Effect executor; Phase-2 schema authority (DTG catalog)</li>
+          <li>A working, daemon-wired <strong>ceremony simulator</strong></li>
+          <li>Visual Rule-IR authoring → Rego + Presentation Definition</li>
+        </ul>
+      </div>
+      <div class="card b-d">
+        <h3 class="accent-d">OpenVTC → multi-community</h3>
+        <ul style="padding-left:17px">
+          <li>Design spec + 9-task plan locked (D1–D17)</li>
+          <li>Account → personas → communities model</li>
+          <li>T1 (config v2 + identity + session manager) in progress</li>
+          <li>Plus: mobile agent, device wake, delegated step-up</li>
+        </ul>
+      </div>
+    </div>
+    <div class="legend" style="margin-top:16px">
+      <span><i class="dot" style="background:var(--ok)"></i><strong>50+ commits</strong> across the three layers</span>
+      <span><i class="dot" style="background:var(--a)"></i>13 PRs in the credential line alone</span>
+      <span><i class="dot" style="background:var(--b)"></i>join · leave · role-change · directory all live</span>
+    </div>
+  </section>
+
+  <!-- 2 — THE MENTAL MODEL -->
+  <section class="slide">
+    <div class="kicker">The mental model</div>
+    <h2>Three layers, one trust fabric</h2>
+    <p class="sub">Each layer was a separate design effort. Read top-to-bottom they are a single pipeline: a credential is held, presented into a governed decision, and the result becomes a community you live in.</p>
+    <div class="layers">
+      <div class="layer la">
+        <div class="who accent-a">Hold &amp; Present<span class="role">VTA · credential agent</span></div>
+        <div class="what">A format-agnostic vault holds credentials encrypted at rest; the agent receives (OpenID4VCI), matches (DCQL), and presents (OpenID4VP) selectively, under per-disclosure consent. <em>Trust the member carries.</em></div>
+      </div>
+      <div class="layer lb">
+        <div class="who accent-b">Decide<span class="role">VTC · governed ceremonies</span></div>
+        <div class="what">Every community state transition — join, leave, role-change, directory — is one policy pipeline producing a four-valued verdict, authored visually and <strong>dry-run in a live simulator</strong> before it ever touches state. <em>Trust the community governs.</em></div>
+      </div>
+      <div class="layer ld">
+        <div class="who accent-d">Experience<span class="role">OpenVTC · member CLI/TUI</span></div>
+        <div class="what">A person bootstraps an account, mints per-community identities, joins many Verifiable Trust Communities, and runs concurrent live sessions from one Communities hub. <em>Trust you actually live in.</em></div>
+      </div>
+    </div>
+    <p class="note">The join ceremony is the spine that threads all three: OpenVTC submits a presentation → the VTA assembles it from held credentials → the VTC ceremony pipeline verifies and decides → the member is admitted and issued their membership credential.</p>
+  </section>
+
+  <!-- 3 — THE SHIFT (two shifts) -->
+  <section class="slide">
+    <div class="kicker">Executive summary</div>
+    <h2>Two shifts, one direction</h2>
+    <div class="grid two" style="margin-top:22px">
+      <div class="card b-a">
+        <h3 class="accent-a">Infrastructure shift</h3>
+        <p class="lead" style="font-size:17px;color:var(--ink)">Authorization moved from <strong class="accent-e">“a row in an ACL + a role in a JWT”</strong> to <strong class="accent-a">“a verifiable credential the member holds and presents.”</strong></p>
+        <p style="margin-top:10px">Trust becomes portable, standards-native, privacy-preserving, and re-verifiable by anyone — not just by us.</p>
+      </div>
+      <div class="card b-d">
+        <h3 class="accent-d">Experience shift</h3>
+        <p class="lead" style="font-size:17px;color:var(--ink)">Identity moved from <strong class="accent-e">“one persona, one authority, one flat context”</strong> to <strong class="accent-d">“an account with many personas across many communities.”</strong></p>
+        <p style="margin-top:10px">Belonging becomes plural: per-community identities, a Communities hub, and concurrent live sessions.</p>
+      </div>
+    </div>
+    <div class="grid three" style="margin-top:16px">
+      <div class="card b-a"><h3 class="accent-a">Portable</h3><p>Membership and roles become W3C VCs the holder carries — usable beyond a single VTA/VTC, by external verifiers that show up later.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Governable</h3><p>One decision pipeline per community, authored without code and simulated before activation. Policy is versioned, signed, and rollback-able.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Privacy-preserving</h3><p>Selective disclosure (SD-JWT-VC, BBS+), per-disclosure consent records, and a vault with <em>no enumeration</em> primitive.</p></div>
+    </div>
+  </section>
+
+  <!-- 4 — BEFORE / AFTER ARCHITECTURE -->
+  <section class="slide">
+    <div class="kicker">Before &nbsp;→&nbsp; After · architecture</div>
+    <h2>What changed under the hood</h2>
+    <div class="ba">
+      <div class="col before">
+        <h3>Before — ACL &amp; keys</h3>
+        <ul>
+          <li><strong>VTA</strong> = key manager (BIP-32, signing oracle) + an ACL keyspace.</li>
+          <li><strong>Authorization</strong> = an ACL entry + a <code>role</code> claim baked into a JWT.</li>
+          <li><strong>Join</strong> = bespoke: submit a VP, an admin approves, the membership credential is handed back <em>inline in the HTTP response</em>.</li>
+          <li><strong>Governance</strong> = accept-any default; raw-Rego upload; a flat status enum.</li>
+          <li>One persona, one mediator, one flat context — no notion of multi-membership.</li>
+        </ul>
+      </div>
+      <div class="mid">⟶</div>
+      <div class="col after">
+        <h3>After — hold, present &amp; govern</h3>
+        <ul>
+          <li><strong>VTA</strong> = credential agent with a <strong class="accent-a">format-agnostic vault</strong> (hold) + receive / match / present.</li>
+          <li><strong>Authorization</strong> = a <strong class="accent-b">held Role VC</strong> → a verified-assertion cache; the ACL becomes a <em>derived index</em>.</li>
+          <li><strong>Join</strong> = invite → hold → present (DCQL) → a governed ceremony verdict → admit + issue.</li>
+          <li><strong>Governance</strong> = one default-deny pipeline per purpose; visual Rule IR → Rego; signed policy log + rollback.</li>
+          <li><strong>Account → many personas → many communities</strong>, concurrent live sessions.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 — THE CREDENTIAL MACHINERY -->
+  <section class="slide">
+    <div class="kicker">Layer 1 · Hold &amp; Present</div>
+    <h2>The member journey — invite → hold → present → join</h2>
+    <p class="sub">A prospective member is invited, holds the invitation, presents it on demand, and is admitted — each arrow a standards-based protocol message.</p>
+    <div class="journey">
+      <div class="step"><span class="n" style="background:var(--a)">1</span><h3 class="accent-a">Invite</h3><p>The VTC <strong>issues</strong> a membership credential offer to the prospect's DID — an OpenID4VCI pre-authorized offer.</p><div class="role">VTC → holder · <span class="muted">offer</span></div></div>
+      <div class="step"><span class="n" style="background:var(--d)">2</span><h3 class="accent-d">Hold</h3><p>The VTA <strong>redeems</strong> with a key-binding proof, receives the credential, stores it in the vault (format-agnostic, encrypted).</p><div class="role">holder ⇄ VTC · <span class="muted">request → issue</span></div></div>
+      <div class="step"><span class="n" style="background:var(--b)">3</span><h3 class="accent-b">Present</h3><p>At join, the VTC sends a <strong>DCQL query</strong>. The VTA matches over its vault (no enumeration), gates on consent, builds a selectively-disclosed VP.</p><div class="role">VTC → holder → VTC · <span class="muted">query → present</span></div></div>
+      <div class="step"><span class="n" style="background:var(--c)">4</span><h3 class="accent-c">Join</h3><p>The VTC <strong>verifies</strong> the VP → runs the join ceremony → admits → issues VMC + Role VEC. The member now holds those too.</p><div class="role">VTC · <span class="muted">verify → decide → issue</span></div></div>
+    </div>
+    <p class="muted" style="margin-top:16px;font-size:13px">Every step is the <strong>same credential machinery</strong> — issuance is presentation's mirror image. Build it once, reuse it for invites, memberships, roles, endorsements.</p>
+  </section>
+
+  <!-- 6 — ISSUANCE SEQUENCE -->
+  <section class="slide">
+    <div class="kicker">Layer 1 · Flow A · Issuance</div>
+    <h2>OpenID4VCI over DIDComm — <span class="mono accent-a">offer → request → issue</span></h2>
+    <div class="seq">
+      <div class="lanes">
+        <div class="actors" style="grid-template-columns:1fr 1fr 1fr">
+          <span class="accent-b">VTC (issuer)</span><span class="accent-a">VTA (holder)</span><span class="accent-c">Vault</span>
+        </div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">① <code>credential-exchange/offer</code> — pre-authorized code (doubles as the proof nonce)</div><div style="grid-column:1/3" class="arrow"></div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">② <code>credential-exchange/request</code> — holder signs an OID4VCI <em>key-binding proof</em> (EdDSA, bound to its did:key)</div><div></div><div style="grid-column:1/3" class="arrow rev"></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">③ Issuer <strong>verifies the proof</strong> → proven holder DID must equal the credential's subject (else <code>Forbidden</code>)</div><div class="arrow gate" style="grid-column:1/2"></div><div></div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">④ <code>credential-exchange/issue</code> — the credential (single-use offer consumed on success only)</div><div style="grid-column:1/3" class="arrow"></div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">⑤ Holder infers format, stores via the format-agnostic <code>vault::receive</code> (encrypted at rest)</div><div></div><div style="grid-column:2/4" class="arrow"></div></div>
+      </div>
+    </div>
+    <div class="grid three" style="margin-top:18px">
+      <div class="card b-a"><h3 class="accent-a">Holder binding is the gate</h3><p>A credential is released only to a party that proves possession of the subject key — the heart of OID4VCI, and the part every implementation otherwise hand-rolls.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Relayer ≠ holder is safe</h3><p>DIDComm authcrypt authenticates the relayer; the inner key-binding proof authenticates the holder. They may differ (air-gapped onboarding) with no escalation.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Single-use, DoS-resistant</h3><p>The pending offer is consumed <em>only</em> on a successful issue — a forged or wrong-party request can't burn the legitimate holder's offer.</p></div>
+    </div>
+  </section>
+
+  <!-- 7 — PRESENTATION SEQUENCE -->
+  <section class="slide">
+    <div class="kicker">Layer 1 · Flow B · Presentation</div>
+    <h2>OpenID4VP + DCQL — <span class="mono accent-b">query → match → present</span></h2>
+    <div class="seq">
+      <div class="lanes">
+        <div class="actors" style="grid-template-columns:1fr 1fr 1fr">
+          <span class="accent-b">VTC (verifier)</span><span class="accent-a">VTA (holder)</span><span class="accent-c">Vault</span>
+        </div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">① <code>credential-exchange/query</code> — DCQL query + nonce + <strong>mandatory purpose</strong> (shown to the holder)</div><div style="grid-column:1/3" class="arrow"></div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">② Holder gathers candidates by the <code>vct</code>/type index — <strong>no wallet enumeration</strong></div><div></div><div style="grid-column:2/4" class="arrow"></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">③ <code>DcqlQuery::match_credentials</code> → which held credentials satisfy it + the claim paths to disclose</div><div></div><div style="grid-column:2/3;justify-self:center" class="tag">match</div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">④ <strong>Consent gate</strong> (ISO/IEC 27560 + DPV) + selectively-disclosed <code>present</code> → <code>vp_token</code></div><div></div><div class="arrow gate" style="grid-column:2/3"></div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">⑤ <code>credential-exchange/present</code> — holder-bound VP; verifier checks binding · status · issuer trust · DCQL</div><div></div><div style="grid-column:1/3" class="arrow rev"></div></div>
+      </div>
+    </div>
+    <div class="grid two" style="margin-top:18px">
+      <div class="card b-a"><h3 class="accent-a">No-enumeration is a feature</h3><p>The vault exposes no “list everything.” Discovery is only via an indexed field + value, so a query with no discriminator returns <em>nothing</em> — the holder never blind-scans its wallet to answer a verifier.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Disclose exactly what was consented</h3><p>The reveal set <em>is</em> the consent record's personal-data list. SD-JWT-VC redacts to the consented subset; plain DI refuses to over-disclose.</p></div>
+    </div>
+  </section>
+
+  <!-- 8 — VAULT -->
+  <section class="slide">
+    <div class="kicker">Layer 1 · the keystone</div>
+    <h2>One vault, every credential format</h2>
+    <p class="sub">The vault and the exchange abstract over credential <em>format</em>, driven by the DCQL <code>format</code> selector. Adding a format never touches the storage schema — every wire op depends on this bridge.</p>
+    <table>
+      <thead><tr><th>Format</th><th>Standard</th><th>Selective disclosure</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td><code>SdJwtVc</code></td><td>IETF SD-JWT-VC + kb-jwt</td><td>Per-claim (selective-disclosures)</td><td><span class="st live">first-class · live</span></td></tr>
+        <tr><td><code>EddsaJcs2022</code></td><td>W3C Data Integrity (eddsa-jcs-2022)</td><td>Whole-credential, holder-bound VP</td><td><span class="st live">first-class · live</span></td></tr>
+        <tr><td><code>Bbs2023</code></td><td>W3C DI · BBS+ (BLS12-381)</td><td>Per-claim + <em>unlinkable</em></td><td><span class="st gated">additive · audit-gated</span></td></tr>
+        <tr><td><code>Zkp</code></td><td>Circom · BabyJubJub-EdDSA + Poseidon</td><td>ZK predicates (future circuit)</td><td><span class="st gated">additive · Phase-0 gate</span></td></tr>
+        <tr><td><code>Other(tag)</code></td><td>forward-compat escape hatch</td><td>—</td><td><span class="st planned">round-trips losslessly</span></td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:16px;font-size:13px"><strong>Decision (Option C):</strong> SD-JWT-VC + W3C-DI are first-class now; BBS+ slots in once its audit clears; a Circom ZKP option is gated behind packaging + a trusted setup. The enum is <em>additive</em> — a new variant is a new arm, never a migration.</p>
+  </section>
+
+  <!-- 9 — VTC DECISION PIPELINE -->
+  <section class="slide">
+    <div class="kicker">Layer 2 · Decide</div>
+    <h2>One decision pipeline; every ceremony is an instance</h2>
+    <p class="sub">A community has many governed state transitions. Rather than a bespoke subsystem per ceremony, every transition flows through the same pipeline, parameterized only by purpose.</p>
+    <div class="pipe">
+      <div class="pstage"><div class="pn">1</div><div class="pt">Trigger</div><div class="pd">a Trust Task arrives</div></div>
+      <div class="pstage"><div class="pn">2</div><div class="pt">Gather</div><div class="pd">collect evidence</div></div>
+      <div class="pstage"><div class="pn">3</div><div class="pt accent-e">Verify</div><div class="pd">crypto only here → <code>Verified*</code></div></div>
+      <div class="pstage"><div class="pn">4</div><div class="pt">Facts</div><div class="pd">typed, verified view</div></div>
+      <div class="pstage"><div class="pn">5</div><div class="pt accent-b">Evaluate</div><div class="pd">&lt;purpose&gt;.rego</div></div>
+      <div class="pstage"><div class="pn">6</div><div class="pt">Verdict</div><div class="pd">four-valued</div></div>
+      <div class="pstage"><div class="pn">7</div><div class="pt">Effects</div><div class="pd">&lt;purpose&gt; handler</div></div>
+    </div>
+    <div class="verdicts">
+      <div class="verdict b-a"><div class="vt accent-a">allow</div><div class="vd">the transition proceeds</div></div>
+      <div class="verdict b-e"><div class="vt accent-e">deny</div><div class="vd">refused</div></div>
+      <div class="verdict b-b"><div class="vt accent-b">refer</div><div class="vd">needs a human / quorum</div></div>
+      <div class="verdict b-c"><div class="vt accent-c">request_more</div><div class="vd">needs more evidence (threaded, async)</div></div>
+    </div>
+    <p class="note">The expensive parts — verification, the four-valued verdict, versioning/rollback, governance, the visual policy compiler — are built <strong>once</strong> and inherited by every ceremony. A new ceremony is a policy module + an evidence slot + an effect handler, <em>not</em> a new subsystem.</p>
+  </section>
+
+  <!-- 10 — CEREMONY CATALOG -->
+  <section class="slide">
+    <div class="kicker">Layer 2 · proven, not asserted</div>
+    <h2>Four maximally-different ceremonies, one pipeline</h2>
+    <p class="sub">If the pipeline only fit join, it would be a join feature. These four were chosen to be as different as possible — and all run through the same machinery.</p>
+    <table>
+      <thead><tr><th>Ceremony</th><th>Nature</th><th>actor = subject?</th><th>Effect</th><th>Invariant</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td><strong class="accent-a">Join</strong></td><td>constructive</td><td>yes</td><td>issue VMC + Role VEC</td><td>privilege ceiling</td><td><span class="st live">live</span></td></tr>
+        <tr><td><strong class="accent-e">Leave</strong></td><td>destructive</td><td>no</td><td>revoke (status-list flip)</td><td>no-last-admin</td><td><span class="st live">live</span></td></tr>
+        <tr><td><strong class="accent-b">Role change</strong></td><td>mutating</td><td>no</td><td>re-issue role VEC</td><td>ceiling + step-up</td><td><span class="st live">live</span></td></tr>
+        <tr><td><strong class="accent-d">Directory</strong></td><td>read-only</td><td>no</td><td>return a filtered projection</td><td>PII boundary</td><td><span class="st live">live</span></td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:16px;font-size:13px">Join and Leave invert each other (constructive/self vs destructive/other). <strong>Directory is the stress test</strong> — a synchronous read returning a projection, proving threads and effects are optional, purpose-specific stages. One signed policy compiles to <strong>Rego</strong> (enforce) + a <strong>DIF Presentation Definition</strong> (so clients self-assemble evidence) + <strong>plain English</strong>.</p>
+  </section>
+
+  <!-- 11 — THE WORKING SIMULATOR -->
+  <section class="slide">
+    <div class="kicker">Layer 2 · the working ceremony simulator</div>
+    <h2>Dry-run any ceremony, live, before it touches state</h2>
+    <p class="sub">Built into the VTC admin-UI and wired to the running daemon, the simulator assembles a verified-Facts document and evaluates the <em>active</em> policy via <code>POST /v1/policies/{id}/test</code> — the same <code>decide()</code> the routes run, minus the effect. State is never mutated.</p>
+    <pre class="tui">┌─ Ceremonies · <span class="acc">Join</span> ─────────────────────  policy: <span class="vio">join v7 · active</span> ─┐
+│ Trigger → Gather → <span class="warn">Verify</span> → Facts → <span class="vio">Evaluate</span> → Verdict → Effects │
+│    <span class="ok">●</span>       <span class="ok">●</span>        <span class="ok">●</span>      <span class="ok">●</span>        <span class="ok">●</span>         <span class="pend">◑</span>        <span class="off">○</span>      │
+├──────────────────────────────────────────────────────────────────┤
+│ Facts (verified)                        Verdict                    │
+│   actor   <span class="blu">did:key:zApplicant</span>  <span class="ok">✓</span>        <span class="pend">◑ request_more</span>            │
+│   cred    MembershipInvite     <span class="ok">✓ trusted</span>  needs:                  │
+│   issuer  <span class="blu">did:webvh:notary…</span>   <span class="ok">✓</span>          · <span class="pend">proof:age_over_18</span>    │
+│                                           · <span class="pend">vc:Endorsement</span>       │
+│   [ <span class="acc">satisfy need</span> ]  [ <span class="acc">re-run</span> ]         → routes to: <span class="vio">moderator</span>   │
+├──────────────────────────────────────────────────────────────────┤
+│ <span class="off">POST /v1/policies/join/test — dry-run · never mutates state</span>      │
+└──────────────────────────────────────────────────────────────────┘</pre>
+    <div class="grid three" style="margin-top:16px">
+      <div class="card b-c"><h3 class="accent-c">Models the negotiation</h3><p>A <code>request_more</code> verdict carries the <code>needs</code> it's missing. Satisfy a need and re-run — exactly the way an applicant would supply it and re-present. The threaded async loop, made tangible.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Authored without raw Rego</h3><p>Operators edit a visual Rule IR that compiles to Rego + a Presentation Definition + English. The simulator checks invariants and shows the real four-valued verdict before activation.</p></div>
+      <div class="card b-a"><h3 class="accent-a">Safe by construction</h3><p>The test endpoint evaluates the active policy and returns a verdict — it never runs effects, so it can't issue, revoke, or admit. Inspect before you commit; version &amp; roll back the policy if wrong.</p></div>
+    </div>
+  </section>
+
+  <!-- 12 — MULTI-COMMUNITY: DATA MODEL -->
+  <section class="slide">
+    <div class="kicker">Layer 3 · Experience</div>
+    <h2>From a profile-singleton to an account graph</h2>
+    <div class="ba">
+      <div class="col before">
+        <h3>Today — one identity, one authority</h3>
+        <ul>
+          <li>One persona DID, one VTA, one mediator, one flat context.</li>
+          <li>A single monolithic ~19-step setup that creates <em>everything</em> up front — including a <code>did:webvh</code> you may not need yet.</li>
+          <li>A single DIDComm session / message loop.</li>
+          <li>No notion of communities, joining, or membership.</li>
+        </ul>
+      </div>
+      <div class="mid">⟶</div>
+      <div class="col after">
+        <h3>After — account → personas → communities</h3>
+        <ul>
+          <li><strong>Account</strong> (vta_did, admin credential, top context) → many <strong>personas</strong> (did:webvh, keys at VTA) → many <strong>communities</strong> (vtc_did, sub-context, persona_ref, status).</li>
+          <li>Personas are <strong>account-level &amp; reusable</strong>; identity is minted <em>lazily</em>, per community.</li>
+          <li><strong>VTA is the system of record</strong> for keys/credentials; local config is metadata + references.</li>
+          <li>A <strong>Communities hub</strong>; the main page is community-scoped with a switcher.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:14px;font-size:13px">No persona DID is created at bootstrap — privacy by default, and you reveal a linkable identity only when (and where) you choose to.</p>
+  </section>
+
+  <!-- 13 — SETUP SPLIT -->
+  <section class="slide">
+    <div class="kicker">Layer 3 · setup</div>
+    <h2>Setup splits: bootstrap an account, then join communities</h2>
+    <div class="grid two">
+      <div class="card b-a">
+        <h3 class="accent-a">State A · bootstrap (no DID)</h3>
+        <ul style="padding-left:18px">
+          <li>Enter VTA DID → ACL / admin rotate</li>
+          <li>Create the top-level context</li>
+          <li>Protect &amp; land in the Communities hub</li>
+        </ul>
+        <p style="margin-top:8px">No identity minted yet — you have an account, nothing linkable.</p>
+      </div>
+      <div class="card b-d">
+        <h3 class="accent-d">State B · join a community</h3>
+        <ul style="padding-left:18px">
+          <li>Enter VTC DID → resolve the community</li>
+          <li>Mint a new persona <em>or</em> reuse one (you choose)</li>
+          <li>Bring up a live session, submit join → receipt</li>
+        </ul>
+        <p style="margin-top:8px">Persona + session come up <em>before</em> submit so the VTC's async reply is receivable.</p>
+      </div>
+    </div>
+    <p class="note">Old config is a breaking reset, not a migration — a clean, full refactor with no shim. Personas are self-contained and context-independent; the mediator defaults to the VTA's with an optional per-DID override.</p>
+  </section>
+
+  <!-- 14 — THE JOIN, END TO END (THE SPINE) -->
+  <section class="slide">
+    <div class="kicker">Where the three layers meet</div>
+    <h2>The join, end-to-end — the stub becomes real</h2>
+    <p class="sub">OpenVTC's join flow ships today with a <strong>stub VP</strong>. The credential machinery (Layer 1) and the ceremony pipeline (Layer 2) are precisely what turn that stub into a real held-and-presented credential, governed by community policy.</p>
+    <div class="seq">
+      <div class="lanes">
+        <div class="actors" style="grid-template-columns:1fr 1fr 1fr">
+          <span class="accent-d">OpenVTC (member)</span><span class="accent-a">VTA (holder)</span><span class="accent-b">VTC (ceremony)</span>
+        </div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">① Member picks/mints a persona, brings up a live session, taps “Join”</div><div style="grid-column:1/2" class="arrow"></div><div></div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">② VTC verifier sends a <strong>DCQL query</strong> (today: trivially satisfied → stub)</div><div></div><div style="grid-column:2/4" class="arrow rev"></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">③ VTA matches the vault, consent-gates, builds a <strong>real selectively-disclosed VP</strong></div><div></div><div style="grid-column:2/3;justify-self:center" class="tag">present</div><div></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">④ VTC runs the <strong>join ceremony</strong> → verdict (allow / refer / request_more / deny)</div><div></div><div></div><div class="arrow gate" style="grid-column:3/4"></div></div>
+        <div class="msg" style="grid-template-columns:1fr 1fr 1fr"><div class="lbl">⑤ On allow: admit + <strong>issue VMC + Role VEC</strong> → member holds them; status flips to <span class="accent-a">Active</span></div><div style="grid-column:1/4" class="arrow rev"></div></div>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:14px;font-size:13px">Same DCQL match the VTA already runs; same four-valued verdict the simulator already shows. The deferred work is wiring OpenVTC's stub to the live present + decide path — the protocol on both ends already exists.</p>
+  </section>
+
+  <!-- 15 — MULTI-SESSION RUNTIME -->
+  <section class="slide">
+    <div class="kicker">Layer 3 · runtime</div>
+    <h2>Single loop → supervised multi-session manager</h2>
+    <div class="grid two">
+      <div class="card before" style="border-top:3px solid var(--gate)">
+        <h3 class="accent-e">Today</h3>
+        <p>One message loop bound to one mediator session. A mediator hiccup stalls the only thing running.</p>
+        <pre class="tui" style="margin-top:12px;font-size:12px">  Single message loop
+        │
+        ▼
+   one mediator session</pre>
+      </div>
+      <div class="card after" style="border-top:3px solid var(--ok)">
+        <h3 class="accent-a">After</h3>
+        <p>One supervised, isolated task per active community: independently recoverable, bounded concurrency, partial-failure-tolerant launch.</p>
+        <pre class="tui" style="margin-top:12px;font-size:12px">   Multi-session manager
+    ├── <span class="ok">task: Acme</span>      ⟲ retry
+    ├── <span class="ok">task: City DAO</span>  ⟲ isolated
+    └── <span class="pend">task: WG</span>        ~ pending</pre>
+      </div>
+    </div>
+    <p class="note">A mediator outage on one community never blocks the others. This is the runtime precondition for the whole multi-community model — concurrency that fails gracefully, per community.</p>
+  </section>
+
+  <!-- 16 — THE MEMBER EXPERIENCE (MOCKUPS) -->
+  <section class="slide">
+    <div class="kicker">Layer 3 · the member experience</div>
+    <h2>The Communities hub &amp; per-community context</h2>
+    <div class="grid two">
+      <div>
+<pre class="tui" style="font-size:12px">┌──────────────────────────────────────────────┐
+│ OpenVTC                  Account: <span class="acc">alice@vta</span>  │
+│ Communities          [+] Join        (2) !   │
+├──────────────────────────────────────────────┤
+│ * Acme Robotics  <span class="ok">o Active</span>   since 2026-03-01 &gt;│
+│   Open Source WG <span class="pend">~ Pending</span>  requested 2d  ! &gt;│
+│ * City DAO       <span class="ok">o Active</span>   since 2025-11-12 &gt;│
+│   Old Guild      <span class="off">- Left</span>     (read-only)     &gt;│
+│   Trial Net      <span class="warn">x Rejected</span> <span class="warn">acknowledge?</span>    &gt;│
+├──────────────────────────────────────────────┤
+│ ↑↓ select  ⏎ open  s star  j join  a/d arch  │
+└──────────────────────────────────────────────┘</pre>
+        <p class="caption">Favourites sort to top · status + member-since per row · an actions-required badge (!) counts communities needing attention.</p>
+      </div>
+      <div>
+<pre class="tui" style="font-size:12px">┌────────────────────────────────────────────┐
+│ <span class="acc">Acme Robotics ▾</span>  persona: <span class="vio">…webvh:acme</span>   │
+│ Messages  Relationships  Contacts  Creds    │
+├────────────────────────────────────────────┤
+│ &gt; bob@acme       last seen 2h ago           │
+│ &gt; carol@acme     <span class="warn">new message !</span>              │
+│ &gt; dave@acme      <span class="ok">online o</span>                   │
+└────────────────────────────────────────────┘
+   ── Join · how do you want to appear? ──
+   <span class="ok">(o)</span> Create a new identity   <span class="off">best for privacy</span>
+   ( ) Reuse a persona  <span class="warn">! links you across</span></pre>
+        <p class="caption">The main page, scoped to the selected community · a per-join identity choice with the linkability warning on reuse.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 17 — STANDARDS STACK -->
+  <section class="slide">
+    <div class="kicker">Adopt, don't invent</div>
+    <h2>The standards the whole fabric stands on</h2>
+    <p class="sub">Every standard here is <strong class="accent-a">open and publicly specified</strong>; every dependency is <strong class="accent-a">open-source</strong>. No proprietary formats, no closed SDKs, no vendor lock-in — anyone can build an interoperable holder, issuer, or verifier from the same public specs.</p>
+    <div class="chips">
+      <div class="chip"><div class="s">W3C</div><div class="t">Verifiable Credentials 2.0</div><div class="d">Data Integrity · eddsa-jcs-2022 · bbs-2023</div></div>
+      <div class="chip"><div class="s">IETF</div><div class="t">SD-JWT-VC</div><div class="d">Selective disclosure + kb-jwt holder binding</div></div>
+      <div class="chip"><div class="s">OpenID</div><div class="t">OpenID4VCI</div><div class="d">Issuance · pre-authorized-code · key-proof</div></div>
+      <div class="chip"><div class="s">OpenID</div><div class="t">OpenID4VP + DCQL</div><div class="d">Presentation + Digital Credentials Query Language</div></div>
+      <div class="chip"><div class="s">DIF</div><div class="t">DIDComm v2</div><div class="d">authcrypt · intrinsic sender authentication</div></div>
+      <div class="chip"><div class="s">DIF</div><div class="t">Presentation Definition</div><div class="d">clients self-assemble evidence from policy</div></div>
+      <div class="chip"><div class="s">W3C</div><div class="t">DIDs</div><div class="d">did:key · did:webvh · did:web</div></div>
+      <div class="chip"><div class="s">OPA</div><div class="t">Rego (regorus)</div><div class="d">the enforcement target of every ceremony policy</div></div>
+      <div class="chip"><div class="s">trusttasks.org</div><div class="t">Trust Tasks</div><div class="d">transport / auth / threading envelope</div></div>
+      <div class="chip"><div class="s">IRTF CFRG</div><div class="t">BBS Signatures</div><div class="d">Unlinkable selective disclosure · BLS12-381</div></div>
+      <div class="chip"><div class="s">ISO/IEC · W3C</div><div class="t">27560 + DPV</div><div class="d">Consent records · per-disclosure authorization</div></div>
+      <div class="chip"><div class="s">HPKE · IETF</div><div class="t">RFC 9180 · 8037</div><div class="d">Sealed transfer · EdDSA JWS</div></div>
+    </div>
+    <p class="note"><strong>No proprietary standards. No proprietary software.</strong> The entire trust fabric is buildable, auditable, and forkable from open specifications and open-source crates — which is exactly what makes regulatory alignment (next slide) possible rather than aspirational.</p>
+  </section>
+
+  <!-- 17a — eIDAS 2.0 / EUDI -->
+  <section class="slide">
+    <div class="kicker">Regulatory alignment</div>
+    <h2>Built to the EU's rulebook — eIDAS 2.0 &amp; the EUDI Wallet</h2>
+    <p class="sub">eIDAS 2.0 (Regulation (EU) 2024/1183) mandates EU Digital Identity Wallets, and the <strong>EUDI Architecture &amp; Reference Framework (ARF)</strong> fixes the technical standards. We didn't choose our stack to match it — we chose open standards, and they <em>are</em> the ARF's stack. Alignment came for free.</p>
+    <table>
+      <thead><tr><th>EUDI ARF requirement</th><th>Our implementation</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr><td>Credential format — SD-JWT-VC</td><td><code>SdJwtVc</code> + kb-jwt, first-class in the vault</td><td><span class="st live">live</span></td></tr>
+        <tr><td>Credential format — ISO mdoc (18013-5)</td><td>Additive enum arm via the format-agnostic vault</td><td><span class="st planned">addable, not a rewrite</span></td></tr>
+        <tr><td>Issuance — OpenID4VCI</td><td>offer → request → issue, holder-key-bound</td><td><span class="st live">live</span></td></tr>
+        <tr><td>Presentation — OpenID4VP + DCQL</td><td>query → match → present, holder-bound VP</td><td><span class="st live">live</span></td></tr>
+        <tr><td>Selective disclosure &amp; unlinkability</td><td>SD-JWT-VC per-claim · BBS+ unlinkable</td><td><span class="st live">live</span> / <span class="st gated">gated</span></td></tr>
+        <tr><td>Holder binding / proof-of-possession</td><td>OID4VCI key-binding proof, verified before release</td><td><span class="st live">live</span></td></tr>
+        <tr><td>User consent &amp; data minimisation</td><td>ISO/IEC 27560 + W3C DPV consent records</td><td><span class="st live">live</span></td></tr>
+        <tr><td>Trust model — registries &amp; issuer trust</td><td>W3C DIDs + trust-registry sync + cross-community recognition</td><td><span class="st live">live</span> / in progress</td></tr>
+      </tbody>
+    </table>
+    <p class="muted" style="margin-top:14px;font-size:13px"><strong>Honest framing:</strong> this is <em>conformance-track alignment by construction</em>, not a certification claim. Formal EUDI conformance additionally needs ISO mdoc support, qualified signatures (QES / QEAA), and a certified wallet solution — but the format-agnostic design makes mdoc an additive arm, and the consent + holder-binding + selective-disclosure guarantees the ARF demands are already enforced.</p>
+  </section>
+
+  <!-- 18 — SECURITY MODEL -->
+  <section class="slide">
+    <div class="kicker">Security model</div>
+    <h2>Where the guarantees live</h2>
+    <div class="grid two">
+      <div class="card b-d"><h3 class="accent-d">Holder key-binding proof</h3><p>OID4VCI <code>openid4vci-proof+jwt</code>: verify <code>typ</code>/<code>alg</code>, resolve the <code>kid</code> did:key, check EdDSA (<code>verify_strict</code>), <code>aud</code>, freshness, and the <strong>c_nonce replay binding</strong>. Issuance releases only to the proven subject.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Consent-gated disclosure</h3><p>A signed consent record (ISO/IEC 27560 + DPV) authorizes a verifier + claim set. The reveal set <em>is</em> the consent; revoked / temporally-invalid credentials are refused before any disclosure.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Crypto only in Verify</h3><p>Policy reasons over a <code>Verified*</code> view; skipping verification doesn't compile. Default-deny posture; a signed, append-only policy log with fail-forward rollback and optional M-of-N governance.</p></div>
+      <div class="card b-a"><h3 class="accent-a">No-enumeration vault + sealed transfer</h3><p>No “list all” primitive — targeted index lookups only. Every secret-bearing bundle is HPKE-sealed to a <code>client_did</code>, armored, with a producer assertion + out-of-band SHA-256 digest.</p></div>
+    </div>
+    <p class="muted" style="margin-top:16px;font-size:13px">Each was traced against forgery, replay (time + nonce), wrong-key, wrong-audience, alg-confusion, <code>alg=none</code>, and relayer-escalation attacks during review. Audience isolation separates VTA and VTC JWTs; cross-audience tokens are rejected.</p>
+  </section>
+
+  <!-- 18a — AUTHENTICATION PATHWAYS -->
+  <section class="slide">
+    <div class="kicker">Authentication · every pathway</div>
+    <h2>Many ways to prove who you are — one auth surface</h2>
+    <p class="sub">The <code>/auth</code> endpoints <strong>content-negotiate</strong> on the request shape: flat-JSON in → flat-JSON out, Trust-Task in → Trust-Task out. A new pathway is a new request shape, not a new endpoint — and freshness/replay is anchored by a single-use, TTL'd challenge throughout.</p>
+    <div class="grid four" style="margin-top:20px">
+      <div class="card b-a"><h3 class="accent-a">DI-signed Trust Task</h3><p>A plain JSON <code>auth/authenticate/0.1</code> whose holder <code>eddsa-jcs-2022</code> proof <em>is</em> the authentication. No mediator — a REST-only VTA can authenticate. The whole login→refresh loop runs over plain HTTPS.</p></div>
+      <div class="card b-d"><h3 class="accent-d">DIDComm v2 authcrypt</h3><p>A packed message via the mediator; unpacking yields a cryptographically-proven sender DID. Works even when the VTA is private-network and reachable only through a mediator. Sender auth is intrinsic.</p></div>
+      <div class="card b-b"><h3 class="accent-b">WebAuthn passkey</h3><p>A passkey enrolled as an <code>authentication</code> <code>verificationMethod</code> in the published DID document. Any verifier resolves the DID and checks the assertion against the embedded key — <strong>the DID doc is the trust anchor</strong>.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Biometric step-up (AAL1→AAL2)</h3><p>A sensitive operation escalates to AAL2 via a passkey/biometric approval — optionally <em>delegated</em> to a separate approver, who is push-woken on their device to consent.</p></div>
+    </div>
+    <p class="note">Refresh carries <em>no proof</em> — the opaque rotated token is the bearer credential (OAuth2 §10.4). Together with the DI-signed path, mobile and browser clients run their full session lifecycle without ever needing a mediator, while DIDComm remains available for private-network and air-gapped peers.</p>
+  </section>
+
+  <!-- 18b — CLIENTS: BROWSER + MOBILE -->
+  <section class="slide">
+    <div class="kicker">The clients we built</div>
+    <h2>A passkey in the browser, an agent in your pocket</h2>
+    <div class="grid two">
+      <div class="card b-d">
+        <h3 class="accent-d">Browser plugin — passkey ↔ DID bridge</h3>
+        <ul style="padding-left:17px">
+          <li>Ships as a <strong>PWA</strong> and an <strong>MV3 extension</strong> (Vite + React) over a shared <code>@openvtc/pnm-core</code>.</li>
+          <li>Enrolls a WebAuthn passkey as a DID <code>verificationMethod</code> — prove control of a VTA-hosted DID from any site.</li>
+          <li><strong>No DID private key ever leaves the VTA; no long-lived bearer token sits in browser storage.</strong></li>
+          <li>Speaks REST <em>and</em> full DIDComm v2 (coordinate-mediation/2.0) — usable even when the VTA is mediator-only.</li>
+        </ul>
+      </div>
+      <div class="card b-a">
+        <h3 class="accent-a">Mobile authenticator — iOS agent</h3>
+        <ul style="padding-left:17px">
+          <li>A shared Rust engine, <strong><code>vta-mobile-core</code> (UniFFI)</strong>, under a native SwiftUI shell — one auth/credential brain, native skins.</li>
+          <li>Biometric <strong>AAL1→AAL2 step-up approver</strong>: Touch/Face ID approves the escalation.</li>
+          <li>Hardware key custody in the <strong>Secure Enclave (P-256)</strong>; Ed25519/X25519 held in software (Tier 2).</li>
+          <li>Runs the entire <code>build_authenticate</code> → refresh loop over plain REST — no mediator required.</li>
+        </ul>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:14px;font-size:13px">Both are <em>holders</em> in the Layer-1 sense — they hold keys/credentials, present proofs, and approve step-ups — over the very same open standards as the VTA and VTC.</p>
+  </section>
+
+  <!-- 18c — PROGRAMMABLE AUTHN/AUTHZ (GAME CHANGER) -->
+  <section class="slide">
+    <div class="kicker">The game changer</div>
+    <h2>A programmable authentication &amp; authorization layer</h2>
+    <p class="lead" style="margin-top:14px">Authentication strength and authorization rules stopped being hard-coded. They are now <strong class="accent-a">runtime, governable configuration</strong> — proven by credentials, decided by policy you can simulate, escalated by risk.</p>
+    <div class="grid two" style="margin-top:22px">
+      <div class="card b-a">
+        <h3 class="accent-a">Authentication — pluggable</h3>
+        <p>One content-negotiated surface accepts DI-signed REST proofs, DIDComm authcrypt, WebAuthn passkeys, and delegated biometric step-up. Add a method by adding a request shape — clients, mediators, and verifiers are untouched.</p>
+      </div>
+      <div class="card b-b">
+        <h3 class="accent-b">Authorization — programmable</h3>
+        <p>Not a hard-coded role check: a <strong>VC/VP the holder presents</strong>, evaluated by a <strong>Rego ceremony policy</strong> authored visually and dry-run in the simulator, with a <strong>configurable step-up policy</strong> (per-op-class AAL floor + per-entry override).</p>
+      </div>
+    </div>
+    <p class="note"><strong>Why it changes the game:</strong> an operator changes <em>who can do what, proven how, and how strongly</em> by editing and simulating policy — not by shipping a release. Step-up becomes risk-based and per-operation; new auth methods and new authorization rules are additive; and every decision is the same verified-Facts → four-valued-verdict pipeline, auditable end-to-end.</p>
+  </section>
+
+  <!-- 19 — ACT 2 DIVIDER -->
+  <section class="slide act">
+    <div class="actnum">ACT II</div>
+    <h1 style="margin-top:14px;max-width:20ch">Why it matters, and what it unlocks</h1>
+    <div class="actline"></div>
+    <p class="lead muted" style="max-width:60ch">Act I was the architecture — three layers, built and largely live. Act II is the payoff: the benefits this foundation delivers today, and the capabilities it makes <em>cheap to build next</em> precisely because the hard parts are already done once.</p>
+  </section>
+
+  <!-- 20 — BENEFITS -->
+  <section class="slide">
+    <div class="kicker">The benefits</div>
+    <h2>What this buys us — concretely</h2>
+    <div class="grid three">
+      <div class="card b-a"><h3 class="accent-a">Portable trust</h3><p>Membership and roles are credentials the member <em>carries</em>, not rows in our database. They survive beyond a single VTA/VTC and are re-verifiable by external parties that show up later.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Standards-native</h3><p>Issuance and presentation ride OID4VCI / OID4VP + DCQL over DIDComm; policy compiles to Rego + Presentation Definitions. No bespoke signature schemes to defend — we delegate to well-tested libraries.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Privacy by construction</h3><p>No persona at bootstrap, no wallet enumeration, selective disclosure, and per-disclosure consent. You reveal the minimum, where you choose, linkable only when you opt in.</p></div>
+      <div class="card b-d"><h3 class="accent-d">Governance without engineers</h3><p>Operators author ceremonies as visual rules, <strong>simulate the verdict live</strong>, version and roll back — no Rego, no redeploy, no waiting on a release. Policy becomes an operational lever.</p></div>
+      <div class="card b-a"><h3 class="accent-a">Belonging is plural</h3><p>One account, many personas, many communities, concurrent and fault-isolated. A person's trust graph stops being a single closed silo and becomes the thing they actually live in.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Build once, reuse everywhere</h3><p>Issuance mirrors presentation; every ceremony is one pipeline; the vault abstracts every format. New credential types, new ceremonies, and new formats are arms on existing machinery — not new subsystems.</p></div>
+    </div>
+  </section>
+
+  <!-- 21 — FUTURE UNLOCKS -->
+  <section class="slide">
+    <div class="kicker">Future unlocks</div>
+    <h2>What this foundation makes cheap to build next</h2>
+    <p class="sub">Each of these was expensive-or-impossible before; each is now a small increment on machinery that already exists.</p>
+    <div class="grid two">
+      <div class="card b-a"><h3 class="accent-a">Portable, cross-community reputation</h3><p>A Role VEC or endorsement earned in one community becomes evidence presentable to another. Cross-community recognition + trust-registry sync turn “member here” into “trusted there.”</p></div>
+      <div class="card b-b"><h3 class="accent-b">Unlinkable membership &amp; ZK predicates</h3><p>BBS+ gives unlinkable presentations; the gated Circom option gives ZK predicates — prove “is a member” or “age over 18” with <em>nothing else revealed</em>. The vault is already format-agnostic; these slot in.</p></div>
+      <div class="card b-d"><h3 class="accent-d">External verifiers &amp; an open ecosystem</h3><p>Because everything is W3C VC/VP over open standards, a verifier we've never met can check a member's credential. Trust stops ending at our walls.</p></div>
+      <div class="card b-c"><h3 class="accent-c">Self-governing communities</h3><p>The simulator + Rule IR + signed policy log + M-of-N governance let communities evolve their own admission, role, and removal rules safely — delegated invitation, quorum review, threaded <code>request_more</code> negotiation.</p></div>
+      <div class="card b-a"><h3 class="accent-a">Air-gapped &amp; sealed onboarding</h3><p>Sealed issuance to an unknown holder (HPKE) means inviting someone who isn't online yet, or onboarding across an air gap, with no privilege escalation through the relayer.</p></div>
+      <div class="card b-b"><h3 class="accent-b">Mobile, passkeys &amp; step-up</h3><p>A mobile authenticator that holds the persona and approves AAL1→AAL2 step-up (WebAuthn passkey) over the same DIDComm/Trust-Task surface — the hold/present agent in your pocket.</p></div>
+      <div class="card b-d"><h3 class="accent-d">Hierarchical trust contexts</h3><p>Folder-structured contexts with folder-level admin let large organisations model departments, working groups, and sub-communities under one account graph.</p></div>
+      <div class="card b-c"><h3 class="accent-c">New ceremonies, near-free</h3><p>Personhood assertions, relationship publishing, endorsement issuance — each is a policy module + evidence slot + effect handler on the pipeline that already runs join, leave, role-change, and directory.</p></div>
+    </div>
+  </section>
+
+  <!-- 22 — COMBINED ROADMAP -->
+  <section class="slide">
+    <div class="kicker">Delivery · combined</div>
+    <h2>Where each layer stands</h2>
+    <div class="road">
+      <div class="phase"><div class="ph">VTA · L1</div><h3>Credential agent</h3><ul><li>SD-JWT-VC + DCQL</li><li>Vault: receive · match</li><li>Issuance (OID4VCI)</li><li>Present (3.5c) — in flight</li></ul><div class="barwrap"><div class="bar"><span style="width:80%"></span></div></div></div>
+      <div class="phase"><div class="ph">VTC · L2</div><h3>Ceremonies</h3><ul><li>Pipeline + 4-valued verdict</li><li>Join · Leave · Role · Directory <strong>live</strong></li><li>Rule IR → Rego + PD</li><li>Working simulator</li></ul><div class="barwrap"><div class="bar"><span style="width:88%"></span></div></div></div>
+      <div class="phase"><div class="ph">VTC · L2</div><h3>Role-by-VC &amp; join</h3><ul><li>Verified-assertion cache</li><li>VP-based <code>/auth</code></li><li>Join ceremony ↔ exchange</li></ul><div class="barwrap"><div class="bar"><span style="width:20%"></span></div></div></div>
+      <div class="phase"><div class="ph">OpenVTC · L3</div><h3>Multi-community</h3><ul><li>Config v2 + session mgr (T1)</li><li>State A/B + hub + switcher</li><li>Join (stub VP) + lifecycle</li></ul><div class="barwrap"><div class="bar"><span style="width:30%"></span></div></div></div>
+      <div class="phase"><div class="ph">Spine</div><h3>Stub → real VP</h3><ul><li>Wire OpenVTC join to present</li><li>VTC verifier emits DCQL</li><li>Live verdict end-to-end</li></ul><div class="barwrap"><div class="bar"><span style="width:8%"></span></div></div></div>
+    </div>
+    <p class="muted" style="margin-top:16px;font-size:13px">The two existing decks are the per-layer detail: <code>credential-architecture-presentation</code> (L1/L2 protocol) and <code>multi-community-presentation</code> (L3 experience). This deck is the unifying arc + benefits + unlocks.</p>
+  </section>
+
+  <!-- 23 — THE NUMBERS -->
+  <section class="slide">
+    <div class="kicker">What shipped</div>
+    <h2>The work, in numbers</h2>
+    <div class="grid four">
+      <div class="card center"><div class="big-num accent-a">13</div><p>PRs merged in the credential line</p></div>
+      <div class="card center"><div class="big-num accent-b">4</div><p>ceremonies live through one pipeline</p></div>
+      <div class="card center"><div class="big-num accent-c">4</div><p>credential formats the vault abstracts over</p></div>
+      <div class="card center"><div class="big-num accent-d">10+</div><p>open standards adopted, not invented</p></div>
+    </div>
+    <div class="grid three" style="margin-top:16px">
+      <div class="card center"><div class="big-num accent-a">1</div><p>working, daemon-wired ceremony simulator</p></div>
+      <div class="card center"><div class="big-num accent-b">1</div><p>upstream crate hardened (affinidi-tdk-rs)</p></div>
+      <div class="card center"><div class="big-num accent-d">1</div><p>account graph: ∞ personas × ∞ communities</p></div>
+    </div>
+    <p class="muted" style="margin-top:16px;font-size:13px">The security-critical key-binding proof handling was pushed <strong>upstream</strong> into <code>affinidi-tdk-rs</code> (crypto-agnostic, DID-resolution-with-the-caller) — closing a real footgun where a structural-only check returned <code>Ok</code> for a forged proof, and giving every SIOPv2 / OID4VCI / OID4VP consumer the fix.</p>
+  </section>
+
+  <!-- 24 — DEFERRED, OPEN, THE ASK -->
+  <section class="slide">
+    <div class="kicker">Status &amp; what's next</div>
+    <h2>Deferred, open, and the ask</h2>
+    <div class="grid three">
+      <div class="card b-c">
+        <h3 class="accent-c">Deliberately deferred</h3>
+        <ul style="padding-left:17px">
+          <li>OpenVTC join uses a <strong>stub VP</strong> until wired to live present</li>
+          <li>Real hierarchical context API (<code>parent_id</code>)</li>
+          <li>Persona key rotation</li>
+          <li>BBS+ / ZKP formats (additive, gated)</li>
+        </ul>
+      </div>
+      <div class="card b-e">
+        <h3 class="accent-e">Open — to decide</h3>
+        <ul style="padding-left:17px">
+          <li><strong>VP requirement discovery</strong> — how a VTC advertises required credentials</li>
+          <li><strong>Default posture</strong> — deny vs the MVP's accept-any</li>
+          <li><strong>Governance quorum</strong> — single-admin vs opt-in M-of-N</li>
+          <li>Sub-context authorization at the VTA layer</li>
+        </ul>
+      </div>
+      <div class="card b-a">
+        <h3 class="accent-a">The ask</h3>
+        <p>Sign off on the unified three-layer model and the combined roadmap. Then prioritise the <strong>spine</strong>: wire OpenVTC's stub VP to the live present + ceremony path — the protocol exists on both ends; this is integration, not invention.</p>
+        <p class="muted" style="margin-top:8px;font-size:12.5px">Plus: the one-command mock VTA harness, and settling credential type strings now.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 25 — CLOSE -->
+  <section class="slide closing">
+    <div class="kicker" style="color:var(--b)">From credentials to communities</div>
+    <h1 style="max-width:20ch;margin:0 auto">Trust you can hold, present, govern,<br>and live in.</h1>
+    <p class="sub" style="margin:22px auto 0">Membership stopped being a row in our database and became a credential in your wallet — issued, held, queried, selectively disclosed, governed by a policy you can simulate, and carried across every community a person belongs to.</p>
+    <div style="margin-top:28px;display:flex;gap:10px;flex-wrap:wrap;justify-content:center">
+      <span class="pill b-a"><i class="dot" style="background:var(--ok)"></i>Vault · ceremonies · simulator — live</span>
+      <span class="pill b-c"><i class="dot" style="background:var(--gate)"></i>BBS+ · ZKP — gated &amp; additive</span>
+      <span class="pill b-b"><i class="dot" style="background:var(--warn)"></i>stub → real VP · role-by-VC — next</span>
+    </div>
+    <p class="muted mono" style="margin-top:32px;font-size:11px">openvtc/docs/design/verifiable-trust-communities-presentation.html · unifies credential-architecture-presentation + multi-community-presentation</p>
+  </section>
+
+</div>
+
+<div class="nav">
+  <button id="prev">◀ Prev</button>
+  <span class="count" id="count">1 / 31</span>
+  <button id="next">Next ▶</button>
+</div>
+<div class="hint">← → · Space · Home/End</div>
+<div class="foot">VTC · CREDENTIALS → COMMUNITIES</div>
+
+<script>
+  var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+  var i = 0;
+  var bar = document.getElementById('bar');
+  var count = document.getElementById('count');
+  function show(n){
+    i = Math.max(0, Math.min(slides.length-1, n));
+    slides.forEach(function(s,k){ s.classList.toggle('on', k===i); });
+    count.textContent = (i+1)+' / '+slides.length;
+    bar.style.width = ((i+1)/slides.length*100)+'%';
+    var on = slides[i]; if(on) on.scrollTop = 0;
+    location.hash = i+1;
+  }
+  document.getElementById('next').onclick = function(){ show(i+1); };
+  document.getElementById('prev').onclick = function(){ show(i-1); };
+  document.addEventListener('keydown', function(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){ show(i+1); e.preventDefault(); }
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){ show(i-1); e.preventDefault(); }
+    else if(e.key==='Home'){ show(0); }
+    else if(e.key==='End'){ show(slides.length-1); }
+  });
+  var start=null;
+  document.addEventListener('touchstart',function(e){start=e.touches[0].clientX;},{passive:true});
+  document.addEventListener('touchend',function(e){
+    if(start===null)return; var dx=e.changedTouches[0].clientX-start;
+    if(Math.abs(dx)>50){ show(i + (dx<0?1:-1)); } start=null;
+  },{passive:true});
+  var h = parseInt(location.hash.replace('#',''),10);
+  show(isNaN(h)?0:h-1);
+</script>
+</body>
+</html>

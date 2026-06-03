@@ -288,6 +288,9 @@ impl ConfigExtension for Config {
         };
 
         let config = Config {
+            // T1 (transitional): the wizard still emits the singleton shape; the
+            // v2 account is populated natively when State A/B land. Default for now.
+            account: openvtc_core::config::account::Account::default(),
             key_backend,
             public: PublicConfig {
                 config_version: openvtc_core::config::public_config::CONFIG_VERSION,

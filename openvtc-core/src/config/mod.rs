@@ -272,6 +272,14 @@ pub struct Config {
     /// All VRC's issued and received by VRC ID
     /// Key: VRC ID
     pub vrcs: HashMap<Arc<String>, Arc<DTGCredential>>,
+
+    /// Config v2 multi-community account model (personas + communities).
+    ///
+    /// T1 migration (transitional): currently populated alongside the singleton
+    /// fields above (`persona_did`, `key_backend`, `key_info`, `atm_profiles`,
+    /// `vrcs`). Consumers are being moved onto `account`; the singleton fields
+    /// are removed in the final T1 slice once nothing reads them.
+    pub account: account::Account,
 }
 
 /// Serializable bundle of public and secured config, used for import/export.
