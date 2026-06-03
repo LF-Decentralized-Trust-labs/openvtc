@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
+pub mod account;
 pub mod did;
 pub mod keys;
 pub mod loading;
