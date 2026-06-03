@@ -15,7 +15,9 @@
  */
 
 use crate::config::account::{Account, CommunityRecord, PersonaId, PersonaRecord, VtcDid};
+use affinidi_tdk::{did_common::Document, messaging::profiles::ATMProfile};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 /// A resolved community membership paired with the persona it presents.
 ///
@@ -108,6 +110,45 @@ impl<'a> IdentityRegistry<'a> {
     /// The set of persona ids that should currently have a live session.
     pub fn active_session_keys(&self) -> HashSet<PersonaId> {
         self.sessions().into_keys().collect()
+    }
+}
+
+/// A fully-resolved, runtime-ready identity: a persona plus its resolved DID
+/// document and registered ATM messaging profile.
+///
+/// Built at config load (and at setup) and held on [`crate::config::Config`].
+/// This is what consumers use to *act* as a persona — sign, send, and receive.
+/// It replaces the singleton `Config.persona_did` (`PersonaDID`) as the runtime
+/// identity as consumers migrate onto it.
+#[derive(Clone, Debug)]
+pub struct IdentityContext {
+    /// Stable id of the persona this context resolves.
+    pub persona_id: PersonaId,
+    /// The persona's `did:webvh`.
+    pub did: String,
+    /// Resolved DID document.
+    pub document: Document,
+    /// Registered ATM messaging profile for this persona (not connected here;
+    /// the DIDComm session manager owns connections).
+    pub profile: Arc<ATMProfile>,
+    /// The persona's mediator DID, if any.
+    pub mediator_did: Option<String>,
+}
+
+impl IdentityContext {
+    /// The persona's `did:webvh`.
+    pub fn persona_did(&self) -> &str {
+        &self.did
+    }
+
+    /// The resolved DID document.
+    pub fn document(&self) -> &Document {
+        &self.document
+    }
+
+    /// The persona's ATM messaging profile.
+    pub fn profile(&self) -> &Arc<ATMProfile> {
+        &self.profile
     }
 }
 

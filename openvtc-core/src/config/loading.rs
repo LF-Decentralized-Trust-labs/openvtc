@@ -280,12 +280,25 @@ impl Config {
             },
             ..Account::default()
         };
-        account
-            .personas
-            .insert(persona_record.persona_id, persona_record);
+        let persona_id = persona_record.persona_id;
+        account.personas.insert(persona_id, persona_record);
+
+        // Runtime identity for the single persona (resolved doc + ATM profile).
+        let mut identities = HashMap::new();
+        identities.insert(
+            persona_id,
+            crate::identity::IdentityContext {
+                persona_id,
+                did: public_config.persona_did.to_string(),
+                document: rr.doc.clone(),
+                profile: persona_profile.clone(),
+                mediator_did: Some(public_config.mediator_did.clone()),
+            },
+        );
 
         Ok(Config {
             account,
+            identities,
             key_backend,
             persona_did: PersonaDID {
                 document: rr.doc,

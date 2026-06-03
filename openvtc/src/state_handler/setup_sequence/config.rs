@@ -291,6 +291,9 @@ impl ConfigExtension for Config {
             // T1 (transitional): the wizard still emits the singleton shape; the
             // v2 account is populated natively when State A/B land. Default for now.
             account: openvtc_core::config::account::Account::default(),
+            // Runtime identities are rebuilt on the next load; empty immediately
+            // post-setup while the TUI still reads the singleton persona_did.
+            identities: std::collections::HashMap::new(),
             key_backend,
             public: PublicConfig {
                 config_version: openvtc_core::config::public_config::CONFIG_VERSION,

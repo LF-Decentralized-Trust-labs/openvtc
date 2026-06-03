@@ -280,6 +280,15 @@ pub struct Config {
     /// `vrcs`). Consumers are being moved onto `account`; the singleton fields
     /// are removed in the final T1 slice once nothing reads them.
     pub account: account::Account,
+
+    /// Runtime-resolved identities (resolved DID document + ATM profile),
+    /// keyed by persona id. Not persisted — rebuilt at load.
+    ///
+    /// T1 migration: built alongside `persona_did`. For the single-persona case
+    /// this holds one entry; consumers move off `persona_did` onto
+    /// [`Config::active_identity`]. Multi-persona population + selection land
+    /// in a later slice.
+    pub identities: HashMap<account::PersonaId, crate::identity::IdentityContext>,
 }
 
 /// Serializable bundle of public and secured config, used for import/export.
@@ -315,6 +324,15 @@ impl Config {
                 encryption_seed.expose_secret().to_vec(),
             ))),
         }
+    }
+
+    /// The currently-active runtime identity.
+    ///
+    /// T1 migration: for the single-persona case this returns the one resolved
+    /// identity. A proper "selected working community" selection replaces the
+    /// `.next()` heuristic when multi-community lands.
+    pub fn active_identity(&self) -> Option<&crate::identity::IdentityContext> {
+        self.identities.values().next()
     }
 }
 
