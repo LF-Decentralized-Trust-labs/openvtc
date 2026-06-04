@@ -180,6 +180,7 @@ mod tests {
             status,
             favourite: false,
             archived: false,
+            acknowledged: false,
             member_since: None,
             requested_at: None,
             relationships: Default::default(),

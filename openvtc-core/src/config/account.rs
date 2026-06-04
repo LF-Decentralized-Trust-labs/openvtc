@@ -135,10 +135,11 @@ impl CommunityStatus {
         )
     }
 
-    /// True when the community should raise the actions-required indicator
-    /// (R-C-3 / R-S-2): a `Pending` decision is awaited, or there is an
-    /// unacknowledged `Rejected` / `Removed` / `Expired` outcome. (Acknowledgement
-    /// of the terminal states is tracked separately and layered on top.)
+    /// The set of *statuses* that can raise the actions-required indicator
+    /// (R-C-3 / R-S-2): `Pending` and the terminal `Rejected` / `Removed` /
+    /// `Expired`. This is status-only; the acknowledgement-aware,
+    /// per-membership predicate is [`CommunityRecord::needs_attention`], which
+    /// layers the `acknowledged` flag on top.
     pub fn needs_attention(&self) -> bool {
         matches!(
             self,
@@ -178,6 +179,11 @@ pub struct CommunityRecord {
     /// User-archived (hidden from the default list; R-C-8).
     #[serde(default)]
     pub archived: bool,
+    /// Whether the user has acknowledged a terminal outcome
+    /// (`Rejected`/`Removed`/`Expired`), clearing the actions-required badge
+    /// (R-C-3 / R-S-2). Reset whenever the membership returns to a live state.
+    #[serde(default)]
+    pub acknowledged: bool,
     /// Set when the membership first becomes `Active` (member-since; R-C-2).
     pub member_since: Option<DateTime<Utc>>,
     /// When the join request was submitted — anchors the 7-day timeout (D16).
@@ -207,26 +213,56 @@ impl CommunityRecord {
     /// Transition to `Active` on acceptance (R-B-8). Stamps `member_since` with
     /// `now` the first time the membership becomes active (R-C-2); leaves an
     /// existing timestamp untouched so a re-activation keeps the original date.
+    /// Returning to a live state clears any prior acknowledgement (R-S-2).
     pub fn activate(&mut self, now: DateTime<Utc>) {
         if self.member_since.is_none() {
             self.member_since = Some(now);
         }
         self.status = CommunityStatus::Active;
+        self.acknowledged = false;
     }
 
-    /// Transition to `Rejected` — the VTC denied the join request (R-B-8).
+    /// Transition to `Rejected` — the VTC denied the join request (R-B-8). A
+    /// fresh terminal outcome starts unacknowledged so it raises the
+    /// actions-required badge until the user clears it (R-S-2).
     pub fn reject(&mut self) {
         self.status = CommunityStatus::Rejected;
+        self.acknowledged = false;
     }
 
-    /// Transition to `Removed` — the VTC removed an active member (R-B-8).
+    /// Transition to `Removed` — the VTC removed an active member (R-B-8). Starts
+    /// unacknowledged (R-S-2).
     pub fn remove(&mut self) {
         self.status = CommunityStatus::Removed;
+        self.acknowledged = false;
     }
 
-    /// Transition to `Left` — the member voluntarily left (R-L-1).
+    /// Transition to `Left` — the member voluntarily left (R-L-1). `Left` never
+    /// raises the actions-required badge (the user chose to leave).
     pub fn leave(&mut self) {
         self.status = CommunityStatus::Left;
+        self.acknowledged = false;
+    }
+
+    /// Acknowledge a terminal outcome (`Rejected`/`Removed`/`Expired`), clearing
+    /// the actions-required badge for this community (R-S-2). No effect on the
+    /// `Pending` badge, which only clears when the request resolves.
+    pub fn acknowledge(&mut self) {
+        self.acknowledged = true;
+    }
+
+    /// Whether this community raises the actions-required indicator (R-C-3):
+    /// `Pending` always (a decision is awaited), or an **unacknowledged**
+    /// terminal outcome `Rejected`/`Removed`/`Expired` (R-S-2). `Active` and
+    /// `Left` never do.
+    pub fn needs_attention(&self) -> bool {
+        match self.status {
+            CommunityStatus::Pending { .. } => true,
+            CommunityStatus::Rejected | CommunityStatus::Removed | CommunityStatus::Expired => {
+                !self.acknowledged
+            }
+            CommunityStatus::Active | CommunityStatus::Left => false,
+        }
     }
 
     /// Toggle the favourite/star flag (R-C-4). Returns the new value.
@@ -252,6 +288,7 @@ impl CommunityRecord {
             && now - requested >= TimeDelta::days(PENDING_TIMEOUT_DAYS)
         {
             self.status = CommunityStatus::Expired;
+            self.acknowledged = false;
             return true;
         }
         false
@@ -352,6 +389,17 @@ impl Account {
         expired
     }
 
+    /// Number of communities currently raising the actions-required indicator
+    /// (R-C-3): see [`CommunityRecord::needs_attention`]. Archived communities
+    /// are excluded — archiving hides a membership from the default list, so it
+    /// no longer nags.
+    pub fn actions_required_count(&self) -> usize {
+        self.communities
+            .values()
+            .filter(|c| !c.archived && c.needs_attention())
+            .count()
+    }
+
     /// Communities for the overview page in display order (R-C-4): favourites
     /// first, then by display name (case-insensitive; unnamed last), then VTC
     /// DID as a stable tiebreak. Archived communities are excluded unless
@@ -443,6 +491,7 @@ mod tests {
             status,
             favourite: false,
             archived: false,
+            acknowledged: false,
             member_since: None,
             requested_at: None,
             relationships: Relationships::default(),
@@ -777,5 +826,79 @@ mod tests {
             CommunityStatus::Pending { .. }
         ));
         assert_eq!(acct.communities["active"].status, CommunityStatus::Active);
+    }
+
+    #[test]
+    fn needs_attention_covers_pending_and_unacked_terminals() {
+        let pid = PersonaId::new();
+        assert!(community("v", pid, pending()).needs_attention());
+        assert!(!community("v", pid, CommunityStatus::Active).needs_attention());
+        assert!(
+            !community("v", pid, CommunityStatus::Left).needs_attention(),
+            "Left is voluntary — never an action"
+        );
+        for s in [
+            CommunityStatus::Rejected,
+            CommunityStatus::Removed,
+            CommunityStatus::Expired,
+        ] {
+            let mut c = community("v", pid, s.clone());
+            assert!(c.needs_attention(), "{s:?} should nag until acknowledged");
+            c.acknowledge();
+            assert!(!c.needs_attention(), "{s:?} clears once acknowledged");
+        }
+    }
+
+    #[test]
+    fn fresh_terminal_outcome_resets_acknowledgement() {
+        let pid = PersonaId::new();
+        // Acknowledge a Rejected, re-activate, then get Removed: the new terminal
+        // outcome must nag again — acknowledgement does not carry across
+        // transitions.
+        let mut c = community("v", pid, CommunityStatus::Rejected);
+        c.acknowledge();
+        assert!(!c.needs_attention());
+        c.activate(Utc::now());
+        assert!(!c.acknowledged, "returning to a live state clears the ack");
+        assert!(!c.needs_attention(), "Active never nags");
+        c.remove();
+        assert!(
+            c.needs_attention(),
+            "a fresh Removed must nag despite the earlier ack"
+        );
+    }
+
+    #[test]
+    fn actions_required_count_excludes_acknowledged_and_archived() {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+        acct.communities
+            .insert("pending".into(), community("pending", pid, pending()));
+        acct.communities.insert(
+            "active".into(),
+            community("active", pid, CommunityStatus::Active),
+        );
+
+        // Unacknowledged Rejected → counts.
+        let mut rejected = community("rejected", pid, CommunityStatus::Rejected);
+
+        // Acknowledged Removed → does not count.
+        let mut acked = community("acked", pid, CommunityStatus::Removed);
+        acked.acknowledge();
+        acct.communities.insert("acked".into(), acked);
+
+        // Archived (unacknowledged) Expired → hidden, so does not count.
+        let mut archived = community("archived", pid, CommunityStatus::Expired);
+        archived.archived = true;
+        acct.communities.insert("archived".into(), archived);
+
+        acct.communities.insert("rejected".into(), rejected.clone());
+        // pending + rejected.
+        assert_eq!(acct.actions_required_count(), 2);
+
+        // Acknowledging the rejection drops the count to just the pending.
+        rejected.acknowledge();
+        acct.communities.insert("rejected".into(), rejected);
+        assert_eq!(acct.actions_required_count(), 1);
     }
 }
