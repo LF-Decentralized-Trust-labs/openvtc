@@ -347,7 +347,52 @@ impl MainPageState {
                 "Keyring Only (no additional encryption)".to_string()
             }
         };
+
+        // Sync the Communities overview (R-C-*): display order from the model,
+        // archived excluded, with the actions-required count for the badge.
+        let mut community_items = Vec::new();
+        for c in config.account.communities_for_display(false) {
+            let persona = config.account.personas.get(&c.persona_ref);
+            let persona_label = persona
+                .and_then(|p| p.label.clone())
+                .or_else(|| persona.map(|p| shorten_did(&p.did, 24)))
+                .unwrap_or_default();
+            community_items.push(content::CommunitySummary {
+                display_name: c
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| shorten_did(&c.vtc_did, 40)),
+                status_label: community_status_label(&c.status),
+                persona_label,
+                member_since: c
+                    .member_since
+                    .map(|d| d.format("%Y-%m-%d").to_string())
+                    .unwrap_or_default(),
+                favourite: c.favourite,
+                needs_attention: c.needs_attention(),
+            });
+        }
+        let community_count = community_items.len();
+        self.content_panel.communities.actions_required = config.account.actions_required_count();
+        self.content_panel.communities.items = community_items;
+        if self.content_panel.communities.selected_index >= community_count {
+            self.content_panel.communities.selected_index = community_count.saturating_sub(1);
+        }
     }
+}
+
+/// Human-readable label for a community membership status (R-C-2).
+fn community_status_label(status: &openvtc_core::config::account::CommunityStatus) -> String {
+    use openvtc_core::config::account::CommunityStatus;
+    match status {
+        CommunityStatus::Pending { .. } => "Pending",
+        CommunityStatus::Active => "Active",
+        CommunityStatus::Left => "Left",
+        CommunityStatus::Rejected => "Rejected",
+        CommunityStatus::Removed => "Removed",
+        CommunityStatus::Expired => "Expired",
+    }
+    .to_string()
 }
 
 /// Collect VRC summaries from a Vrcs collection.

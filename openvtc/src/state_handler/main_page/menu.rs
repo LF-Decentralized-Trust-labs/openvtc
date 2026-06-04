@@ -23,7 +23,9 @@ impl Default for MenuPanelState {
 
 #[derive(Default, Debug, Clone, EnumIter, PartialEq, Eq)]
 pub enum MainMenu {
+    /// Communities overview — the account hub and post-bootstrap landing (R-C).
     #[default]
+    Communities,
     Inbox,
     Relationships,
     Credentials,
@@ -37,6 +39,7 @@ pub enum MainMenu {
 impl Display for MainMenu {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            MainMenu::Communities => write!(f, "Communities"),
             MainMenu::Inbox => write!(f, "Inbox"),
             MainMenu::Relationships => write!(f, "My Relationships"),
             MainMenu::Credentials => write!(f, "My Credentials"),
@@ -53,7 +56,8 @@ impl MainMenu {
     /// Returns the previous MainMenu item
     pub fn prev(&self) -> MainMenu {
         match self {
-            MainMenu::Inbox => MainMenu::Quit,
+            MainMenu::Communities => MainMenu::Quit,
+            MainMenu::Inbox => MainMenu::Communities,
             MainMenu::Relationships => MainMenu::Inbox,
             MainMenu::Credentials => MainMenu::Relationships,
             MainMenu::Settings => MainMenu::Credentials,
@@ -67,6 +71,7 @@ impl MainMenu {
     /// Returns the next MainMenu item
     pub fn next(&self) -> MainMenu {
         match self {
+            MainMenu::Communities => MainMenu::Inbox,
             MainMenu::Inbox => MainMenu::Relationships,
             MainMenu::Relationships => MainMenu::Credentials,
             MainMenu::Credentials => MainMenu::Settings,
@@ -74,7 +79,7 @@ impl MainMenu {
             MainMenu::Vta => MainMenu::Logs,
             MainMenu::Logs => MainMenu::Help,
             MainMenu::Help => MainMenu::Quit,
-            MainMenu::Quit => MainMenu::Inbox,
+            MainMenu::Quit => MainMenu::Communities,
         }
     }
 }

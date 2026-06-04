@@ -1,6 +1,7 @@
 /// The main page is made up of two main panels side by side:
 /// LEFT: Menu Panel
 /// RIGHT: Content Panel
+pub mod communities_panel;
 pub mod content_panel;
 pub mod credentials_panel;
 pub mod inbox_panel;

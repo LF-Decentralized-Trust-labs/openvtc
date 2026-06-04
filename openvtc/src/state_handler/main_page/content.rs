@@ -19,6 +19,43 @@ pub struct ContentPanelState {
     pub vta: VtaState,
     /// Logs panel state
     pub logs: LogsState,
+    /// Communities overview panel state
+    pub communities: CommunitiesState,
+}
+
+// ****************************************************************************
+// Communities State (R-C-*)
+// ****************************************************************************
+
+/// State for the Communities overview panel — the account's community
+/// memberships, in display order (favourites first).
+#[derive(Clone, Debug, Default)]
+pub struct CommunitiesState {
+    /// Display summaries of the (non-archived) communities, in display order.
+    pub items: Vec<CommunitySummary>,
+    /// Currently selected index in the list.
+    pub selected_index: usize,
+    /// Number of communities raising the actions-required indicator (R-C-3).
+    pub actions_required: usize,
+    /// Transient status message.
+    pub status_message: Option<String>,
+}
+
+/// Lightweight display summary of a community membership (no Arc/Mutex).
+#[derive(Clone, Debug)]
+pub struct CommunitySummary {
+    /// Display name (resolved name, or the VTC DID when unnamed).
+    pub display_name: String,
+    /// Human-readable membership status (e.g. "Active", "Pending", "Left").
+    pub status_label: String,
+    /// Label of the persona presented to this community.
+    pub persona_label: String,
+    /// Member-since date (when Active), formatted; empty otherwise.
+    pub member_since: String,
+    /// Whether the user has starred this community (R-C-4).
+    pub favourite: bool,
+    /// Whether this community raises the actions-required indicator (R-C-3).
+    pub needs_attention: bool,
 }
 
 // ****************************************************************************

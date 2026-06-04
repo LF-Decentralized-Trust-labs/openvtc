@@ -22,8 +22,9 @@ use ratatui::{
 };
 
 use super::{
-    credentials_panel::CredentialsPanel, inbox_panel::InboxPanel, panel::Panel,
-    relationships_panel::RelationshipsPanel, settings_panel::SettingsPanel, vta_panel::VtaPanel,
+    communities_panel::CommunitiesPanel, credentials_panel::CredentialsPanel,
+    inbox_panel::InboxPanel, panel::Panel, relationships_panel::RelationshipsPanel,
+    settings_panel::SettingsPanel, vta_panel::VtaPanel,
 };
 
 // ****************************************************************************
@@ -64,6 +65,7 @@ impl ContentPanelState {
         };
 
         let panel: Option<Box<dyn Panel>> = match menu.selected_menu {
+            MainMenu::Communities => Some(Box::new(CommunitiesPanel)),
             MainMenu::Inbox => Some(Box::new(InboxPanel)),
             MainMenu::Relationships => Some(Box::new(RelationshipsPanel)),
             MainMenu::Credentials => Some(Box::new(CredentialsPanel)),
