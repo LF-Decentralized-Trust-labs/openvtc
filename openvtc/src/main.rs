@@ -8,9 +8,9 @@ use crate::{
 };
 use anyhow::{Result, bail};
 use console::style;
-use dialoguer::{Password, theme::ColorfulTheme};
+use dialoguer::{Confirm, Password, theme::ColorfulTheme};
 use openvtc_core::{
-    config::{Config, ConfigProtectionType, UnlockCode},
+    config::{Config, ConfigProtectionType, UnlockCode, public_config::PublicConfig},
     errors::OpenVTCError,
     process_lock::{check_duplicate_instance, remove_lock_file},
 };
@@ -160,6 +160,46 @@ async fn main() -> Result<()> {
             }
             Err(OpenVTCError::ConfigNotFound(_, _)) => {
                 // Configuration not found, start in setup mode
+                starting_mode = StartingMode::SetupWizard;
+            }
+            Err(OpenVTCError::ConfigVersionUnsupported { found, expected }) => {
+                // Breaking reset (D13 / R-RST-2,3): the on-disk config predates
+                // the v2 account model and cannot be migrated. Warn explicitly,
+                // require confirmation, then delete it and run setup from scratch.
+                eprintln!(
+                    "{}",
+                    style(format!(
+                        "Your existing configuration (format v{found}) is incompatible with \
+                         this version of OpenVTC (format v{expected}) and cannot be upgraded \
+                         automatically."
+                    ))
+                    .color256(CLI_ORANGE)
+                );
+                eprintln!(
+                    "{}",
+                    style(
+                        "Continuing will DELETE the existing configuration and its stored \
+                         credentials, then start a fresh setup. This cannot be undone."
+                    )
+                    .color256(CLI_RED)
+                );
+                let confirmed = Confirm::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Delete the incompatible configuration and reset?")
+                    .default(false)
+                    .interact()
+                    .unwrap_or(false);
+                if !confirmed {
+                    bail!("Incompatible configuration; reset declined by user");
+                }
+                let summary = PublicConfig::delete_profile(&profile).map_err(|e| {
+                    anyhow::anyhow!("Failed to delete incompatible configuration: {e}")
+                })?;
+                for warning in &summary.warnings {
+                    eprintln!(
+                        "{}",
+                        style(format!("warning during reset: {warning}")).color256(CLI_ORANGE)
+                    );
+                }
                 starting_mode = StartingMode::SetupWizard;
             }
             Err(e) => {

@@ -15,7 +15,11 @@ use std::{env, fs, path::PathBuf, sync::Arc};
 use tracing::warn;
 
 /// Current config format version. Increment when the format changes.
-pub const CONFIG_VERSION: u32 = 1;
+///
+/// v2 (T1): the multi-community `account` model is the persisted source of
+/// truth. There is no in-place v1→v2 migration — a pre-v2 config triggers a
+/// breaking reset (D13 / R-RST): the CLI warns, deletes it, and re-runs setup.
+pub const CONFIG_VERSION: u32 = 2;
 
 /// Result of [`PublicConfig::delete_profile`]. Mostly informational —
 /// callers render `warnings` when surfacing partial-state issues. None of
@@ -250,7 +254,7 @@ impl PublicConfig {
         let file = fs::File::open(&path)
             .map_err(|e| OpenVTCError::ConfigNotFound(path.to_string_lossy().into_owned(), e))?;
 
-        let mut config: Self = match serde_json::from_reader(file) {
+        let config: Self = match serde_json::from_reader(file) {
             Ok(s) => s,
             Err(e) => {
                 warn!("Couldn't Deserialize PublicConfig. Reason: {e}");
@@ -258,46 +262,24 @@ impl PublicConfig {
             }
         };
 
-        // Run migrations if config is from an older version
+        // Breaking reset (D13 / R-RST-1): a pre-v2 config cannot be migrated in
+        // place. Detect it here — on the plaintext public config, before any
+        // decryption that assumes the v2 shape — and surface a typed error the
+        // CLI maps to a "warn → delete → fresh setup" flow.
         if config.config_version < CONFIG_VERSION {
-            tracing::info!(
+            warn!(
                 from = config.config_version,
                 to = CONFIG_VERSION,
-                "migrating config format"
+                "incompatible config version — breaking reset required"
             );
-            migrate_config(&mut config)?;
+            return Err(OpenVTCError::ConfigVersionUnsupported {
+                found: config.config_version,
+                expected: CONFIG_VERSION,
+            });
         }
 
         Ok(config)
     }
-}
-
-/// Run config migrations from `config.config_version` up to [`CONFIG_VERSION`].
-///
-/// Each migration step handles one version increment. New migrations are added
-/// as new match arms. The version field is updated after all migrations complete.
-fn migrate_config(config: &mut PublicConfig) -> Result<(), OpenVTCError> {
-    let mut version = config.config_version;
-
-    while version < CONFIG_VERSION {
-        match version {
-            // Version 0 → 1: no structural changes, just adding the version field.
-            // Pre-0.2.0 configs lack `config_version` and deserialize as 0.
-            0 => {
-                tracing::debug!("migration 0→1: adding config_version field");
-            }
-            v => {
-                return Err(OpenVTCError::Config(format!(
-                    "Unknown config version {v} — cannot migrate. \
-                     Expected version <= {CONFIG_VERSION}."
-                )));
-            }
-        }
-        version += 1;
-    }
-
-    config.config_version = CONFIG_VERSION;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -374,6 +356,40 @@ mod tests {
             "fallback path should end with openvtc/config.json: {}",
             path.display()
         );
+    }
+
+    #[test]
+    fn test_load_pre_v2_config_triggers_breaking_reset() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join("openvtc-reset-test");
+        let _ = fs::create_dir_all(&dir);
+        unsafe { env::set_var("OPENVTC_CONFIG_PATH", &dir) };
+
+        // Write a v1-shaped config (config_version = 1) to disk.
+        let old = PublicConfig {
+            config_version: 1,
+            ..PublicConfig::default()
+        };
+        fs::write(
+            dir.join("config.json"),
+            serde_json::to_string_pretty(&old).unwrap(),
+        )
+        .unwrap();
+
+        let err = PublicConfig::load("default").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                OpenVTCError::ConfigVersionUnsupported {
+                    found: 1,
+                    expected: CONFIG_VERSION
+                }
+            ),
+            "pre-v2 config must surface ConfigVersionUnsupported, got: {err:?}"
+        );
+
+        let _ = fs::remove_file(dir.join("config.json"));
+        unsafe { env::remove_var("OPENVTC_CONFIG_PATH") };
     }
 
     #[test]

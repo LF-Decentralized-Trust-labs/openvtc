@@ -59,6 +59,17 @@ pub enum OpenVTCError {
     #[error("Config Not Found! path({0}): {1}")]
     ConfigNotFound(String, std::io::Error),
 
+    /// The on-disk config predates the current [`crate::config::public_config::CONFIG_VERSION`]
+    /// and cannot be migrated in place (T1 breaking reset, D13/R-RST). The caller
+    /// must warn the user, delete the old config + keyring entries, and re-run setup.
+    #[error("Config version {found} is incompatible with required version {expected}")]
+    ConfigVersionUnsupported {
+        /// The `config_version` read from disk.
+        found: u32,
+        /// The version this build requires.
+        expected: u32,
+    },
+
     /// An error from a hardware security token (e.g. OpenPGP card / YubiKey).
     #[cfg(feature = "openpgp-card")]
     #[error("Token Error: {0}")]
