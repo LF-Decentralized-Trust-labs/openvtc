@@ -5,6 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    config::account::Account,
     config::secured_config::{unlock_code_decrypt, unlock_code_encrypt},
     errors::OpenVTCError,
     logs::{LogFamily, Logs},
@@ -175,6 +176,15 @@ impl From<ContactsShadow> for Contacts {
 /// not key data
 #[derive(Clone, Default, Serialize, Deserialize, Debug)]
 pub struct ProtectedConfig {
+    /// Config v2 multi-community account model (personas + communities).
+    ///
+    /// The encrypted source of truth for the account's personas and community
+    /// memberships. Empty in v1 (singleton) configs; populated on the first v2
+    /// save. `Config::load_step2` reads it back to rebuild the runtime
+    /// [`crate::identity::IdentityContext`]s and drive DID resolution.
+    #[serde(default)]
+    pub account: Account,
+
     /// Known contacts and associated information
     pub contacts: Contacts,
 
@@ -315,6 +325,41 @@ mod tests {
 
         let loaded = ProtectedConfig::load(&seed, &saved).unwrap();
         assert!(loaded.contacts.is_empty());
+    }
+
+    #[test]
+    fn test_protected_config_account_round_trips() {
+        use crate::config::account::{Account, PersonaId, PersonaRecord};
+        use chrono::Utc;
+
+        let mut config = ProtectedConfig::default();
+        let pid = PersonaId::new();
+        config.account = Account {
+            vta_did: "did:webvh:vta.example".into(),
+            vta_url: "https://vta.example".into(),
+            top_context_id: "openvtc".into(),
+            ..Account::default()
+        };
+        config.account.personas.insert(
+            pid,
+            PersonaRecord {
+                persona_id: pid,
+                did: "did:webvh:example:p".into(),
+                key_refs: Vec::new(),
+                mediator_did: Some("did:webvh:mediator".into()),
+                origin_context_id: String::new(),
+                created_at: Utc::now(),
+                label: Some("alice".into()),
+            },
+        );
+
+        let seed = test_seed();
+        let saved = config.save(&seed).unwrap();
+        let loaded = ProtectedConfig::load(&seed, &saved).unwrap();
+
+        assert_eq!(loaded.account.vta_did, "did:webvh:vta.example");
+        assert_eq!(loaded.account.personas.len(), 1);
+        assert_eq!(loaded.account.personas[&pid].did, "did:webvh:example:p");
     }
 
     #[test]

@@ -31,7 +31,11 @@ impl Config {
         #[cfg(feature = "openpgp-card")] touch_prompt: &(dyn Fn() + Send + Sync),
     ) -> Result<(), OpenVTCError> {
         let encryption_seed = self.get_encryption_seed()?;
-        self.public.save(profile, &self.private, &encryption_seed)?;
+        // The v2 `account` is the encrypted source of truth — mirror the live
+        // in-memory account into the protected tier so it round-trips to disk.
+        let mut private = self.private.clone();
+        private.account = self.account.clone();
+        self.public.save(profile, &private, &encryption_seed)?;
 
         let sc = SecuredConfig::from(self);
         sc.save(
