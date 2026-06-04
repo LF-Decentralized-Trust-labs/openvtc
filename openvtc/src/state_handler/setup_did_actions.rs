@@ -5,6 +5,7 @@ use openvtc_core::{
 };
 use pgp::composed::ArmorOptions;
 use secrecy::SecretString;
+use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
 use crate::{
     state_handler::{
@@ -91,7 +92,7 @@ pub(crate) async fn handle_webvh_server_create_did(
     state_tx: &watch::Sender<State>,
     tdk: &TDK,
     server_id: String,
-    custom_path: Option<String>,
+    path_mode: WebvhPathMode,
 ) -> anyhow::Result<bool> {
     use crate::state_handler::setup_sequence::vta;
 
@@ -126,7 +127,7 @@ pub(crate) async fn handle_webvh_server_create_did(
         .push(MessageType::Info(format!("Server: {}", server_id)));
     let _ = state_tx.send(state.clone());
 
-    apply_server_create_result(state, &client, tdk, &context_id, &server_id, custom_path).await;
+    apply_server_create_result(state, &client, tdk, &context_id, &server_id, path_mode).await;
     Ok(false)
 }
 
@@ -162,7 +163,7 @@ pub(crate) async fn handle_custom_mediator_webvh(
 
     let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
     let server_id = state.setup.webvh_server.selected_server_id.clone();
-    let custom_path = state.setup.webvh_server.custom_path.clone();
+    let path_mode = state.setup.webvh_server.path_mode.clone();
 
     state
         .setup
@@ -171,7 +172,7 @@ pub(crate) async fn handle_custom_mediator_webvh(
         .push(MessageType::Info(format!("Server: {}", server_id)));
     let _ = state_tx.send(state.clone());
 
-    apply_server_create_result(state, &client, tdk, &context_id, &server_id, custom_path).await;
+    apply_server_create_result(state, &client, tdk, &context_id, &server_id, path_mode).await;
     Ok(false)
 }
 
@@ -182,11 +183,11 @@ async fn apply_server_create_result(
     tdk: &TDK,
     context_id: &str,
     server_id: &str,
-    custom_path: Option<String>,
+    path_mode: WebvhPathMode,
 ) {
     use crate::state_handler::setup_sequence::vta;
 
-    match vta::create_did_via_server(client, tdk, context_id, server_id, custom_path).await {
+    match vta::create_did_via_server(client, tdk, context_id, server_id, path_mode).await {
         Ok((persona_keys, did, document, mnemonic)) => {
             state
                 .setup

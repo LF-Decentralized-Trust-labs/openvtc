@@ -271,8 +271,11 @@ pub enum Action {
     TokenWriteKeys(Option<Arc<Mutex<Card<Open>>>>),
 
     // ************************************************************************
-    /// Create a DID via a WebVH server (server_id, optional custom path)
-    WebvhServerCreateDid(String, Option<String>),
+    /// Create a DID via a WebVH server (server_id, path mode)
+    WebvhServerCreateDid(
+        String,
+        vta_sdk::protocols::did_management::create::WebvhPathMode,
+    ),
 
     /// Using a custom mediator DID
     SetCustomMediator(String),

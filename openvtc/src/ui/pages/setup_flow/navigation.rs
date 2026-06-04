@@ -26,7 +26,7 @@ pub enum SetupEvent {
     // WebvhServerSelect
     UseWebvhServer {
         server_id: String,
-        custom_path: Option<String>,
+        path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode,
     },
     CreateManually,
 
@@ -127,8 +127,8 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         // === WebvhServerSelect ===
         SetupEvent::UseWebvhServer {
             server_id,
-            custom_path,
-        } => NavResult::SendAction(Action::WebvhServerCreateDid(server_id, custom_path)),
+            path_mode,
+        } => NavResult::SendAction(Action::WebvhServerCreateDid(server_id, path_mode)),
         SetupEvent::CreateManually => NavResult::SendAction(Action::VtaCreateKeys),
 
         // === VtaKeysFetch ===
@@ -333,7 +333,7 @@ mod tests {
         let r = navigate(
             SetupEvent::UseWebvhServer {
                 server_id: "id".to_string(),
-                custom_path: None,
+                path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode::WellKnown,
             },
             &empty_state(),
         );

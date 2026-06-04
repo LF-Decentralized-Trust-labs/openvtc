@@ -340,7 +340,9 @@ pub struct WebvhServerState {
     pub completed: Completion,
     pub messages: Vec<MessageType>,
     pub selected_server_id: String,
-    pub custom_path: Option<String>,
+    /// Chosen WebVH path mode: `.well-known` root, an explicit label, or
+    /// server auto-assignment.
+    pub path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode,
     pub did: String,
     pub document: Document,
     pub mnemonic: String,

@@ -256,19 +256,13 @@ pub async fn create_did_via_server(
     tdk: &TDK,
     context_id: &str,
     server_id: &str,
-    path: Option<String>,
+    path_mode: WebvhPathMode,
 ) -> Result<(PersonaDIDKeys, String, Document, String)> {
     let created = Utc::now();
 
-    // Map the optional explicit path to the SDK's `path_mode`. A blank path
-    // means the `.well-known` root DID; a provided path is an explicit label.
-    // (Server auto-assignment is `WebvhPathMode::AutoAssign`, selected upstream.)
-    // The legacy `path` field is rejected for the empty case by the server, so
-    // `path_mode` is the authoritative selector and `path` is left `None`.
-    let path_mode = match path {
-        Some(p) => WebvhPathMode::Explicit(p),
-        None => WebvhPathMode::WellKnown,
-    };
+    // `path_mode` is the authoritative path selector (WellKnown / Explicit /
+    // AutoAssign). The legacy `path` field is left `None` — the server rejects a
+    // present-but-empty path with `e.p.did.path-invalid`.
 
     // Use the VTA's built-in mediator service rather than additional_services,
     // because the VTA formats the service ID as a full DID URL (e.g. "did:...#vta-didcomm")

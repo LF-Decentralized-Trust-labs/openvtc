@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Padding, Paragraph, Wrap},
 };
 use tui_input::{Input, backend::crossterm::EventHandler};
+use vta_sdk::protocols::did_management::create::WebvhPathMode;
 
 use crate::{
     state_handler::{actions::Action, setup_sequence::SetupState},
@@ -34,6 +35,9 @@ pub struct WebvhServerSelect {
     pub method: SelectMethod,
     pub selected_server_index: usize,
     pub path_input: Input,
+    /// When true, the hosting server auto-assigns the path
+    /// ([`WebvhPathMode::AutoAssign`]); the path text field is ignored.
+    pub server_assign: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -149,26 +153,36 @@ fn handle_server_config(state: &mut SetupFlow, key: KeyEvent) {
             // Go back to method selection
             state.webvh_server_select.phase = SelectPhase::ChooseMethod;
             state.webvh_server_select.path_input.reset();
+            state.webvh_server_select.server_assign = false;
+        }
+        KeyCode::Tab => {
+            // Toggle "let the server choose the path" (auto-assign).
+            state.webvh_server_select.server_assign = !state.webvh_server_select.server_assign;
         }
         KeyCode::Enter => {
             let servers = &state.props.state.vta.webvh_servers;
             if let Some(server) = servers.get(state.webvh_server_select.selected_server_index) {
                 let server_id = server.id.clone();
+                // Path mode (R-B path select): server auto-assign wins; otherwise
+                // a blank field means the `.well-known` root, a value an explicit
+                // label.
                 let path_value = state.webvh_server_select.path_input.value().to_string();
-                let custom_path = if path_value.is_empty() {
-                    None
+                let path_mode = if state.webvh_server_select.server_assign {
+                    WebvhPathMode::AutoAssign
+                } else if path_value.is_empty() {
+                    WebvhPathMode::WellKnown
                 } else {
-                    Some(path_value)
+                    WebvhPathMode::Explicit(path_value)
                 };
 
                 // Store server selection in webvh_server state for UI rendering
                 state.props.state.webvh_server.selected_server_id = server_id.clone();
-                state.props.state.webvh_server.custom_path = custom_path.clone();
+                state.props.state.webvh_server.path_mode = path_mode.clone();
 
                 let result = navigate(
                     SetupEvent::UseWebvhServer {
                         server_id,
-                        custom_path,
+                        path_mode,
                     },
                     &state.props.state,
                 );
@@ -291,10 +305,17 @@ fn render_server_config(
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), content[0]);
 
     // Path input
-    let path_header = Line::styled(
-        "Custom path (optional, leave empty for auto-generated):",
-        Style::new().fg(COLOR_BORDER).bold(),
-    );
+    let path_header = if select.server_assign {
+        Line::styled(
+            "Path: the server will choose one  ([TAB] to set your own)",
+            Style::new().fg(COLOR_BORDER).bold(),
+        )
+    } else {
+        Line::styled(
+            "Path (blank = .well-known root, or type a label  —  [TAB]: let the server choose):",
+            Style::new().fg(COLOR_BORDER).bold(),
+        )
+    };
     frame.render_widget(Paragraph::new(path_header), content[1]);
 
     let [input_prompt, input_box] = Layout::horizontal([Length(2), Min(0)]).areas(Rect {
@@ -335,24 +356,44 @@ fn render_server_config(
         })
         .unwrap_or_default();
 
-    if path_value.is_empty() {
+    if select.server_assign {
         info_lines.push(Line::styled(
-            "If left empty, a random mnemonic phrase will be used as the path.",
+            "The hosting server will allocate the path (a random mnemonic).",
             Style::new().fg(COLOR_DARK_GRAY),
         ));
         info_lines.push(Line::default());
         info_lines.push(Line::from(vec![
             Span::styled("DID document URL: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled(
-                format!("https://{}/{{mnemonic}}/did.jsonl", server_domain),
+                format!("https://{}/{{server-assigned}}/did.jsonl", server_domain),
                 Style::new().fg(COLOR_ORANGE).italic(),
             ),
         ]));
         info_lines.push(Line::from(vec![
             Span::styled("Your DID:         ", Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled(
-                format!("did:webvh:{{scid}}:{}:{{mnemonic}}", server_domain),
+                format!("did:webvh:{{scid}}:{}:{{server-assigned}}", server_domain),
                 Style::new().fg(COLOR_ORANGE).italic(),
+            ),
+        ]));
+    } else if path_value.is_empty() {
+        info_lines.push(Line::styled(
+            "Blank path → a root DID, served at the host's /.well-known/did.jsonl.",
+            Style::new().fg(COLOR_DARK_GRAY),
+        ));
+        info_lines.push(Line::default());
+        info_lines.push(Line::from(vec![
+            Span::styled("DID document URL: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(
+                format!("https://{}/.well-known/did.jsonl", server_domain),
+                Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+            ),
+        ]));
+        info_lines.push(Line::from(vec![
+            Span::styled("Your DID:         ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(
+                format!("did:webvh:{{scid}}:{}", server_domain),
+                Style::new().fg(COLOR_SOFT_PURPLE).bold(),
             ),
         ]));
     } else {
@@ -374,10 +415,17 @@ fn render_server_config(
 
     info_lines.push(Line::default());
 
+    let tab_hint = if select.server_assign {
+        " use my own path  |  "
+    } else {
+        " server-assign path  |  "
+    };
     if servers.len() > 1 {
         info_lines.push(Line::from(vec![
             Span::styled("[UP/DOWN]", Style::new().fg(COLOR_BORDER).bold()),
             Span::styled(" select server  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled("[TAB]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled(tab_hint, Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled("[ESC]", Style::new().fg(COLOR_BORDER).bold()),
             Span::styled(" go back  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
@@ -385,6 +433,8 @@ fn render_server_config(
         ]));
     } else {
         info_lines.push(Line::from(vec![
+            Span::styled("[TAB]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled(tab_hint, Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled("[ESC]", Style::new().fg(COLOR_BORDER).bold()),
             Span::styled(" go back  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),

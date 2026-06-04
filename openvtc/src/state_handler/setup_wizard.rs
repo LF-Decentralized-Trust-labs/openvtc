@@ -122,11 +122,11 @@ impl StateHandler {
                 Action::SetTokenName(token, name) => {
                     setup_token_actions::handle_set_token_name(state, &self.state_tx, token, &name);
                 },
-                Action::WebvhServerCreateDid(server_id, custom_path) => {
+                Action::WebvhServerCreateDid(server_id, path_mode) => {
                     // Cannot move owned bound vars into a match guard, so the
                     // collapsible_match form clippy suggests doesn't compile.
                     #[allow(clippy::collapsible_match)]
-                    if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id, custom_path).await? {
+                    if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id, path_mode).await? {
                         continue;
                     }
                 },
