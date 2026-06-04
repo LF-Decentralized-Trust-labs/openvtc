@@ -17,7 +17,7 @@
 use crate::config::KeyTypes;
 use crate::relationships::Relationships;
 use crate::vrc::Vrcs;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -192,6 +192,58 @@ pub struct CommunityRecord {
     pub vrcs_received: Vrcs,
 }
 
+/// Client-side timeout for an unanswered `Pending` join (D16 / R-B-7): a join
+/// request with no decision after this many days transitions to `Expired`.
+pub const PENDING_TIMEOUT_DAYS: i64 = 7;
+
+impl CommunityRecord {
+    /// True for a membership that needs a live DIDComm session (Active or
+    /// Pending) — so the VTC's asynchronous join reply is receivable (D16).
+    pub fn is_live(&self) -> bool {
+        self.status.requires_live_session()
+    }
+
+    /// Transition to `Active` on acceptance (R-B-8). Stamps `member_since` with
+    /// `now` the first time the membership becomes active (R-C-2); leaves an
+    /// existing timestamp untouched so a re-activation keeps the original date.
+    pub fn activate(&mut self, now: DateTime<Utc>) {
+        if self.member_since.is_none() {
+            self.member_since = Some(now);
+        }
+        self.status = CommunityStatus::Active;
+    }
+
+    /// Transition to `Rejected` — the VTC denied the join request (R-B-8).
+    pub fn reject(&mut self) {
+        self.status = CommunityStatus::Rejected;
+    }
+
+    /// Transition to `Removed` — the VTC removed an active member (R-B-8).
+    pub fn remove(&mut self) {
+        self.status = CommunityStatus::Removed;
+    }
+
+    /// Transition to `Left` — the member voluntarily left (R-L-1).
+    pub fn leave(&mut self) {
+        self.status = CommunityStatus::Left;
+    }
+
+    /// Expire a stale `Pending` join past the [`PENDING_TIMEOUT_DAYS`] client
+    /// timeout (R-B-7 / D16). No-op unless the membership is currently `Pending`
+    /// with a `requested_at` at least the timeout old. Returns `true` if it
+    /// transitioned to `Expired`.
+    pub fn expire_if_stale(&mut self, now: DateTime<Utc>) -> bool {
+        if matches!(self.status, CommunityStatus::Pending { .. })
+            && let Some(requested) = self.requested_at
+            && now - requested >= TimeDelta::days(PENDING_TIMEOUT_DAYS)
+        {
+            self.status = CommunityStatus::Expired;
+            return true;
+        }
+        false
+    }
+}
+
 /// The account — the OpenVTC ↔ VTA relationship (State-A bootstrap) plus its
 /// personas and community memberships.
 ///
@@ -252,6 +304,38 @@ impl Account {
     /// Iterator over communities in the `Active` (live) state.
     pub fn active_communities(&self) -> impl Iterator<Item = &CommunityRecord> {
         self.communities.values().filter(|c| c.status.is_active())
+    }
+
+    /// A membership by VTC DID.
+    pub fn community(&self, vtc: &VtcDid) -> Option<&CommunityRecord> {
+        self.communities.get(vtc)
+    }
+
+    /// A mutable membership by VTC DID — for applying a lifecycle transition.
+    pub fn community_mut(&mut self, vtc: &VtcDid) -> Option<&mut CommunityRecord> {
+        self.communities.get_mut(vtc)
+    }
+
+    /// A *live* membership (Active or Pending) for this VTC, if any.
+    ///
+    /// State B uses this for join idempotency (R-B-9): a live membership is
+    /// surfaced to the user instead of submitting a duplicate, while an inactive
+    /// one (`Left`/`Rejected`/`Removed`/`Expired`) may be re-joined.
+    pub fn live_community(&self, vtc: &VtcDid) -> Option<&CommunityRecord> {
+        self.communities.get(vtc).filter(|c| c.is_live())
+    }
+
+    /// Sweep all `Pending` memberships, expiring any past the client timeout
+    /// (R-B-7 / D16). Returns the VTC DIDs that transitioned to `Expired` so the
+    /// caller can persist and raise the actions-required indicator (R-S-2).
+    pub fn expire_stale_pending(&mut self, now: DateTime<Utc>) -> Vec<VtcDid> {
+        let mut expired = Vec::new();
+        for (vtc, community) in self.communities.iter_mut() {
+            if community.expire_if_stale(now) {
+                expired.push(vtc.clone());
+            }
+        }
+        expired
     }
 }
 
@@ -417,5 +501,122 @@ mod tests {
         assert_eq!(j, r#"{"state":"active"}"#);
         let j = serde_json::to_string(&CommunityStatus::Expired).unwrap();
         assert_eq!(j, r#"{"state":"expired"}"#);
+    }
+
+    fn pending() -> CommunityStatus {
+        CommunityStatus::Pending {
+            request_id: Uuid::new_v4(),
+        }
+    }
+
+    #[test]
+    fn activate_stamps_member_since_once() {
+        let pid = PersonaId::new();
+        let mut c = community("v", pid, pending());
+        let t0 = Utc::now();
+        c.activate(t0);
+        assert_eq!(c.status, CommunityStatus::Active);
+        assert_eq!(c.member_since, Some(t0));
+
+        // Re-activating keeps the original member-since date.
+        c.activate(t0 + TimeDelta::days(5));
+        assert_eq!(c.member_since, Some(t0), "member_since must not be reset");
+    }
+
+    #[test]
+    fn terminal_transitions_set_status() {
+        let pid = PersonaId::new();
+
+        let mut r = community("v", pid, pending());
+        r.reject();
+        assert_eq!(r.status, CommunityStatus::Rejected);
+
+        let mut rm = community("v", pid, CommunityStatus::Active);
+        rm.remove();
+        assert_eq!(rm.status, CommunityStatus::Removed);
+
+        let mut l = community("v", pid, CommunityStatus::Active);
+        l.leave();
+        assert_eq!(l.status, CommunityStatus::Left);
+    }
+
+    #[test]
+    fn expire_if_stale_only_fires_for_old_pending() {
+        let pid = PersonaId::new();
+        let now = Utc::now();
+
+        // Fresh pending (just under the timeout): not expired.
+        let mut fresh = community("v", pid, pending());
+        fresh.requested_at = Some(now - TimeDelta::days(PENDING_TIMEOUT_DAYS - 1));
+        assert!(!fresh.expire_if_stale(now));
+        assert!(matches!(fresh.status, CommunityStatus::Pending { .. }));
+
+        // Stale pending (at the timeout): expires.
+        let mut stale = community("v", pid, pending());
+        stale.requested_at = Some(now - TimeDelta::days(PENDING_TIMEOUT_DAYS));
+        assert!(stale.expire_if_stale(now));
+        assert_eq!(stale.status, CommunityStatus::Expired);
+
+        // Active is never expired, however old.
+        let mut active = community("v", pid, CommunityStatus::Active);
+        active.requested_at = Some(now - TimeDelta::days(365));
+        assert!(!active.expire_if_stale(now));
+        assert_eq!(active.status, CommunityStatus::Active);
+
+        // Pending with no requested_at can't be judged stale.
+        let mut no_ts = community("v", pid, pending());
+        no_ts.requested_at = None;
+        assert!(!no_ts.expire_if_stale(now));
+    }
+
+    #[test]
+    fn live_community_filters_inactive() {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+        acct.communities.insert(
+            "active".into(),
+            community("active", pid, CommunityStatus::Active),
+        );
+        acct.communities
+            .insert("left".into(), community("left", pid, CommunityStatus::Left));
+        acct.communities
+            .insert("pend".into(), community("pend", pid, pending()));
+
+        assert!(acct.live_community(&"active".to_string()).is_some());
+        assert!(acct.live_community(&"pend".to_string()).is_some());
+        assert!(
+            acct.live_community(&"left".to_string()).is_none(),
+            "Left is not a live membership"
+        );
+        assert!(acct.live_community(&"missing".to_string()).is_none());
+    }
+
+    #[test]
+    fn expire_stale_pending_sweeps_and_reports() {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+        let now = Utc::now();
+
+        let mut stale = community("stale", pid, pending());
+        stale.requested_at = Some(now - TimeDelta::days(10));
+        acct.communities.insert("stale".into(), stale);
+
+        let mut fresh = community("fresh", pid, pending());
+        fresh.requested_at = Some(now - TimeDelta::days(1));
+        acct.communities.insert("fresh".into(), fresh);
+
+        acct.communities.insert(
+            "active".into(),
+            community("active", pid, CommunityStatus::Active),
+        );
+
+        let expired = acct.expire_stale_pending(now);
+        assert_eq!(expired, vec!["stale".to_string()]);
+        assert_eq!(acct.communities["stale"].status, CommunityStatus::Expired);
+        assert!(matches!(
+            acct.communities["fresh"].status,
+            CommunityStatus::Pending { .. }
+        ));
+        assert_eq!(acct.communities["active"].status, CommunityStatus::Active);
     }
 }
