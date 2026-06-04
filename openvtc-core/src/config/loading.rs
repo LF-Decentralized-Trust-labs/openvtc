@@ -2,9 +2,8 @@
 
 use crate::{
     config::{
-        Config, ConfigProtectionType, KeyBackend, UnlockCode, account::PersonaId,
-        protected_config::ProtectedConfig, public_config::PublicConfig,
-        secured_config::SecuredConfig,
+        Config, ConfigProtectionType, KeyBackend, UnlockCode, protected_config::ProtectedConfig,
+        public_config::PublicConfig, secured_config::SecuredConfig,
     },
     errors::OpenVTCError,
 };
@@ -168,37 +167,15 @@ impl Config {
 
         debug!("Private Config\n{:#?}", private_cfg);
 
-        // T1 (final slice): the v2 `account` persisted in the protected tier is
-        // the sole source of truth for the active persona. v1 (singleton) configs
-        // are reset before reaching here (D13/R-RST), so a loadable config always
-        // carries an account; an empty one is corruption, not a v1 fallback.
-        if private_cfg.account.personas.is_empty() {
-            return Err(OpenVTCError::Config(
-                "Config account has no personas — empty or corrupt account".to_string(),
-            ));
-        }
+        // The v2 `account` persisted in the protected tier is the source of
+        // truth. v1 (singleton) configs are reset before reaching here
+        // (D13/R-RST), so a loadable config always carries an account.
         let account = private_cfg.account.clone();
-        // Single-persona for now: the one (and only) persona entry.
-        let (active_persona_id, active_persona_did, active_mediator_did): (
-            PersonaId,
-            std::sync::Arc<String>,
-            String,
-        ) = {
-            let persona = account
-                .personas
-                .values()
-                .next()
-                .expect("non-empty personas checked above");
-            (
-                persona.persona_id,
-                std::sync::Arc::new(persona.did.clone()),
-                persona.mediator_did.clone().unwrap_or_default(),
-            )
-        };
 
         // Build the VTA client once upfront (if VTA backend), reusing whichever
         // transport setup chose: DIDComm if a mediator was advertised, REST
-        // otherwise. The helper handles auth in both directions.
+        // otherwise. Needed for runtime VTA operations whether or not a persona
+        // is present.
         let vta_client = if matches!(&key_backend, KeyBackend::Vta { .. }) {
             report_progress(&on_progress, "Authenticating...");
             Some(super::build_runtime_vta_client(&key_backend).await?)
@@ -206,74 +183,88 @@ impl Config {
             None
         };
 
-        // All config info has been loaded, load DID Document and regenerate keys
-        report_progress(&on_progress, "Resolving DID...");
-        let rr = tdk
-            .did_resolver()
-            .resolve(&active_persona_did)
-            .await
-            .map_err(|e| {
-                OpenVTCError::Resolver(format!(
-                    "Couldn't resolve Persona DID ({active_persona_did}): {e}"
-                ))
-            })?;
+        // Resolve runtime identities from the account's personas.
+        //
+        // A State-A (account-bootstrap, R-A-5) account persists with NO persona:
+        // the app loads to a "no active community" state and a persona is minted
+        // later in a State-B join. Such an account has no DID to resolve and no
+        // persona/relationship messaging profiles to register, so the whole
+        // resolve/keygen/profile block is skipped and `identities` stays empty.
+        // A State-B account currently carries a single persona, resolved here.
+        let active_persona = account.personas.values().next().map(|p| {
+            (
+                p.persona_id,
+                std::sync::Arc::new(p.did.clone()),
+                p.mediator_did.clone().unwrap_or_default(),
+            )
+        });
 
-        // Create keys from DID Document
-        report_progress(&on_progress, "Loading keys...");
-        Config::regenerate_persona_keys(tdk, &sc, &key_backend, &rr.doc, vta_client.as_ref())
-            .await?;
+        let mut identities = HashMap::new();
+        if let Some((active_persona_id, active_persona_did, active_mediator_did)) = active_persona {
+            // All config info has been loaded, load DID Document and regenerate keys
+            report_progress(&on_progress, "Resolving DID...");
+            let rr = tdk
+                .did_resolver()
+                .resolve(&active_persona_did)
+                .await
+                .map_err(|e| {
+                    OpenVTCError::Resolver(format!(
+                        "Couldn't resolve Persona DID ({active_persona_did}): {e}"
+                    ))
+                })?;
 
-        // Create persona profile
-        report_progress(&on_progress, "Creating messaging profiles...");
-        let persona_profile = ATMProfile::new(
-            tdk.atm.as_ref().ok_or_else(|| {
-                OpenVTCError::Config("TDK ATM service not initialized".to_string())
-            })?,
-            Some("Persona DID".to_string()),
-            active_persona_did.to_string(),
-            Some(active_mediator_did.clone()),
-        )
-        .await?;
+            // Create keys from DID Document
+            report_progress(&on_progress, "Loading keys...");
+            Config::regenerate_persona_keys(tdk, &sc, &key_backend, &rr.doc, vta_client.as_ref())
+                .await?;
 
-        // Register the persona profile with the TDK ATM Service but do NOT
-        // open a WebSocket connection. The DIDComm service manages its own
-        // connections — connecting here would create a duplicate WebSocket for
-        // the same DID, triggering the mediator's duplicate detection loop.
-        let atm = tdk
-            .atm
-            .clone()
-            .ok_or_else(|| OpenVTCError::Config("TDK ATM service not initialized".to_string()))?;
-        let persona_profile = atm.profile_add(&persona_profile, false).await?;
-
-        report_progress(&on_progress, "Loading relationships...");
-        // Registers each relationship profile with the ATM service as a
-        // side-effect; the returned map is no longer stored on `Config`.
-        private_cfg
-            .relationships
-            .generate_profiles(
-                tdk,
-                &active_persona_did,
-                &active_mediator_did,
-                &key_backend,
-                &sc.key_info,
-                vta_client.as_ref(),
+            // Create persona profile
+            report_progress(&on_progress, "Creating messaging profiles...");
+            let persona_profile = ATMProfile::new(
+                tdk.atm.as_ref().ok_or_else(|| {
+                    OpenVTCError::Config("TDK ATM service not initialized".to_string())
+                })?,
+                Some("Persona DID".to_string()),
+                active_persona_did.to_string(),
+                Some(active_mediator_did.clone()),
             )
             .await?;
 
-        // Runtime identity for the single active persona (resolved doc + ATM
-        // profile). `account` and `active_persona_id` were resolved above.
-        let persona_id = active_persona_id;
-        let mut identities = HashMap::new();
-        identities.insert(
-            persona_id,
-            crate::identity::IdentityContext {
-                persona_id,
-                did: active_persona_did.to_string(),
-                document: rr.doc,
-                profile: persona_profile,
-                mediator_did: Some(active_mediator_did.clone()),
-            },
-        );
+            // Register the persona profile with the TDK ATM Service but do NOT
+            // open a WebSocket connection. The DIDComm service manages its own
+            // connections — connecting here would create a duplicate WebSocket for
+            // the same DID, triggering the mediator's duplicate detection loop.
+            let atm = tdk.atm.clone().ok_or_else(|| {
+                OpenVTCError::Config("TDK ATM service not initialized".to_string())
+            })?;
+            let persona_profile = atm.profile_add(&persona_profile, false).await?;
+
+            report_progress(&on_progress, "Loading relationships...");
+            // Registers each relationship profile with the ATM service as a
+            // side-effect; the returned map is no longer stored on `Config`.
+            private_cfg
+                .relationships
+                .generate_profiles(
+                    tdk,
+                    &active_persona_did,
+                    &active_mediator_did,
+                    &key_backend,
+                    &sc.key_info,
+                    vta_client.as_ref(),
+                )
+                .await?;
+
+            identities.insert(
+                active_persona_id,
+                crate::identity::IdentityContext {
+                    persona_id: active_persona_id,
+                    did: active_persona_did.to_string(),
+                    document: rr.doc,
+                    profile: persona_profile,
+                    mediator_did: Some(active_mediator_did),
+                },
+            );
+        }
 
         Ok(Config {
             account,

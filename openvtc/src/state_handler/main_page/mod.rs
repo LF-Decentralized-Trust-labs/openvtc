@@ -292,19 +292,29 @@ impl MainPageState {
             }
         }
         self.content_panel.vta.key_count = config.key_info.len();
-        // Count persona vs relationship keys
-        self.content_panel.vta.persona_key_count = config
-            .key_info
-            .keys()
-            .filter(|k| k.starts_with(config.persona_did()))
-            .count();
+        // Count persona vs relationship keys. With no active persona (State A)
+        // there are no persona keys — and `starts_with("")` would otherwise match
+        // every key, so guard on a non-empty persona DID.
+        let persona_did = config.persona_did();
+        self.content_panel.vta.persona_key_count = if persona_did.is_empty() {
+            0
+        } else {
+            config
+                .key_info
+                .keys()
+                .filter(|k| k.starts_with(persona_did))
+                .count()
+        };
         self.content_panel.vta.relationship_key_count =
             self.content_panel.vta.key_count - self.content_panel.vta.persona_key_count;
-        // Collect active DIDs
-        let mut active_dids = vec![content::ActiveDid {
-            did: config.persona_did().to_string(),
-            label: "Persona".to_string(),
-        }];
+        // Collect active DIDs — none for a zero-persona (State-A) account.
+        let mut active_dids = Vec::new();
+        if !persona_did.is_empty() {
+            active_dids.push(content::ActiveDid {
+                did: persona_did.to_string(),
+                label: "Persona".to_string(),
+            });
+        }
         for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
             if let Ok(rel) = rel_arc.lock()
                 && rel.our_did.as_str() != config.persona_did()

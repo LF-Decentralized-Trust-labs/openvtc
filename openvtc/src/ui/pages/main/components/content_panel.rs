@@ -257,6 +257,10 @@ fn render_status_help(
             Span::styled("  Connection:   ", label_style),
             Span::styled("Not connected", Style::new().fg(COLOR_DARK_GRAY)),
         ]),
+        MediatorStatus::NoActiveCommunity => Line::from(vec![
+            Span::styled("  Connection:   ", label_style),
+            Span::styled("No active community", Style::new().fg(COLOR_DARK_GRAY)),
+        ]),
     };
     lines.push(conn_line);
 

@@ -55,4 +55,8 @@ pub enum MediatorStatus {
     Connected,
     /// Connection failed with an error description.
     Failed(String),
+    /// The account has no active community/persona yet (State A, R-A-5/R-C-7):
+    /// there is no DID to open a DIDComm session for. The app runs without
+    /// messaging until the user joins a community.
+    NoActiveCommunity,
 }

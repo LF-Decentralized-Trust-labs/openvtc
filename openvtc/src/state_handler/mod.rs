@@ -378,6 +378,25 @@ impl StateHandler {
             }
         }
 
+        // A State-A account has no persona/community yet (R-A-5): there is no
+        // DID to open a DIDComm session for. Skip the persona listener entirely
+        // and run the responsive degraded loop so the user can still navigate,
+        // open the Communities page, and start a join. Attempting to connect
+        // would register a listener for an empty DID and stall on
+        // `wait_connected` for 30s before failing.
+        if config.active_identity().is_none() {
+            state.connection.status = state::MediatorStatus::NoActiveCommunity;
+            let _ = self.state_tx.send(state.clone());
+            return self
+                .run_degraded_loop(
+                    &mut action_rx,
+                    &mut interrupt_rx,
+                    &mut terminator,
+                    &mut state,
+                )
+                .await;
+        }
+
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());

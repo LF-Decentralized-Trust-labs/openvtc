@@ -578,4 +578,32 @@ mod tests {
         assert!(validate_passphrase("1234567").is_err());
         assert!(validate_passphrase("").is_err());
     }
+
+    /// A State-A (account-bootstrap, R-A-5) config carries an account but no
+    /// persona, so it resolves no runtime identity. The accessors must degrade
+    /// to the documented "no active community" sentinels rather than panic.
+    #[test]
+    fn zero_persona_config_has_no_active_identity() {
+        let config = Config {
+            public: public_config::PublicConfig::default(),
+            private: ProtectedConfig::default(),
+            key_backend: KeyBackend::Bip32 {
+                root: ExtendedSigningKey::from_seed(&[7u8; 32]).unwrap(),
+                seed: SecretString::new("seed".into()),
+            },
+            key_info: HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+            #[cfg(feature = "openpgp-card")]
+            token_admin_pin: None,
+            #[cfg(feature = "openpgp-card")]
+            token_user_pin: SecretString::new("".into()),
+            unlock_code: None,
+            account: account::Account::default(),
+            identities: HashMap::new(),
+        };
+
+        assert!(config.active_identity().is_none());
+        assert_eq!(config.persona_did(), "");
+        assert_eq!(config.mediator_did(), "");
+    }
 }

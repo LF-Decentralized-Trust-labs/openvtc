@@ -1563,6 +1563,10 @@ impl ComponentRender<()> for MainPage {
                 "Mediator: --",
                 ratatui::style::Style::default().fg(COLOR_ORANGE),
             )),
+            MediatorStatus::NoActiveCommunity => Line::from(Span::styled(
+                "No active community",
+                ratatui::style::Style::default().fg(COLOR_ORANGE),
+            )),
         };
         frame.render_widget(
             Paragraph::new(connection_line).alignment(Alignment::Center),
