@@ -26,6 +26,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fmt::Display};
 
 pub mod account;
+pub mod context_path;
 pub mod did;
 pub mod keys;
 pub mod loading;
