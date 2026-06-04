@@ -59,6 +59,22 @@ pub trait ConfigExtension {
         tdk: &TDK,
         profile: &str,
     ) -> Result<Config>;
+
+    /// State A (R-A-5): build and persist an **account-only** Config from the VTA
+    /// bootstrap state — no persona, no community, no `did:webvh`, no mediator.
+    /// The runtime loads this to a "no active community" state until a join.
+    async fn create_account(state: &SetupState, profile: &str) -> Result<Config>;
+
+    /// State B: mint a persona (`did:webvh` + keys + mediator + runtime identity)
+    /// into an existing account `config`, persist, and return its id. Used by the
+    /// join flow once a community has been chosen.
+    async fn mint_persona_into(
+        config: &mut Config,
+        state: &SetupState,
+        setup_flow: &SetupFlow,
+        tdk: &TDK,
+        profile: &str,
+    ) -> Result<PersonaId>;
 }
 
 impl ConfigExtension for Config {
@@ -210,8 +226,14 @@ impl ConfigExtension for Config {
         tdk: &TDK,
         profile: &str,
     ) -> Result<Config> {
-        // Initial Configuration state
+        // Account bootstrap (State A) then persona mint (State B) — the legacy
+        // single-flow setup is exactly these two steps back to back.
+        let mut config = Self::create_account(state, profile).await?;
+        Self::mint_persona_into(&mut config, state, setup_flow, tdk, profile).await?;
+        Ok(config)
+    }
 
+    async fn create_account(state: &SetupState, profile: &str) -> Result<Config> {
         let mut unlock_code = None;
         let protection = match &state.protection {
             ConfigProtection::PlainText => ConfigProtectionType::Plaintext,
@@ -222,43 +244,6 @@ impl ConfigExtension for Config {
                 ConfigProtectionType::Encrypted
             }
         };
-
-        let mediator_did = if let Some(mediator) = &state.custom_mediator {
-            mediator.to_string()
-        } else {
-            LF_PUBLIC_MEDIATOR_DID.to_string()
-        };
-
-        // Build key info from persona keys
-        let mut key_info = HashMap::new();
-        let persona_keys = state
-            .did_keys
-            .clone()
-            .ok_or_else(|| anyhow::anyhow!("Persona DID keys not set during setup"))?;
-        key_info.insert(
-            persona_keys.signing.secret.id.clone(),
-            KeyInfoConfig {
-                path: persona_keys.signing.source.clone(),
-                create_time: persona_keys.signing.created,
-                purpose: KeyTypes::PersonaSigning,
-            },
-        );
-        key_info.insert(
-            persona_keys.authentication.secret.id.clone(),
-            KeyInfoConfig {
-                path: persona_keys.authentication.source.clone(),
-                create_time: persona_keys.authentication.created,
-                purpose: KeyTypes::PersonaAuthentication,
-            },
-        );
-        key_info.insert(
-            persona_keys.decryption.secret.id.clone(),
-            KeyInfoConfig {
-                path: persona_keys.decryption.source.clone(),
-                create_time: persona_keys.decryption.created,
-                purpose: KeyTypes::PersonaEncryption,
-            },
-        );
 
         // Build VTA key backend from the admin credential issued during
         // online provisioning. The on-disk `credential_bundle` is the JSON
@@ -289,9 +274,102 @@ impl ConfigExtension for Config {
             encryption_seed,
         };
 
-        // T1: build the v2 account + runtime identity for this single persona,
-        // mirroring `load_step2` so `active_identity()` is consistent whether the
-        // Config came from setup or from a load.
+        // The account owns the VTA relationship + top-level context. No persona,
+        // no community, no runtime identity yet (R-A-5).
+        let account = Account {
+            vta_did: state.vta.vta_did.clone(),
+            vta_url: state.vta.vta_url.clone(),
+            top_context_id: state.vta.context_id.clone().unwrap_or_default(),
+            org_did: LF_ORG_DID.to_string(),
+            ..Account::default()
+        };
+
+        let config = Config {
+            account,
+            identities: HashMap::new(),
+            key_backend,
+            public: PublicConfig {
+                config_version: openvtc_core::config::public_config::CONFIG_VERSION,
+                protection,
+                private: None,
+                logs: Logs {
+                    messages: VecDeque::from([LogMessage {
+                        created: Utc::now(),
+                        type_: LogFamily::Config,
+                        message: "Account bootstrap completed".to_string(),
+                    }]),
+                    ..Default::default()
+                },
+                friendly_name: String::new(),
+            },
+            private: ProtectedConfig::default(),
+            key_info: HashMap::new(),
+            #[cfg(feature = "openpgp-card")]
+            token_admin_pin: None,
+            #[cfg(feature = "openpgp-card")]
+            token_user_pin: SecretString::new(String::new().into()),
+            protection_method: ProtectionMethod::default(),
+            unlock_code,
+        };
+
+        config.save(
+            profile,
+            #[cfg(feature = "openpgp-card")]
+            &|| {
+                eprintln!("Touch confirmation needed for decryption");
+            },
+        )?;
+
+        Ok(config)
+    }
+
+    async fn mint_persona_into(
+        config: &mut Config,
+        state: &SetupState,
+        setup_flow: &SetupFlow,
+        tdk: &TDK,
+        profile: &str,
+    ) -> Result<PersonaId> {
+        let mediator_did = if let Some(mediator) = &state.custom_mediator {
+            mediator.to_string()
+        } else {
+            LF_PUBLIC_MEDIATOR_DID.to_string()
+        };
+
+        // Build key info from the persona keys created during this mint.
+        let mut key_info = HashMap::new();
+        let persona_keys = state
+            .did_keys
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Persona DID keys not set during setup"))?;
+        key_info.insert(
+            persona_keys.signing.secret.id.clone(),
+            KeyInfoConfig {
+                path: persona_keys.signing.source.clone(),
+                create_time: persona_keys.signing.created,
+                purpose: KeyTypes::PersonaSigning,
+            },
+        );
+        key_info.insert(
+            persona_keys.authentication.secret.id.clone(),
+            KeyInfoConfig {
+                path: persona_keys.authentication.source.clone(),
+                create_time: persona_keys.authentication.created,
+                purpose: KeyTypes::PersonaAuthentication,
+            },
+        );
+        key_info.insert(
+            persona_keys.decryption.secret.id.clone(),
+            KeyInfoConfig {
+                path: persona_keys.decryption.source.clone(),
+                create_time: persona_keys.decryption.created,
+                purpose: KeyTypes::PersonaEncryption,
+            },
+        );
+
+        // Build the runtime identity, mirroring `load_step2` so
+        // `active_identity()` is consistent whether the Config came from setup
+        // or from a load.
         let persona_did_str = state.webvh_address.did.to_string();
         let document = state.webvh_address.document.clone();
         let persona_profile = Arc::new(
@@ -322,52 +400,20 @@ impl ConfigExtension for Config {
             created_at: Utc::now(),
             label: Some(setup_flow.username.username.value().to_string()),
         };
-        let mut account = Account {
-            vta_did: state.vta.vta_did.clone(),
-            vta_url: state.vta.vta_url.clone(),
-            org_did: LF_ORG_DID.to_string(),
-            ..Account::default()
-        };
-        account.personas.insert(persona_id, persona_record);
-        let mut identities = HashMap::new();
-        identities.insert(
+
+        config.account.personas.insert(persona_id, persona_record);
+        config.identities.insert(
             persona_id,
             IdentityContext {
                 persona_id,
-                did: persona_did_str.clone(),
+                did: persona_did_str,
                 document,
                 profile: persona_profile,
-                mediator_did: Some(mediator_did.clone()),
+                mediator_did: Some(mediator_did),
             },
         );
-
-        let config = Config {
-            account,
-            identities,
-            key_backend,
-            public: PublicConfig {
-                config_version: openvtc_core::config::public_config::CONFIG_VERSION,
-                protection,
-                private: None,
-                logs: Logs {
-                    messages: VecDeque::from([LogMessage {
-                        created: Utc::now(),
-                        type_: LogFamily::Config,
-                        message: "Initial openvtc setup completed".to_string(),
-                    }]),
-                    ..Default::default()
-                },
-                friendly_name: setup_flow.username.username.value().to_string(),
-            },
-            private: ProtectedConfig::default(),
-            key_info,
-            #[cfg(feature = "openpgp-card")]
-            token_admin_pin: None,
-            #[cfg(feature = "openpgp-card")]
-            token_user_pin: SecretString::new(String::new().into()),
-            protection_method: ProtectionMethod::default(),
-            unlock_code,
-        };
+        config.key_info.extend(key_info);
+        config.public.friendly_name = setup_flow.username.username.value().to_string();
 
         config.save(
             profile,
@@ -377,6 +423,6 @@ impl ConfigExtension for Config {
             },
         )?;
 
-        Ok(config)
+        Ok(persona_id)
     }
 }
