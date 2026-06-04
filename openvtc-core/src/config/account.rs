@@ -15,6 +15,7 @@
  */
 
 use crate::config::KeyTypes;
+use crate::errors::OpenVTCError;
 use crate::relationships::Relationships;
 use crate::vrc::Vrcs;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -228,6 +229,19 @@ impl CommunityRecord {
         self.status = CommunityStatus::Left;
     }
 
+    /// Toggle the favourite/star flag (R-C-4). Returns the new value.
+    pub fn toggle_favourite(&mut self) -> bool {
+        self.favourite = !self.favourite;
+        self.favourite
+    }
+
+    /// Whether this membership may be archived or deleted (R-C-8): only an
+    /// **inactive** one (`Left`/`Rejected`/`Removed`/`Expired`). An active or
+    /// pending membership must be left first.
+    pub fn can_archive_or_delete(&self) -> bool {
+        self.status.is_inactive()
+    }
+
     /// Expire a stale `Pending` join past the [`PENDING_TIMEOUT_DAYS`] client
     /// timeout (R-B-7 / D16). No-op unless the membership is currently `Pending`
     /// with a `requested_at` at least the timeout old. Returns `true` if it
@@ -336,6 +350,67 @@ impl Account {
             }
         }
         expired
+    }
+
+    /// Communities for the overview page in display order (R-C-4): favourites
+    /// first, then by display name (case-insensitive; unnamed last), then VTC
+    /// DID as a stable tiebreak. Archived communities are excluded unless
+    /// `include_archived` (R-C-8).
+    pub fn communities_for_display(&self, include_archived: bool) -> Vec<&CommunityRecord> {
+        let mut list: Vec<&CommunityRecord> = self
+            .communities
+            .values()
+            .filter(|c| include_archived || !c.archived)
+            .collect();
+        list.sort_by(|a, b| {
+            // Favourites first.
+            b.favourite
+                .cmp(&a.favourite)
+                // Then by display name, case-insensitive; the unnamed sort last.
+                .then_with(|| match (&a.display_name, &b.display_name) {
+                    (Some(an), Some(bn)) => an.to_lowercase().cmp(&bn.to_lowercase()),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    (None, Some(_)) => std::cmp::Ordering::Greater,
+                    (None, None) => std::cmp::Ordering::Equal,
+                })
+                // Finally the VTC DID for a stable, deterministic order.
+                .then_with(|| a.vtc_did.cmp(&b.vtc_did))
+        });
+        list
+    }
+
+    /// Archive an inactive community (R-C-8): retain its data but hide it from
+    /// the default list. Errors if the community is unknown or still
+    /// active/pending (it must be left first).
+    pub fn archive_community(&mut self, vtc: &VtcDid) -> Result<(), OpenVTCError> {
+        let community = self
+            .communities
+            .get_mut(vtc)
+            .ok_or_else(|| OpenVTCError::Config(format!("Unknown community: {vtc}")))?;
+        if !community.can_archive_or_delete() {
+            return Err(OpenVTCError::Config(format!(
+                "Cannot archive an active/pending community ({vtc}); leave it first"
+            )));
+        }
+        community.archived = true;
+        Ok(())
+    }
+
+    /// Delete an inactive community's local record (R-C-8), returning the removed
+    /// record. Errors if the community is unknown or still active/pending. The
+    /// presented persona is retained even if now unreferenced (R-P-2); explicit
+    /// persona deletion is a separate action.
+    pub fn delete_community(&mut self, vtc: &VtcDid) -> Result<CommunityRecord, OpenVTCError> {
+        match self.communities.get(vtc) {
+            None => Err(OpenVTCError::Config(format!("Unknown community: {vtc}"))),
+            Some(c) if !c.can_archive_or_delete() => Err(OpenVTCError::Config(format!(
+                "Cannot delete an active/pending community ({vtc}); leave it first"
+            ))),
+            Some(_) => Ok(self
+                .communities
+                .remove(vtc)
+                .expect("presence checked above")),
+        }
     }
 }
 
@@ -589,6 +664,90 @@ mod tests {
             "Left is not a live membership"
         );
         assert!(acct.live_community(&"missing".to_string()).is_none());
+    }
+
+    #[test]
+    fn favourite_toggle_and_archive_delete_guard() {
+        let pid = PersonaId::new();
+        let mut c = community("v", pid, CommunityStatus::Active);
+        assert!(!c.favourite);
+        assert!(c.toggle_favourite());
+        assert!(c.favourite);
+        assert!(!c.toggle_favourite());
+
+        // Active/pending cannot be archived/deleted; inactive can.
+        assert!(!community("v", pid, CommunityStatus::Active).can_archive_or_delete());
+        assert!(!community("v", pid, pending()).can_archive_or_delete());
+        for s in [
+            CommunityStatus::Left,
+            CommunityStatus::Rejected,
+            CommunityStatus::Removed,
+            CommunityStatus::Expired,
+        ] {
+            assert!(community("v", pid, s).can_archive_or_delete());
+        }
+    }
+
+    #[test]
+    fn communities_for_display_orders_and_filters() {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+
+        let mut zebra = community("did:z", pid, CommunityStatus::Active);
+        zebra.display_name = Some("Zebra".into());
+        let mut acme = community("did:a", pid, CommunityStatus::Active);
+        acme.display_name = Some("acme".into()); // lowercase: case-insensitive sort
+        let mut fav = community("did:f", pid, CommunityStatus::Active);
+        fav.display_name = Some("Middle".into());
+        fav.favourite = true;
+        let mut archived = community("did:x", pid, CommunityStatus::Left);
+        archived.display_name = Some("Aardvark".into());
+        archived.archived = true;
+
+        for c in [zebra, acme, fav, archived] {
+            acct.communities.insert(c.vtc_did.clone(), c);
+        }
+
+        // Default: archived excluded; favourite first, then name (ci).
+        let names: Vec<&str> = acct
+            .communities_for_display(false)
+            .iter()
+            .map(|c| c.display_name.as_deref().unwrap())
+            .collect();
+        assert_eq!(names, vec!["Middle", "acme", "Zebra"]);
+
+        // With archived included, "Aardvark" appears (still after the favourite).
+        let with_archived: Vec<&str> = acct
+            .communities_for_display(true)
+            .iter()
+            .map(|c| c.display_name.as_deref().unwrap())
+            .collect();
+        assert_eq!(with_archived, vec!["Middle", "Aardvark", "acme", "Zebra"]);
+    }
+
+    #[test]
+    fn archive_and_delete_respect_guards() {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+        acct.communities.insert(
+            "active".into(),
+            community("active", pid, CommunityStatus::Active),
+        );
+        acct.communities
+            .insert("left".into(), community("left", pid, CommunityStatus::Left));
+
+        // Active cannot be archived or deleted.
+        assert!(acct.archive_community(&"active".to_string()).is_err());
+        assert!(acct.delete_community(&"active".to_string()).is_err());
+        // Unknown errors too.
+        assert!(acct.archive_community(&"missing".to_string()).is_err());
+
+        // Inactive archives, then deletes.
+        acct.archive_community(&"left".to_string()).unwrap();
+        assert!(acct.communities["left"].archived);
+        let removed = acct.delete_community(&"left".to_string()).unwrap();
+        assert_eq!(removed.vtc_did, "left");
+        assert!(!acct.communities.contains_key("left"));
     }
 
     #[test]
