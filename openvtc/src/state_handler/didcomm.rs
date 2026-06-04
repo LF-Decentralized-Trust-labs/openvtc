@@ -281,13 +281,13 @@ pub async fn build_listener_configs(
 ) -> Vec<ListenerConfig> {
     let restart = default_listener_restart_policy();
 
-    let persona_secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
+    let persona_secrets = get_secrets_for_did(tdk, config, config.persona_did()).await;
 
     let mut configs = vec![ListenerConfig {
         id: PERSONA_LISTENER_ID.to_string(),
         profile: make_profile(
-            &config.public.persona_did,
-            &config.public.mediator_did,
+            config.persona_did(),
+            config.mediator_did(),
             "Persona",
             persona_secrets,
         ),
@@ -323,7 +323,7 @@ pub async fn build_listener_configs(
                 RelationshipState::Established
                     | RelationshipState::RequestSent
                     | RelationshipState::RequestAccepted
-            ) && *rel.our_did != *config.public.persona_did
+            ) && rel.our_did.as_str() != config.persona_did()
                 && seen_dids.insert(rel.our_did.to_string())
             {
                 Some((rel.our_did.to_string(), remote_p_did.to_string()))
@@ -339,7 +339,7 @@ pub async fn build_listener_configs(
             id: format!("rel-{}", short_did_id(our_did)),
             profile: make_profile(
                 our_did,
-                &config.public.mediator_did,
+                config.mediator_did(),
                 &format!(
                     "R-DID for {}",
                     openvtc_core::display::truncate_did(remote_p_did, 32)
@@ -353,7 +353,7 @@ pub async fn build_listener_configs(
     }
 
     debug!(
-        persona = %config.public.persona_did,
+        persona = %config.persona_did(),
         r_did_listeners = r_did_entries.len(),
         total = configs.len(),
         "built listener configs"
@@ -383,7 +383,7 @@ pub async fn send_message(
     from_did: &str,
     to_did: &str,
 ) -> Result<(), DIDCommServiceError> {
-    let listener_id = listener_id_for_did(from_did, &config.public.persona_did);
+    let listener_id = listener_id_for_did(from_did, config.persona_did());
     send_message_via(service, message, &listener_id, to_did).await
 }
 
@@ -475,12 +475,12 @@ pub fn spawn_lifecycle_logger(
 
 /// Build a single `ListenerConfig` for the persona DID.
 pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -> ListenerConfig {
-    let secrets = get_secrets_for_did(tdk, config, &config.public.persona_did).await;
+    let secrets = get_secrets_for_did(tdk, config, config.persona_did()).await;
     ListenerConfig {
         id: PERSONA_LISTENER_ID.to_string(),
         profile: make_profile(
-            &config.public.persona_did,
-            &config.public.mediator_did,
+            config.persona_did(),
+            config.mediator_did(),
             "Persona",
             secrets,
         ),

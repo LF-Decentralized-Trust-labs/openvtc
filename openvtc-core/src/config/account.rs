@@ -6,12 +6,12 @@
  * [`CommunityRecord`]s. See `docs/design/multi-community-support.md` and
  * `docs/design/t1-active-identity-api.md`.
  *
- * Scope note: this module currently defines the **persisted metadata** model
- * (the `ProtectedConfig` tier). The account admin credential (a secret) stays
- * in `SecuredConfig`/keyring; persona key material is VTA-managed (`key_refs`
- * are non-secret ids, D12). Runtime resolution (`IdentityContext` /
- * `IdentityRegistry`) and wiring into `Config` land in a later T1 commit; these
- * types are additive and not yet referenced by the live load/save path.
+ * Scope note: this module defines the **persisted metadata** model, stored
+ * encrypted in the `ProtectedConfig` tier and treated by `Config::load_step2`
+ * as the source of truth for the active persona. The account admin credential
+ * (a secret) stays in `SecuredConfig`/keyring; persona key material is
+ * VTA-managed (`key_refs` are non-secret ids, D12). Runtime resolution lives in
+ * [`crate::identity`] (`IdentityContext` / `IdentityRegistry`).
  */
 
 use crate::config::KeyTypes;
@@ -206,6 +206,10 @@ pub struct Account {
     pub vta_url: String,
     /// The top-level context this account administers.
     pub top_context_id: String,
+    /// Organisation DID this account is affiliated with (the former
+    /// `public.lk_did` singleton). Account-level, not persona-scoped.
+    #[serde(default)]
+    pub org_did: String,
     /// Account personas, keyed by stable id.
     #[serde(default)]
     pub personas: HashMap<PersonaId, PersonaRecord>,

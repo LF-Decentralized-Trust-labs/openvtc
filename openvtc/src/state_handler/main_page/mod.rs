@@ -268,14 +268,13 @@ impl MainPageState {
 
         // Sync settings
         self.content_panel.settings.friendly_name = config.public.friendly_name.clone();
-        self.content_panel.settings.mediator_did = config.public.mediator_did.clone();
-        self.content_panel.settings.org_did = config.public.lk_did.clone();
-        self.content_panel.settings.persona_did = config.public.persona_did.to_string();
-        self.content_panel.settings.did_git_sign =
-            detect_did_git_sign_info(config.public.persona_did.as_str());
+        self.content_panel.settings.mediator_did = config.mediator_did().to_string();
+        self.content_panel.settings.org_did = config.account.org_did.clone();
+        self.content_panel.settings.persona_did = config.persona_did().to_string();
+        self.content_panel.settings.did_git_sign = detect_did_git_sign_info(config.persona_did());
         // Sync VTA info
-        self.content_panel.vta.persona_did = config.public.persona_did.to_string();
-        self.content_panel.vta.mediator_did = config.public.mediator_did.clone();
+        self.content_panel.vta.persona_did = config.persona_did().to_string();
+        self.content_panel.vta.mediator_did = config.mediator_did().to_string();
         match &config.key_backend {
             KeyBackend::Vta {
                 vta_url,
@@ -297,18 +296,18 @@ impl MainPageState {
         self.content_panel.vta.persona_key_count = config
             .key_info
             .keys()
-            .filter(|k| k.starts_with(config.public.persona_did.as_str()))
+            .filter(|k| k.starts_with(config.persona_did()))
             .count();
         self.content_panel.vta.relationship_key_count =
             self.content_panel.vta.key_count - self.content_panel.vta.persona_key_count;
         // Collect active DIDs
         let mut active_dids = vec![content::ActiveDid {
-            did: config.public.persona_did.to_string(),
+            did: config.persona_did().to_string(),
             label: "Persona".to_string(),
         }];
         for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
             if let Ok(rel) = rel_arc.lock()
-                && *rel.our_did != *config.public.persona_did
+                && rel.our_did.as_str() != config.persona_did()
             {
                 let alias = config
                     .private
@@ -483,7 +482,7 @@ impl From<&Box<Config>> for MainMenuConfigState {
     fn from(config: &Box<Config>) -> Self {
         MainMenuConfigState {
             name: config.public.friendly_name.clone(),
-            did: config.public.persona_did.clone(),
+            did: config.persona_did_arc(),
         }
     }
 }
@@ -492,7 +491,7 @@ impl From<&Config> for MainMenuConfigState {
     fn from(config: &Config) -> Self {
         MainMenuConfigState {
             name: config.public.friendly_name.clone(),
-            did: config.public.persona_did.clone(),
+            did: config.persona_did_arc(),
         }
     }
 }

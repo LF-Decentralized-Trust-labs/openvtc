@@ -325,6 +325,7 @@ impl ConfigExtension for Config {
         let mut account = Account {
             vta_did: state.vta.vta_did.clone(),
             vta_url: state.vta.vta_url.clone(),
+            org_did: LF_ORG_DID.to_string(),
             ..Account::default()
         };
         account.personas.insert(persona_id, persona_record);
@@ -347,8 +348,6 @@ impl ConfigExtension for Config {
             public: PublicConfig {
                 config_version: openvtc_core::config::public_config::CONFIG_VERSION,
                 protection,
-                persona_did: Arc::new(state.webvh_address.did.clone()),
-                mediator_did: mediator_did.clone(),
                 private: None,
                 logs: Logs {
                     messages: VecDeque::from([LogMessage {
@@ -359,7 +358,6 @@ impl ConfigExtension for Config {
                     ..Default::default()
                 },
                 friendly_name: setup_flow.username.username.value().to_string(),
-                lk_did: LF_ORG_DID.to_string(),
             },
             private: ProtectedConfig::default(),
             key_info,

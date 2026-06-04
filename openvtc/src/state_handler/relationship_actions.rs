@@ -84,16 +84,16 @@ pub async fn send_relationship_request(
 
     // Optionally generate a random relationship DID for privacy
     let our_did: Arc<String> = if generate_r_did {
-        let r_did = Arc::new(
-            create_relationship_did(tdk, config, &config.public.mediator_did.clone()).await?,
-        );
+        // Snapshot the mediator before the &mut config borrow below.
+        let mediator = config.mediator_did().to_string();
+        let r_did = Arc::new(create_relationship_did(tdk, config, &mediator).await?);
         // Register a listener for the new R-DID
         let listener_config = super::didcomm::relationship_listener_config(
             config,
             tdk,
             &r_did,
             respondent_did,
-            &config.public.mediator_did,
+            config.mediator_did(),
         )
         .await;
         if let Err(e) = service.add_listener(listener_config).await {
@@ -101,7 +101,7 @@ pub async fn send_relationship_request(
         }
         r_did
     } else {
-        Arc::clone(&config.public.persona_did)
+        config.persona_did_arc()
     };
 
     // Build the relationship request message
@@ -111,7 +111,7 @@ pub async fn send_relationship_request(
         Some(config.public.friendly_name.as_str())
     };
     let msg = create_request_message(
-        &config.public.persona_did,
+        config.persona_did(),
         respondent_did,
         reason,
         &our_did,
@@ -119,15 +119,9 @@ pub async fn send_relationship_request(
     )?;
     let msg_id = Arc::new(msg.id.clone());
 
-    super::didcomm::send_message(
-        service,
-        config,
-        &msg,
-        &config.public.persona_did,
-        respondent_did,
-    )
-    .await
-    .map_err(|e| anyhow::anyhow!("failed to send relationship request: {e}"))?;
+    super::didcomm::send_message(service, config, &msg, config.persona_did(), respondent_did)
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to send relationship request: {e}"))?;
 
     // Create relationship entry
     config.private.relationships.relationships.insert(
@@ -188,7 +182,7 @@ pub async fn ping_relationship(
     info!(
         our_did = %our_did,
         remote_did = %remote_did,
-        is_r_did = *our_did != *config.public.persona_did,
+        is_r_did = our_did.as_str() != config.persona_did(),
         "ping using relationship DIDs"
     );
     let ping_msg = {
@@ -244,11 +238,11 @@ pub async fn remove_relationship(
     // Extract listener ID before any async work to avoid holding MutexGuard across await
     let listener_to_remove = if let Some(rel_arc) = config.private.relationships.get(&key)
         && let Ok(lock) = rel_arc.lock()
-        && *lock.our_did != *config.public.persona_did
+        && lock.our_did.as_str() != config.persona_did()
     {
         Some(super::didcomm::listener_id_for_did(
             &lock.our_did,
-            &config.public.persona_did,
+            config.persona_did(),
         ))
     } else {
         None
@@ -627,7 +621,7 @@ async fn handle_submit(
                          Task ID:       {}",
                         r.remote_p_did,
                         r.our_did,
-                        if *r.our_did != *config.public.persona_did {
+                        if r.our_did.as_str() != config.persona_did() {
                             "yes"
                         } else {
                             "no"
@@ -682,7 +676,7 @@ async fn handle_ping(
                 state.main_page.log_error("Failed to save config", &e);
             }
             state.main_page.sync_from_config(config);
-            let using_rdid = our_did_str != *config.public.persona_did;
+            let using_rdid = our_did_str != config.persona_did();
             state.main_page.log_detailed(
                 format!(
                     "Trust-ping sent to {display_name}{}",

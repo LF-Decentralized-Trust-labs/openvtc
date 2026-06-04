@@ -260,19 +260,19 @@ pub struct Config {
 
     /// Config v2 multi-community account model (personas + communities).
     ///
-    /// T1 migration (transitional): populated alongside the remaining singleton
-    /// fields (`key_backend`, `key_info`, and `public.persona_did` /
-    /// `mediator_did` / `lk_did`). Consumers are being moved onto `account`;
-    /// the singleton fields are removed field-by-field as their readers migrate.
+    /// The persisted source of truth for the account's personas and community
+    /// memberships (stored encrypted in [`ProtectedConfig`]). The persona DID,
+    /// mediator DID, and org DID that used to live as `public.*` singletons are
+    /// now read from here via [`Config::persona_did`], [`Config::mediator_did`],
+    /// and `account.org_did`.
     pub account: account::Account,
 
     /// Runtime-resolved identities (resolved DID document + ATM profile),
-    /// keyed by persona id. Not persisted — rebuilt at load.
+    /// keyed by persona id. Not persisted — rebuilt at load from `account`.
     ///
-    /// T1 migration: built alongside `persona_did`. For the single-persona case
-    /// this holds one entry; consumers move off `persona_did` onto
-    /// [`Config::active_identity`]. Multi-persona population + selection land
-    /// in a later slice.
+    /// For the single-persona case this holds one entry, surfaced by
+    /// [`Config::active_identity`]. Multi-persona population + selection land in
+    /// a later slice.
     pub identities: HashMap<account::PersonaId, crate::identity::IdentityContext>,
 }
 
@@ -308,6 +308,48 @@ impl Config {
     /// `.next()` heuristic when multi-community lands.
     pub fn active_identity(&self) -> Option<&crate::identity::IdentityContext> {
         self.identities.values().next()
+    }
+
+    /// The active persona's `did:webvh` as a string slice.
+    ///
+    /// Replaces the removed `public.persona_did` singleton. Returns `""` when no
+    /// identity is resolved — which should not occur after a successful load or
+    /// setup, where exactly one persona is always active.
+    pub fn persona_did(&self) -> &str {
+        self.active_identity().map(|i| i.did.as_str()).unwrap_or("")
+    }
+
+    /// The active persona's `did:webvh` as an owned `Arc<String>`.
+    ///
+    /// For the call sites that previously cloned the `Arc<String>` singleton
+    /// (e.g. to stash the DID on a message or relationship). The returned `Arc`
+    /// is freshly allocated; equality is by value, so sharing is not required.
+    pub fn persona_did_arc(&self) -> std::sync::Arc<String> {
+        std::sync::Arc::new(self.persona_did().to_string())
+    }
+
+    /// The active persona's mediator DID as a string slice (`""` if unset).
+    ///
+    /// Replaces the removed `public.mediator_did` singleton.
+    pub fn mediator_did(&self) -> &str {
+        self.active_identity()
+            .and_then(|i| i.mediator_did.as_deref())
+            .unwrap_or("")
+    }
+
+    /// Set the active persona's mediator DID, updating both the persisted
+    /// `account` record and the runtime `IdentityContext` so subsequent reads
+    /// (and the next save) see the new value. No-op if no identity is active.
+    pub fn set_active_mediator_did(&mut self, did: &str) {
+        let Some(id) = self.active_identity().map(|i| i.persona_id) else {
+            return;
+        };
+        if let Some(persona) = self.account.personas.get_mut(&id) {
+            persona.mediator_did = Some(did.to_string());
+        }
+        if let Some(ctx) = self.identities.get_mut(&id) {
+            ctx.mediator_did = Some(did.to_string());
+        }
     }
 }
 

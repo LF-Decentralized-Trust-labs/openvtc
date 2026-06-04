@@ -29,7 +29,7 @@ pub fn update_friendly_name(config: &mut Config, profile: &str, name: &str) -> R
 
 /// Update the mediator DID and save.
 pub fn update_mediator_did(config: &mut Config, profile: &str, did: &str) -> Result<()> {
-    config.public.mediator_did = did.to_string();
+    config.set_active_mediator_did(did);
     config.public.logs.insert(
         LogFamily::Config,
         format!("Mediator DID changed to '{}'", did),
@@ -41,7 +41,7 @@ pub fn update_mediator_did(config: &mut Config, profile: &str, did: &str) -> Res
 
 /// Update the organization DID and save.
 pub fn update_org_did(config: &mut Config, profile: &str, did: &str) -> Result<()> {
-    config.public.lk_did = did.to_string();
+    config.account.org_did = did.to_string();
     config
         .public
         .logs

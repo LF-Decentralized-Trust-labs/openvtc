@@ -99,7 +99,7 @@ impl Config {
     /// this is done by `load_step2`.
     pub async fn load_persona_secrets(&self, tdk: &TDK) -> Result<(), OpenVTCError> {
         for (key_id, key_info) in &self.key_info {
-            if !key_id.starts_with(self.public.persona_did.as_str()) {
+            if !key_id.starts_with(self.persona_did()) {
                 continue;
             }
             let kp = match key_info.purpose {

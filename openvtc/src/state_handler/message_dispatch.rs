@@ -239,11 +239,11 @@ pub async fn process_inbound_message(
             let listener_to_remove = if let Some(rel_arc) =
                 config.private.relationships.find_by_task_id(&task_id)
                 && let Ok(lock) = rel_arc.lock()
-                && *lock.our_did != *config.public.persona_did
+                && lock.our_did.as_str() != config.persona_did()
             {
                 Some(super::didcomm::listener_id_for_did(
                     &lock.our_did,
-                    &config.public.persona_did,
+                    config.persona_did(),
                 ))
             } else {
                 None
@@ -314,14 +314,13 @@ pub async fn process_inbound_message(
 
             // Send finalize using persona DIDs (same as request and accept).
             // If the send fails, still persist the Established state.
-            let finalize_msg =
-                create_finalize_message(&config.public.persona_did, &from_did, &task_id)?;
+            let finalize_msg = create_finalize_message(config.persona_did(), &from_did, &task_id)?;
 
             if let Err(e) = super::didcomm::send_message(
                 service,
                 config,
                 &finalize_msg,
-                &config.public.persona_did,
+                config.persona_did(),
                 &from_did,
             )
             .await

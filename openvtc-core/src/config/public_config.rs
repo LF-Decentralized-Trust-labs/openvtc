@@ -11,7 +11,7 @@ use secrecy::SecretBox;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{env, fs, path::PathBuf, sync::Arc};
+use std::{env, fs, path::PathBuf};
 use tracing::warn;
 
 /// Current config format version. Increment when the format changes.
@@ -45,17 +45,8 @@ pub struct PublicConfig {
     /// How is the configuration protected?
     pub protection: ConfigProtectionType,
 
-    /// Persona DID
-    pub persona_did: Arc<String>,
-
-    /// Mediator DID
-    pub mediator_did: String,
-
     /// Human friendly name to use when referring to ourself
     pub friendly_name: String,
-
-    /// Linux Organisation DID
-    pub lk_did: String,
 
     #[serde(default)]
     pub logs: Logs,
@@ -395,9 +386,8 @@ mod tests {
     #[test]
     fn test_public_config_default() {
         let pc = PublicConfig::default();
-        assert!(pc.persona_did.is_empty());
-        assert!(pc.mediator_did.is_empty());
         assert!(pc.friendly_name.is_empty());
         assert!(pc.private.is_none());
+        assert_eq!(pc.config_version, 0);
     }
 }

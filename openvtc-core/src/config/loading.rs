@@ -2,17 +2,14 @@
 
 use crate::{
     config::{
-        Config, ConfigProtectionType, KeyBackend, UnlockCode,
-        account::{Account, KeyRef, PersonaId, PersonaRecord},
-        protected_config::ProtectedConfig,
-        public_config::PublicConfig,
+        Config, ConfigProtectionType, KeyBackend, UnlockCode, account::PersonaId,
+        protected_config::ProtectedConfig, public_config::PublicConfig,
         secured_config::SecuredConfig,
     },
     errors::OpenVTCError,
 };
 use affinidi_tdk::{TDK, messaging::profiles::ATMProfile};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
-use chrono::Utc;
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::HashMap;
@@ -172,30 +169,32 @@ impl Config {
         debug!("Private Config\n{:#?}", private_cfg);
 
         // T1 (final slice): the v2 `account` persisted in the protected tier is
-        // the source of truth for the active persona. A freshly-loaded v1 config
-        // has an empty persisted account — fall back to deriving from the
-        // singleton, which is re-persisted into `account` on the next save.
-        let persisted_account =
-            (!private_cfg.account.personas.is_empty()).then(|| private_cfg.account.clone());
-        let (active_persona_did, active_mediator_did): (std::sync::Arc<String>, String) =
-            match &persisted_account {
-                Some(acct) => {
-                    // Single-persona for now: the one (and only) persona entry.
-                    let persona = acct
-                        .personas
-                        .values()
-                        .next()
-                        .expect("non-empty personas checked above");
-                    (
-                        std::sync::Arc::new(persona.did.clone()),
-                        persona.mediator_did.clone().unwrap_or_default(),
-                    )
-                }
-                None => (
-                    public_config.persona_did.clone(),
-                    public_config.mediator_did.clone(),
-                ),
-            };
+        // the sole source of truth for the active persona. v1 (singleton) configs
+        // are reset before reaching here (D13/R-RST), so a loadable config always
+        // carries an account; an empty one is corruption, not a v1 fallback.
+        if private_cfg.account.personas.is_empty() {
+            return Err(OpenVTCError::Config(
+                "Config account has no personas — empty or corrupt account".to_string(),
+            ));
+        }
+        let account = private_cfg.account.clone();
+        // Single-persona for now: the one (and only) persona entry.
+        let (active_persona_id, active_persona_did, active_mediator_did): (
+            PersonaId,
+            std::sync::Arc<String>,
+            String,
+        ) = {
+            let persona = account
+                .personas
+                .values()
+                .next()
+                .expect("non-empty personas checked above");
+            (
+                persona.persona_id,
+                std::sync::Arc::new(persona.did.clone()),
+                persona.mediator_did.clone().unwrap_or_default(),
+            )
+        };
 
         // Build the VTA client once upfront (if VTA backend), reusing whichever
         // transport setup chose: DIDComm if a mediator was advertised, REST
@@ -261,55 +260,9 @@ impl Config {
             )
             .await?;
 
-        // Use the persisted v2 account as the source of truth. For a freshly
-        // loaded v1 config (no persisted account) derive one from the singleton —
-        // one persona (the current persona DID + its keys), no communities yet —
-        // which is re-persisted into `account` on the next save.
-        let account = match persisted_account {
-            Some(acct) => acct,
-            None => {
-                let persona_record = PersonaRecord {
-                    persona_id: PersonaId::new(),
-                    did: active_persona_did.to_string(),
-                    key_refs: sc
-                        .key_info
-                        .iter()
-                        .map(|(id, info)| KeyRef {
-                            key_id: id.clone(),
-                            purpose: info.purpose.clone(),
-                            created_at: info.create_time,
-                        })
-                        .collect(),
-                    mediator_did: Some(active_mediator_did.clone()),
-                    origin_context_id: String::new(),
-                    created_at: Utc::now(),
-                    label: Some(public_config.friendly_name.clone()),
-                };
-                let mut account = Account {
-                    vta_did: match &key_backend {
-                        KeyBackend::Vta { vta_did, .. } => vta_did.clone(),
-                        KeyBackend::Bip32 { .. } => String::new(),
-                    },
-                    vta_url: match &key_backend {
-                        KeyBackend::Vta { vta_url, .. } => vta_url.clone(),
-                        KeyBackend::Bip32 { .. } => String::new(),
-                    },
-                    ..Account::default()
-                };
-                account
-                    .personas
-                    .insert(persona_record.persona_id, persona_record);
-                account
-            }
-        };
-        // The active persona id: the single (and only) persona entry for now.
-        let persona_id = *account
-            .personas
-            .keys()
-            .next()
-            .expect("account always has at least one persona after the derive above");
-
-        // Runtime identity for the single persona (resolved doc + ATM profile).
+        // Runtime identity for the single active persona (resolved doc + ATM
+        // profile). `account` and `active_persona_id` were resolved above.
+        let persona_id = active_persona_id;
         let mut identities = HashMap::new();
         identities.insert(
             persona_id,

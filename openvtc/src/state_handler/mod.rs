@@ -187,7 +187,10 @@ impl StateHandler {
                 state.main_page.menu_panel.selected = true;
                 state.main_page.config = main_page::MainMenuConfigState {
                     name: deferred.public_config.friendly_name.clone(),
-                    did: deferred.public_config.persona_did.clone(),
+                    // The persona DID now lives in the encrypted account, which
+                    // isn't decrypted yet at this pre-load render. It populates
+                    // from the full Config once load_step2 completes.
+                    did: std::sync::Arc::new(String::new()),
                 };
                 state.connection.status = state::MediatorStatus::Initializing("Starting...".into());
                 let _ = self.state_tx.send(state.clone());
@@ -366,7 +369,7 @@ impl StateHandler {
             if let Some(ctx) = resp
                 .contexts
                 .iter()
-                .find(|c| c.did.as_deref() == Some(config.public.persona_did.as_str()))
+                .find(|c| c.did.as_deref() == Some(config.persona_did()))
             {
                 state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
             } else if let Some(ctx) = resp.contexts.first() {
@@ -611,7 +614,7 @@ impl StateHandler {
                             let sender_arc = std::sync::Arc::new(sender.to_string());
 
                             // Only respond to pings from the mediator or established relationships
-                            let is_mediator = sender == config.public.mediator_did;
+                            let is_mediator = sender == config.mediator_did();
                             let has_relationship = config
                                 .private
                                 .relationships
@@ -629,7 +632,7 @@ impl StateHandler {
                                 let our_listener_did = didcomm_service
                                     .listener_did(&listener_id)
                                     .await
-                                    .unwrap_or_else(|| config.public.persona_did.to_string());
+                                    .unwrap_or_else(|| config.persona_did().to_string());
                                 if let Some(ref from_did) = from
                                     && let Ok(pong_msg) =
                                         build_trust_pong(&our_listener_did, from_did, &message_id)

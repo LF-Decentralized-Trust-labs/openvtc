@@ -309,7 +309,7 @@ pub fn apply_env_overrides(config: &mut Config) {
     use openvtc_core::config::KeyBackend;
 
     if let Ok(val) = std::env::var("OPENVTC_MEDIATOR_DID") {
-        config.public.mediator_did = val;
+        config.set_active_mediator_did(&val);
     }
     if let Ok(val) = std::env::var("OPENVTC_VTA_URL")
         && let KeyBackend::Vta {
