@@ -9,6 +9,7 @@ use openvtc_core::config::{KeyInfo, PersonaDIDKeys, secured_config::KeySourceMat
 use vta_sdk::{
     client::{CreateDidWebvhRequest, CreateKeyRequest, VtaClient},
     keys::KeyType,
+    protocols::did_management::create::WebvhPathMode,
     provision_client::Protocol,
     session::{TokenResult, challenge_response},
     webvh::WebvhServerRecord,
@@ -259,6 +260,16 @@ pub async fn create_did_via_server(
 ) -> Result<(PersonaDIDKeys, String, Document, String)> {
     let created = Utc::now();
 
+    // Map the optional explicit path to the SDK's `path_mode`. A blank path
+    // means the `.well-known` root DID; a provided path is an explicit label.
+    // (Server auto-assignment is `WebvhPathMode::AutoAssign`, selected upstream.)
+    // The legacy `path` field is rejected for the empty case by the server, so
+    // `path_mode` is the authoritative selector and `path` is left `None`.
+    let path_mode = match path {
+        Some(p) => WebvhPathMode::Explicit(p),
+        None => WebvhPathMode::WellKnown,
+    };
+
     // Use the VTA's built-in mediator service rather than additional_services,
     // because the VTA formats the service ID as a full DID URL (e.g. "did:...#vta-didcomm")
     // which the TDK resolver requires. A relative fragment like "#public-didcomm" is rejected.
@@ -266,7 +277,8 @@ pub async fn create_did_via_server(
         context_id: context_id.to_string(),
         server_id: Some(server_id.to_string()),
         url: None,
-        path,
+        path: None,
+        path_mode: Some(path_mode),
         // No explicit hosting-domain override: the server determines the
         // domain from the selected `server_id`.
         domain: None,
