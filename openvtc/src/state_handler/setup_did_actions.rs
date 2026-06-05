@@ -128,6 +128,9 @@ pub(crate) async fn handle_webvh_server_create_did(
     let _ = state_tx.send(state.clone());
 
     apply_server_create_result(state, &client, tdk, &context_id, &server_id, path_mode).await;
+    // Close the persistent DIDComm session so it doesn't linger and duel the
+    // next step's session on the mediator (duplicate-WebSocket loop → timeouts).
+    client.shutdown().await;
     Ok(false)
 }
 
@@ -173,6 +176,9 @@ pub(crate) async fn handle_custom_mediator_webvh(
     let _ = state_tx.send(state.clone());
 
     apply_server_create_result(state, &client, tdk, &context_id, &server_id, path_mode).await;
+    // Close the persistent DIDComm session so it doesn't linger and duel the
+    // next step's session on the mediator (duplicate-WebSocket loop → timeouts).
+    client.shutdown().await;
     Ok(false)
 }
 

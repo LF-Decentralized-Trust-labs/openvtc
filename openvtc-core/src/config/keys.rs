@@ -132,18 +132,24 @@ impl Config {
                     KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
                         if matches!(&self.key_backend, KeyBackend::Vta { .. }) {
                             match super::build_runtime_vta_client(&self.key_backend).await {
-                                Ok(client) => client
-                                    .get_key_secret(vta_key_id)
-                                    .await
-                                    .ok()
-                                    .and_then(|resp| {
-                                        secret_from_vta_response(&resp, kp)
-                                            .map(|mut s| {
-                                                s.id = key_id.clone();
-                                                s
-                                            })
-                                            .ok()
-                                    }),
+                                Ok(client) => {
+                                    let secret =
+                                        client.get_key_secret(vta_key_id).await.ok().and_then(
+                                            |resp| {
+                                                secret_from_vta_response(&resp, kp)
+                                                    .map(|mut s| {
+                                                        s.id = key_id.clone();
+                                                        s
+                                                    })
+                                                    .ok()
+                                            },
+                                        );
+                                    // Close the persistent DIDComm session so it
+                                    // doesn't linger and duel other admin sessions
+                                    // on the mediator (`Drop` can't close it).
+                                    client.shutdown().await;
+                                    secret
+                                }
                                 Err(_) => None,
                             }
                         } else {

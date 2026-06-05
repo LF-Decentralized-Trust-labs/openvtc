@@ -435,5 +435,10 @@ pub(crate) async fn handle_vta_create_keys(
             state.setup.vta.completed = Completion::CompletedFail;
         }
     }
+    // Close the DIDComm session — `connect_didcomm` opens a persistent,
+    // auto-reconnecting WebSocket that `Drop` cannot close (shutdown is async).
+    // A leaked admin-DID session duels the next step's session on the mediator
+    // (duplicate-WebSocket loop → DIDComm timeouts).
+    client.shutdown().await;
     Ok(false)
 }

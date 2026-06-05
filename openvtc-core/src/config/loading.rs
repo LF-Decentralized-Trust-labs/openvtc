@@ -266,6 +266,14 @@ impl Config {
             );
         }
 
+        // Close the transient admin-DID VTA session. `connect_didcomm` opens a
+        // persistent, auto-reconnecting WebSocket that `Drop` cannot close
+        // (shutdown is async), so a leaked admin session duels later admin
+        // sessions on the mediator (duplicate-WebSocket loop → DIDComm timeouts).
+        if let Some(client) = &vta_client {
+            client.shutdown().await;
+        }
+
         Ok(Config {
             account,
             identities,

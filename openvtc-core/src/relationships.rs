@@ -191,13 +191,14 @@ impl Relationships {
         // The previous fallback hand-rolled `challenge_response` against
         // `vta_url` and silently broke for DIDComm-only VTAs whose
         // `vta_url` is empty.
-        let owned_vta_client;
+        let mut owned_vta_client: Option<vta_sdk::client::VtaClient> = None;
         let vta_client: Option<&vta_sdk::client::VtaClient> = match vta_client {
             Some(client) => Some(client),
             None => {
                 if matches!(key_backend, KeyBackend::Vta { .. }) {
-                    owned_vta_client = super::config::build_runtime_vta_client(key_backend).await?;
-                    Some(&owned_vta_client)
+                    owned_vta_client =
+                        Some(super::config::build_runtime_vta_client(key_backend).await?);
+                    owned_vta_client.as_ref()
                 } else {
                     None
                 }
@@ -319,6 +320,13 @@ impl Relationships {
                 .secrets_resolver()
                 .insert_vec(&all_secrets)
                 .await;
+        }
+
+        // If we opened our own admin-DID VTA session above, close it. A client
+        // passed in by the caller is the caller's to shut down. `connect_didcomm`
+        // opens a persistent reconnecting WebSocket that `Drop` can't close.
+        if let Some(client) = &owned_vta_client {
+            client.shutdown().await;
         }
 
         Ok(profiles)

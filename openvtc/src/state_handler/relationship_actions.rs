@@ -448,6 +448,11 @@ async fn create_relationship_did_vta(
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     e_secret.id = e_secret.get_public_keymultibase()?;
 
+    // Close the persistent DIDComm session now that the key fetches are done —
+    // `connect_didcomm` opens an auto-reconnecting WebSocket that `Drop` cannot
+    // close, so a leak duels other admin sessions on the mediator.
+    client.shutdown().await;
+
     // Build did:peer from secrets
     let mut keys = vec![
         (PeerKeyRole::Verification, &mut v_secret),

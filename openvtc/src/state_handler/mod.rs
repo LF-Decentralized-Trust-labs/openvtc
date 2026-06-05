@@ -358,24 +358,28 @@ impl StateHandler {
         state.main_page.content_panel.vta.profile = self.profile.clone();
 
         // Fetch VTA context name if using VTA backend. The helper handles
-        // both DIDComm and REST transports automatically.
+        // both DIDComm and REST transports automatically. The DIDComm client
+        // opens a persistent session, so it MUST be shut down after use or it
+        // lingers and duels other admin sessions on the mediator.
         if matches!(
             &config.key_backend,
             openvtc_core::config::KeyBackend::Vta { .. }
         ) && let Ok(client) =
             openvtc_core::config::build_runtime_vta_client(&config.key_backend).await
-            && let Ok(resp) = client.list_contexts().await
         {
-            if let Some(ctx) = resp
-                .contexts
-                .iter()
-                .find(|c| c.did.as_deref() == Some(config.persona_did()))
-            {
-                state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
-            } else if let Some(ctx) = resp.contexts.first() {
-                // Fallback to first context
-                state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+            if let Ok(resp) = client.list_contexts().await {
+                if let Some(ctx) = resp
+                    .contexts
+                    .iter()
+                    .find(|c| c.did.as_deref() == Some(config.persona_did()))
+                {
+                    state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+                } else if let Some(ctx) = resp.contexts.first() {
+                    // Fallback to first context
+                    state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+                }
             }
+            client.shutdown().await;
         }
 
         // A State-A account has no persona/community yet (R-A-5): there is no
