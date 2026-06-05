@@ -73,11 +73,15 @@ pub trait ConfigExtension {
     /// State B: mint a persona (`did:webvh` + keys + mediator + runtime identity)
     /// into an existing account `config`, persist, and return its id. Used by the
     /// join flow (Stage 4) once a community has been chosen.
-    #[allow(dead_code)]
+    ///
+    /// The persona label/username is read from `state.username` (set by the
+    /// caller — the setup wizard via `Action::SetUsername`, or the join flow from
+    /// the community display name). This replaces the previous
+    /// `setup_flow.username.username` read so the join flow needn't construct a
+    /// full `SetupFlow` UI component just to carry one string.
     async fn mint_persona_into(
         config: &mut Config,
         state: &SetupState,
-        setup_flow: &SetupFlow,
         tdk: &TDK,
         profile: &str,
     ) -> Result<PersonaId>;
@@ -233,9 +237,13 @@ impl ConfigExtension for Config {
         profile: &str,
     ) -> Result<Config> {
         // Account bootstrap (State A) then persona mint (State B) — the legacy
-        // single-flow setup is exactly these two steps back to back.
-        let mut config = Self::create_account(state, profile).await?;
-        Self::mint_persona_into(&mut config, state, setup_flow, tdk, profile).await?;
+        // single-flow setup is exactly these two steps back to back. The username
+        // travels via `state.username`; mirror the legacy `setup_flow` source
+        // into it so behaviour is unchanged.
+        let mut state = state.clone();
+        state.username = setup_flow.username.username.value().to_string();
+        let mut config = Self::create_account(&state, profile).await?;
+        Self::mint_persona_into(&mut config, &state, tdk, profile).await?;
         Ok(config)
     }
 
@@ -332,7 +340,6 @@ impl ConfigExtension for Config {
     async fn mint_persona_into(
         config: &mut Config,
         state: &SetupState,
-        setup_flow: &SetupFlow,
         tdk: &TDK,
         profile: &str,
     ) -> Result<PersonaId> {
@@ -404,7 +411,7 @@ impl ConfigExtension for Config {
             mediator_did: Some(mediator_did.clone()),
             origin_context_id: String::new(),
             created_at: Utc::now(),
-            label: Some(setup_flow.username.username.value().to_string()),
+            label: Some(state.username.clone()),
         };
 
         config.account.personas.insert(persona_id, persona_record);
@@ -419,7 +426,7 @@ impl ConfigExtension for Config {
             },
         );
         config.key_info.extend(key_info);
-        config.public.friendly_name = setup_flow.username.username.value().to_string();
+        config.public.friendly_name = state.username.clone();
 
         config.save(
             profile,

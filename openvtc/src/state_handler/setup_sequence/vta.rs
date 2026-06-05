@@ -318,8 +318,6 @@ pub async fn create_did_via_server(
 // calls are a body swap with no call-site churn) but do not hit the network yet.
 
 /// Receipt from submitting a community join request.
-// `dead_code` until the join flow (next Stage-4 slice) calls these seams.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct JoinReceipt {
     /// Correlates the VTC's asynchronous accept/reject decision (R-B-8).
@@ -332,7 +330,7 @@ pub struct JoinReceipt {
 /// [`context_path::build_sub_context_id`](openvtc_core::config::context_path::build_sub_context_id);
 /// this seam is where the VTA registration call will go. STUB: echoes the id
 /// back. `parent_id` is the account's `top_context_id`.
-#[allow(dead_code, clippy::unused_async)]
+#[allow(clippy::unused_async)]
 pub async fn create_sub_context(
     client: &VtaClient,
     parent_id: &str,
@@ -346,7 +344,7 @@ pub async fn create_sub_context(
 ///
 /// STUB: synthesizes a local `request_id`. The real VTA/VTC submission (with the
 /// holder's verifiable presentation) is a later body swap.
-#[allow(dead_code, clippy::unused_async)]
+#[allow(clippy::unused_async)]
 pub async fn submit_join(
     client: &VtaClient,
     vtc_did: &str,

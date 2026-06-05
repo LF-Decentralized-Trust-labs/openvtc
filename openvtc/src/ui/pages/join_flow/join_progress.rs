@@ -1,0 +1,146 @@
+//! Join flow — step 2: live progress of the automated mint + join sequence.
+//!
+//! Renders the `JoinState.messages` log plus the terminal outcome. On success
+//! it shows the created persona DID and the pending community, and prompts the
+//! operator to restart OpenVTC to activate the new community (hot-start is a
+//! deliberate follow-up). [ENTER] returns to the main page.
+
+use crate::colors::{
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
+    COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
+};
+use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::{
+    Frame,
+    layout::{
+        Constraint::{Length, Min},
+        Layout,
+    },
+    style::{Style, Stylize},
+    text::{Line, Span},
+    widgets::{Block, Padding, Paragraph, Wrap},
+};
+
+use crate::{
+    state_handler::{
+        actions::Action,
+        join::JoinState,
+        setup_sequence::{Completion, MessageType},
+    },
+    ui::pages::join_flow::JoinFlow,
+};
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct JoinProgress;
+
+impl JoinProgress {
+    pub fn handle_key_event(state: &mut JoinFlow, key: KeyEvent) {
+        match key.code {
+            KeyCode::F(10) => {
+                let _ = state.action_tx.send(Action::Exit);
+            }
+            KeyCode::Enter if !state.props.state.processing => {
+                // Return to the main page once the sequence has settled.
+                let _ = state.action_tx.send(Action::JoinCancel);
+            }
+            _ => {}
+        }
+    }
+
+    pub fn render(&self, state: &JoinState, frame: &mut Frame<'_>) {
+        let [middle, bottom] = Layout::vertical([Min(0), Length(3)]).areas(frame.area());
+
+        let block = Block::bordered()
+            .fg(COLOR_BORDER)
+            .padding(Padding::proportional(1))
+            .title(" Joining community ");
+
+        let mut lines = Vec::new();
+
+        for msg in &state.messages {
+            match msg {
+                MessageType::Info(info) => lines.push(Line::styled(
+                    format!("INFO: {info}"),
+                    Style::new().fg(COLOR_SUCCESS),
+                )),
+                MessageType::Error(err) => lines.push(Line::styled(
+                    format!("ERROR: {err}"),
+                    Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED),
+                )),
+            }
+        }
+
+        match state.completed {
+            Completion::NotFinished => {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    "Working… please wait.",
+                    Style::new().fg(COLOR_DARK_GRAY),
+                ));
+            }
+            Completion::CompletedOK => {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    "Join request submitted.",
+                    Style::new().fg(COLOR_SUCCESS).bold(),
+                ));
+                if let Some(rec) = &state.created_community {
+                    lines.push(Line::default());
+                    lines.push(Line::from(vec![
+                        Span::styled("  Community: ", Style::new().fg(COLOR_SUCCESS)),
+                        Span::styled(
+                            rec.display_name
+                                .clone()
+                                .unwrap_or_else(|| rec.vtc_did.clone()),
+                            Style::new().fg(COLOR_SOFT_PURPLE),
+                        ),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("  VTC DID:   ", Style::new().fg(COLOR_SUCCESS)),
+                        Span::styled(rec.vtc_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                    ]));
+                    lines.push(Line::from(vec![
+                        Span::styled("  Status:    ", Style::new().fg(COLOR_SUCCESS)),
+                        Span::styled("Pending", Style::new().fg(COLOR_ORANGE)),
+                    ]));
+                }
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    "Restart OpenVTC to activate this community.",
+                    Style::new().fg(COLOR_ORANGE).bold(),
+                ));
+            }
+            Completion::CompletedFail => {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    "Join failed. Nothing was activated.",
+                    Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+                ));
+            }
+        }
+
+        if !matches!(state.completed, Completion::NotFinished) {
+            lines.push(Line::default());
+            lines.push(Line::from(vec![
+                Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" to return", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ]));
+        }
+
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .wrap(Wrap { trim: false }),
+            middle,
+        );
+
+        let bottom_line = Line::from(vec![
+            Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled(" to quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
+        ]);
+        frame.render_widget(
+            Paragraph::new(bottom_line).block(Block::new().padding(Padding::new(2, 0, 1, 0))),
+            bottom,
+        );
+    }
+}

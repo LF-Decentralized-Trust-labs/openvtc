@@ -53,6 +53,8 @@ pub mod actions;
 mod credential_actions;
 pub mod didcomm;
 mod inbox_actions;
+pub mod join;
+mod join_flow;
 pub mod main_page;
 mod message_dispatch;
 mod relationship_actions;
@@ -297,12 +299,14 @@ impl StateHandler {
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
                                     let _ = self.state_tx.send(state.clone());
+                                    // No config loaded here — join is unavailable.
                                     return self
                                         .run_degraded_loop(
                                             &mut action_rx,
                                             &mut interrupt_rx,
                                             &mut terminator,
                                             &mut state,
+                                            None,
                                         )
                                         .await;
                                 }
@@ -318,6 +322,7 @@ impl StateHandler {
                                             &mut interrupt_rx,
                                             &mut terminator,
                                             &mut state,
+                                            None,
                                         )
                                         .await;
                                 }
@@ -403,18 +408,22 @@ impl StateHandler {
         if config.active_identity().is_none() {
             state.connection.status = state::MediatorStatus::NoActiveCommunity;
             let _ = self.state_tx.send(state.clone());
-            // No persona yet (State A). The join flow (R-A-5 Stage 4) will reuse
-            // the admin session from the Communities/degraded loop; until then
-            // nothing there uses it, so close it rather than let it linger.
-            if let Some(c) = admin_vta {
-                c.shutdown().await;
-            }
+            // No persona yet (State A). Hand the always-on admin session to the
+            // degraded loop so the Communities `j` → join flow (R-A-5 Stage 4)
+            // can reuse it; the loop closes it on exit.
+            let join_ctx = DegradedJoinContext {
+                tdk,
+                config,
+                admin_vta,
+                profile: self.profile.clone(),
+            };
             return self
                 .run_degraded_loop(
                     &mut action_rx,
                     &mut interrupt_rx,
                     &mut terminator,
                     &mut state,
+                    Some(join_ctx),
                 )
                 .await;
         }
@@ -447,15 +456,22 @@ impl StateHandler {
                     .main_page
                     .log_error("DIDComm service failed to start", &e);
                 let _ = self.state_tx.send(state.clone());
-                if let Some(c) = admin_vta {
-                    c.shutdown().await;
-                }
+                // Messaging is down but the admin VTA session may still be live;
+                // hand it to the degraded loop so the user can still join a
+                // community (State-B path). The loop closes the session on exit.
+                let join_ctx = DegradedJoinContext {
+                    tdk,
+                    config,
+                    admin_vta,
+                    profile: self.profile.clone(),
+                };
                 return self
                     .run_degraded_loop(
                         &mut action_rx,
                         &mut interrupt_rx,
                         &mut terminator,
                         &mut state,
+                        Some(join_ctx),
                     )
                     .await;
             }
@@ -533,6 +549,36 @@ impl StateHandler {
                                 // When switching to MainMenu, reset any content-specific state if needed
                                 state.main_page.menu_panel.selected = true;
                                 state.main_page.content_panel.selected = false;
+                            }
+                        }
+                    },
+                    Action::StartJoin => {
+                        // State-B join from the live runtime: reuse the always-on
+                        // admin VTA session. The DIDComm service keeps running in
+                        // the background; the join flow owns the screen until the
+                        // user returns. Restart is required to activate the new
+                        // community (hot-start is a deliberate follow-up).
+                        match self
+                            .join_flow(
+                                &mut action_rx,
+                                &mut interrupt_rx,
+                                &mut state,
+                                &tdk,
+                                &mut config,
+                                admin_vta.as_ref(),
+                                self.profile.as_str(),
+                            )
+                            .await
+                        {
+                            Ok(join_flow::JoinExit::Returned) => {
+                                state.active_page = state::ActivePage::Main;
+                            }
+                            Ok(join_flow::JoinExit::Exit(interrupted)) => {
+                                break interrupted;
+                            }
+                            Err(e) => {
+                                state.main_page.log_error("Join flow failed", &e);
+                                state.active_page = state::ActivePage::Main;
                             }
                         }
                     },
@@ -783,28 +829,36 @@ impl StateHandler {
         Ok(result)
     }
 
-    /// Minimal event loop for when init fails -- keeps UI alive so user sees the error and can exit.
+    /// Minimal event loop for when there is no active community / messaging
+    /// (State-A) or after an init failure — keeps the UI alive so the user can
+    /// navigate, exit, and (when `join_ctx` is supplied) start a join.
+    ///
+    /// `join_ctx` carries the runtime pieces the join flow needs (TDK, the live
+    /// `Config`, the always-on admin VTA session, profile). The early
+    /// load-failure callers have no loaded config, so they pass `None` and
+    /// `StartJoin` is a no-op there.
     async fn run_degraded_loop(
         &self,
         action_rx: &mut UnboundedReceiver<Action>,
         interrupt_rx: &mut broadcast::Receiver<Interrupted>,
         terminator: &mut Terminator,
         state: &mut State,
+        mut join_ctx: Option<DegradedJoinContext>,
     ) -> Result<Interrupted> {
-        loop {
+        let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
                     Action::Exit => {
                         if let Err(e) = terminator.terminate(Interrupted::UserInt) {
                             debug!("Failed to send terminate signal: {e}");
                         }
-                        return Ok(Interrupted::UserInt);
+                        break Interrupted::UserInt;
                     }
                     Action::UXError(interrupted) => {
                         if let Err(e) = terminator.terminate(interrupted.clone()) {
                             debug!("Failed to send terminate signal: {e}");
                         }
-                        return Ok(interrupted);
+                        break interrupted;
                     }
                     Action::MainMenuSelected(menu_item) => {
                         state.main_page.menu_panel.selected_menu = menu_item;
@@ -821,15 +875,73 @@ impl StateHandler {
                             }
                         }
                     }
+                    Action::StartJoin => {
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            match self
+                                .join_flow(
+                                    action_rx,
+                                    interrupt_rx,
+                                    state,
+                                    &ctx.tdk,
+                                    &mut ctx.config,
+                                    ctx.admin_vta.as_ref(),
+                                    ctx.profile.as_str(),
+                                )
+                                .await
+                            {
+                                Ok(join_flow::JoinExit::Returned) => {
+                                    // Back on the main page; resume the degraded loop.
+                                    state.active_page = state::ActivePage::Main;
+                                }
+                                Ok(join_flow::JoinExit::Exit(interrupted)) => {
+                                    if let Err(e) = terminator.terminate(interrupted.clone()) {
+                                        debug!("Failed to send terminate signal: {e}");
+                                    }
+                                    break interrupted;
+                                }
+                                Err(e) => {
+                                    state
+                                        .main_page
+                                        .log_error("Join flow failed", &e);
+                                    state.active_page = state::ActivePage::Main;
+                                }
+                            }
+                        } else {
+                            state
+                                .main_page
+                                .log("Cannot join: no active VTA session.");
+                        }
+                    }
                     _ => {}
                 },
                 Ok(interrupted) = interrupt_rx.recv() => {
-                    return Ok(interrupted);
+                    break interrupted;
                 }
             }
             let _ = self.state_tx.send(state.clone());
+        };
+
+        // Close the always-on admin VTA session owned by the join context, if any.
+        if let Some(ctx) = join_ctx
+            && let Some(c) = ctx.admin_vta
+        {
+            c.shutdown().await;
         }
+
+        Ok(result)
     }
+}
+
+/// Runtime context the degraded loop hands to [`StateHandler::join_flow`].
+///
+/// Owns the live `Config` (mutated + persisted by a successful join), the TDK,
+/// the always-on admin VTA session, and the profile name. The admin session is
+/// shut down when the degraded loop returns.
+struct DegradedJoinContext {
+    tdk: TDK,
+    config: Box<Config>,
+    admin_vta: Option<vta_sdk::client::VtaClient>,
+    profile: String,
 }
 
 // Per-domain action dispatch lives in the corresponding sub-module:

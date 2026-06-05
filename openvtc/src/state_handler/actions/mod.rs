@@ -208,6 +208,19 @@ pub enum Action {
     Settings(SettingsAction),
 
     // ************************************************************************
+    // JOIN flow (R-A-5 Stage 4 — State-B "join a community")
+    /// Open the join flow (pressing `j` on the Communities panel). Handled in
+    /// both the degraded loop (State-A first join) and the runtime select loop.
+    StartJoin,
+
+    /// Submit the entered community VTC DID — kicks off the automated
+    /// persona-mint + sub-context + join-submit sequence.
+    JoinSubmitVtc(String),
+
+    /// Cancel the join flow and return to the main page.
+    JoinCancel,
+
+    // ************************************************************************
     // SETUP Pages
     /// Import existing Config
     /// Filename, config_unlock_passphrase, new_unlock_passphrase

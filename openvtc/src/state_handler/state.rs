@@ -4,7 +4,7 @@ use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 
-use crate::state_handler::{main_page::MainPageState, setup_sequence::SetupState};
+use crate::state_handler::{join::JoinState, main_page::MainPageState, setup_sequence::SetupState};
 
 /// State holds the state of the application
 #[derive(Default, Debug, Clone)]
@@ -12,6 +12,8 @@ pub struct State {
     pub active_page: ActivePage,
     pub main_page: MainPageState,
     pub setup: SetupState,
+    /// State-B "join a community" flow (R-A-5 Stage 4).
+    pub join: JoinState,
     pub connection: ConnectionState,
 
     /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
@@ -31,6 +33,8 @@ pub enum ActivePage {
     Main,
     /// The setup wizard flow (comprised of multiple sequential screens).
     Setup,
+    /// The State-B "join a community" flow (R-A-5 Stage 4).
+    Join,
 }
 
 /// Tracks the state of the DIDComm mediator connection.

@@ -309,6 +309,25 @@ impl MainPage {
             MainMenu::Settings => self.handle_settings_key(key),
             MainMenu::Logs => self.handle_logs_key(key),
             MainMenu::Help => self.handle_help_key(key),
+            MainMenu::Communities => self.handle_communities_key(key),
+            _ => false,
+        }
+    }
+
+    /// Communities overview keys (R-A-5 Stage 4): `j` starts the join flow,
+    /// including from the empty state. Returns true if consumed.
+    fn handle_communities_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Char('j') => {
+                let _ = self.action_tx.send(Action::StartJoin);
+                true
+            }
+            KeyCode::Esc => {
+                let _ = self
+                    .action_tx
+                    .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                true
+            }
             _ => false,
         }
     }
