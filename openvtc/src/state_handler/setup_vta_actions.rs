@@ -4,6 +4,7 @@ use crate::state_handler::{
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
+use vta_sdk::client::VtaClient;
 use vta_sdk::provision_client::{
     DiagStatus, EphemeralSetupKey, Protocol, ProvisionAsk, VtaEvent, VtaIntent, VtaReply,
     apply_update, pending_list, run_connection_test,
@@ -111,13 +112,20 @@ pub(crate) async fn handle_vta_submit_did(
 /// success store the issued admin VC + access token. The provisioning page
 /// itself emits `VtaAuthCompleted` once the operator confirms, which routes
 /// into the keys-fetch / webvh-server pick flow.
+///
+/// On success it returns the live admin [`VtaClient`] (DIDComm session opened as
+/// the rotated admin DID, or a REST client). The caller (the setup wizard) holds
+/// this **single** session and reuses it for the key/DID-creation steps, then
+/// shuts it down once when setup ends — so the admin DID keeps **one** mediator
+/// connection for the whole flow instead of opening a fresh WebSocket per VTA
+/// call (which churns the mediator's one-socket-per-DID policy and drops
+/// in-flight responses). Returns `Ok(None)` if provisioning did not complete.
 pub(crate) async fn handle_vta_start_provision(
     state: &mut State,
     state_tx: &watch::Sender<State>,
     context_id: String,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<VtaClient>> {
     use crate::state_handler::setup_sequence::vta;
-    use vta_sdk::client::VtaClient;
 
     let setup_key = match state.setup.vta.setup_key.clone() {
         Some(k) => k,
@@ -126,7 +134,7 @@ pub(crate) async fn handle_vta_start_provision(
                 "Setup DID not generated yet — restart the setup wizard.".to_string(),
             ));
             state.setup.vta.completed = Completion::CompletedFail;
-            return Ok(());
+            return Ok(None);
         }
     };
     let vta_did = state.setup.vta.vta_did.clone();
@@ -221,7 +229,7 @@ pub(crate) async fn handle_vta_start_provision(
             state.setup.vta.completed = Completion::CompletedFail;
             let _ = state_tx.send(state.clone());
         }
-        return Ok(());
+        return Ok(None);
     };
 
     // Adopt the admin credential as the authenticated identity for the rest
@@ -254,7 +262,7 @@ pub(crate) async fn handle_vta_start_provision(
                     ));
                     state.setup.vta.completed = Completion::CompletedFail;
                     let _ = state_tx.send(state.clone());
-                    return Ok(());
+                    return Ok(None);
                 }
             };
             state.setup.vta.messages.push(MessageType::Info(
@@ -290,7 +298,7 @@ pub(crate) async fn handle_vta_start_provision(
                     )));
                     state.setup.vta.completed = Completion::CompletedFail;
                     let _ = state_tx.send(state.clone());
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -330,7 +338,7 @@ pub(crate) async fn handle_vta_start_provision(
                         .push(MessageType::Error(format!("Authentication failed: {e}")));
                     state.setup.vta.completed = Completion::CompletedFail;
                     let _ = state_tx.send(state.clone());
-                    return Ok(());
+                    return Ok(None);
                 }
             }
         }
@@ -357,18 +365,16 @@ pub(crate) async fn handle_vta_start_provision(
         }
     }
 
-    // Close the post-bootstrap admin DIDComm session. `connect_didcomm` opens a
-    // session whose only graceful close is the async `shutdown()` — `Drop` can't
-    // do it, and vta-sdk 0.9.8's LeakGuard panics (debug) on a leaked drop.
-    client.shutdown().await;
-
     state.setup.vta.completed = Completion::CompletedOK;
     // Stay on VtaProvisioning so the operator can see the admin DID rotation
     // result (ephemeral setup DID → long-term admin DID) before advancing on
     // Enter.
     let _ = state_tx.send(state.clone());
 
-    Ok(())
+    // Hand the live admin session back to the wizard. It is kept open and reused
+    // for the key/DID-creation steps (one mediator connection for the whole
+    // flow), then shut down once when setup ends.
+    Ok(Some(client))
 }
 
 /// Handle the `VtaCreateKeys` action: create persona keys and WebVH update keys via VTA.
@@ -376,6 +382,7 @@ pub(crate) async fn handle_vta_start_provision(
 pub(crate) async fn handle_vta_create_keys(
     state: &mut State,
     state_tx: &watch::Sender<State>,
+    client: Option<&VtaClient>,
 ) -> anyhow::Result<bool> {
     use crate::state_handler::setup_sequence::vta;
 
@@ -387,22 +394,19 @@ pub(crate) async fn handle_vta_create_keys(
     ));
     let _ = state_tx.send(state.clone());
 
-    let client = match vta::build_vta_client(&state.setup.vta).await {
-        Ok(c) => c,
-        Err(e) => {
-            state
-                .setup
-                .vta
-                .messages
-                .push(MessageType::Error(format!("VTA client unavailable: {e}")));
-            state.setup.vta.completed = Completion::CompletedFail;
-            return Ok(true);
-        }
+    // Reuse the single admin session the wizard opened at provisioning — no fresh
+    // VTA WebSocket per step (which churns the mediator and drops responses).
+    let Some(client) = client else {
+        state.setup.vta.messages.push(MessageType::Error(
+            "VTA admin session unavailable — restart provisioning.".to_string(),
+        ));
+        state.setup.vta.completed = Completion::CompletedFail;
+        return Ok(true);
     };
 
     // Create persona keys (signing, authentication, encryption)
     let context_id = state.setup.vta.context_id.as_deref();
-    match vta::create_persona_keys(&client, context_id).await {
+    match vta::create_persona_keys(client, context_id).await {
         Ok(persona_keys) => {
             state.setup.vta.messages.push(MessageType::Info(
                 "Persona keys created successfully.".to_string(),
@@ -415,7 +419,7 @@ pub(crate) async fn handle_vta_create_keys(
             ));
             let _ = state_tx.send(state.clone());
 
-            match vta::create_update_keys(&client, context_id).await {
+            match vta::create_update_keys(client, context_id).await {
                 Ok((update_secret, next_update_secret)) => {
                     state.setup.vta.update_secret = Some(update_secret);
                     state.setup.vta.next_update_secret = Some(next_update_secret);
@@ -440,10 +444,6 @@ pub(crate) async fn handle_vta_create_keys(
             state.setup.vta.completed = Completion::CompletedFail;
         }
     }
-    // Close the DIDComm session — `connect_didcomm` opens a persistent,
-    // auto-reconnecting WebSocket that `Drop` cannot close (shutdown is async).
-    // A leaked admin-DID session duels the next step's session on the mediator
-    // (duplicate-WebSocket loop → DIDComm timeouts).
-    client.shutdown().await;
+    // No shutdown here — the wizard owns the shared admin session.
     Ok(false)
 }

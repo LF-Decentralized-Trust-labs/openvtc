@@ -29,7 +29,17 @@ impl StateHandler {
 
         // Holder for the created config
         let mut config: Option<Config> = None;
-        let exit = loop {
+        // The single admin VTA session: opened once at provisioning (after the
+        // ephemeral→admin DID swap) and reused by every subsequent VTA step, so
+        // the admin DID holds ONE mediator connection for the whole flow rather
+        // than a fresh WebSocket per call (which churns the mediator's
+        // one-socket-per-DID policy and drops in-flight responses). Shut down
+        // once when the wizard exits (below).
+        let mut admin_client: Option<vta_sdk::client::VtaClient> = None;
+        // Wrapped so the admin session is torn down on EVERY exit — including a
+        // `?` error out of a handler below — and never leaks (the LeakGuard).
+        let exit: Result<SetupWizardExit> = async {
+            Ok(loop {
             let _ = self.state_tx.send(state.clone());
             tokio::select! {
             Some(action) = action_rx.recv() => match action {
@@ -85,10 +95,14 @@ impl StateHandler {
                     setup_vta_actions::handle_vta_submit_did(state, &self.state_tx, vta_did).await?;
                 },
                 Action::VtaStartProvision(context_id) => {
-                    setup_vta_actions::handle_vta_start_provision(state, &self.state_tx, context_id).await?;
+                    // Close any prior admin session before re-provisioning.
+                    if let Some(c) = admin_client.take() {
+                        c.shutdown().await;
+                    }
+                    admin_client = setup_vta_actions::handle_vta_start_provision(state, &self.state_tx, context_id).await?;
                 },
                 Action::VtaCreateKeys
-                    if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx).await? =>
+                    if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx, admin_client.as_ref()).await? =>
                 {
                     continue;
                 },
@@ -126,14 +140,14 @@ impl StateHandler {
                     // Cannot move owned bound vars into a match guard, so the
                     // collapsible_match form clippy suggests doesn't compile.
                     #[allow(clippy::collapsible_match)]
-                    if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, server_id, path_mode).await? {
+                    if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, admin_client.as_ref(), server_id, path_mode).await? {
                         continue;
                     }
                 },
                 Action::SetCustomMediator(mediator_did) => {
                     state.setup.custom_mediator = Some(mediator_did.clone());
                     if state.setup.vta.use_webvh_server {
-                        if setup_did_actions::handle_custom_mediator_webvh(state, &self.state_tx, tdk).await? {
+                        if setup_did_actions::handle_custom_mediator_webvh(state, &self.state_tx, tdk, admin_client.as_ref()).await? {
                             continue;
                         }
                     } else {
@@ -190,8 +204,17 @@ impl StateHandler {
                     break SetupWizardExit::Interrupted(interrupted);
                 }
             }
-        };
+            })
+        }
+        .await;
 
-        Ok(exit)
+        // Tear down the single admin VTA session now that setup is over (no-op
+        // for the REST transport). This is the one place the wizard's session is
+        // closed — every VTA step above reused it without opening its own.
+        if let Some(c) = admin_client {
+            c.shutdown().await;
+        }
+
+        exit
     }
 }
