@@ -422,6 +422,30 @@ pub async fn build_runtime_vta_client(
     }
 }
 
+/// Run `f` with a runtime VTA client built from `backend`, guaranteeing the
+/// (DIDComm) session is shut down whether `f` returns `Ok` **or** `Err`.
+///
+/// Mirrors [`vta_sdk::client::VtaClient::with_didcomm`] but threads the caller's
+/// own error type — any `E: From<OpenVTCError>` (e.g. [`OpenVTCError`] or
+/// `anyhow::Error`). `shutdown` is a no-op for the REST transport. Prefer this
+/// over [`build_runtime_vta_client`] + a manual `shutdown()`: an early `?` in the
+/// body can otherwise drop the session without closing it, leaking a live
+/// session (and tripping the SDK's `LeakGuard`).
+pub async fn with_runtime_vta_client<F, Fut, T, E>(backend: &KeyBackend, f: F) -> Result<T, E>
+where
+    F: FnOnce(vta_sdk::client::VtaClient) -> Fut,
+    Fut: std::future::Future<Output = Result<T, E>>,
+    E: From<OpenVTCError>,
+{
+    // Hand the body an owned clone (a `VtaClient` shares its session across
+    // clones, and `shutdown` is idempotent) — passing by value sidesteps the
+    // async-closure-borrowed-argument lifetime limitation.
+    let client = build_runtime_vta_client(backend).await?;
+    let result = f(client.clone()).await;
+    client.shutdown().await;
+    result
+}
+
 // ****************************************************************************
 // Key Types
 // ****************************************************************************

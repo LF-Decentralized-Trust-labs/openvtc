@@ -201,76 +201,85 @@ impl Config {
 
         let mut identities = HashMap::new();
         if let Some((active_persona_id, active_persona_did, active_mediator_did)) = active_persona {
-            // All config info has been loaded, load DID Document and regenerate keys
-            report_progress(&on_progress, "Resolving DID...");
-            let rr = tdk
-                .did_resolver()
-                .resolve(&active_persona_did)
-                .await
-                .map_err(|e| {
-                    OpenVTCError::Resolver(format!(
-                        "Couldn't resolve Persona DID ({active_persona_did}): {e}"
-                    ))
-                })?;
+            // Resolve + key/profile setup for the active persona. Wrapped in an
+            // inner future so the transient admin-DID VTA session is shut down on
+            // EVERY exit (incl. the `?` error paths below) — a leaked session
+            // would otherwise trip the SDK `LeakGuard` and (pre-0.9.8) duel other
+            // sessions on the mediator.
+            let persona_identity: Result<crate::identity::IdentityContext, OpenVTCError> = async {
+                // All config info has been loaded, load DID Document + regen keys
+                report_progress(&on_progress, "Resolving DID...");
+                let rr = tdk
+                    .did_resolver()
+                    .resolve(&active_persona_did)
+                    .await
+                    .map_err(|e| {
+                        OpenVTCError::Resolver(format!(
+                            "Couldn't resolve Persona DID ({active_persona_did}): {e}"
+                        ))
+                    })?;
 
-            // Create keys from DID Document
-            report_progress(&on_progress, "Loading keys...");
-            Config::regenerate_persona_keys(tdk, &sc, &key_backend, &rr.doc, vta_client.as_ref())
-                .await?;
-
-            // Create persona profile
-            report_progress(&on_progress, "Creating messaging profiles...");
-            let persona_profile = ATMProfile::new(
-                tdk.atm.as_ref().ok_or_else(|| {
-                    OpenVTCError::Config("TDK ATM service not initialized".to_string())
-                })?,
-                Some("Persona DID".to_string()),
-                active_persona_did.to_string(),
-                Some(active_mediator_did.clone()),
-            )
-            .await?;
-
-            // Register the persona profile with the TDK ATM Service but do NOT
-            // open a WebSocket connection. The DIDComm service manages its own
-            // connections — connecting here would create a duplicate WebSocket for
-            // the same DID, triggering the mediator's duplicate detection loop.
-            let atm = tdk.atm.clone().ok_or_else(|| {
-                OpenVTCError::Config("TDK ATM service not initialized".to_string())
-            })?;
-            let persona_profile = atm.profile_add(&persona_profile, false).await?;
-
-            report_progress(&on_progress, "Loading relationships...");
-            // Registers each relationship profile with the ATM service as a
-            // side-effect; the returned map is no longer stored on `Config`.
-            private_cfg
-                .relationships
-                .generate_profiles(
+                report_progress(&on_progress, "Loading keys...");
+                Config::regenerate_persona_keys(
                     tdk,
-                    &active_persona_did,
-                    &active_mediator_did,
+                    &sc,
                     &key_backend,
-                    &sc.key_info,
+                    &rr.doc,
                     vta_client.as_ref(),
                 )
                 .await?;
 
-            identities.insert(
-                active_persona_id,
-                crate::identity::IdentityContext {
+                report_progress(&on_progress, "Creating messaging profiles...");
+                let persona_profile = ATMProfile::new(
+                    tdk.atm.as_ref().ok_or_else(|| {
+                        OpenVTCError::Config("TDK ATM service not initialized".to_string())
+                    })?,
+                    Some("Persona DID".to_string()),
+                    active_persona_did.to_string(),
+                    Some(active_mediator_did.clone()),
+                )
+                .await?;
+
+                // Register the persona profile with the TDK ATM Service but do
+                // NOT open a WebSocket — the DIDComm service owns connections.
+                let atm = tdk.atm.clone().ok_or_else(|| {
+                    OpenVTCError::Config("TDK ATM service not initialized".to_string())
+                })?;
+                let persona_profile = atm.profile_add(&persona_profile, false).await?;
+
+                report_progress(&on_progress, "Loading relationships...");
+                // Registers each relationship profile with the ATM service as a
+                // side-effect; the returned map is no longer stored on `Config`.
+                private_cfg
+                    .relationships
+                    .generate_profiles(
+                        tdk,
+                        &active_persona_did,
+                        &active_mediator_did,
+                        &key_backend,
+                        &sc.key_info,
+                        vta_client.as_ref(),
+                    )
+                    .await?;
+
+                Ok(crate::identity::IdentityContext {
                     persona_id: active_persona_id,
                     did: active_persona_did.to_string(),
                     document: rr.doc,
                     profile: persona_profile,
-                    mediator_did: Some(active_mediator_did),
-                },
-            );
-        }
+                    mediator_did: Some(active_mediator_did.clone()),
+                })
+            }
+            .await;
 
-        // Close the transient admin-DID VTA session. `connect_didcomm` opens a
-        // persistent, auto-reconnecting WebSocket that `Drop` cannot close
-        // (shutdown is async), so a leaked admin session duels later admin
-        // sessions on the mediator (duplicate-WebSocket loop → DIDComm timeouts).
-        if let Some(client) = &vta_client {
+            // Always close the transient admin session before propagating any
+            // error from the body above.
+            if let Some(client) = &vta_client {
+                client.shutdown().await;
+            }
+            identities.insert(active_persona_id, persona_identity?);
+        } else if let Some(client) = &vta_client {
+            // No persona to resolve, but a VTA client was built — close it too.
             client.shutdown().await;
         }
 
