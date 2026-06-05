@@ -5813,7 +5813,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -8457,9 +8457,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vta-sdk"
-version = "0.9.8"
+version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ca9a9ef918900c67ca3247018cdaeb4382c5647ab6cd3ab365f2b43e9412d23"
+checksum = "95b83da57520fdbcf3a7ae45532ff020bb3e732abd6be691ffaf198fb514b612"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
