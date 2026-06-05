@@ -175,25 +175,28 @@ impl StateHandler {
                 Action::ResolveWebVHDID(did) => {
                     setup_did_actions::handle_resolve_webvh_did(state, tdk, did).await;
                 },
-                Action::SetupCompleted(setup_flow) => {
+                Action::SetupCompleted(_setup_flow) => {
                     state.setup.active_page = SetupPage::FinalPage;
                     // The armored private-key block is no longer needed once we
                     // leave the export page; drop it so it stops being cloned
                     // out on every state broadcast.
                     state.setup.did_keys_export.exported = None;
-                    state.setup.final_page.messages.push(MessageType::Info("Generating your profile configuration...".to_string()));
+                    state.setup.final_page.messages.push(MessageType::Info("Creating your account configuration...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Securing sensitive data for storage...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Your device may prompt for authentication to access OS secure storage.".to_string()));
                     let _ = self.state_tx.send(state.clone());
-                    match Config::create(&state.setup, &setup_flow, tdk, &self.profile).await {
+                    // R-A-5: setup now bootstraps a State-A account (VTA admin
+                    // credential + top-level context, no persona/community). A
+                    // persona is minted later by the State-B join flow.
+                    match Config::create_account(&state.setup, &self.profile).await {
                         Ok(cfg) => {
                             state.setup.final_page.completed = Completion::CompletedOK;
-                            state.setup.final_page.messages.push(MessageType::Info("Profile setup completed successfully.".to_string()));
+                            state.setup.final_page.messages.push(MessageType::Info("Account setup completed successfully.".to_string()));
                             config = Some(cfg);
                         },
                         Err(e) => {
                             state.setup.final_page.completed = Completion::CompletedFail;
-                            state.setup.final_page.messages.push(MessageType::Error(format!("Couldn't create OpenVTC configuration. Reason: {e}")));
+                            state.setup.final_page.messages.push(MessageType::Error(format!("Couldn't create OpenVTC account. Reason: {e}")));
                         }
                     }
                 },

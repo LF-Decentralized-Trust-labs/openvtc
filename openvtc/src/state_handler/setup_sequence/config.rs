@@ -52,7 +52,12 @@ pub trait ConfigExtension {
     ) -> Result<()>;
 
     /// Creates a new Config instance based on the setup state
-    /// Saves this to disk and returns the created Config
+    /// Saves this to disk and returns the created Config.
+    ///
+    /// R-A-5: the monolithic account+persona path. Superseded by
+    /// `create_account` (State A) + `mint_persona_into` (State B); kept until the
+    /// Stage-5 cleanup removes it.
+    #[allow(dead_code)]
     async fn create(
         state: &SetupState,
         setup_flow: &SetupFlow,
@@ -67,7 +72,8 @@ pub trait ConfigExtension {
 
     /// State B: mint a persona (`did:webvh` + keys + mediator + runtime identity)
     /// into an existing account `config`, persist, and return its id. Used by the
-    /// join flow once a community has been chosen.
+    /// join flow (Stage 4) once a community has been chosen.
+    #[allow(dead_code)]
     async fn mint_persona_into(
         config: &mut Config,
         state: &SetupState,

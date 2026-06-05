@@ -3,7 +3,6 @@ use crate::colors::{
     COLOR_WARNING_ACCESSIBLE_RED,
 };
 use crossterm::event::{KeyCode, KeyEvent};
-use openvtc_core::LF_PUBLIC_MEDIATOR_DID;
 use ratatui::{
     Frame,
     layout::{
@@ -78,32 +77,26 @@ impl FinalPage {
         if matches!(state.final_page.completed, Completion::CompletedOK) {
             lines.push(Line::default());
             lines.push(Line::styled(
-                "Congratulations! Your OpenVTC profile is ready.",
+                "Congratulations! Your OpenVTC account is ready.",
                 Style::new().fg(COLOR_SUCCESS).bold(),
             ));
             lines.push(Line::default());
 
-            // Display profile information
+            // Display account information (State A — no persona/community yet).
             lines.push(Line::styled(
-                "Profile Summary:",
+                "Account Summary:",
                 Style::new().fg(COLOR_BORDER).bold(),
             ));
             lines.push(Line::from(vec![
-                Span::styled("  Display Name: ", Style::new().fg(COLOR_SUCCESS)),
-                Span::styled(&state.username, Style::new().fg(COLOR_SOFT_PURPLE)),
+                Span::styled("  VTA DID: ", Style::new().fg(COLOR_SUCCESS)),
+                Span::styled(&state.vta.vta_did, Style::new().fg(COLOR_SOFT_PURPLE)),
             ]));
             lines.push(Line::from(vec![
-                Span::styled("  Persona DID: ", Style::new().fg(COLOR_SUCCESS)),
-                Span::styled(&state.webvh_address.did, Style::new().fg(COLOR_SOFT_PURPLE)),
-            ]));
-
-            let mediator_did = state
-                .custom_mediator
-                .as_deref()
-                .unwrap_or(LF_PUBLIC_MEDIATOR_DID);
-            lines.push(Line::from(vec![
-                Span::styled("  Mediator DID: ", Style::new().fg(COLOR_SUCCESS)),
-                Span::styled(mediator_did, Style::new().fg(COLOR_SOFT_PURPLE)),
+                Span::styled("  Context: ", Style::new().fg(COLOR_SUCCESS)),
+                Span::styled(
+                    state.vta.context_id.as_deref().unwrap_or("(none)"),
+                    Style::new().fg(COLOR_SOFT_PURPLE),
+                ),
             ]));
 
             lines.push(Line::default());

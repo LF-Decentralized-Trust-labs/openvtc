@@ -157,7 +157,11 @@ impl StateHandler {
                         // The setup wizard saved the config but the TDK secrets
                         // resolver is empty. Load persona key secrets so the
                         // DIDComm service can authenticate with the mediator.
-                        if let Err(e) = config.load_persona_secrets(&tdk).await {
+                        // R-A-5: a State-A account has no persona, so there are no
+                        // secrets to load — skip it (and the VTA round-trip).
+                        if config.active_identity().is_some()
+                            && let Err(e) = config.load_persona_secrets(&tdk).await
+                        {
                             state
                                 .main_page
                                 .log_error("Warning: failed to load persona keys", &e);

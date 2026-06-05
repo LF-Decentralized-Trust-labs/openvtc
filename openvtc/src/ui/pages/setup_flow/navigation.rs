@@ -116,13 +116,12 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         SetupEvent::ImportConfig => NavResult::GoTo(SetupPage::ConfigImport),
 
         // === VtaProvisioning ===
-        SetupEvent::VtaAuthCompleted => {
-            if !state.vta.webvh_servers.is_empty() {
-                NavResult::GoTo(SetupPage::WebvhServerSelect)
-            } else {
-                NavResult::SendAction(Action::VtaCreateKeys)
-            }
-        }
+        // R-A-5: setup is now State A (account bootstrap) only. Once the admin
+        // credential is issued, go straight to protection then create the
+        // account — minting a persona / did:webvh moves to the State-B join flow
+        // (Stage 4). The persona-minting arms below are unreachable from this
+        // flow and will be reused by the join flow.
+        SetupEvent::VtaAuthCompleted => NavResult::GoTo(protection_entry()),
 
         // === WebvhServerSelect ===
         SetupEvent::UseWebvhServer {
@@ -151,10 +150,10 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
 
         // === DidGitSignAsk ===
         SetupEvent::DidGitSignAccept => NavResult::SendAction(Action::DidGitSignInstall),
-        SetupEvent::DidGitSignSkip => NavResult::GoTo(after_export()),
+        SetupEvent::DidGitSignSkip => NavResult::GoTo(protection_entry()),
 
         // === DidGitSignSetup ===
-        SetupEvent::DidGitSignDone => NavResult::GoTo(after_export()),
+        SetupEvent::DidGitSignDone => NavResult::GoTo(protection_entry()),
 
         // === Token pages ===
         #[cfg(feature = "openpgp-card")]
@@ -171,17 +170,19 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         }
 
         // === UnlockCode ===
+        // R-A-5: after protection is decided, create the account (State A) and
+        // land on FinalPage. SetProtection records the passcode + page; the
+        // trailing SetupCompleted runs `Config::create_account`.
         SetupEvent::WantUnlockCode => NavResult::GoTo(SetupPage::UnlockCodeSet),
         SetupEvent::SkipUnlockCode => NavResult::GoTo(SetupPage::UnlockCodeWarn),
         SetupEvent::UnlockCodeSet { passphrase_hash } => {
-            let next = after_unlock(state);
-            NavResult::SendAction(Action::SetProtection(
+            NavResult::SendActionThenCompleteSetup(Action::SetProtection(
                 ConfigProtection::Passcode(passphrase_hash),
-                next,
+                SetupPage::FinalPage,
             ))
         }
         SetupEvent::ReturnToSetCode => NavResult::GoTo(SetupPage::UnlockCodeSet),
-        SetupEvent::AcceptNoCodeRisk => NavResult::GoTo(after_unlock(state)),
+        SetupEvent::AcceptNoCodeRisk => NavResult::CompleteSetup,
 
         // === Mediator ===
         SetupEvent::UseDefaultMediator => NavResult::GoTo(SetupPage::UserName),
@@ -207,8 +208,10 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
     }
 }
 
-/// After export (skip or complete), go to token setup or unlock code.
-fn after_export() -> SetupPage {
+/// Entry point into the config-protection sub-flow (token setup on openpgp-card
+/// builds, otherwise the unlock-code prompt). Reached straight after VTA
+/// provisioning in State-A setup, and after key export in the persona flow.
+fn protection_entry() -> SetupPage {
     #[cfg(feature = "openpgp-card")]
     {
         SetupPage::TokenStart
@@ -224,15 +227,6 @@ fn after_export() -> SetupPage {
 fn after_tokens(state: &SetupState) -> SetupPage {
     let _ = state; // tokens always lead to UnlockCodeAsk
     SetupPage::UnlockCodeAsk
-}
-
-/// After unlock code (set or skipped), go to UserName (webvh) or MediatorAsk (manual).
-fn after_unlock(state: &SetupState) -> SetupPage {
-    if state.vta.use_webvh_server {
-        SetupPage::UserName
-    } else {
-        SetupPage::MediatorAsk
-    }
 }
 
 /// Executes a `NavResult` against the setup flow.
@@ -307,25 +301,11 @@ mod tests {
     }
 
     #[test]
-    fn vta_auth_completed_routes_to_webvh_when_servers_advertised() {
-        use chrono::Utc;
-        use vta_sdk::webvh::WebvhServerRecord;
-        let mut state = empty_state();
-        state.vta.webvh_servers = vec![WebvhServerRecord {
-            id: "test-id".to_string(),
-            did: "did:webvh:test".to_string(),
-            label: Some("test".to_string()),
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        }];
-        let r = navigate(SetupEvent::VtaAuthCompleted, &state);
-        assert!(matches_goto(&r, SetupPage::WebvhServerSelect));
-    }
-
-    #[test]
-    fn vta_auth_completed_falls_back_to_create_keys_when_no_server() {
+    fn vta_auth_completed_routes_to_protection() {
+        // R-A-5: provisioning now leads straight into the protection sub-flow
+        // (then State-A account creation) — no persona-minting pages.
         let r = navigate(SetupEvent::VtaAuthCompleted, &empty_state());
-        assert!(is_send_action(&r));
+        assert!(matches_goto(&r, protection_entry()));
     }
 
     #[test]
@@ -401,15 +381,22 @@ mod tests {
     }
 
     #[test]
-    fn accept_no_code_risk_in_webvh_state_lands_on_username() {
-        let r = navigate(SetupEvent::AcceptNoCodeRisk, &webvh_state());
-        assert!(matches_goto(&r, SetupPage::UserName));
+    fn accept_no_code_risk_completes_account_setup() {
+        // R-A-5: no passcode → create the State-A account directly.
+        let r = navigate(SetupEvent::AcceptNoCodeRisk, &empty_state());
+        assert!(is_complete(&r));
     }
 
     #[test]
-    fn accept_no_code_risk_in_manual_state_lands_on_mediator() {
-        let r = navigate(SetupEvent::AcceptNoCodeRisk, &empty_state());
-        assert!(matches_goto(&r, SetupPage::MediatorAsk));
+    fn unlock_code_set_sets_protection_then_completes() {
+        use secrecy::SecretBox;
+        let r = navigate(
+            SetupEvent::UnlockCodeSet {
+                passphrase_hash: Arc::new(SecretBox::new(Box::new(vec![0u8; 32]))),
+            },
+            &empty_state(),
+        );
+        assert!(is_send_then_complete(&r));
     }
 
     #[test]

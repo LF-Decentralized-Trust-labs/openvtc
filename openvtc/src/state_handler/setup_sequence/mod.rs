@@ -58,8 +58,13 @@ pub enum SetupPage {
     UnlockCodeAsk,
     UnlockCodeSet,
     UnlockCodeWarn,
+    // R-A-5: persona-minting pages. Unreachable from State-A setup (which ends at
+    // protection → account creation); reconstructed by the State-B join flow
+    // (Stage 4). `#[allow(dead_code)]` until then.
+    #[allow(dead_code)]
     MediatorAsk,
     MediatorCustom,
+    #[allow(dead_code)]
     WebvhServerSelect,
     WebvhServerProgress,
     UserName,
