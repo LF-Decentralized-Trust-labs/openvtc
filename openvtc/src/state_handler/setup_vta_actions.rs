@@ -357,6 +357,11 @@ pub(crate) async fn handle_vta_start_provision(
         }
     }
 
+    // Close the post-bootstrap admin DIDComm session. `connect_didcomm` opens a
+    // session whose only graceful close is the async `shutdown()` — `Drop` can't
+    // do it, and vta-sdk 0.9.8's LeakGuard panics (debug) on a leaked drop.
+    client.shutdown().await;
+
     state.setup.vta.completed = Completion::CompletedOK;
     // Stay on VtaProvisioning so the operator can see the admin DID rotation
     // result (ephemeral setup DID → long-term admin DID) before advancing on
