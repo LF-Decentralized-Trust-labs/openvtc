@@ -108,11 +108,11 @@ impl FinalPage {
 
             lines.push(Line::default());
             lines.push(Line::styled(
-                "You can now access the dashboard to:",
+                "Your account is ready — you can now join a community to:",
                 Style::new().fg(COLOR_BORDER).bold(),
             ));
             lines.push(Line::styled(
-                "  • Send relationship requests and connect with others.",
+                "  • Connect with its members and send relationship requests.",
                 Style::new().fg(COLOR_TEXT_DEFAULT),
             ));
             lines.push(Line::styled(

@@ -31,6 +31,7 @@ use uuid::Uuid;
 /// When `generate_r_did` is true and the key backend is BIP32, a unique
 /// relationship DID (did:peer) is derived for privacy. Otherwise the
 /// persona DID is used directly.
+#[allow(clippy::too_many_arguments)]
 pub async fn send_relationship_request(
     config: &mut Config,
     tdk: &TDK,
@@ -39,6 +40,7 @@ pub async fn send_relationship_request(
     alias: &str,
     reason: Option<&str>,
     generate_r_did: bool,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> Result<()> {
     // Validate DID format
     if !respondent_did.starts_with("did:") {
@@ -86,7 +88,7 @@ pub async fn send_relationship_request(
     let our_did: Arc<String> = if generate_r_did {
         // Snapshot the mediator before the &mut config borrow below.
         let mediator = config.mediator_did().to_string();
-        let r_did = Arc::new(create_relationship_did(tdk, config, &mediator).await?);
+        let r_did = Arc::new(create_relationship_did(tdk, config, &mediator, admin_vta).await?);
         // Register a listener for the new R-DID
         let listener_config = super::didcomm::relationship_listener_config(
             config,
@@ -284,10 +286,13 @@ pub(crate) async fn create_relationship_did(
     tdk: &TDK,
     config: &mut Config,
     mediator: &str,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> Result<String> {
     match &config.key_backend {
         KeyBackend::Bip32 { .. } => create_relationship_did_bip32(tdk, config, mediator).await,
-        KeyBackend::Vta { .. } => create_relationship_did_vta(tdk, config, mediator).await,
+        KeyBackend::Vta { .. } => {
+            create_relationship_did_vta(tdk, config, mediator, admin_vta).await
+        }
     }
 }
 
@@ -393,63 +398,21 @@ async fn create_relationship_did_vta(
     tdk: &TDK,
     config: &mut Config,
     mediator: &str,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> Result<String> {
-    use vta_sdk::client::CreateKeyRequest;
-    use vta_sdk::keys::KeyType;
-
     // Create the relationship signing (Ed25519) + encryption (X25519) keys via
-    // the VTA. The wrapper guarantees the DIDComm session is shut down on every
-    // exit (incl. the `?` error paths below), so it can't leak and duel other
-    // admin sessions on the mediator.
-    info!("opening VTA client for R-DID creation...");
-    let (mut v_secret, mut e_secret, sign_key_id, enc_key_id) =
-        openvtc_core::config::with_runtime_vta_client::<_, _, _, anyhow::Error>(
-            &config.key_backend,
-            |client| async move {
-                info!("creating Ed25519 signing key via VTA...");
-                let sign_resp = client
-                    .create_key(CreateKeyRequest {
-                        key_type: KeyType::Ed25519,
-                        derivation_path: None,
-                        key_id: None,
-                        mnemonic: None,
-                        label: Some("relationship-signing".to_string()),
-                        context_id: None,
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to create signing key: {e}"))?;
-                let sign_secret_resp = client
-                    .get_key_secret(&sign_resp.key_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get signing key secret: {e}"))?;
-                let mut v_secret = vta_sdk::did_key::secret_from_key_response(&sign_secret_resp)
-                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-                v_secret.id = v_secret.get_public_keymultibase()?;
-
-                info!("creating X25519 encryption key via VTA...");
-                let enc_resp = client
-                    .create_key(CreateKeyRequest {
-                        key_type: KeyType::X25519,
-                        derivation_path: None,
-                        key_id: None,
-                        mnemonic: None,
-                        label: Some("relationship-encryption".to_string()),
-                        context_id: None,
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to create encryption key: {e}"))?;
-                let enc_secret_resp = client
-                    .get_key_secret(&enc_resp.key_id)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to get encryption key secret: {e}"))?;
-                let mut e_secret = vta_sdk::did_key::secret_from_key_response(&enc_secret_resp)
-                    .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-                e_secret.id = e_secret.get_public_keymultibase()?;
-
-                Ok((v_secret, e_secret, sign_resp.key_id, enc_resp.key_id))
-            },
-        )
-        .await?;
+    // the VTA. Reuse the always-on admin session when the runtime provides one;
+    // otherwise open a transient session (guaranteed to shut down on every exit).
+    let (mut v_secret, mut e_secret, sign_key_id, enc_key_id) = match admin_vta {
+        Some(client) => create_relationship_keys(client).await?,
+        None => {
+            openvtc_core::config::with_runtime_vta_client::<_, _, _, anyhow::Error>(
+                &config.key_backend,
+                |client| async move { create_relationship_keys(&client).await },
+            )
+            .await?
+        }
+    };
 
     // Build did:peer from secrets
     let mut keys = vec![
@@ -490,6 +453,58 @@ async fn create_relationship_did_vta(
         .await;
 
     Ok(r_did)
+}
+
+/// Create a relationship's signing (Ed25519) + encryption (X25519) keys via the
+/// VTA and fetch their secrets, on the given (admin) session. Returns
+/// `(v_secret, e_secret, signing_key_id, encryption_key_id)`.
+async fn create_relationship_keys(
+    client: &vta_sdk::client::VtaClient,
+) -> Result<(Secret, Secret, String, String)> {
+    use vta_sdk::client::CreateKeyRequest;
+    use vta_sdk::keys::KeyType;
+
+    info!("creating Ed25519 signing key via VTA...");
+    let sign_resp = client
+        .create_key(CreateKeyRequest {
+            key_type: KeyType::Ed25519,
+            derivation_path: None,
+            key_id: None,
+            mnemonic: None,
+            label: Some("relationship-signing".to_string()),
+            context_id: None,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create signing key: {e}"))?;
+    let sign_secret_resp = client
+        .get_key_secret(&sign_resp.key_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get signing key secret: {e}"))?;
+    let mut v_secret = vta_sdk::did_key::secret_from_key_response(&sign_secret_resp)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    v_secret.id = v_secret.get_public_keymultibase()?;
+
+    info!("creating X25519 encryption key via VTA...");
+    let enc_resp = client
+        .create_key(CreateKeyRequest {
+            key_type: KeyType::X25519,
+            derivation_path: None,
+            key_id: None,
+            mnemonic: None,
+            label: Some("relationship-encryption".to_string()),
+            context_id: None,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create encryption key: {e}"))?;
+    let enc_secret_resp = client
+        .get_key_secret(&enc_resp.key_id)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to get encryption key secret: {e}"))?;
+    let mut e_secret = vta_sdk::did_key::secret_from_key_response(&enc_secret_resp)
+        .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    e_secret.id = e_secret.get_public_keymultibase()?;
+
+    Ok((v_secret, e_secret, sign_resp.key_id, enc_resp.key_id))
 }
 
 /// Build a DIDComm relationship request message.
@@ -586,6 +601,7 @@ async fn handle_submit(
     alias: &str,
     reason: Option<&str>,
     generate_r_did: bool,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) {
     if generate_r_did {
         state.main_page.content_panel.relationships.status_message =
@@ -599,7 +615,17 @@ async fn handle_submit(
     }
     let _ = state_tx.send(state.clone());
 
-    match send_relationship_request(config, tdk, service, did, alias, reason, generate_r_did).await
+    match send_relationship_request(
+        config,
+        tdk,
+        service,
+        did,
+        alias,
+        reason,
+        generate_r_did,
+        admin_vta,
+    )
+    .await
     {
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
@@ -847,6 +873,7 @@ pub(crate) async fn dispatch(
     state_tx: &watch::Sender<State>,
     profile: &str,
     ping_sent_at: &mut Option<Instant>,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) {
     match action {
         RelationshipAction::Select(index) => {
@@ -887,6 +914,7 @@ pub(crate) async fn dispatch(
                 &alias,
                 reason.as_deref(),
                 generate_r_did,
+                admin_vta,
             )
             .await
         }

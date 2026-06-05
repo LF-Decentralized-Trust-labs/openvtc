@@ -98,6 +98,17 @@ impl Config {
     /// DIDComm service can authenticate with the mediator. On normal startup
     /// this is done by `load_step2`.
     pub async fn load_persona_secrets(&self, tdk: &TDK) -> Result<(), OpenVTCError> {
+        // Open ONE VTA admin session up front and reuse it for every VtaManaged
+        // key below, instead of connecting (and tearing down) a fresh mediator
+        // session per key.
+        let vta_client = if matches!(&self.key_backend, KeyBackend::Vta { .. }) {
+            super::build_runtime_vta_client(&self.key_backend)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
         for (key_id, key_info) in &self.key_info {
             if !key_id.starts_with(self.persona_did()) {
                 continue;
@@ -107,59 +118,54 @@ impl Config {
                 KeyTypes::PersonaEncryption => KeyPurpose::Encryption,
                 _ => continue,
             };
-            let secret =
-                match &key_info.path {
-                    KeySourceMaterial::Derived { path } => {
-                        let KeyBackend::Bip32 { root, .. } = &self.key_backend else {
-                            continue;
-                        };
-                        root.get_secret_from_path(path, kp)
-                            .map(|mut s| {
-                                s.id = key_id.clone();
-                                s
-                            })
+            let secret = match &key_info.path {
+                KeySourceMaterial::Derived { path } => {
+                    let KeyBackend::Bip32 { root, .. } = &self.key_backend else {
+                        continue;
+                    };
+                    root.get_secret_from_path(path, kp)
+                        .map(|mut s| {
+                            s.id = key_id.clone();
+                            s
+                        })
+                        .ok()
+                }
+                KeySourceMaterial::Imported { seed } => {
+                    use secrecy::ExposeSecret;
+                    Secret::from_multibase(seed.expose_secret(), None)
+                        .map(|mut s| {
+                            s.id = key_id.clone();
+                            s
+                        })
+                        .ok()
+                }
+                KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
+                    if let Some(client) = vta_client.as_ref() {
+                        client
+                            .get_key_secret(vta_key_id)
+                            .await
                             .ok()
-                    }
-                    KeySourceMaterial::Imported { seed } => {
-                        use secrecy::ExposeSecret;
-                        Secret::from_multibase(seed.expose_secret(), None)
-                            .map(|mut s| {
-                                s.id = key_id.clone();
-                                s
+                            .and_then(|resp| {
+                                secret_from_vta_response(&resp, kp)
+                                    .map(|mut s| {
+                                        s.id = key_id.clone();
+                                        s
+                                    })
+                                    .ok()
                             })
-                            .ok()
+                    } else {
+                        None
                     }
-                    KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
-                        if matches!(&self.key_backend, KeyBackend::Vta { .. }) {
-                            match super::build_runtime_vta_client(&self.key_backend).await {
-                                Ok(client) => {
-                                    let secret =
-                                        client.get_key_secret(vta_key_id).await.ok().and_then(
-                                            |resp| {
-                                                secret_from_vta_response(&resp, kp)
-                                                    .map(|mut s| {
-                                                        s.id = key_id.clone();
-                                                        s
-                                                    })
-                                                    .ok()
-                                            },
-                                        );
-                                    // Close the persistent DIDComm session so it
-                                    // doesn't linger and duel other admin sessions
-                                    // on the mediator (`Drop` can't close it).
-                                    client.shutdown().await;
-                                    secret
-                                }
-                                Err(_) => None,
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                };
+                }
+            };
             if let Some(s) = secret {
                 tdk.get_shared_state().secrets_resolver().insert(s).await;
             }
+        }
+
+        // Close the single shared session now that all keys are loaded.
+        if let Some(client) = vta_client {
+            client.shutdown().await;
         }
         Ok(())
     }

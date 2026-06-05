@@ -357,29 +357,37 @@ impl StateHandler {
         // Set the profile name once (doesn't change during runtime)
         state.main_page.content_panel.vta.profile = self.profile.clone();
 
-        // Fetch VTA context name if using VTA backend. The helper handles
-        // both DIDComm and REST transports automatically. The DIDComm client
-        // opens a persistent session, so it MUST be shut down after use or it
-        // lingers and duels other admin sessions on the mediator.
-        if matches!(
+        // Open the always-on admin VTA session for VTA backends. It stays open
+        // for the whole time openvtc runs and is reused by every runtime VTA op
+        // (context-name fetch, relationship creation, and future community joins
+        // / context creation), so the admin DID holds ONE mediator connection
+        // instead of reconnecting per operation. It is shut down at every exit
+        // path below (degraded returns + end of the main loop).
+        let admin_vta: Option<vta_sdk::client::VtaClient> = if matches!(
             &config.key_backend,
             openvtc_core::config::KeyBackend::Vta { .. }
-        ) && let Ok(client) =
-            openvtc_core::config::build_runtime_vta_client(&config.key_backend).await
+        ) {
+            openvtc_core::config::build_runtime_vta_client(&config.key_backend)
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        // Fetch VTA context name, reusing the always-on admin session.
+        if let Some(client) = admin_vta.as_ref()
+            && let Ok(resp) = client.list_contexts().await
         {
-            if let Ok(resp) = client.list_contexts().await {
-                if let Some(ctx) = resp
-                    .contexts
-                    .iter()
-                    .find(|c| c.did.as_deref() == Some(config.persona_did()))
-                {
-                    state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
-                } else if let Some(ctx) = resp.contexts.first() {
-                    // Fallback to first context
-                    state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
-                }
+            if let Some(ctx) = resp
+                .contexts
+                .iter()
+                .find(|c| c.did.as_deref() == Some(config.persona_did()))
+            {
+                state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
+            } else if let Some(ctx) = resp.contexts.first() {
+                // Fallback to first context
+                state.main_page.content_panel.vta.context_name = Some(ctx.name.clone());
             }
-            client.shutdown().await;
         }
 
         // A State-A account has no persona/community yet (R-A-5): there is no
@@ -391,6 +399,12 @@ impl StateHandler {
         if config.active_identity().is_none() {
             state.connection.status = state::MediatorStatus::NoActiveCommunity;
             let _ = self.state_tx.send(state.clone());
+            // No persona yet (State A). The join flow (R-A-5 Stage 4) will reuse
+            // the admin session from the Communities/degraded loop; until then
+            // nothing there uses it, so close it rather than let it linger.
+            if let Some(c) = admin_vta {
+                c.shutdown().await;
+            }
             return self
                 .run_degraded_loop(
                     &mut action_rx,
@@ -429,6 +443,9 @@ impl StateHandler {
                     .main_page
                     .log_error("DIDComm service failed to start", &e);
                 let _ = self.state_tx.send(state.clone());
+                if let Some(c) = admin_vta {
+                    c.shutdown().await;
+                }
                 return self
                     .run_degraded_loop(
                         &mut action_rx,
@@ -524,6 +541,7 @@ impl StateHandler {
                             &mut state,
                             &self.state_tx,
                             &self.profile,
+                            admin_vta.as_ref(),
                         )
                         .await;
                     },
@@ -537,6 +555,7 @@ impl StateHandler {
                             &self.state_tx,
                             &self.profile,
                             &mut ping_sent_at,
+                            admin_vta.as_ref(),
                         )
                         .await;
                     },
@@ -751,6 +770,11 @@ impl StateHandler {
         // Shut down the DIDComm service gracefully
         shutdown_token.cancel();
         didcomm_service.shutdown().await;
+
+        // Close the always-on admin VTA session.
+        if let Some(c) = admin_vta {
+            c.shutdown().await;
+        }
 
         Ok(result)
     }

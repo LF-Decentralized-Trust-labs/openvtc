@@ -33,6 +33,7 @@ pub async fn accept_relationship_request(
     service: &DIDCommService,
     task_id: &str,
     generate_r_did: bool,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> Result<()> {
     let task_id = Arc::new(task_id.to_string());
 
@@ -73,7 +74,8 @@ pub async fn accept_relationship_request(
         // Snapshot the mediator before the &mut config borrow below.
         let mediator = config.mediator_did().to_string();
         let r_did = Arc::new(
-            super::relationship_actions::create_relationship_did(tdk, config, &mediator).await?,
+            super::relationship_actions::create_relationship_did(tdk, config, &mediator, admin_vta)
+                .await?,
         );
         // Register listener for post-establishment use (no need to wait for connection)
         let listener_config = super::didcomm::relationship_listener_config(
@@ -555,6 +557,7 @@ async fn handle_accept_relationship(
     profile: &str,
     task_id: &str,
     generate_r_did: bool,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) {
     if generate_r_did {
         state.main_page.content_panel.inbox.status_message =
@@ -569,7 +572,9 @@ async fn handle_accept_relationship(
     }
     let _ = state_tx.send(state.clone());
 
-    match accept_relationship_request(config, tdk, service, task_id, generate_r_did).await {
+    match accept_relationship_request(config, tdk, service, task_id, generate_r_did, admin_vta)
+        .await
+    {
         Ok(()) => save_and_sync(
             config,
             state,
@@ -691,6 +696,7 @@ pub(crate) async fn dispatch(
     state: &mut State,
     state_tx: &watch::Sender<State>,
     profile: &str,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) {
     match action {
         InboxAction::SelectTask(index) => handle_inbox_select(state, index),
@@ -711,6 +717,7 @@ pub(crate) async fn dispatch(
                 profile,
                 &task_id,
                 generate_r_did,
+                admin_vta,
             )
             .await
         }
