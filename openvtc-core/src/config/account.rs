@@ -204,6 +204,37 @@ pub struct CommunityRecord {
 pub const PENDING_TIMEOUT_DAYS: i64 = 7;
 
 impl CommunityRecord {
+    /// Build a fresh `Pending` join record (State-B join request, R-B-*).
+    ///
+    /// `request_id` correlates the VTC's asynchronous accept/reject decision
+    /// (R-B-8); `requested_at` is stamped with `now` to anchor the 7-day timeout
+    /// (D16). Starts unfavourited, unarchived, unacknowledged, with empty
+    /// community-scoped relationship/VRC stores.
+    pub fn new_pending(
+        vtc_did: VtcDid,
+        display_name: Option<String>,
+        sub_context_id: String,
+        persona_ref: PersonaId,
+        request_id: Uuid,
+        now: DateTime<Utc>,
+    ) -> Self {
+        CommunityRecord {
+            vtc_did,
+            display_name,
+            sub_context_id,
+            persona_ref,
+            status: CommunityStatus::Pending { request_id },
+            favourite: false,
+            archived: false,
+            acknowledged: false,
+            member_since: None,
+            requested_at: Some(now),
+            relationships: Relationships::default(),
+            vrcs_issued: Vrcs::default(),
+            vrcs_received: Vrcs::default(),
+        }
+    }
+
     /// True for a membership that needs a live DIDComm session (Active or
     /// Pending) — so the VTC's asynchronous join reply is receivable (D16).
     pub fn is_live(&self) -> bool {
@@ -498,6 +529,34 @@ mod tests {
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
         }
+    }
+
+    #[test]
+    fn new_pending_builds_a_live_pending_record() {
+        let now = Utc::now();
+        let pid = PersonaId::new();
+        let req = Uuid::new_v4();
+        let rec = CommunityRecord::new_pending(
+            "did:webvh:vtc.example".to_string(),
+            Some("Example VTC".to_string()),
+            "openvtc/example".to_string(),
+            pid,
+            req,
+            now,
+        );
+        assert!(matches!(rec.status, CommunityStatus::Pending { request_id } if request_id == req));
+        assert_eq!(rec.persona_ref, pid);
+        assert_eq!(rec.requested_at, Some(now));
+        assert_eq!(rec.member_since, None);
+        assert!(rec.is_live());
+        assert!(rec.needs_attention());
+        assert!(!rec.favourite && !rec.archived && !rec.acknowledged);
+
+        // Idempotency (R-B-9): a pending join is a live membership, so a re-join
+        // attempt finds it via `live_community`.
+        let mut acct = Account::default();
+        acct.communities.insert(rec.vtc_did.clone(), rec.clone());
+        assert!(acct.live_community(&rec.vtc_did).is_some());
     }
 
     #[test]
