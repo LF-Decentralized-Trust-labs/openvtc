@@ -47,17 +47,28 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         ]));
     }
 
-    // Persona DID
-    lines.push(Line::from(vec![
-        Span::styled("  Persona DID:   ", label_style),
-        Span::styled(state.persona_did.clone(), value_style),
-    ]));
-
-    // Mediator DID
-    lines.push(Line::from(vec![
-        Span::styled("  Mediator DID:  ", label_style),
-        Span::styled(state.mediator_did.clone(), value_style),
-    ]));
+    // Persona + Mediator DIDs are community-scoped: they only exist once a
+    // community is joined (a persona is minted). Pre-community (State A) show a
+    // readiness line instead of blank fields, so the panel confirms the account
+    // is set up and ready to join.
+    if state.persona_did.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  Status:        ", label_style),
+            Span::styled(
+                "Ready — join a community to create your persona",
+                Style::new().fg(COLOR_SUCCESS),
+            ),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled("  Persona DID:   ", label_style),
+            Span::styled(state.persona_did.clone(), value_style),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  Mediator DID:  ", label_style),
+            Span::styled(state.mediator_did.clone(), value_style),
+        ]));
+    }
 
     if !state.is_vta_managed {
         lines.push(Line::from(""));
