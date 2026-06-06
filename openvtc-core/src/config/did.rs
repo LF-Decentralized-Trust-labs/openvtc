@@ -20,6 +20,34 @@ use url::Url;
 
 use crate::{config::PersonaDIDKeys, errors::OpenVTCError};
 
+/// Extract the mediator DID from a persona's DID document.
+///
+/// A persona DID minted via the VTA's webvh server carries a `DIDCommMessaging`
+/// service whose endpoint URI is the mediator DID (see the `#public-didcomm`
+/// service built above, and the VTA's equivalent `#vta-didcomm`). This is the
+/// authoritative source for a persona's mediator — used to repair a persona
+/// that was persisted without one. Returns `None` if the document has no
+/// DIDComm service or it carries no URI.
+pub fn mediator_from_document(doc: &Document) -> Option<String> {
+    doc.service
+        .iter()
+        .find(|s| s.type_.iter().any(|t| t == "DIDCommMessaging"))
+        .and_then(|s| match &s.service_endpoint {
+            Endpoint::Url(url) => Some(url.to_string()),
+            // The endpoint is `[{"uri": "<mediator did>", "accept": [...]}]` (an
+            // array) or a bare `{"uri": ...}` object. Read the string via
+            // `as_str` (not `Value::to_string`, which would keep the quotes).
+            Endpoint::Map(value) => {
+                let obj = match value {
+                    Value::Array(items) => items.first()?,
+                    other => other,
+                };
+                obj.get("uri").and_then(Value::as_str).map(str::to_owned)
+            }
+        })
+        .filter(|m| !m.is_empty())
+}
+
 /// Creates a new `did:webvh` DID with key pre-rotation enabled.
 ///
 /// This builds a full DID Document containing three verification methods:

@@ -288,6 +288,35 @@ impl Config {
                         .doc
                 };
 
+                // Final mediator resolution. If neither the persona record nor
+                // the account carried a mediator, recover it from the DID
+                // document itself — the persona DID was minted with a
+                // DIDCommMessaging service whose endpoint IS the mediator, so it
+                // is always authoritative. Without this the persona listener
+                // fails with "No Mediator is configured" and reconnect-loops.
+                let active_mediator_did = if active_mediator_did.is_empty() {
+                    match super::did::mediator_from_document(&document) {
+                        Some(m) => {
+                            warn!(
+                                persona = %active_persona_did,
+                                mediator = %m,
+                                "recovered persona mediator from its DID document"
+                            );
+                            m
+                        }
+                        None => {
+                            warn!(
+                                persona = %active_persona_did,
+                                "persona has no mediator anywhere (record, account, \
+                                 or DID document) — its listener will not connect"
+                            );
+                            active_mediator_did
+                        }
+                    }
+                } else {
+                    active_mediator_did
+                };
+
                 report_progress(&on_progress, "Identity", "Fetching persona keys");
                 Config::regenerate_persona_keys(
                     tdk,
