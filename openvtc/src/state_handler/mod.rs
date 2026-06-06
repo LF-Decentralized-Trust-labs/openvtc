@@ -372,7 +372,7 @@ impl StateHandler {
         // / context creation), so the admin DID holds ONE mediator connection
         // instead of reconnecting per operation. It is shut down at every exit
         // path below (degraded returns + end of the main loop).
-        let mut admin_vta: Option<vta_sdk::client::VtaClient> = if matches!(
+        let admin_vta: Option<vta_sdk::client::VtaClient> = if matches!(
             &config.key_backend,
             openvtc_core::config::KeyBackend::Vta { .. }
         ) {
@@ -558,19 +558,6 @@ impl StateHandler {
                         // the background; the join flow owns the screen until the
                         // user returns. Restart is required to activate the new
                         // community (hot-start is a deliberate follow-up).
-                        //
-                        // The always-on admin session may have gone stale while
-                        // idle (the mediator closes idle WebSockets), so its first
-                        // round-trip would time out. Reconnect a fresh one right
-                        // before the join — the old one is closed first, so the
-                        // admin DID never has two competing sockets.
-                        if let Some(old) = admin_vta.take() {
-                            old.shutdown().await;
-                        }
-                        admin_vta =
-                            openvtc_core::config::build_runtime_vta_client(&config.key_backend)
-                                .await
-                                .ok();
                         match self
                             .join_flow(
                                 &mut action_rx,
@@ -890,18 +877,6 @@ impl StateHandler {
                     }
                     Action::StartJoin => {
                         if let Some(ctx) = join_ctx.as_mut() {
-                            // Reconnect a fresh admin session before the join: the
-                            // always-on one may have gone stale during idle (the
-                            // mediator closes idle WebSockets). Close the old first
-                            // so the admin DID never has two competing sockets.
-                            if let Some(old) = ctx.admin_vta.take() {
-                                old.shutdown().await;
-                            }
-                            ctx.admin_vta = openvtc_core::config::build_runtime_vta_client(
-                                &ctx.config.key_backend,
-                            )
-                            .await
-                            .ok();
                             match self
                                 .join_flow(
                                     action_rx,
