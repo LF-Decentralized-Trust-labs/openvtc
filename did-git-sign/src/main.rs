@@ -886,8 +886,17 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn delegate_forwards_all_flags_to_ssh_keygen() {
-        let mock_path =
+        // Copy the mock script into a private temp dir and operate on the COPY —
+        // never mutate the shared, checked-in fixture. Previously this test
+        // chmod'd the fixture in-place, which raced under full-workspace parallel
+        // test runs (the shared file's metadata read could fail mid-mutation),
+        // producing a flaky failure. Each run now owns its own executable copy,
+        // and `tmp_dir` is held for the test's lifetime so it isn't reaped early.
+        let src =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_ssh_keygen.sh");
+        let tmp_dir = tempfile::tempdir().unwrap();
+        let mock_path = tmp_dir.path().join("mock_ssh_keygen.sh");
+        std::fs::copy(&src, &mock_path).unwrap();
 
         // Ensure the mock script is executable regardless of git checkout settings.
         #[cfg(unix)]
