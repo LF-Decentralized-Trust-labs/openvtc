@@ -109,6 +109,10 @@ impl Config {
             None
         };
 
+        // PERF: VtaManaged `get_key_secret` calls stay sequential — see the note
+        // in `regenerate_persona_keys`: concurrent fetches on a single
+        // DIDComm-backed session race on the shared live-stream cursor and can
+        // drop each other's responses.
         for (key_id, key_info) in &self.key_info {
             if !key_id.starts_with(self.persona_did()) {
                 continue;
@@ -183,7 +187,21 @@ impl Config {
         doc: &Document,
         vta_client: Option<&vta_sdk::client::VtaClient>,
     ) -> Result<(), OpenVTCError> {
-        // Rehydrate DID keys referenced by Verification Methods in the DID Document
+        // Rehydrate DID keys referenced by Verification Methods in the DID
+        // Document.
+        //
+        // PERF: the VtaManaged `get_key_secret` round-trips below are kept
+        // SEQUENTIAL on purpose. When `vta_client` is DIDComm-backed (the
+        // default for a VTA backend), all cloned `VtaClient`s share ONE
+        // `Arc<ATM>`/`Arc<ATMProfile>` and therefore ONE WebSocket live-stream
+        // cursor. `vta_sdk`'s `send_and_wait` reads that cursor with
+        // `live_stream_next` and DROPS (`continue`) any message whose `thid`
+        // doesn't match the request it is waiting on — so two concurrent
+        // fetches on the same session race: one can consume and discard the
+        // other's response, making that fetch time out. Parallelising here
+        // would risk dropped persona keys at startup. (REST-backed sessions
+        // would be safe, but the transport isn't known here.) See
+        // `vta-sdk/src/didcomm_session.rs::send_and_wait`.
         for vm in &doc.verification_method {
             let Some(kp) = sc.key_info.get(vm.id.as_str()) else {
                 warn!(

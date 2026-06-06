@@ -400,6 +400,8 @@ impl ConfigExtension for Config {
         let persona_record = PersonaRecord {
             persona_id,
             did: persona_did_str.clone(),
+            // Cache the minted document so the next startup skips the resolve.
+            did_document: Some(document.clone()),
             key_refs: key_info
                 .iter()
                 .map(|(id, info)| KeyRef {

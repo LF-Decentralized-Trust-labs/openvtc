@@ -75,6 +75,14 @@ pub struct PersonaRecord {
     pub persona_id: PersonaId,
     /// The persona's `did:webvh`.
     pub did: String,
+    /// Cached resolved DID document (PERF #3: startup uses this instead of a
+    /// fresh network resolve when present — did:webvh documents change rarely
+    /// between launches, so a cached doc only goes stale if the persona rotated
+    /// keys out-of-band). Persisted with the record; populated at mint/setup and
+    /// whenever the persona is resolved. `None` for records minted before this
+    /// field existed, in which case load falls back to a network resolve.
+    #[serde(default)]
+    pub did_document: Option<affinidi_tdk::did_common::Document>,
     /// Non-secret references to this persona's VTA-managed keys.
     pub key_refs: Vec<KeyRef>,
     /// Mediator DID; defaults to the VTA mediator, optional override at mint (D7).
@@ -501,6 +509,7 @@ mod tests {
         PersonaRecord {
             persona_id: PersonaId::new(),
             did: format!("did:webvh:example.com:{label}"),
+            did_document: None,
             key_refs: vec![KeyRef {
                 key_id: format!("key-{label}"),
                 purpose: KeyTypes::PersonaSigning,

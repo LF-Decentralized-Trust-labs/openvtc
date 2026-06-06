@@ -120,14 +120,17 @@ impl StateHandler {
         let mut state = State::default();
 
         let starting_mode = std::mem::replace(&mut self.starting_mode, StartingMode::NotSet);
-        let (tdk, mut config) = match starting_mode {
+        // The third element is the live admin VTA session handed back by
+        // `load_step2` (PERF #1) for reuse below; `None` for the modes that
+        // don't open one (they fall back to building one as before).
+        let (tdk, mut config, loaded_admin_vta) = match starting_mode {
             StartingMode::MainPage(config, tdk) => {
                 state.active_page = ActivePage::Main;
                 state.main_page.menu_panel.selected = true;
                 state.main_page.config = (&config).into();
                 state.main_page.log("Configuration loaded");
 
-                (tdk.to_owned(), config)
+                (tdk.to_owned(), config, None)
             }
             StartingMode::SetupWizard => {
                 // Instantiate TDK
@@ -169,7 +172,7 @@ impl StateHandler {
                         }
                         state.main_page.log("Setup complete — configuration loaded");
 
-                        (tdk, config)
+                        (tdk, config, None)
                     }
                     Ok(SetupWizardExit::Interrupted(interrupted)) => {
                         if let Err(e) = terminator.terminate(interrupted.clone()) {
@@ -202,8 +205,9 @@ impl StateHandler {
                 state.connection.status = state::MediatorStatus::Initializing("Starting...".into());
                 let _ = self.state_tx.send(state.clone());
 
-                // Spawn TDK init + config load as a background task with progress reporting
-                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<String>();
+                // Spawn TDK init + config load as a background task with
+                // hierarchical progress reporting: each event is (major, sub).
+                let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(String, String)>();
 
                 // Dedicated channel for token-touch events.  The notifier sends a bool
                 // (true = touch required, false = touch completed) and the StateHandler's
@@ -217,13 +221,13 @@ impl StateHandler {
                 let (token_touch_tx, mut token_touch_rx) = mpsc::unbounded_channel::<bool>();
 
                 let mut load_handle = tokio::spawn(async move {
-                    let on_progress = |msg: &str| {
-                        if let Err(e) = progress_tx.send(msg.to_string()) {
+                    let on_progress = |major: &str, sub: &str| {
+                        if let Err(e) = progress_tx.send((major.to_string(), sub.to_string())) {
                             debug!("Failed to send progress event: {e}");
                         }
                     };
 
-                    on_progress("Starting TDK...");
+                    on_progress("Local configuration", "Starting TDK");
                     let mut tdk = TDK::new(
                         TDKConfig::builder()
                             .with_load_environment(false)
@@ -262,7 +266,9 @@ impl StateHandler {
                     #[cfg(not(feature = "openpgp-card"))]
                     drop(token_touch_tx);
 
-                    let config = Config::load_step2(
+                    // PERF #1: load_step2 returns its live admin VTA session for
+                    // reuse downstream instead of opening a second one here.
+                    let (config, admin_session) = Config::load_step2(
                         &mut tdk,
                         &deferred.profile,
                         deferred.public_config,
@@ -276,34 +282,23 @@ impl StateHandler {
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-                    Ok::<_, anyhow::Error>((tdk, config))
+                    Ok::<_, anyhow::Error>((tdk, config, admin_session))
                 });
 
-                // Listen for progress updates + handle user actions while loading
-                // Wall-clock start of the step currently in progress, used to
-                // stamp its duration on the loading screen when the next step
-                // begins (or when the load finishes).
-                let mut step_start: Option<std::time::Instant> = None;
-                let (tdk, config) = loop {
+                // Listen for progress updates + handle user actions while
+                // loading. `progress` drives the hierarchical loading model,
+                // stamping each sub-step/major with its duration as the next
+                // begins (and the whole thing when the load finishes).
+                let mut progress = state::LoadingProgress::default();
+                let (tdk, config, loaded_admin_vta) = loop {
                     tokio::select! {
-                        Some(msg) = progress_rx.recv() => {
-                            let now = std::time::Instant::now();
-                            // Finalize the previous step's duration.
-                            if let (Some(start), Some(last)) =
-                                (step_start, state.loading_steps.last_mut())
-                            {
-                                last.duration = Some(now.duration_since(start));
-                            }
-                            // Begin this step.
-                            state.loading_steps.push(state::LoadingStep {
-                                label: msg.clone(),
-                                started: chrono::Local::now().format("%H:%M:%S").to_string(),
-                                duration: None,
-                            });
-                            step_start = Some(now);
+                        Some((major, sub)) = progress_rx.recv() => {
+                            progress.begin(&mut state.loading, &major, &sub);
                             state.tip_index = state.tip_index.wrapping_add(1);
                             state.connection.status =
-                                state::MediatorStatus::Initializing(msg);
+                                state::MediatorStatus::Initializing(
+                                    format!("{major} — {sub}"),
+                                );
                             let _ = self.state_tx.send(state.clone());
                         }
                         // Token-touch notifications arrive through the dedicated channel
@@ -314,16 +309,13 @@ impl StateHandler {
                         }
                         result = &mut load_handle => {
                             match result {
-                                Ok(Ok((tdk, config))) => {
-                                    // Stamp the final load step's duration.
-                                    if let (Some(start), Some(last)) =
-                                        (step_start, state.loading_steps.last_mut())
-                                    {
-                                        last.duration = Some(start.elapsed());
-                                    }
-                                    break (tdk, config);
+                                Ok(Ok((tdk, config, admin_session))) => {
+                                    // Stamp the final step + major as Done.
+                                    progress.finish(&mut state.loading);
+                                    break (tdk, config, admin_session);
                                 }
                                 Ok(Err(e)) => {
+                                    progress.fail(&mut state.loading);
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
                                     let _ = self.state_tx.send(state.clone());
@@ -339,6 +331,7 @@ impl StateHandler {
                                         .await;
                                 }
                                 Err(join_err) => {
+                                    progress.fail(&mut state.loading);
                                     state.connection.status =
                                         state::MediatorStatus::Failed(
                                             format!("Internal error: {join_err}"),
@@ -380,7 +373,7 @@ impl StateHandler {
                 state.main_page.sync_from_config(&config);
                 state.main_page.log("Configuration loaded");
 
-                (tdk, config)
+                (tdk, config, loaded_admin_vta)
             }
             StartingMode::NotSet => {
                 let err = Interrupted::SystemError("Starting Mode is Not Set!".to_string());
@@ -394,13 +387,21 @@ impl StateHandler {
         // Set the profile name once (doesn't change during runtime)
         state.main_page.content_panel.vta.profile = self.profile.clone();
 
-        // Open the always-on admin VTA session for VTA backends. It stays open
-        // for the whole time openvtc runs and is reused by every runtime VTA op
+        // The always-on admin VTA session for VTA backends. It stays open for
+        // the whole time openvtc runs and is reused by every runtime VTA op
         // (context-name fetch, relationship creation, and future community joins
         // / context creation), so the admin DID holds ONE mediator connection
         // instead of reconnecting per operation. It is shut down at every exit
         // path below (degraded returns + end of the main loop).
-        let admin_vta: Option<vta_sdk::client::VtaClient> = if matches!(
+        //
+        // PERF #1: prefer the session `load_step2` already opened (handed back
+        // as `loaded_admin_vta`) so the whole runtime uses a SINGLE admin
+        // connection. Only fall back to opening one here when there isn't one
+        // (the SetupWizard / pre-loaded-Config modes, or a State-A account that
+        // had no persona to open a session for).
+        let admin_vta: Option<vta_sdk::client::VtaClient> = if loaded_admin_vta.is_some() {
+            loaded_admin_vta
+        } else if matches!(
             &config.key_backend,
             openvtc_core::config::KeyBackend::Vta { .. }
         ) {

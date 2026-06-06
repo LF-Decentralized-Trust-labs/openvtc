@@ -17,7 +17,7 @@ use crate::{
     },
     state_handler::{
         actions::Action,
-        state::{LoadingStep, MediatorStatus, State},
+        state::{LoadingTask, MediatorStatus, State, StepStatus},
     },
     ui::component::{Component, ComponentRender},
 };
@@ -59,9 +59,10 @@ const BANNER: &[&str] = &[
 pub struct Props {
     /// Current mediator/connection status, driving the phase + error display.
     pub status: MediatorStatus,
-    /// Timed startup steps, in order (the last may still be in progress).
-    pub steps: Vec<LoadingStep>,
-    /// Rotating-tip index (advanced as startup steps stream).
+    /// Hierarchical, timed startup tasks (the last may still be in progress).
+    pub tasks: Vec<LoadingTask>,
+    /// Rotating-tip index (advanced as startup steps stream); also drives the
+    /// running-step spinner frame.
     pub tip_index: usize,
     /// True once phase 1 finished — show the "Press Enter to continue" prompt.
     pub complete: bool,
@@ -71,7 +72,7 @@ impl From<&State> for Props {
     fn from(state: &State) -> Self {
         Props {
             status: state.connection.status.clone(),
-            steps: state.loading_steps.clone(),
+            tasks: state.loading.clone(),
             tip_index: state.tip_index,
             complete: state.loading_complete,
         }
@@ -154,6 +155,84 @@ impl LoadingScreen {
         };
         Line::styled(text, Style::new().fg(color).bold())
     }
+
+    /// Per-status leading icon + colour. A `Running` step gets a simple
+    /// frame-based spinner driven by `tick` (the tip index, bumped each step).
+    fn status_icon(status: StepStatus, tick: usize) -> (String, ratatui::style::Color) {
+        const SPINNER: &[char] = &['▸', '▹', '▸', '▹'];
+        match status {
+            StepStatus::Queued => ("◦".to_string(), COLOR_DARK_GRAY),
+            StepStatus::Running => (SPINNER[tick % SPINNER.len()].to_string(), COLOR_SOFT_PURPLE),
+            StepStatus::Done => ("✓".to_string(), COLOR_SUCCESS),
+            StepStatus::Failed => ("✗".to_string(), COLOR_WARNING_ACCESSIBLE_RED),
+        }
+    }
+
+    /// Column the timing annotation starts at, so times line up neatly.
+    const TIME_COL: usize = 34;
+
+    /// A right-aligned `(time)` annotation, padded so it lands in [`TIME_COL`].
+    /// `prefix_len` is the visible width already consumed on the line.
+    fn time_span(
+        duration: Option<std::time::Duration>,
+        prefix_len: usize,
+    ) -> Option<Span<'static>> {
+        let d = duration?;
+        let text = format!("({})", format_duration(d));
+        let pad = Self::TIME_COL.saturating_sub(prefix_len).max(1);
+        Some(Span::styled(
+            format!("{}{text}", " ".repeat(pad)),
+            Style::new().fg(COLOR_DARK_GRAY),
+        ))
+    }
+
+    /// Render a major task line: bold, leading status icon, combined time once
+    /// the major is Done.
+    fn major_line(task: &LoadingTask, tick: usize) -> Line<'static> {
+        let (icon, icon_color) = Self::status_icon(task.status, tick);
+        let label_color = match task.status {
+            StepStatus::Failed => COLOR_WARNING_ACCESSIBLE_RED,
+            StepStatus::Queued => COLOR_DARK_GRAY,
+            _ => COLOR_TEXT_DEFAULT,
+        };
+        let clock = task.started.as_deref().unwrap_or("--:--:--");
+        let time_prefix = format!("[{clock}] ");
+        let mut spans = vec![
+            Span::styled(format!("  {icon} "), Style::new().fg(icon_color)),
+            Span::styled(time_prefix.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+            Span::styled(task.label.clone(), Style::new().fg(label_color).bold()),
+        ];
+        // prefix = "  " + icon(1) + " " + "[HH:MM:SS] " + label
+        let prefix_len = 4 + time_prefix.chars().count() + task.label.chars().count();
+        if let Some(t) = Self::time_span(task.duration, prefix_len) {
+            spans.push(t);
+        }
+        Line::from(spans)
+    }
+
+    /// Render a sub-step line: indented under its major, dimmer, prefixed with
+    /// its start time and annotated with its own per-step time once Done.
+    fn sub_line(step: &crate::state_handler::state::LoadingStep, tick: usize) -> Line<'static> {
+        let (icon, icon_color) = Self::status_icon(step.status, tick);
+        let label_color = match step.status {
+            StepStatus::Failed => COLOR_WARNING_ACCESSIBLE_RED,
+            StepStatus::Running => COLOR_TEXT_DEFAULT,
+            _ => COLOR_DARK_GRAY,
+        };
+        let clock = step.started.as_deref().unwrap_or("--:--:--");
+        let time_prefix = format!("[{clock}] ");
+        let mut spans = vec![
+            Span::styled(format!("      {icon} "), Style::new().fg(icon_color)),
+            Span::styled(time_prefix.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+            Span::styled(step.label.clone(), Style::new().fg(label_color)),
+        ];
+        // prefix = 6 spaces + icon(1) + " " + "[HH:MM:SS] " + label
+        let prefix_len = 8 + time_prefix.chars().count() + step.label.chars().count();
+        if let Some(t) = Self::time_span(step.duration, prefix_len) {
+            spans.push(t);
+        }
+        Line::from(spans)
+    }
 }
 
 impl ComponentRender<()> for LoadingScreen {
@@ -199,27 +278,19 @@ impl ComponentRender<()> for LoadingScreen {
             lines.push(Line::default());
         }
 
-        // Timed startup steps — each shows its start time and, once finished,
-        // how long it took, so a slow step is obvious at a glance.
-        if !self.props.steps.is_empty() {
+        // Hierarchical startup tasks — majors in bold with their combined time,
+        // sub-steps indented and dimmer with their own time, so a slow task (and
+        // which sub-step caused it) is obvious at a glance.
+        if !self.props.tasks.is_empty() {
             lines.push(Line::styled(
                 "Startup",
                 Style::new().fg(COLOR_BORDER).bold(),
             ));
-            for step in &self.props.steps {
-                let (marker, detail, marker_color) = match step.duration {
-                    Some(d) => ("✓", format!("  ({})", format_duration(d)), COLOR_SUCCESS),
-                    None => ("▸", "  …".to_string(), COLOR_SOFT_PURPLE),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(format!("  {marker} "), Style::new().fg(marker_color)),
-                    Span::styled(
-                        format!("[{}] ", step.started),
-                        Style::new().fg(COLOR_DARK_GRAY),
-                    ),
-                    Span::styled(step.label.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
-                    Span::styled(detail, Style::new().fg(COLOR_DARK_GRAY)),
-                ]));
+            for task in &self.props.tasks {
+                lines.push(Self::major_line(task, self.props.tip_index));
+                for step in &task.children {
+                    lines.push(Self::sub_line(step, self.props.tip_index));
+                }
             }
             lines.push(Line::default());
         }

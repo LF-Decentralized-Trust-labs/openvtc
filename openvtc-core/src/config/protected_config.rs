@@ -345,6 +345,7 @@ mod tests {
             PersonaRecord {
                 persona_id: pid,
                 did: "did:webvh:example:p".into(),
+                did_document: None,
                 key_refs: Vec::new(),
                 mediator_did: Some("did:webvh:mediator".into()),
                 origin_context_id: String::new(),

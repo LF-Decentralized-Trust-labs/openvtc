@@ -18,6 +18,11 @@ use vta_sdk::credentials::CredentialBundle;
 #[cfg(feature = "openpgp-card")]
 use super::TokenInteractions;
 
+/// Hierarchical startup-progress callback: invoked as `(major, sub)` when a new
+/// sub-step of a major task begins, so the UI can build a two-level loading view
+/// with per-step and per-major timing.
+pub type ProgressFn<'a> = &'a (dyn Fn(&str, &str) + Send + Sync);
+
 impl Config {
     /// Step 1 of loading the configuration: reads the public config from disk.
     ///
@@ -37,6 +42,17 @@ impl Config {
     /// Requires the [`PublicConfig`] from [`Config::load_step1`] plus any unlock
     /// credentials determined by the protection type.
     ///
+    /// On success returns the loaded [`Config`] **and** the still-open admin VTA
+    /// session (PERF #1) so the caller can reuse the single mediator connection
+    /// for the context-name fetch, relationship/community operations, and joins,
+    /// instead of opening a second session. The session is `None` for non-VTA
+    /// backends or a no-persona (State-A) account, where none was opened. The
+    /// caller is then responsible for shutting it down on every exit path.
+    ///
+    /// Progress is reported hierarchically via `on_progress(major, sub)`: each
+    /// call names the major task and the sub-step now starting, letting the UI
+    /// build a two-level loading view with per-step and per-major timing.
+    ///
     /// # Errors
     ///
     /// Returns an error if decryption fails, the BIP32 seed or VTA credential
@@ -49,17 +65,17 @@ impl Config {
         unlock_passphrase: Option<&UnlockCode>,
         #[cfg(feature = "openpgp-card")] token_user_pin: &SecretString,
         #[cfg(feature = "openpgp-card")] touch_prompt: &impl TokenInteractions,
-        on_progress: Option<&(dyn Fn(&str) + Send + Sync)>,
-    ) -> Result<Self, OpenVTCError> {
+        on_progress: Option<ProgressFn<'_>>,
+    ) -> Result<(Self, Option<vta_sdk::client::VtaClient>), OpenVTCError> {
         use tracing::debug;
 
-        fn report_progress(on_progress: &Option<&(dyn Fn(&str) + Send + Sync)>, msg: &str) {
+        fn report_progress(on_progress: &Option<ProgressFn<'_>>, major: &str, sub: &str) {
             if let Some(f) = on_progress {
-                f(msg);
+                f(major, sub);
             }
         }
 
-        report_progress(&on_progress, "Decrypting secrets...");
+        report_progress(&on_progress, "Local configuration", "Decrypting secrets");
 
         let sc = SecuredConfig::load(
             profile,
@@ -185,6 +201,9 @@ impl Config {
                 p.persona_id,
                 std::sync::Arc::new(p.did.clone()),
                 p.mediator_did.clone().unwrap_or_default(),
+                // PERF #3: the cached DID document, used instead of a network
+                // resolve when present.
+                p.did_document.clone(),
             )
         });
 
@@ -198,43 +217,54 @@ impl Config {
         // admin session for the whole runtime.
         let vta_client =
             if matches!(&key_backend, KeyBackend::Vta { .. }) && active_persona.is_some() {
-                report_progress(&on_progress, "Authenticating...");
+                report_progress(&on_progress, "VTA establishment", "Connecting to VTA");
                 Some(super::build_runtime_vta_client(&key_backend).await?)
             } else {
                 None
             };
 
         let mut identities = HashMap::new();
-        if let Some((active_persona_id, active_persona_did, active_mediator_did)) = active_persona {
+        if let Some((active_persona_id, active_persona_did, active_mediator_did, cached_document)) =
+            active_persona
+        {
             // Resolve + key/profile setup for the active persona. Wrapped in an
-            // inner future so the transient admin-DID VTA session is shut down on
-            // EVERY exit (incl. the `?` error paths below) — a leaked session
-            // would otherwise trip the SDK `LeakGuard` and (pre-0.9.8) duel other
-            // sessions on the mediator.
+            // inner future so that, on the `?` error paths below, the admin VTA
+            // session is shut down before the error propagates (a leaked session
+            // would trip the SDK `LeakGuard` and duel other sessions on the
+            // mediator). On SUCCESS the session is returned to the caller alive
+            // (PERF #1) — it is NOT shut down here.
             let persona_identity: Result<crate::identity::IdentityContext, OpenVTCError> = async {
-                // All config info has been loaded, load DID Document + regen keys
-                report_progress(&on_progress, "Resolving DID...");
-                let rr = tdk
-                    .did_resolver()
-                    .resolve(&active_persona_did)
-                    .await
-                    .map_err(|e| {
-                        OpenVTCError::Resolver(format!(
-                            "Couldn't resolve Persona DID ({active_persona_did}): {e}"
-                        ))
-                    })?;
+                // PERF #3: prefer the persisted persona DID document over a fresh
+                // network resolve (~1s). did:webvh docs change rarely between
+                // launches; a stale doc only matters if the persona rotated keys
+                // out-of-band — rare, and recoverable on the next mint/resolve.
+                let document = if let Some(doc) = cached_document {
+                    report_progress(&on_progress, "Identity", "Loading DID document (cached)");
+                    doc
+                } else {
+                    report_progress(&on_progress, "Identity", "Resolving DID document");
+                    tdk.did_resolver()
+                        .resolve(&active_persona_did)
+                        .await
+                        .map_err(|e| {
+                            OpenVTCError::Resolver(format!(
+                                "Couldn't resolve Persona DID ({active_persona_did}): {e}"
+                            ))
+                        })?
+                        .doc
+                };
 
-                report_progress(&on_progress, "Loading keys...");
+                report_progress(&on_progress, "Identity", "Fetching persona keys");
                 Config::regenerate_persona_keys(
                     tdk,
                     &sc,
                     &key_backend,
-                    &rr.doc,
+                    &document,
                     vta_client.as_ref(),
                 )
                 .await?;
 
-                report_progress(&on_progress, "Creating messaging profiles...");
+                report_progress(&on_progress, "Identity", "Building messaging profiles");
                 let persona_profile = ATMProfile::new(
                     tdk.atm.as_ref().ok_or_else(|| {
                         OpenVTCError::Config("TDK ATM service not initialized".to_string())
@@ -252,7 +282,7 @@ impl Config {
                 })?;
                 let persona_profile = atm.profile_add(&persona_profile, false).await?;
 
-                report_progress(&on_progress, "Loading relationships...");
+                report_progress(&on_progress, "Identity", "Loading relationships");
                 // Registers each relationship profile with the ATM service as a
                 // side-effect; the returned map is no longer stored on `Config`.
                 private_cfg
@@ -270,38 +300,55 @@ impl Config {
                 Ok(crate::identity::IdentityContext {
                     persona_id: active_persona_id,
                     did: active_persona_did.to_string(),
-                    document: rr.doc,
+                    document,
                     profile: persona_profile,
                     mediator_did: Some(active_mediator_did.clone()),
                 })
             }
             .await;
 
-            // Always close the transient admin session before propagating any
-            // error from the body above.
-            if let Some(client) = &vta_client {
-                client.shutdown().await;
+            // On ERROR, close the admin session before propagating (a leaked
+            // session would duel others on the mediator). On SUCCESS, the
+            // session is returned to the caller alive (PERF #1) and is NOT shut
+            // down here.
+            match persona_identity {
+                Ok(identity) => {
+                    identities.insert(active_persona_id, identity);
+                }
+                Err(e) => {
+                    if let Some(client) = &vta_client {
+                        client.shutdown().await;
+                    }
+                    return Err(e);
+                }
             }
-            identities.insert(active_persona_id, persona_identity?);
         } else if let Some(client) = &vta_client {
-            // No persona to resolve, but a VTA client was built — close it too.
+            // No persona to resolve, but a VTA client was somehow built — close
+            // it (this branch is unreachable: the client is only built when a
+            // persona is present, but kept defensively).
             client.shutdown().await;
         }
 
-        Ok(Config {
-            account,
-            identities,
-            key_backend,
-            public: public_config,
-            private: private_cfg,
-            key_info: sc.key_info.clone(),
-            #[cfg(feature = "openpgp-card")]
-            token_admin_pin: None,
-            #[cfg(feature = "openpgp-card")]
-            token_user_pin: token_user_pin.clone(),
-            protection_method: sc.protection_method.clone(),
-            unlock_code: unlock_passphrase
-                .map(|uc| SecretBox::new(Box::new(uc.0.expose_secret().to_owned()))),
-        })
+        Ok((
+            Config {
+                account,
+                identities,
+                key_backend,
+                public: public_config,
+                private: private_cfg,
+                key_info: sc.key_info.clone(),
+                #[cfg(feature = "openpgp-card")]
+                token_admin_pin: None,
+                #[cfg(feature = "openpgp-card")]
+                token_user_pin: token_user_pin.clone(),
+                protection_method: sc.protection_method.clone(),
+                unlock_code: unlock_passphrase
+                    .map(|uc| SecretBox::new(Box::new(uc.0.expose_secret().to_owned()))),
+            },
+            // PERF #1: hand the still-open admin session back to the caller for
+            // reuse (context-name fetch, relationships, joins). `vta_client` is
+            // `Some` only for a VTA backend with an active persona.
+            vta_client,
+        ))
     }
 }
