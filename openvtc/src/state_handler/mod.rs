@@ -552,6 +552,12 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::CommunitySelect(i) => {
+                        state.main_page.content_panel.communities.selected_index = i;
+                    },
+                    Action::DeleteCommunity(i) => {
+                        self.remove_community(&mut state, &mut config, i);
+                    },
                     Action::StartJoin => {
                         // State-B join from the live runtime: reuse the always-on
                         // admin VTA session. The DIDComm service keeps running in
@@ -829,6 +835,46 @@ impl StateHandler {
         Ok(result)
     }
 
+    /// Remove the community at `index` in the Communities display list: withdraw
+    /// a live (Pending/Active) membership first (R-C-8 — for a pending join this
+    /// is the withdrawal), then delete the record, persist, and refresh the
+    /// panel. Surfaces the outcome as a status message.
+    fn remove_community(&self, state: &mut State, config: &mut Config, index: usize) {
+        let Some(vtc) = config
+            .account
+            .communities_for_display(false)
+            .get(index)
+            .map(|c| c.vtc_did.clone())
+        else {
+            return;
+        };
+        if config.account.community(&vtc).is_some_and(|c| c.is_live())
+            && let Some(c) = config.account.community_mut(&vtc)
+        {
+            c.leave();
+        }
+        match config.account.delete_community(&vtc) {
+            Ok(_) => {
+                if let Err(e) = config.save(
+                    &self.profile,
+                    #[cfg(feature = "openpgp-card")]
+                    &|| eprintln!("Touch confirmation needed for decryption"),
+                ) {
+                    state
+                        .main_page
+                        .log_error("Failed to save after removing community", &e);
+                }
+                state.main_page.sync_from_config(config);
+                state.main_page.content_panel.communities.status_message =
+                    Some("Community removed.".to_string());
+            }
+            Err(e) => {
+                state.main_page.content_panel.communities.status_message =
+                    Some(format!("Could not remove community: {e}"));
+            }
+        }
+    }
+
     /// Minimal event loop for when there is no active community / messaging
     /// (State-A) or after an init failure — keeps the UI alive so the user can
     /// navigate, exit, and (when `join_ctx` is supplied) start a join.
@@ -873,6 +919,14 @@ impl StateHandler {
                                 state.main_page.menu_panel.selected = true;
                                 state.main_page.content_panel.selected = false;
                             }
+                        }
+                    }
+                    Action::CommunitySelect(i) => {
+                        state.main_page.content_panel.communities.selected_index = i;
+                    }
+                    Action::DeleteCommunity(i) => {
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            self.remove_community(state, &mut ctx.config, i);
                         }
                     }
                     Action::StartJoin => {

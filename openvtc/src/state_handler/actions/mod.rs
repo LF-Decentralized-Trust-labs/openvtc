@@ -220,6 +220,13 @@ pub enum Action {
     /// Cancel the join flow and return to the main page.
     JoinCancel,
 
+    /// Move the Communities-list selection to this index.
+    CommunitySelect(usize),
+
+    /// Remove the community at this index in the Communities list (withdraws a
+    /// live/pending membership, then deletes the record).
+    DeleteCommunity(usize),
+
     // ************************************************************************
     // SETUP Pages
     /// Import existing Config

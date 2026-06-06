@@ -314,12 +314,32 @@ impl MainPage {
         }
     }
 
-    /// Communities overview keys (R-A-5 Stage 4): `j` starts the join flow,
-    /// including from the empty state. Returns true if consumed.
+    /// Communities overview keys (R-A-5 Stage 4): `j` starts the join flow
+    /// (incl. from the empty state), ↑/↓ move the selection, `d`/Del removes the
+    /// selected community. Returns true if consumed.
     fn handle_communities_key(&mut self, key: KeyEvent) -> bool {
+        let comms = &self.props.main_page.content_panel.communities;
+        let count = comms.items.len();
+        let selected = comms.selected_index;
         match key.code {
             KeyCode::Char('j') => {
                 let _ = self.action_tx.send(Action::StartJoin);
+                true
+            }
+            KeyCode::Up if count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::CommunitySelect(selected.saturating_sub(1)));
+                true
+            }
+            KeyCode::Down if count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::CommunitySelect((selected + 1).min(count - 1)));
+                true
+            }
+            KeyCode::Char('d') | KeyCode::Delete if selected < count => {
+                let _ = self.action_tx.send(Action::DeleteCommunity(selected));
                 true
             }
             KeyCode::Esc => {
