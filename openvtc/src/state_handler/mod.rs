@@ -533,6 +533,9 @@ impl StateHandler {
         // moment a `ListenerEvent::Connected` arrives — and back to Connecting on
         // a disconnect. Subscribe to typed lifecycle events for that.
         let mut listener_events = didcomm_service.subscribe();
+        // The persona listener's id (community-scoped, derived from its DID) is
+        // stable for the life of this loop — compute it once for event matching.
+        let persona_lid = didcomm::persona_listener_id(config.persona_did());
         state.connection.status = state::MediatorStatus::Connecting;
         state.main_page.log("Connecting to the mediator…");
         let _ = self.state_tx.send(state.clone());
@@ -591,6 +594,9 @@ impl StateHandler {
                         state.main_page.content_panel.communities.confirm_delete = None;
                     },
                     Action::DeleteCommunity(i) => {
+                        // Capture the listener id before the delete, while the
+                        // persona/community are still present.
+                        let listener_id = didcomm::persona_listener_id(config.persona_did());
                         self.remove_community(&mut state, &mut config, i);
                         // A deleted community must not leave its persona's
                         // mediator connection running. If the active persona no
@@ -606,10 +612,7 @@ impl StateHandler {
                                 .any(|c| c.persona_ref == pid && c.is_live())
                         });
                         if !still_live {
-                            if let Err(e) = didcomm_service
-                                .remove_listener(didcomm::PERSONA_LISTENER_ID)
-                                .await
-                            {
+                            if let Err(e) = didcomm_service.remove_listener(&listener_id).await {
                                 debug!("remove_listener after community delete: {e}");
                             }
                             state.connection.status = state::MediatorStatus::NoActiveCommunity;
@@ -884,13 +887,13 @@ impl StateHandler {
                     if let Ok(ev) = ev {
                         match ev {
                             ListenerEvent::Connected { listener_id }
-                                if listener_id == didcomm::PERSONA_LISTENER_ID =>
+                                if listener_id == persona_lid =>
                             {
                                 state.connection.status = state::MediatorStatus::Connected;
                                 state.connection.messaging_active = true;
                             }
                             ListenerEvent::Disconnected { listener_id, .. }
-                                if listener_id == didcomm::PERSONA_LISTENER_ID =>
+                                if listener_id == persona_lid =>
                             {
                                 state.connection.status = state::MediatorStatus::Connecting;
                                 state.connection.messaging_active = false;
