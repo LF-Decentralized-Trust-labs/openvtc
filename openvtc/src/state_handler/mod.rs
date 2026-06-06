@@ -555,6 +555,12 @@ impl StateHandler {
                     Action::CommunitySelect(i) => {
                         state.main_page.content_panel.communities.selected_index = i;
                     },
+                    Action::CommunityConfirmDelete(i) => {
+                        state.main_page.content_panel.communities.confirm_delete = Some(i);
+                    },
+                    Action::CommunityCancelDelete => {
+                        state.main_page.content_panel.communities.confirm_delete = None;
+                    },
                     Action::DeleteCommunity(i) => {
                         self.remove_community(&mut state, &mut config, i);
                     },
@@ -848,6 +854,8 @@ impl StateHandler {
         else {
             return;
         };
+        // The confirmation is now resolved.
+        state.main_page.content_panel.communities.confirm_delete = None;
         if config.account.community(&vtc).is_some_and(|c| c.is_live())
             && let Some(c) = config.account.community_mut(&vtc)
         {
@@ -923,6 +931,12 @@ impl StateHandler {
                     }
                     Action::CommunitySelect(i) => {
                         state.main_page.content_panel.communities.selected_index = i;
+                    }
+                    Action::CommunityConfirmDelete(i) => {
+                        state.main_page.content_panel.communities.confirm_delete = Some(i);
+                    }
+                    Action::CommunityCancelDelete => {
+                        state.main_page.content_panel.communities.confirm_delete = None;
                     }
                     Action::DeleteCommunity(i) => {
                         if let Some(ctx) = join_ctx.as_mut() {

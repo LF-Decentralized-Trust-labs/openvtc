@@ -99,9 +99,23 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(
-        Line::from("↑/↓ navigate   j: join a community   d: remove selected").fg(COLOR_DARK_GRAY),
-    );
+    if let Some(idx) = state.confirm_delete {
+        let name = state
+            .items
+            .get(idx)
+            .map(|c| c.display_name.as_str())
+            .unwrap_or("this community");
+        lines.push(
+            Line::from(format!("Remove “{name}”?   y: confirm    n: cancel"))
+                .fg(COLOR_ORANGE)
+                .bold(),
+        );
+    } else {
+        lines.push(
+            Line::from("↑/↓ navigate   j: join a community   d: remove selected")
+                .fg(COLOR_DARK_GRAY),
+        );
+    }
 
     lines
 }

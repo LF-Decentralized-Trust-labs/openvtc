@@ -223,8 +223,16 @@ pub enum Action {
     /// Move the Communities-list selection to this index.
     CommunitySelect(usize),
 
+    /// Arm a removal confirmation for the community at this index (the panel
+    /// prompts for y/n before anything is deleted).
+    CommunityConfirmDelete(usize),
+
+    /// Dismiss a pending removal confirmation without deleting.
+    CommunityCancelDelete,
+
     /// Remove the community at this index in the Communities list (withdraws a
-    /// live/pending membership, then deletes the record).
+    /// live/pending membership, then deletes the record). Only sent after the
+    /// user confirms.
     DeleteCommunity(usize),
 
     // ************************************************************************

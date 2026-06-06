@@ -321,6 +321,21 @@ impl MainPage {
         let comms = &self.props.main_page.content_panel.communities;
         let count = comms.items.len();
         let selected = comms.selected_index;
+
+        // A removal confirmation is pending: only confirm (y/Enter) or cancel
+        // (n/Esc) apply; every other key is swallowed so nothing slips through.
+        if let Some(idx) = comms.confirm_delete {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::DeleteCommunity(idx));
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::CommunityCancelDelete);
+                }
+            }
+            return true;
+        }
+
         match key.code {
             KeyCode::Char('j') => {
                 let _ = self.action_tx.send(Action::StartJoin);
@@ -339,7 +354,9 @@ impl MainPage {
                 true
             }
             KeyCode::Char('d') | KeyCode::Delete if selected < count => {
-                let _ = self.action_tx.send(Action::DeleteCommunity(selected));
+                let _ = self
+                    .action_tx
+                    .send(Action::CommunityConfirmDelete(selected));
                 true
             }
             KeyCode::Esc => {

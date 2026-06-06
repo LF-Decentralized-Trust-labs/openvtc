@@ -39,6 +39,9 @@ pub struct CommunitiesState {
     pub actions_required: usize,
     /// Transient status message.
     pub status_message: Option<String>,
+    /// When `Some(index)`, a removal of that community is awaiting `y`/`n`
+    /// confirmation (the panel shows a prompt and other keys are suppressed).
+    pub confirm_delete: Option<usize>,
 }
 
 /// Lightweight display summary of a community membership (no Arc/Mutex).
