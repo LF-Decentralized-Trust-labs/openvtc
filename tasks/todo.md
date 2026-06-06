@@ -69,10 +69,16 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   - Slug rule (§10.4): lowercase; keep `[a-z0-9-]`; collapse other runs to `-`;
     trim; cap 32; collision suffix `-2`, `-3`, …; name-less fallback derives a
     stable token from the VTC DID via `didwebvh-rs` (no hand-rolled parsing).
-  - Single swap point documented for the future `parent_id` API.
+    Each segment must be a valid context identifier and the full path satisfy
+    `validate_context_path` (depth ≤ 8) — **mirror `vti-common::context_path`**
+    (reuse if consumable; else replicate its rules to avoid drift).
+  - **Hierarchy is VTA-enforced (VTI #257)** — the VTA validates depth/segments
+    and ancestry ACL server-side; this module just builds/validates paths. **No
+    `vta-sdk` change needed** (`create_context` already takes a path id).
 - **Acceptance criteria:**
   - build/parse/render round-trip tests pass; slug + collision + fallback cases
-    covered; no `format!`-style DID surgery (uses `didwebvh-rs`).
+    covered; paths satisfy the `vti-common` rules; no `format!`-style DID
+    surgery (uses `didwebvh-rs`).
 - **Verification:** `cargo test -p openvtc-core` (context_path unit tests).
 - **Depends on:** — (parallelizable with T1)
 
@@ -227,15 +233,20 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
   the git-config / env override set.
 - **Depends on:** T1 (persona model) · independent of T3–T7 otherwise.
 
-### [ ] T9 — Mock VTA/mediator integration harness *(nice-to-have)*
-- **Crate:** test-only (dev-deps; `affinidi-messaging-test-mediator` present)
-- **Satisfies:** spec §9 testing (non-blocking)
+### [ ] T9 — MockVta integration harness
+- **Crate:** test-only — **`MockVta` now exists** (VTI #256, in the `vta-service`
+  crate: `MockVta::start()` → `base_url()` → `shutdown()`).
+- **Satisfies:** spec §9 testing
 - **Description:**
-  - Integration tests exercising bootstrap + join + lifecycle against a mock
-    VTA/VTC. User to supply a mock VTA externally for now.
-- **Acceptance criteria:** end-to-end bootstrap→join→resolve runs against the
-  mock in CI or locally.
-- **Depends on:** T5 · **not required for v1.**
+  - Add `vta-service` as a **git dev-dependency** (VTI repo) and write
+    integration tests that start a `MockVta`, point the CLI at `base_url()`, and
+    exercise bootstrap (State A) → join (State B) → lifecycle.
+  - **CI prerequisite:** add the VTI git URL to `deny.toml` `[sources].allow-git`
+    (currently `[]` with `unknown-git = "deny"`), or `cargo deny check sources`
+    fails.
+- **Acceptance criteria:** end-to-end bootstrap→join→resolve runs against a live
+  `MockVta` in CI or locally; `cargo deny` passes with the git source allowed.
+- **Depends on:** T5 · promoted from nice-to-have now that MockVta exists.
 
 > **CHECKPOINT 3** — feature complete (minus deferred VP). See plan §3.
 
@@ -243,7 +254,7 @@ Status legend: `[ ]` todo · `[~]` in progress · `[x]` done
 
 ## Deferred (not scheduled here)
 - D4 VP construction + VP requirement discovery (spec §8, §10.1).
-- Real hierarchical context API (`parent_id`); VTA-side sub-context
-  authorization (§10.5, owner-driven).
+- *(Resolved — VTI #257)* hierarchical contexts + sub-context authorization are
+  now VTA-enforced; `context_path` (T2) mirrors `vti-common::context_path`.
 - *New* per-community capabilities beyond porting today's main page; persona
   key rotation (R-P-3).
