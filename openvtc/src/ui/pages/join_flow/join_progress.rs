@@ -106,7 +106,7 @@ impl JoinProgress {
                 }
                 lines.push(Line::default());
                 lines.push(Line::styled(
-                    "Restart OpenVTC to activate this community.",
+                    "Restart OpenVTC to bring your new persona online.",
                     Style::new().fg(COLOR_ORANGE).bold(),
                 ));
             }

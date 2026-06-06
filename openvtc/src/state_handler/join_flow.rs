@@ -321,12 +321,12 @@ async fn run_join_sequence(
     state.main_page.sync_from_config(config);
     state
         .main_page
-        .log("Join request submitted — restart to activate.");
+        .log("Join request submitted — Pending in your Communities list.");
     state.join.created_community = Some(record);
     state.join.completed = Completion::CompletedOK;
     state
         .join
-        .info("Done. Restart OpenVTC to activate this community.");
+        .info("Join request submitted — it's now Pending in your Communities list.");
 }
 
 /// Persist the config, abstracting over the openpgp-card touch prompt.

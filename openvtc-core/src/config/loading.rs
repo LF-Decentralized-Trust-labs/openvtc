@@ -172,17 +172,6 @@ impl Config {
         // (D13/R-RST), so a loadable config always carries an account.
         let account = private_cfg.account.clone();
 
-        // Build the VTA client once upfront (if VTA backend), reusing whichever
-        // transport setup chose: DIDComm if a mediator was advertised, REST
-        // otherwise. Needed for runtime VTA operations whether or not a persona
-        // is present.
-        let vta_client = if matches!(&key_backend, KeyBackend::Vta { .. }) {
-            report_progress(&on_progress, "Authenticating...");
-            Some(super::build_runtime_vta_client(&key_backend).await?)
-        } else {
-            None
-        };
-
         // Resolve runtime identities from the account's personas.
         //
         // A State-A (account-bootstrap, R-A-5) account persists with NO persona:
@@ -198,6 +187,22 @@ impl Config {
                 p.mediator_did.clone().unwrap_or_default(),
             )
         });
+
+        // Open the admin VTA session ONLY when there's a persona to rehydrate
+        // (regenerate its keys + register messaging profiles). A State-A account
+        // has none, so opening one here is useless — and opening it then shutting
+        // it down right before `main_loop` opens its own admin session leaves the
+        // shut-down session's auto-reconnect briefly dueling the live one on the
+        // mediator (WebSocket churn → a dropped response on the first burst of
+        // requests, e.g. the join's key creation). Skipping it leaves a single
+        // admin session for the whole runtime.
+        let vta_client =
+            if matches!(&key_backend, KeyBackend::Vta { .. }) && active_persona.is_some() {
+                report_progress(&on_progress, "Authenticating...");
+                Some(super::build_runtime_vta_client(&key_backend).await?)
+            } else {
+                None
+            };
 
         let mut identities = HashMap::new();
         if let Some((active_persona_id, active_persona_did, active_mediator_did)) = active_persona {
