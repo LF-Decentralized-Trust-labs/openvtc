@@ -25,6 +25,12 @@ pub struct State {
     /// sees exactly which step is slow.
     pub loading_steps: Vec<LoadingStep>,
 
+    /// True once phase 1 (config + VTA) has finished successfully. The loading
+    /// screen then offers "Press Enter to continue" while phase-2 community
+    /// connections already run in the background; pressing Enter reveals the
+    /// main page.
+    pub loading_complete: bool,
+
     /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
     #[cfg(feature = "openpgp-card")]
     pub token_admin_pin: Option<Arc<SecretString>>,
@@ -42,8 +48,8 @@ pub struct LoadingStep {
     pub label: String,
     /// Wall-clock time the step started, `HH:MM:SS`.
     pub started: String,
-    /// Duration once the step completed, in milliseconds. `None` while running.
-    pub duration_ms: Option<u64>,
+    /// How long the step took, once completed. `None` while still running.
+    pub duration: Option<std::time::Duration>,
 }
 
 #[derive(Default, Debug, Clone, Copy)]

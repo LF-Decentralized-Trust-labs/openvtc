@@ -292,14 +292,13 @@ impl StateHandler {
                             if let (Some(start), Some(last)) =
                                 (step_start, state.loading_steps.last_mut())
                             {
-                                last.duration_ms =
-                                    Some(now.duration_since(start).as_millis() as u64);
+                                last.duration = Some(now.duration_since(start));
                             }
                             // Begin this step.
                             state.loading_steps.push(state::LoadingStep {
                                 label: msg.clone(),
                                 started: chrono::Local::now().format("%H:%M:%S").to_string(),
-                                duration_ms: None,
+                                duration: None,
                             });
                             step_start = Some(now);
                             state.tip_index = state.tip_index.wrapping_add(1);
@@ -320,8 +319,7 @@ impl StateHandler {
                                     if let (Some(start), Some(last)) =
                                         (step_start, state.loading_steps.last_mut())
                                     {
-                                        last.duration_ms =
-                                            Some(start.elapsed().as_millis() as u64);
+                                        last.duration = Some(start.elapsed());
                                     }
                                     break (tdk, config);
                                 }
@@ -429,11 +427,12 @@ impl StateHandler {
             }
         }
 
-        // Phase 1 (config load + VTA) is complete — leave the loading screen and
-        // show the main page now. The per-community DIDComm connection (phase 2)
-        // runs asynchronously below and reports its status without blocking the
-        // UI (it no longer waits up-front for the listener to connect).
-        state.active_page = ActivePage::Main;
+        // Phase 1 (config load + VTA) is complete. Stay on the loading screen
+        // and offer "Press Enter to continue" — but kick off phase 2 (the
+        // per-community DIDComm connection) right away below, so the work is
+        // already happening in the background regardless of when the user hits
+        // Enter. Dismissing the loading screen (Enter) reveals the main page.
+        state.loading_complete = true;
 
         // A State-A account has no persona/community yet (R-A-5): there is no
         // DID to open a DIDComm session for. Skip the persona listener entirely
@@ -557,6 +556,11 @@ impl StateHandler {
                         }
 
                         break interrupted;
+                    },
+                    Action::DismissLoading => {
+                        // Phase 1 done + user pressed Enter — reveal the main page
+                        // (phase-2 connection is already running in the background).
+                        state.active_page = state::ActivePage::Main;
                     },
                     Action::MainMenuSelected(menu_item) => {
                         // User has changed main menu selection
@@ -961,6 +965,9 @@ impl StateHandler {
                             debug!("Failed to send terminate signal: {e}");
                         }
                         break interrupted;
+                    }
+                    Action::DismissLoading => {
+                        state.active_page = state::ActivePage::Main;
                     }
                     Action::MainMenuSelected(menu_item) => {
                         state.main_page.menu_panel.selected_menu = menu_item;

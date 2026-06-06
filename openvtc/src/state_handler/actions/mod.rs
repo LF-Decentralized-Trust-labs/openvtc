@@ -207,6 +207,11 @@ pub enum Action {
     Contact(ContactAction),
     Settings(SettingsAction),
 
+    /// Dismiss the startup loading screen (Enter, once loading has completed) and
+    /// reveal the main page. Phase-2 connections are already running in the
+    /// background by this point.
+    DismissLoading,
+
     // ************************************************************************
     // JOIN flow (R-A-5 Stage 4 — State-B "join a community")
     /// Open the join flow (pressing `j` on the Communities panel). Handled in

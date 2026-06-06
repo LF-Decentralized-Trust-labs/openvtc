@@ -63,6 +63,8 @@ pub struct Props {
     pub steps: Vec<LoadingStep>,
     /// Rotating-tip index (advanced as startup steps stream).
     pub tip_index: usize,
+    /// True once phase 1 finished — show the "Press Enter to continue" prompt.
+    pub complete: bool,
 }
 
 impl From<&State> for Props {
@@ -71,7 +73,19 @@ impl From<&State> for Props {
             status: state.connection.status.clone(),
             steps: state.loading_steps.clone(),
             tip_index: state.tip_index,
+            complete: state.loading_complete,
         }
+    }
+}
+
+/// Human-friendly duration: milliseconds (2 dp) under a second, seconds (2 dp)
+/// at or above — e.g. `3.42ms`, `842.10ms`, `5.83s`.
+fn format_duration(d: std::time::Duration) -> String {
+    let secs = d.as_secs_f64();
+    if secs >= 1.0 {
+        format!("{secs:.2}s")
+    } else {
+        format!("{:.2}ms", d.as_micros() as f64 / 1000.0)
     }
 }
 
@@ -108,9 +122,16 @@ impl Component for LoadingScreen {
         if key.kind != KeyEventKind::Press {
             return;
         }
-        // The loading screen is non-interactive: only quit is honoured.
-        if let KeyCode::F(10) = key.code {
-            let _ = self.action_tx.send(Action::Exit);
+        match key.code {
+            KeyCode::F(10) => {
+                let _ = self.action_tx.send(Action::Exit);
+            }
+            // Once phase 1 has finished, Enter dismisses the loading screen and
+            // reveals the main page (phase-2 connections already run in the bg).
+            KeyCode::Enter if self.props.complete => {
+                let _ = self.action_tx.send(Action::DismissLoading);
+            }
+            _ => {}
         }
     }
 }
@@ -186,8 +207,8 @@ impl ComponentRender<()> for LoadingScreen {
                 Style::new().fg(COLOR_BORDER).bold(),
             ));
             for step in &self.props.steps {
-                let (marker, detail, marker_color) = match step.duration_ms {
-                    Some(ms) => ("✓", format!("  ({ms} ms)"), COLOR_SUCCESS),
+                let (marker, detail, marker_color) = match step.duration {
+                    Some(d) => ("✓", format!("  ({})", format_duration(d)), COLOR_SUCCESS),
                     None => ("▸", "  …".to_string(), COLOR_SOFT_PURPLE),
                 };
                 lines.push(Line::from(vec![
@@ -212,16 +233,35 @@ impl ComponentRender<()> for LoadingScreen {
             ));
         }
 
+        // Once phase 1 is done, prompt to continue (phase-2 connections are
+        // already running in the background).
+        if self.props.complete {
+            lines.push(Line::default());
+            lines.push(Line::styled(
+                "Press [ENTER] to continue — connecting in the background",
+                Style::new().fg(COLOR_SUCCESS).bold(),
+            ));
+        }
+
         let body = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .block(Block::new().padding(Padding::new(1, 1, 1, 0)));
         frame.render_widget(body, body_area);
 
         // Footer.
-        let footer = Line::from(vec![
-            Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
-            Span::styled(" quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        ]);
+        let footer = if self.props.complete {
+            Line::from(vec![
+                Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" continue   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ])
+        };
         frame.render_widget(Paragraph::new(footer).centered(), footer_area);
     }
 }
