@@ -196,11 +196,45 @@ impl Config {
         // persona/relationship messaging profiles to register, so the whole
         // resolve/keygen/profile block is skipped and `identities` stays empty.
         // A State-B account currently carries a single persona, resolved here.
+        // The account's VTA mediator (captured at provisioning). Used as the
+        // fallback below for any persona stored without one.
+        let account_mediator = match &key_backend {
+            KeyBackend::Vta { mediator_did, .. } => mediator_did.clone().unwrap_or_default(),
+            KeyBackend::Bip32 { .. } => String::new(),
+        };
         let active_persona = account.personas.values().next().map(|p| {
+            // A persona minted before the mediator fix was stored with an empty
+            // mediator, which leaves its DIDComm listener failing with "No
+            // Mediator is configured" in an endless reconnect loop. Repair it at
+            // load by falling back to the account's VTA mediator — the persona
+            // DID was minted with the VTA's mediator service, so they match — so
+            // an already-broken persona comes good on the next launch with no
+            // re-join. (Runtime-only; the record is rewritten on the next save.)
+            let mediator = {
+                let stored = p.mediator_did.clone().unwrap_or_default();
+                if stored.is_empty() {
+                    if account_mediator.is_empty() {
+                        warn!(
+                            persona = %p.did,
+                            "persona has no mediator and the account has none either — \
+                             the persona listener will not connect"
+                        );
+                    } else {
+                        warn!(
+                            persona = %p.did,
+                            "persona stored without a mediator — falling back to the \
+                             account VTA mediator"
+                        );
+                    }
+                    account_mediator.clone()
+                } else {
+                    stored
+                }
+            };
             (
                 p.persona_id,
                 std::sync::Arc::new(p.did.clone()),
-                p.mediator_did.clone().unwrap_or_default(),
+                mediator,
                 // PERF #3: the cached DID document, used instead of a network
                 // resolve when present.
                 p.did_document.clone(),
