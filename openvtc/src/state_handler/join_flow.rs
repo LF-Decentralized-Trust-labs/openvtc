@@ -239,8 +239,15 @@ async fn run_join_sequence(
         }
     }
 
-    // Default mediator; label the persona after the community.
-    state.setup.custom_mediator = None;
+    // The persona's mediator is the account's VTA mediator: the DID minted via
+    // the VTA's webvh server advertises that mediator in its DIDComm service, so
+    // the persona listener must use the same one. Hardcoding `None` (the public
+    // default) left the persona with no usable mediator — the listener then
+    // failed with "No Mediator is configured" and retried forever.
+    state.setup.custom_mediator = match &config.key_backend {
+        openvtc_core::config::KeyBackend::Vta { mediator_did, .. } => mediator_did.clone(),
+        _ => None,
+    };
     state.setup.username = display_name.clone().unwrap_or_else(|| {
         openvtc_core::config::context_path::render_for_display(&vtc_did).to_string()
     });
