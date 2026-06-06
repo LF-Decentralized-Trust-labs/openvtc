@@ -77,7 +77,7 @@ impl FinalPage {
         if matches!(state.final_page.completed, Completion::CompletedOK) {
             lines.push(Line::default());
             lines.push(Line::styled(
-                "Congratulations! Your OpenVTC account is ready.",
+                "Congratulations! OpenVTC is now securely integrated with your Verifiable Trust Agent (VTA)",
                 Style::new().fg(COLOR_SUCCESS).bold(),
             ));
             lines.push(Line::default());
@@ -101,7 +101,7 @@ impl FinalPage {
 
             lines.push(Line::default());
             lines.push(Line::styled(
-                "Your account is ready — you can now join a community to:",
+                "You are now ready - you can join a community to:",
                 Style::new().fg(COLOR_BORDER).bold(),
             ));
             lines.push(Line::styled(
