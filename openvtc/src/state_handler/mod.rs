@@ -144,12 +144,11 @@ impl StateHandler {
                     Ok(SetupWizardExit::Config(mut config)) => {
                         crate::apply_env_overrides(&mut config);
 
-                        // Push the main menu skeleton *before* the slow
-                        // post-setup work (keyring read, VTA round-trip,
-                        // mediator handshake) so the operator isn't stuck
-                        // on FinalPage for several seconds. The remaining
-                        // tasks update connection status as they progress.
-                        state.active_page = ActivePage::Main;
+                        // Show the loading screen during the slow post-setup work
+                        // (keyring read, VTA round-trip, mediator handshake)
+                        // instead of a not-yet-interactive main page; it switches
+                        // to Main once the connection is ready.
+                        state.active_page = ActivePage::Loading;
                         state.main_page.menu_panel.selected = true;
                         state.main_page.sync_from_config(&config);
                         state.connection.status =
@@ -188,8 +187,10 @@ impl StateHandler {
                 }
             }
             StartingMode::MainPageDeferred(deferred) => {
-                // Set minimal state from PublicConfig so UI can render immediately
-                state.active_page = ActivePage::Main;
+                // Show the loading screen while the config decrypts and the
+                // mediator connection is established; it switches to Main once
+                // ready (or stays up to show a startup error).
+                state.active_page = ActivePage::Loading;
                 state.main_page.menu_panel.selected = true;
                 state.main_page.config = main_page::MainMenuConfigState {
                     name: deferred.public_config.friendly_name.clone(),
@@ -279,9 +280,29 @@ impl StateHandler {
                 });
 
                 // Listen for progress updates + handle user actions while loading
+                // Wall-clock start of the step currently in progress, used to
+                // stamp its duration on the loading screen when the next step
+                // begins (or when the load finishes).
+                let mut step_start: Option<std::time::Instant> = None;
                 let (tdk, config) = loop {
                     tokio::select! {
                         Some(msg) = progress_rx.recv() => {
+                            let now = std::time::Instant::now();
+                            // Finalize the previous step's duration.
+                            if let (Some(start), Some(last)) =
+                                (step_start, state.loading_steps.last_mut())
+                            {
+                                last.duration_ms =
+                                    Some(now.duration_since(start).as_millis() as u64);
+                            }
+                            // Begin this step.
+                            state.loading_steps.push(state::LoadingStep {
+                                label: msg.clone(),
+                                started: chrono::Local::now().format("%H:%M:%S").to_string(),
+                                duration_ms: None,
+                            });
+                            step_start = Some(now);
+                            state.tip_index = state.tip_index.wrapping_add(1);
                             state.connection.status =
                                 state::MediatorStatus::Initializing(msg);
                             let _ = self.state_tx.send(state.clone());
@@ -294,7 +315,16 @@ impl StateHandler {
                         }
                         result = &mut load_handle => {
                             match result {
-                                Ok(Ok((tdk, config))) => break (tdk, config),
+                                Ok(Ok((tdk, config))) => {
+                                    // Stamp the final load step's duration.
+                                    if let (Some(start), Some(last)) =
+                                        (step_start, state.loading_steps.last_mut())
+                                    {
+                                        last.duration_ms =
+                                            Some(start.elapsed().as_millis() as u64);
+                                    }
+                                    break (tdk, config);
+                                }
                                 Ok(Err(e)) => {
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
@@ -399,12 +429,16 @@ impl StateHandler {
             }
         }
 
+        // Phase 1 (config load + VTA) is complete — leave the loading screen and
+        // show the main page now. The per-community DIDComm connection (phase 2)
+        // runs asynchronously below and reports its status without blocking the
+        // UI (it no longer waits up-front for the listener to connect).
+        state.active_page = ActivePage::Main;
+
         // A State-A account has no persona/community yet (R-A-5): there is no
         // DID to open a DIDComm session for. Skip the persona listener entirely
         // and run the responsive degraded loop so the user can still navigate,
-        // open the Communities page, and start a join. Attempting to connect
-        // would register a listener for an empty DID and stall on
-        // `wait_connected` for 30s before failing.
+        // open the Communities page, and start a join.
         if config.active_identity().is_none() {
             state.connection.status = state::MediatorStatus::NoActiveCommunity;
             let _ = self.state_tx.send(state.clone());
@@ -492,25 +526,15 @@ impl StateHandler {
         }
         info!(count = listeners.len(), "DIDComm listeners registered");
 
-        // Wait for persona listener to connect.
-        // Latency starts at 0 and updates from the first keepalive ping round-trip.
-        match didcomm_service
-            .wait_connected(
-                didcomm::PERSONA_LISTENER_ID,
-                std::time::Duration::from_secs(30),
-            )
-            .await
-        {
-            Ok(()) => {
-                state.connection.status = state::MediatorStatus::Connected;
-                state.connection.messaging_active = true;
-                state.main_page.log("Connected to mediator");
-            }
-            Err(e) => {
-                state.connection.status = state::MediatorStatus::Failed(format!("{e:#}"));
-                state.main_page.log_error("Mediator connection failed", &e);
-            }
-        }
+        // Phase 2 (community/persona DIDComm connection) runs ASYNCHRONOUSLY: we
+        // do NOT block the UI waiting for the listener. The main page is already
+        // showing (Connecting); the persona connection proceeds in the
+        // background and the runtime loop below flips the status to Connected the
+        // moment a `ListenerEvent::Connected` arrives — and back to Connecting on
+        // a disconnect. Subscribe to typed lifecycle events for that.
+        let mut listener_events = didcomm_service.subscribe();
+        state.connection.status = state::MediatorStatus::Connecting;
+        state.main_page.log("Connecting to the mediator…");
         let _ = self.state_tx.send(state.clone());
 
         // Track when a manual trust-ping was sent (for activity log latency display).
@@ -819,6 +843,30 @@ impl StateHandler {
                 // Lifecycle log messages from the DIDCommService
                 Some(log_msg) = lifecycle_log_rx.recv() => {
                     state.main_page.log(log_msg);
+                },
+                // Typed listener lifecycle events → drive the connection status
+                // asynchronously (phase 2). The persona listener connecting flips
+                // the status to Connected; a disconnect drops back to Connecting
+                // while the service auto-reconnects.
+                ev = listener_events.recv() => {
+                    use affinidi_messaging_didcomm_service::ListenerEvent;
+                    if let Ok(ev) = ev {
+                        match ev {
+                            ListenerEvent::Connected { listener_id }
+                                if listener_id == didcomm::PERSONA_LISTENER_ID =>
+                            {
+                                state.connection.status = state::MediatorStatus::Connected;
+                                state.connection.messaging_active = true;
+                            }
+                            ListenerEvent::Disconnected { listener_id, .. }
+                                if listener_id == didcomm::PERSONA_LISTENER_ID =>
+                            {
+                                state.connection.status = state::MediatorStatus::Connecting;
+                                state.connection.messaging_active = false;
+                            }
+                            _ => {}
+                        }
+                    }
                 },
                 // (keepalive removed — WebSocket-level pings handle connectivity)
                 // Catch and handle interrupt signal to gracefully shutdown

@@ -5,7 +5,9 @@ use crate::{
     },
     ui::{
         component::{Component, ComponentRender},
-        pages::{join_flow::JoinFlow, main::MainPage, setup_flow::SetupFlow},
+        pages::{
+            join_flow::JoinFlow, loading::LoadingScreen, main::MainPage, setup_flow::SetupFlow,
+        },
     },
 };
 use crossterm::event::KeyEvent;
@@ -13,6 +15,7 @@ use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 
 pub mod join_flow;
+pub mod loading;
 pub mod main;
 pub mod setup_flow;
 
@@ -38,11 +41,13 @@ pub struct AppRouter {
     main_page: MainPage,
     setup_flow: SetupFlow,
     join_flow: JoinFlow,
+    loading: LoadingScreen,
 }
 
 impl AppRouter {
     fn get_active_page_component_mut(&mut self) -> &mut dyn Component {
         match self.props.active_page {
+            ActivePage::Loading => &mut self.loading,
             ActivePage::Main => &mut self.main_page,
             ActivePage::Setup => &mut self.setup_flow,
             ActivePage::Join => &mut self.join_flow,
@@ -61,6 +66,7 @@ impl Component for AppRouter {
             main_page: MainPage::new(state, action_tx.clone()),
             setup_flow: SetupFlow::new(state, action_tx.clone()),
             join_flow: JoinFlow::new(state, action_tx.clone()),
+            loading: LoadingScreen::new(state, action_tx.clone()),
         }
         .move_with_state(state)
     }
@@ -75,6 +81,7 @@ impl Component for AppRouter {
             main_page: self.main_page.move_with_state(state),
             setup_flow: self.setup_flow.move_with_state(state),
             join_flow: self.join_flow.move_with_state(state),
+            loading: self.loading.move_with_state(state),
         }
     }
 
@@ -91,6 +98,7 @@ impl Component for AppRouter {
 impl ComponentRender<()> for AppRouter {
     fn render(&self, frame: &mut Frame, props: ()) {
         match self.props.active_page {
+            ActivePage::Loading => self.loading.render(frame, props),
             ActivePage::Main => self.main_page.render(frame, props),
             ActivePage::Setup => self.setup_flow.render(frame, props),
             ActivePage::Join => self.join_flow.render(frame, props),

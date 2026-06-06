@@ -16,6 +16,15 @@ pub struct State {
     pub join: JoinState,
     pub connection: ConnectionState,
 
+    /// Rotating-tip index for the startup loading screen, advanced as startup
+    /// steps stream so the tip changes during the load/connect.
+    pub tip_index: usize,
+
+    /// Timed startup steps shown on the loading screen, in order. Each entry is
+    /// marked done (with its duration) when the next step begins, so the user
+    /// sees exactly which step is slow.
+    pub loading_steps: Vec<LoadingStep>,
+
     /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
     #[cfg(feature = "openpgp-card")]
     pub token_admin_pin: Option<Arc<SecretString>>,
@@ -26,10 +35,25 @@ pub struct State {
     pub token_touch_pending: bool,
 }
 
+/// One timed step of the startup sequence, shown on the loading screen.
+#[derive(Clone, Debug)]
+pub struct LoadingStep {
+    /// What the step is doing (the progress message).
+    pub label: String,
+    /// Wall-clock time the step started, `HH:MM:SS`.
+    pub started: String,
+    /// Duration once the step completed, in milliseconds. `None` while running.
+    pub duration_ms: Option<u64>,
+}
+
 #[derive(Default, Debug, Clone, Copy)]
 pub enum ActivePage {
-    /// The main application page with menu, content panels, and activity log.
+    /// The startup loading screen, shown while config loads and the mediator
+    /// connection is established (default so the first frame isn't a blank,
+    /// not-yet-interactive main page).
     #[default]
+    Loading,
+    /// The main application page with menu, content panels, and activity log.
     Main,
     /// The setup wizard flow (comprised of multiple sequential screens).
     Setup,
