@@ -36,6 +36,9 @@ pub struct JoinState {
     pub completed: Completion,
     /// The pending community record created on success (for the success page).
     pub created_community: Option<CommunityRecord>,
+    /// The DID of the persona minted for this community, shown on the success
+    /// page alongside the community DID.
+    pub created_persona_did: Option<String>,
 }
 
 impl JoinState {

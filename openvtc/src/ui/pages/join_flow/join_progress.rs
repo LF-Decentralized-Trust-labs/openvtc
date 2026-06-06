@@ -86,28 +86,34 @@ impl JoinProgress {
                 ));
                 if let Some(rec) = &state.created_community {
                     lines.push(Line::default());
+                    // Only show a friendly name when one actually resolved —
+                    // otherwise it would just duplicate the DID below.
+                    if let Some(name) = &rec.display_name {
+                        lines.push(Line::from(vec![
+                            Span::styled("  Community:     ", Style::new().fg(COLOR_SUCCESS)),
+                            Span::styled(name.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                        ]));
+                    }
                     lines.push(Line::from(vec![
-                        Span::styled("  Community: ", Style::new().fg(COLOR_SUCCESS)),
-                        Span::styled(
-                            rec.display_name
-                                .clone()
-                                .unwrap_or_else(|| rec.vtc_did.clone()),
-                            Style::new().fg(COLOR_SOFT_PURPLE),
-                        ),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("  VTC DID:   ", Style::new().fg(COLOR_SUCCESS)),
+                        Span::styled("  Community DID: ", Style::new().fg(COLOR_SUCCESS)),
                         Span::styled(rec.vtc_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
                     ]));
+                    if let Some(persona_did) = &state.created_persona_did {
+                        lines.push(Line::from(vec![
+                            Span::styled("  Your persona:  ", Style::new().fg(COLOR_SUCCESS)),
+                            Span::styled(persona_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                        ]));
+                    }
                     lines.push(Line::from(vec![
-                        Span::styled("  Status:    ", Style::new().fg(COLOR_SUCCESS)),
+                        Span::styled("  Status:        ", Style::new().fg(COLOR_SUCCESS)),
                         Span::styled("Pending", Style::new().fg(COLOR_ORANGE)),
                     ]));
                 }
                 lines.push(Line::default());
                 lines.push(Line::styled(
-                    "Restart OpenVTC to bring your new persona online.",
-                    Style::new().fg(COLOR_ORANGE).bold(),
+                    "It's now in your Communities list, marked Pending — it will update \
+                     there as the community responds.",
+                    Style::new().fg(COLOR_SUCCESS),
                 ));
             }
             Completion::CompletedFail => {

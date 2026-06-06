@@ -330,6 +330,7 @@ async fn run_join_sequence(
         .main_page
         .log("Join request submitted — Pending in your Communities list.");
     state.join.created_community = Some(record);
+    state.join.created_persona_did = Some(persona_did.clone());
     state.join.completed = Completion::CompletedOK;
     state
         .join
