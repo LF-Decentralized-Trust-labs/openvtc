@@ -283,12 +283,13 @@ pub async fn build_listener_configs(
 
     let persona_secrets = get_secrets_for_did(tdk, config, config.persona_did()).await;
 
+    let persona_label = config.persona_profile_label();
     let mut configs = vec![ListenerConfig {
         id: PERSONA_LISTENER_ID.to_string(),
         profile: make_profile(
             config.persona_did(),
             config.mediator_did(),
-            "Persona",
+            &persona_label,
             persona_secrets,
         ),
         restart_policy: restart.clone(),
@@ -481,7 +482,7 @@ pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -
         profile: make_profile(
             config.persona_did(),
             config.mediator_did(),
-            "Persona",
+            &config.persona_profile_label(),
             secrets,
         ),
         restart_policy: default_listener_restart_policy(),

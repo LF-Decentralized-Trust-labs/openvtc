@@ -261,6 +261,20 @@ impl Config {
         if let Some((active_persona_id, active_persona_did, active_mediator_did, cached_document)) =
             active_persona
         {
+            // Name the persona's messaging profile after its community so it is
+            // identifiable (not a generic "Persona") — matches the runtime
+            // listener label (`Config::persona_profile_label`).
+            let profile_label = account
+                .communities
+                .values()
+                .find(|c| c.persona_ref == active_persona_id)
+                .map(|c| {
+                    c.display_name.clone().unwrap_or_else(|| {
+                        crate::config::context_path::render_for_display(&c.vtc_did).to_string()
+                    })
+                })
+                .unwrap_or_else(|| "Persona".to_string());
+
             // Resolve + key/profile setup for the active persona. Wrapped in an
             // inner future so that, on the `?` error paths below, the admin VTA
             // session is shut down before the error propagates (a leaked session
@@ -332,7 +346,7 @@ impl Config {
                     tdk.atm.as_ref().ok_or_else(|| {
                         OpenVTCError::Config("TDK ATM service not initialized".to_string())
                     })?,
-                    Some("Persona DID".to_string()),
+                    Some(profile_label.clone()),
                     active_persona_did.to_string(),
                     Some(active_mediator_did.clone()),
                 )

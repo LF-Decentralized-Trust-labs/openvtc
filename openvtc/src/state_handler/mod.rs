@@ -592,6 +592,32 @@ impl StateHandler {
                     },
                     Action::DeleteCommunity(i) => {
                         self.remove_community(&mut state, &mut config, i);
+                        // A deleted community must not leave its persona's
+                        // mediator connection running. If the active persona no
+                        // longer has any live community, stop and remove its
+                        // listener so the connection is torn down with the
+                        // community (not left dangling).
+                        let persona_id = config.active_identity().map(|id| id.persona_id);
+                        let still_live = persona_id.is_some_and(|pid| {
+                            config
+                                .account
+                                .communities
+                                .values()
+                                .any(|c| c.persona_ref == pid && c.is_live())
+                        });
+                        if !still_live {
+                            if let Err(e) = didcomm_service
+                                .remove_listener(didcomm::PERSONA_LISTENER_ID)
+                                .await
+                            {
+                                debug!("remove_listener after community delete: {e}");
+                            }
+                            state.connection.status = state::MediatorStatus::NoActiveCommunity;
+                            state.connection.messaging_active = false;
+                            state
+                                .main_page
+                                .log("Community removed — persona listener stopped.");
+                        }
                     },
                     Action::StartJoin => {
                         // State-B join from the live runtime: reuse the always-on

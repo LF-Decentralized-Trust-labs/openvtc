@@ -338,6 +338,26 @@ impl Config {
             .unwrap_or("")
     }
 
+    /// Human label for the active persona's messaging profile: the community it
+    /// belongs to (its display name, else the VTC DID slug), so each community's
+    /// profile is identifiable rather than a generic "Persona". Falls back to
+    /// "Persona" when the persona has no community yet.
+    pub fn persona_profile_label(&self) -> String {
+        let Some(pid) = self.active_identity().map(|i| i.persona_id) else {
+            return "Persona".to_string();
+        };
+        self.account
+            .communities
+            .values()
+            .find(|c| c.persona_ref == pid)
+            .map(|c| {
+                c.display_name.clone().unwrap_or_else(|| {
+                    crate::config::context_path::render_for_display(&c.vtc_did).to_string()
+                })
+            })
+            .unwrap_or_else(|| "Persona".to_string())
+    }
+
     /// Set the active persona's mediator DID, updating both the persisted
     /// `account` record and the runtime `IdentityContext` so subsequent reads
     /// (and the next save) see the new value. No-op if no identity is active.
