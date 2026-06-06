@@ -161,10 +161,11 @@ async fn run_join_sequence(
     let top_context_id = config.account.top_context_id.clone();
 
     // 4. Mint a fresh persona into `state.setup` (reusing the setup helpers).
-    state.join.info("Minting a persona for this community…");
-    let _ = handler.state_tx.send(state.clone());
-
     // Persona signing/auth/encryption keys.
+    state
+        .join
+        .info("Creating persona keys (signing, authentication, encryption)…");
+    let _ = handler.state_tx.send(state.clone());
     match vta::create_persona_keys(admin_vta, Some(&top_context_id)).await {
         Ok(keys) => state.setup.did_keys = Some(keys),
         Err(e) => {
@@ -175,6 +176,8 @@ async fn run_join_sequence(
         }
     }
     // WebVH update keys.
+    state.join.info("Creating DID update keys…");
+    let _ = handler.state_tx.send(state.clone());
     match vta::create_update_keys(admin_vta, Some(&top_context_id)).await {
         Ok((update, next_update)) => {
             state.setup.vta.update_secret = Some(update);
@@ -189,6 +192,8 @@ async fn run_join_sequence(
     }
 
     // Pick the first WebVH server. Serverless mint is a deliberate follow-up.
+    state.join.info("Finding a DID hosting server…");
+    let _ = handler.state_tx.send(state.clone());
     let server_id = match vta::list_webvh_servers(admin_vta).await {
         Ok(servers) => match servers.into_iter().next() {
             Some(s) => s.id,
