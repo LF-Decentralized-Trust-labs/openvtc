@@ -535,18 +535,32 @@ pub struct MainMenuConfigState {
 
 impl From<&Box<Config>> for MainMenuConfigState {
     fn from(config: &Box<Config>) -> Self {
-        MainMenuConfigState {
-            name: config.public.friendly_name.clone(),
-            did: config.persona_did_arc(),
-        }
+        MainMenuConfigState::from(config.as_ref())
     }
 }
 
 impl From<&Config> for MainMenuConfigState {
     fn from(config: &Config) -> Self {
+        // The persona identity is community-scoped: only surface it in the top
+        // bar once the user is actually in a community (an Active membership). A
+        // State-A account or a still-Pending join shows no persona name/DID up
+        // there — the persona belongs to a community context, not the chrome.
+        let in_community = config
+            .account
+            .communities
+            .values()
+            .any(|c| c.status.is_active());
         MainMenuConfigState {
-            name: config.public.friendly_name.clone(),
-            did: config.persona_did_arc(),
+            name: if in_community {
+                config.public.friendly_name.clone()
+            } else {
+                String::new()
+            },
+            did: if in_community {
+                config.persona_did_arc()
+            } else {
+                Arc::new(String::new())
+            },
         }
     }
 }
