@@ -20,9 +20,10 @@ use openvtc_core::{
     tasks::TaskType,
     vrc::VRCRequestReject,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
+use vta_sdk::protocols::credential_exchange::ISSUE as CREDENTIAL_ISSUE_TYPE;
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JoinRequestSubmitReceiptBody,
 };
@@ -198,6 +199,83 @@ fn handle_join_submit_receipt(account: &mut Account, message: &Message, from_did
     }
 }
 
+/// Handle a VTC `credential-exchange/issue`: store the issued credential on the
+/// matching community and, for the membership credential (VMC), flip the
+/// membership to `Active`. The issuing VTC is the authcrypt sender; the
+/// credential must be issued by that VTC and to the community's own persona
+/// (anti-misdelivery). Returns `true` if a record was updated.
+fn handle_credential_issue(account: &mut Account, message: &Message, from_did: &str) -> bool {
+    // The known-holder delivery carries the VC at `credential_response.credential`.
+    // `sealed` issues (invite / air-gap) are not handled here.
+    let Some(credential) = message
+        .body
+        .get("credential_response")
+        .and_then(|cr| cr.get("credential"))
+        .cloned()
+    else {
+        warn!(vtc = %from_did, "credential-issue without credential_response.credential — ignoring");
+        return false;
+    };
+
+    // Resolve the target community (the sender is the issuing VTC) + its persona.
+    let Some(record) = account.communities.get(from_did) else {
+        warn!(vtc = %from_did, "credential-issue from an unknown community — ignoring");
+        return false;
+    };
+    let persona_ref = record.persona_ref;
+    let Some(persona_did) = account.personas.get(&persona_ref).map(|p| p.did.clone()) else {
+        warn!(vtc = %from_did, "community persona missing — ignoring credential");
+        return false;
+    };
+
+    // Anti-misdelivery: issuer must be this community's VTC, subject our persona.
+    let issuer = credential.get("issuer").and_then(|i| match i {
+        Value::String(s) => Some(s.as_str()),
+        Value::Object(o) => o.get("id").and_then(Value::as_str),
+        _ => None,
+    });
+    if issuer != Some(from_did) {
+        warn!(vtc = %from_did, ?issuer, "issued credential's issuer is not the community VTC — ignoring");
+        return false;
+    }
+    let subject = credential
+        .get("credentialSubject")
+        .and_then(|s| s.get("id"))
+        .and_then(Value::as_str);
+    if subject != Some(persona_did.as_str()) {
+        warn!(vtc = %from_did, "issued credential subject is not our persona — ignoring");
+        return false;
+    }
+
+    // VMC vs role VEC, by the `type` array.
+    let types = credential.get("type").and_then(Value::as_array);
+    let has_type = |needle: &str| {
+        types.is_some_and(|a| a.iter().filter_map(Value::as_str).any(|t| t == needle))
+    };
+    let is_vmc = has_type("MembershipCredential");
+    let is_vec = has_type("EndorsementCredential");
+
+    let record = account
+        .communities
+        .get_mut(from_did)
+        .expect("community present (checked above)");
+    if is_vmc {
+        record.membership_credential = Some(credential);
+        if !record.status.is_active() {
+            record.activate(chrono::Utc::now());
+        }
+        info!(vtc = %from_did, "received membership credential — community is now Active");
+        true
+    } else if is_vec {
+        record.role_credential = Some(credential);
+        info!(vtc = %from_did, "received role endorsement credential");
+        true
+    } else {
+        warn!(vtc = %from_did, "issued credential is neither a VMC nor a role VEC — ignoring");
+        false
+    }
+}
+
 /// Process an inbound DIDComm message.
 ///
 /// Auto-processes messages that don't need human input (pong, accept, finalize, reject).
@@ -271,6 +349,17 @@ pub async fn process_inbound_message(
     // so handle it before the `MessageType` conversion below (which rejects it).
     if message.typ == JOIN_REQUEST_SUBMIT_RECEIPT_TYPE {
         return Ok(handle_join_submit_receipt(
+            &mut config.account,
+            message,
+            &from_did,
+        ));
+    }
+
+    // VTC credential delivery: on approve, the VTC pushes the issued VMC + role
+    // VEC as separate `credential-exchange/issue` messages. Store each on the
+    // community and flip Pending -> Active when the membership credential lands.
+    if message.typ == CREDENTIAL_ISSUE_TYPE {
+        return Ok(handle_credential_issue(
             &mut config.account,
             message,
             &from_did,
@@ -823,7 +912,7 @@ mod tests {
     // --- join submit-receipt reconciliation ---
 
     use chrono::Utc;
-    use openvtc_core::config::account::{Account, CommunityRecord, PersonaId};
+    use openvtc_core::config::account::{Account, CommunityRecord, PersonaId, PersonaRecord};
 
     fn pending_account(vtc: &str, placeholder: Uuid) -> Account {
         let mut acct = Account::default();
@@ -901,6 +990,139 @@ mod tests {
             CommunityStatus::Pending { request_id } => assert_eq!(*request_id, placeholder),
             other => panic!("expected unchanged Pending, got {other:?}"),
         }
+    }
+
+    // --- credential-issue outcome handling ---
+
+    fn account_with_persona(vtc: &str, persona_did: &str) -> Account {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+        acct.personas.insert(
+            pid,
+            PersonaRecord {
+                persona_id: pid,
+                did: persona_did.to_string(),
+                did_document: None,
+                key_refs: Vec::new(),
+                mediator_did: None,
+                origin_context_id: String::new(),
+                created_at: Utc::now(),
+                label: None,
+            },
+        );
+        acct.communities.insert(
+            vtc.to_string(),
+            CommunityRecord::new_pending(
+                vtc.to_string(),
+                None,
+                "openvtc/x".to_string(),
+                pid,
+                Uuid::new_v4(),
+                Utc::now(),
+            ),
+        );
+        acct
+    }
+
+    fn issue(from: &str, credential: serde_json::Value) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            CREDENTIAL_ISSUE_TYPE.to_string(),
+            serde_json::json!({ "credential_response": { "credential": credential } }),
+        )
+        .from(from.to_string())
+        .finalize()
+    }
+
+    fn vc(types: &[&str], issuer: &str, subject: &str) -> serde_json::Value {
+        serde_json::json!({
+            "type": types,
+            "issuer": issuer,
+            "credentialSubject": { "id": subject },
+        })
+    }
+
+    #[test]
+    fn credential_issue_vmc_activates_and_stores() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+        let mut acct = account_with_persona(vtc, persona);
+
+        let m = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "MembershipCredential"],
+                vtc,
+                persona,
+            ),
+        );
+        assert!(handle_credential_issue(&mut acct, &m, vtc));
+
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(rec.status.is_active());
+        assert!(rec.membership_credential.is_some());
+    }
+
+    #[test]
+    fn credential_issue_role_vec_stores_without_activating() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+        let mut acct = account_with_persona(vtc, persona);
+
+        let m = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "EndorsementCredential"],
+                vtc,
+                persona,
+            ),
+        );
+        assert!(handle_credential_issue(&mut acct, &m, vtc));
+
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(
+            !rec.status.is_active(),
+            "role VEC must not activate on its own"
+        );
+        assert!(rec.role_credential.is_some());
+    }
+
+    #[test]
+    fn credential_issue_from_wrong_issuer_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+        let mut acct = account_with_persona(vtc, persona);
+
+        // Issuer is not the community's VTC.
+        let m = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "MembershipCredential"],
+                "did:webvh:evil",
+                persona,
+            ),
+        );
+        assert!(!handle_credential_issue(&mut acct, &m, vtc));
+        assert!(!acct.communities.get(vtc).unwrap().status.is_active());
+    }
+
+    #[test]
+    fn credential_issue_for_wrong_subject_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+        let mut acct = account_with_persona(vtc, persona);
+
+        // Subject is not our persona.
+        let m = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "MembershipCredential"],
+                vtc,
+                "did:webvh:someone-else",
+            ),
+        );
+        assert!(!handle_credential_issue(&mut acct, &m, vtc));
+        assert!(!acct.communities.get(vtc).unwrap().status.is_active());
     }
 
     #[test]

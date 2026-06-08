@@ -187,6 +187,8 @@ mod tests {
             relationships: Default::default(),
             vrcs_issued: Default::default(),
             vrcs_received: Default::default(),
+            membership_credential: None,
+            role_credential: None,
         }
     }
 

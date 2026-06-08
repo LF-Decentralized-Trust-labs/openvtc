@@ -215,7 +215,7 @@ pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyh
         // (e.g. join-requests/submit-receipt). The state handler dispatches
         // by type and ignores any it doesn't handle.
         .route_regex(
-            "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*|https://trusttasks\\.org/openvtc/vtc/.*",
+            "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*|https://trusttasks\\.org/openvtc/vtc/.*|https://trusttasks\\.org/spec/credential-exchange/.*",
             openvtc_handler,
         )?
         // Message pickup status — silently drop
