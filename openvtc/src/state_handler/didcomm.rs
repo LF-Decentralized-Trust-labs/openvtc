@@ -211,9 +211,11 @@ pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyh
                 }
             }),
         )?
-        // Catch-all for OpenVTC protocol messages
+        // Catch-all for OpenVTC protocol messages + VTC Trust-Task replies
+        // (e.g. join-requests/submit-receipt). The state handler dispatches
+        // by type and ignores any it doesn't handle.
         .route_regex(
-            "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*",
+            "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*|https://trusttasks\\.org/openvtc/vtc/.*",
             openvtc_handler,
         )?
         // Message pickup status — silently drop

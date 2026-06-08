@@ -11,7 +11,10 @@ use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{TDK, didcomm::Message};
 use openvtc_core::{
     MessageType,
-    config::Config,
+    config::{
+        Config,
+        account::{Account, CommunityStatus},
+    },
     logs::LogFamily,
     relationships::{RelationshipAcceptBody, RelationshipRejectBody, RelationshipState},
     tasks::TaskType,
@@ -19,6 +22,10 @@ use openvtc_core::{
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
+use uuid::Uuid;
+use vta_sdk::protocols::join_requests::{
+    JOIN_REQUEST_SUBMIT_RECEIPT_TYPE, JoinRequestSubmitReceiptBody,
+};
 
 /// Maximum allowed message body size in bytes (1 MB).
 const MAX_MESSAGE_BODY_SIZE: usize = 1_048_576;
@@ -133,6 +140,64 @@ fn check_task_capacity(
     Ok(())
 }
 
+/// Reconcile a VTC `join-requests/submit-receipt` onto the matching Pending
+/// community record: replace the placeholder request id (our submit message id,
+/// echoed back as the receipt's `thid`) with the VTC's authoritative
+/// `requestId`. The receipt must come from the community's own VTC DID
+/// (anti-spoof) and match the placeholder we stored at submit time.
+///
+/// Returns `true` if a record was updated (Config needs saving).
+fn handle_join_submit_receipt(account: &mut Account, message: &Message, from_did: &str) -> bool {
+    let Some(thid) = message.thid.as_deref() else {
+        warn!("join submit-receipt without thid — cannot correlate; ignoring");
+        return false;
+    };
+    let placeholder = match Uuid::parse_str(thid) {
+        Ok(u) => u,
+        Err(e) => {
+            warn!(thid, error = %e, "join submit-receipt thid is not a uuid — ignoring");
+            return false;
+        }
+    };
+    let body: JoinRequestSubmitReceiptBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "malformed join submit-receipt body — ignoring");
+            return false;
+        }
+    };
+
+    let Some(record) = account.communities.get_mut(from_did) else {
+        warn!(vtc = %from_did, "join submit-receipt from an unknown community — ignoring");
+        return false;
+    };
+    // Copy the current placeholder out (Uuid: Copy) so the immutable match
+    // borrow ends before we re-assign `status`.
+    let current = match &record.status {
+        CommunityStatus::Pending { request_id } => Some(*request_id),
+        _ => None,
+    };
+    if current == Some(placeholder) {
+        record.status = CommunityStatus::Pending {
+            request_id: body.request_id,
+        };
+        info!(
+            vtc = %from_did,
+            vtc_request_id = %body.request_id,
+            receipt_status = %body.status,
+            "reconciled join request id from VTC submit-receipt",
+        );
+        true
+    } else {
+        warn!(
+            vtc = %from_did,
+            thid,
+            "join submit-receipt did not match a pending join with that id — ignoring",
+        );
+        false
+    }
+}
+
 /// Process an inbound DIDComm message.
 ///
 /// Auto-processes messages that don't need human input (pong, accept, finalize, reject).
@@ -196,6 +261,20 @@ pub async fn process_inbound_message(
             "rejecting oversized message body ({} bytes)", body_size
         );
         return Ok(false);
+    }
+
+    // VTC join-requests submit-receipt: the VTC's asynchronous reply to our
+    // submit, threaded (`thid`) on our submit message id. It carries the
+    // authoritative VTC `requestId`; reconcile it onto the matching Pending
+    // community record (which holds our submit message id as a placeholder).
+    // It is a VTC Trust-Task type, not an openvtc relationship-protocol type,
+    // so handle it before the `MessageType` conversion below (which rejects it).
+    if message.typ == JOIN_REQUEST_SUBMIT_RECEIPT_TYPE {
+        return Ok(handle_join_submit_receipt(
+            &mut config.account,
+            message,
+            &from_did,
+        ));
     }
 
     let msg_type = match MessageType::try_from(message) {
@@ -739,6 +818,89 @@ mod tests {
         let now = unix_now();
         // expires_time in the past
         assert!(check_message_age(&msg("id", Some(now), Some(now - 60))).is_err());
+    }
+
+    // --- join submit-receipt reconciliation ---
+
+    use chrono::Utc;
+    use openvtc_core::config::account::{Account, CommunityRecord, PersonaId};
+
+    fn pending_account(vtc: &str, placeholder: Uuid) -> Account {
+        let mut acct = Account::default();
+        acct.communities.insert(
+            vtc.to_string(),
+            CommunityRecord::new_pending(
+                vtc.to_string(),
+                None,
+                "openvtc/x".to_string(),
+                PersonaId::new(),
+                placeholder,
+                Utc::now(),
+            ),
+        );
+        acct
+    }
+
+    fn receipt(thid: &str, from: &str, request_id: Uuid, status: &str) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            JOIN_REQUEST_SUBMIT_RECEIPT_TYPE.to_string(),
+            serde_json::json!({ "requestId": request_id, "status": status }),
+        )
+        .from(from.to_string())
+        .thid(thid.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn submit_receipt_reconciles_the_authoritative_request_id() {
+        let vtc = "did:webvh:example:vtc";
+        let placeholder = Uuid::new_v4();
+        let mut acct = pending_account(vtc, placeholder);
+
+        let real = Uuid::new_v4();
+        let m = receipt(&placeholder.to_string(), vtc, real, "pending");
+        assert!(handle_join_submit_receipt(&mut acct, &m, vtc));
+
+        match &acct.communities.get(vtc).unwrap().status {
+            CommunityStatus::Pending { request_id } => assert_eq!(*request_id, real),
+            other => panic!("expected Pending, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_receipt_from_a_different_did_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let placeholder = Uuid::new_v4();
+        let mut acct = pending_account(vtc, placeholder);
+
+        // A receipt whose sender is not the community's VTC must not reconcile.
+        let m = receipt(
+            &placeholder.to_string(),
+            "did:webvh:evil",
+            Uuid::new_v4(),
+            "pending",
+        );
+        assert!(!handle_join_submit_receipt(&mut acct, &m, "did:webvh:evil"));
+        match &acct.communities.get(vtc).unwrap().status {
+            CommunityStatus::Pending { request_id } => assert_eq!(*request_id, placeholder),
+            other => panic!("expected unchanged Pending, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn submit_receipt_with_mismatched_thid_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let placeholder = Uuid::new_v4();
+        let mut acct = pending_account(vtc, placeholder);
+
+        // thid does not match the stored placeholder.
+        let m = receipt(&Uuid::new_v4().to_string(), vtc, Uuid::new_v4(), "pending");
+        assert!(!handle_join_submit_receipt(&mut acct, &m, vtc));
+        match &acct.communities.get(vtc).unwrap().status {
+            CommunityStatus::Pending { request_id } => assert_eq!(*request_id, placeholder),
+            other => panic!("expected unchanged Pending, got {other:?}"),
+        }
     }
 
     #[test]
