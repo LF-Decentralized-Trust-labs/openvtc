@@ -109,6 +109,11 @@ pub struct VtaState {
     /// present it — the manageable set for the DID manager. A persona bound to
     /// zero communities is an orphan (e.g. left by a failed join).
     pub context_dids: Vec<ManagedDid>,
+    /// Selected index into [`Self::context_dids`] (DID manager navigation).
+    pub did_selected_index: usize,
+    /// When `Some(index)`, a deletion of that context DID is awaiting `y`/`n`
+    /// confirmation.
+    pub confirm_delete_did: Option<usize>,
 }
 
 /// A persona DID in the account's context, for the DID manager view.

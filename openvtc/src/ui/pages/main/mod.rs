@@ -310,6 +310,64 @@ impl MainPage {
             MainMenu::Logs => self.handle_logs_key(key),
             MainMenu::Help => self.handle_help_key(key),
             MainMenu::Communities => self.handle_communities_key(key),
+            MainMenu::Vta => self.handle_vta_key(key),
+            _ => false,
+        }
+    }
+
+    /// VTA Service / DID-manager keys: ↑/↓ move the Context-Identities
+    /// selection, `d`/Del removes the selected **orphan** (unbound) DID after a
+    /// y/n confirmation. Returns true if consumed.
+    fn handle_vta_key(&mut self, key: KeyEvent) -> bool {
+        let vta = &self.props.main_page.content_panel.vta;
+        let count = vta.context_dids.len();
+        let selected = vta.did_selected_index;
+
+        // A deletion confirmation is pending: only y/Enter confirms; anything
+        // else cancels.
+        if let Some(idx) = vta.confirm_delete_did {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::DeleteDid(idx));
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::DidCancelDelete);
+                }
+            }
+            return true;
+        }
+
+        match key.code {
+            KeyCode::Up if count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::DidSelect(selected.saturating_sub(1)));
+                true
+            }
+            KeyCode::Down if count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::DidSelect((selected + 1).min(count - 1)));
+                true
+            }
+            KeyCode::Char('d') | KeyCode::Delete if selected < count => {
+                // Only orphan (unbound) personas are removable — a persona
+                // serving a community must not be deleted out from under it.
+                if vta
+                    .context_dids
+                    .get(selected)
+                    .is_some_and(|d| d.bound_communities == 0)
+                {
+                    let _ = self.action_tx.send(Action::DidConfirmDelete(selected));
+                }
+                true
+            }
+            KeyCode::Esc => {
+                let _ = self
+                    .action_tx
+                    .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                true
+            }
             _ => false,
         }
     }

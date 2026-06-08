@@ -240,6 +240,19 @@ pub enum Action {
     /// user confirms.
     DeleteCommunity(usize),
 
+    /// Move the Context-Identities (VTA DID manager) selection to this index.
+    DidSelect(usize),
+
+    /// Arm a removal confirmation for the context DID at this index.
+    DidConfirmDelete(usize),
+
+    /// Dismiss a pending DID removal confirmation without deleting.
+    DidCancelDelete,
+
+    /// Delete the orphan context DID at this index — removes it at the VTA and
+    /// locally. Only sent after the user confirms; guarded to unbound personas.
+    DeleteDid(usize),
+
     // ************************************************************************
     // SETUP Pages
     /// Import existing Config

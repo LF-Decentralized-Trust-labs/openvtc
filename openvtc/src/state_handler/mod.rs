@@ -622,6 +622,25 @@ impl StateHandler {
                                 .log("Community removed — persona listener stopped.");
                         }
                     },
+                    Action::DidSelect(i) => {
+                        state.main_page.content_panel.vta.did_selected_index = i;
+                    },
+                    Action::DidConfirmDelete(i) => {
+                        state.main_page.content_panel.vta.confirm_delete_did = Some(i);
+                    },
+                    Action::DidCancelDelete => {
+                        state.main_page.content_panel.vta.confirm_delete_did = None;
+                    },
+                    Action::DeleteDid(i) => {
+                        self.delete_context_did(
+                            &mut state,
+                            &mut config,
+                            admin_vta.as_ref(),
+                            &didcomm_service,
+                            i,
+                        )
+                        .await;
+                    },
                     Action::StartJoin => {
                         // State-B join from the live runtime: reuse the always-on
                         // admin VTA session. The DIDComm service keeps running in
@@ -963,6 +982,89 @@ impl StateHandler {
                     Some(format!("Could not remove community: {e}"));
             }
         }
+    }
+
+    /// Delete an **orphan** context identity (persona DID) at `index` in the
+    /// VTA DID manager: remove it at the VTA (`delete_did_webvh`), then locally
+    /// (persona record + runtime identity + key info), tear down its listener,
+    /// and re-save. Guarded to personas presenting **no** community — a
+    /// community-bound identity must not be deleted out from under its
+    /// membership. Feedback goes to the activity log.
+    async fn delete_context_did(
+        &self,
+        state: &mut State,
+        config: &mut Config,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+        didcomm_service: &affinidi_messaging_didcomm_service::DIDCommService,
+        index: usize,
+    ) {
+        state.main_page.content_panel.vta.confirm_delete_did = None;
+        let Some(did) = state
+            .main_page
+            .content_panel
+            .vta
+            .context_dids
+            .get(index)
+            .map(|d| d.did.clone())
+        else {
+            return;
+        };
+
+        // Resolve the persona for this DID + its key ids.
+        let Some(persona) = config.account.personas.values().find(|p| p.did == did) else {
+            state.main_page.log("DID not found — nothing removed.");
+            return;
+        };
+        let persona_id = persona.persona_id;
+        let key_ids: Vec<String> = persona.key_refs.iter().map(|k| k.key_id.clone()).collect();
+
+        // Guard: refuse to delete an identity any community still presents.
+        let bound = config
+            .account
+            .communities
+            .values()
+            .filter(|c| c.persona_ref == persona_id)
+            .count();
+        if bound > 0 {
+            state.main_page.log(format!(
+                "Can't delete — {bound} communit{} still use this identity; leave them first.",
+                if bound == 1 { "y" } else { "ies" }
+            ));
+            return;
+        }
+
+        // Delete at the VTA. Best-effort: a missing/already-deleted DID at the
+        // VTA must not block removing the local orphan, so log and continue.
+        if let Some(vta) = admin_vta
+            && let Err(e) = vta.delete_did_webvh(&did).await
+        {
+            debug!("delete_did_webvh({did}) failed (continuing local cleanup): {e}");
+        }
+
+        // Local cleanup.
+        config.account.personas.remove(&persona_id);
+        config.identities.remove(&persona_id);
+        for kid in &key_ids {
+            config.key_info.remove(kid);
+        }
+        if let Err(e) = config.save(
+            &self.profile,
+            #[cfg(feature = "openpgp-card")]
+            &|| eprintln!("Touch confirmation needed for decryption"),
+        ) {
+            state
+                .main_page
+                .log_error("Failed to save after removing DID", &e);
+        }
+
+        // Tear down the orphan's listener if one was running (best-effort).
+        let listener_id = didcomm::persona_listener_id(&did);
+        if let Err(e) = didcomm_service.remove_listener(&listener_id).await {
+            debug!("remove_listener after DID delete: {e}");
+        }
+
+        state.main_page.sync_from_config(config);
+        state.main_page.log(format!("Removed identity {did}"));
     }
 
     /// Minimal event loop for when there is no active community / messaging

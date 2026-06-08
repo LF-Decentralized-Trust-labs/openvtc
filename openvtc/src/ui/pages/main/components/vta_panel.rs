@@ -157,16 +157,25 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         );
         lines.push(Line::from(""));
 
-        for d in &state.context_dids {
+        for (i, d) in state.context_dids.iter().enumerate() {
+            let is_selected = i == state.did_selected_index;
             let orphan = d.bound_communities == 0;
-            let (marker, marker_style) = if orphan {
-                ("  ○ ", Style::new().fg(COLOR_ORANGE))
+            let prefix = if is_selected { "▸ " } else { "  " };
+            let marker = if orphan { "○ " } else { "● " };
+            let marker_style = if orphan {
+                Style::new().fg(COLOR_ORANGE)
             } else {
-                ("  ● ", Style::new().fg(COLOR_SUCCESS))
+                Style::new().fg(COLOR_SUCCESS)
+            };
+            let did_style = if is_selected {
+                Style::new().fg(COLOR_SUCCESS).bold()
+            } else {
+                Style::new().fg(COLOR_TEXT_DEFAULT)
             };
             lines.push(Line::from(vec![
+                Span::styled(prefix, marker_style),
                 Span::styled(marker, marker_style),
-                Span::styled(d.did.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled(d.did.clone(), did_style),
             ]));
 
             let name = if d.label.is_empty() {
@@ -196,6 +205,23 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
                 ),
                 Span::styled(binding, binding_style),
             ]));
+        }
+
+        // Confirmation prompt (a delete is armed) or the navigation/remove hint.
+        lines.push(Line::from(""));
+        if let Some(idx) = state.confirm_delete_did {
+            let target = state
+                .context_dids
+                .get(idx)
+                .map(|d| d.did.as_str())
+                .unwrap_or("this identity");
+            lines.push(
+                Line::from(format!("Remove {target}?   y: confirm    n: cancel"))
+                    .fg(COLOR_ORANGE)
+                    .bold(),
+            );
+        } else {
+            lines.push(Line::from("↑/↓ select   d: remove selected orphan").fg(COLOR_DARK_GRAY));
         }
     }
 
