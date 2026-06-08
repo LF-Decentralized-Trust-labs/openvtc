@@ -357,6 +357,12 @@ impl MainPageState {
                 .and_then(|p| p.label.clone())
                 .or_else(|| persona.map(|p| shorten_did(&p.did, 24)))
                 .unwrap_or_default();
+            let request_id = match &c.status {
+                openvtc_core::config::account::CommunityStatus::Pending { request_id } => {
+                    request_id.to_string()
+                }
+                _ => String::new(),
+            };
             community_items.push(content::CommunitySummary {
                 display_name: c
                     .display_name
@@ -370,6 +376,12 @@ impl MainPageState {
                     .unwrap_or_default(),
                 favourite: c.favourite,
                 needs_attention: c.needs_attention(),
+                persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
+                vtc_did: c.vtc_did.clone(),
+                sub_context_id: c.sub_context_id.clone(),
+                request_id,
+                has_membership_credential: c.membership_credential.is_some(),
+                has_role_credential: c.role_credential.is_some(),
             });
         }
         let community_count = community_items.len();

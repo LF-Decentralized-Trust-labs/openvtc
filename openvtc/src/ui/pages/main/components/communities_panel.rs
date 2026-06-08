@@ -96,6 +96,40 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
             Style::new().fg(COLOR_DARK_GRAY)
         };
         lines.push(Line::from(Span::styled(detail, detail_style)));
+
+        // Expanded troubleshooting detail for the selected community: which
+        // persona this community actually uses (full DID), the VTC, the
+        // sub-context, the in-flight request id, and which credentials are held.
+        if is_selected {
+            let label = Style::new().fg(COLOR_DARK_GRAY);
+            let value = Style::new().fg(COLOR_TEXT_DEFAULT);
+            let kv = |k: &str, v: String| {
+                Line::from(vec![
+                    Span::styled(format!("      {k:<13}"), label),
+                    Span::styled(v, value),
+                ])
+            };
+            lines.push(kv("Persona DID:", c.persona_did.clone()));
+            lines.push(kv("VTC DID:", c.vtc_did.clone()));
+            if !c.sub_context_id.is_empty() {
+                lines.push(kv("Sub-context:", c.sub_context_id.clone()));
+            }
+            if !c.request_id.is_empty() {
+                lines.push(kv("Request ID:", c.request_id.clone()));
+            }
+            lines.push(kv(
+                "Credentials:",
+                format!(
+                    "membership {}   role {}",
+                    if c.has_membership_credential {
+                        "✓"
+                    } else {
+                        "—"
+                    },
+                    if c.has_role_credential { "✓" } else { "—" },
+                ),
+            ));
+        }
     }
 
     lines.push(Line::from(""));

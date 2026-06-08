@@ -59,6 +59,19 @@ pub struct CommunitySummary {
     pub favourite: bool,
     /// Whether this community raises the actions-required indicator (R-C-3).
     pub needs_attention: bool,
+    /// Full persona `did:webvh` presented to this community (troubleshooting
+    /// detail). Empty if the `persona_ref` dangles.
+    pub persona_did: String,
+    /// The community's VTC `did:webvh` (troubleshooting detail).
+    pub vtc_did: String,
+    /// The per-community sub-context id (troubleshooting detail).
+    pub sub_context_id: String,
+    /// The join request id while `Pending`; empty otherwise.
+    pub request_id: String,
+    /// Whether the membership credential (VMC) has been received + stored.
+    pub has_membership_credential: bool,
+    /// Whether the role endorsement credential (VEC) has been received.
+    pub has_role_credential: bool,
 }
 
 // ****************************************************************************
