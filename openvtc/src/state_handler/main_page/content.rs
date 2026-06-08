@@ -105,6 +105,23 @@ pub struct VtaState {
     pub is_vta_managed: bool,
     /// DIDs in use (persona + relationship R-DIDs)
     pub active_dids: Vec<ActiveDid>,
+    /// Every persona DID minted in this context, with how many communities
+    /// present it — the manageable set for the DID manager. A persona bound to
+    /// zero communities is an orphan (e.g. left by a failed join).
+    pub context_dids: Vec<ManagedDid>,
+}
+
+/// A persona DID in the account's context, for the DID manager view.
+#[derive(Clone, Debug, Default)]
+pub struct ManagedDid {
+    /// The persona `did:webvh`.
+    pub did: String,
+    /// Optional human label.
+    pub label: String,
+    /// How many communities present this persona (0 ⇒ orphan).
+    pub bound_communities: usize,
+    /// Whether this is the account's current active persona.
+    pub is_active: bool,
 }
 
 /// A DID in active use within this context.

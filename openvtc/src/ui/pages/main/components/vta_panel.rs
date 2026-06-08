@@ -1,5 +1,7 @@
 use super::panel::Panel;
-use crate::colors::{COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT};
+use crate::colors::{
+    COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+};
 use crate::state_handler::{
     main_page::content::{ContentPanelState, VtaState},
     state::ConnectionState,
@@ -137,6 +139,62 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
                     Style::new().fg(COLOR_TEXT_DEFAULT),
                 ),
                 Span::styled(did_entry.did.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+            ]));
+        }
+    }
+
+    // Context identities — every persona DID in this context, with its binding.
+    // Orphans (no community) are flagged so they can be spotted and removed.
+    if !state.context_dids.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from(format!(
+                " Context Identities ({})",
+                state.context_dids.len()
+            ))
+            .fg(COLOR_SUCCESS)
+            .bold(),
+        );
+        lines.push(Line::from(""));
+
+        for d in &state.context_dids {
+            let orphan = d.bound_communities == 0;
+            let (marker, marker_style) = if orphan {
+                ("  ○ ", Style::new().fg(COLOR_ORANGE))
+            } else {
+                ("  ● ", Style::new().fg(COLOR_SUCCESS))
+            };
+            lines.push(Line::from(vec![
+                Span::styled(marker, marker_style),
+                Span::styled(d.did.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ]));
+
+            let name = if d.label.is_empty() {
+                "persona".to_string()
+            } else {
+                d.label.clone()
+            };
+            let active = if d.is_active { "  ·  active" } else { "" };
+            let binding = if orphan {
+                "orphan — no community".to_string()
+            } else {
+                format!(
+                    "{} communit{}",
+                    d.bound_communities,
+                    if d.bound_communities == 1 { "y" } else { "ies" }
+                )
+            };
+            let binding_style = if orphan {
+                Style::new().fg(COLOR_ORANGE)
+            } else {
+                Style::new().fg(COLOR_DARK_GRAY)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("      {name}{active}  ·  "),
+                    Style::new().fg(COLOR_DARK_GRAY),
+                ),
+                Span::styled(binding, binding_style),
             ]));
         }
     }

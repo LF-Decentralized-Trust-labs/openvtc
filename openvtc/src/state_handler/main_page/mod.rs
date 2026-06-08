@@ -333,6 +333,29 @@ impl MainPageState {
         }
         self.content_panel.vta.active_dids = active_dids;
 
+        // Context identities: every persona in the account, with how many
+        // communities present it. A persona bound to zero communities is an
+        // orphan (e.g. left by a failed join before the rollback fix) —
+        // surfaced so the operator can spot and manage it.
+        let mut context_dids: Vec<content::ManagedDid> = config
+            .account
+            .personas
+            .values()
+            .map(|p| content::ManagedDid {
+                did: p.did.clone(),
+                label: p.label.clone().unwrap_or_default(),
+                bound_communities: config
+                    .account
+                    .communities
+                    .values()
+                    .filter(|c| c.persona_ref == p.persona_id)
+                    .count(),
+                is_active: p.did.as_str() == persona_did,
+            })
+            .collect();
+        context_dids.sort_by(|a, b| a.did.cmp(&b.did));
+        self.content_panel.vta.context_dids = context_dids;
+
         self.content_panel.settings.protection_type = match &config.public.protection {
             openvtc_core::config::ConfigProtectionType::Token(id) => {
                 format!(
