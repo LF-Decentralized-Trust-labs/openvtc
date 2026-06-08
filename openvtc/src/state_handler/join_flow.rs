@@ -15,7 +15,11 @@
 use affinidi_tdk::TDK;
 use anyhow::Result;
 use chrono::Utc;
-use openvtc_core::config::{Config, account::CommunityRecord, context_path::build_sub_context_id};
+use openvtc_core::config::{
+    Config,
+    account::{CommunityRecord, PersonaId},
+    context_path::build_sub_context_id,
+};
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver};
 use tracing::debug;
 use vta_sdk::{client::VtaClient, protocols::did_management::create::WebvhPathMode};
@@ -278,6 +282,7 @@ async fn run_join_sequence(
                 state
                     .join
                     .fail(format!("Failed to derive sub-context id: {e}"));
+                rollback_minted_persona(config, persona_id, state, profile);
                 return;
             }
         };
@@ -291,6 +296,7 @@ async fn run_join_sequence(
         state
             .join
             .fail(format!("Failed to create sub-context: {e}"));
+        rollback_minted_persona(config, persona_id, state, profile);
         return;
     }
 
@@ -311,6 +317,7 @@ async fn run_join_sequence(
         state
             .join
             .fail("Messaging (ATM) unavailable — cannot submit the join request.");
+        rollback_minted_persona(config, persona_id, state, profile);
         return;
     };
     let (applicant_did, persona_profile, persona_mediator) =
@@ -324,6 +331,7 @@ async fn run_join_sequence(
                 state
                     .join
                     .fail("Persona identity unavailable after mint — cannot submit.");
+                rollback_minted_persona(config, persona_id, state, profile);
                 return;
             }
         };
@@ -346,6 +354,7 @@ async fn run_join_sequence(
             state
                 .join
                 .fail(format!("Failed to submit join request: {e}"));
+            rollback_minted_persona(config, persona_id, state, profile);
             return;
         }
     };
@@ -381,6 +390,31 @@ async fn run_join_sequence(
 }
 
 /// Persist the config, abstracting over the openpgp-card touch prompt.
+/// Roll back a just-minted persona when a later join step fails before the
+/// persona is bound to a community. The mint (`mint_persona_into`) persists the
+/// persona record + runtime identity + key info *before* the submit; without
+/// this, a failed join (e.g. a submit error) leaves an orphan persona in the
+/// account — a spurious identity with no membership, which then confuses the
+/// active-identity display. Best-effort re-save; the VTA-side keys are cleaned
+/// separately via the DID manager.
+fn rollback_minted_persona(
+    config: &mut Config,
+    persona_id: PersonaId,
+    state: &State,
+    profile: &str,
+) {
+    config.account.personas.remove(&persona_id);
+    config.identities.remove(&persona_id);
+    if let Some(keys) = &state.setup.did_keys {
+        config.key_info.remove(&keys.signing.secret.id);
+        config.key_info.remove(&keys.authentication.secret.id);
+        config.key_info.remove(&keys.decryption.secret.id);
+    }
+    if let Err(e) = save_config(config, profile) {
+        debug!("persona rollback re-save failed after a failed join: {e}");
+    }
+}
+
 fn save_config(config: &Config, profile: &str) -> Result<(), openvtc_core::errors::OpenVTCError> {
     config.save(
         profile,
