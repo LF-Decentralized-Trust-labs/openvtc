@@ -294,11 +294,54 @@ async fn run_join_sequence(
         return;
     }
 
-    // 8. Submit the join request.
+    // 8. Submit the join request to the VTC over DIDComm. The persona is
+    // the authcrypt sender (the VTC reads the applicant from the
+    // envelope — no holder-binding signature, and a did:webvh persona
+    // can't use the VTC's did:key-only REST signature path). The minted
+    // persona's runtime identity (ATM profile + mediator) was built into
+    // `config.identities` by `mint_persona_into`. The VTC's
+    // submit-receipt (with the authoritative requestId) returns
+    // asynchronously to the persona's mediator; until that receipt
+    // handler lands, the request message id is the correlation handle
+    // stored on the Pending record.
     state.join.info("Submitting join request…");
     let _ = handler.state_tx.send(state.clone());
-    let receipt = match vta::submit_join(admin_vta, &vtc_did, &sub_context_id).await {
-        Ok(r) => r,
+
+    let Some(atm) = tdk.atm.as_ref() else {
+        state
+            .join
+            .fail("Messaging (ATM) unavailable — cannot submit the join request.");
+        return;
+    };
+    let (applicant_did, persona_profile, persona_mediator) =
+        match config.identities.get(&persona_id) {
+            Some(ident) => (
+                ident.persona_did().to_string(),
+                ident.profile().clone(),
+                ident.mediator_did.clone().unwrap_or_default(),
+            ),
+            None => {
+                state
+                    .join
+                    .fail("Persona identity unavailable after mint — cannot submit.");
+                return;
+            }
+        };
+    let vp = serde_json::json!({
+        "type": "VerifiablePresentation",
+        "holder": applicant_did,
+    });
+    let request_id = match openvtc_core::join::submit_join_request(
+        atm,
+        &persona_profile,
+        &applicant_did,
+        &vtc_did,
+        &persona_mediator,
+        vp,
+    )
+    .await
+    {
+        Ok(id) => id,
         Err(e) => {
             state
                 .join
@@ -313,7 +356,7 @@ async fn run_join_sequence(
         display_name,
         sub_context_id,
         persona_id,
-        receipt.request_id,
+        request_id,
         Utc::now(),
     );
     config.account.communities.insert(vtc_did, record.clone());

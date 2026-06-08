@@ -317,13 +317,6 @@ pub async fn create_did_via_server(
 // Stubbed async seams: they carry the final signatures (so the real VTA/VTC
 // calls are a body swap with no call-site churn) but do not hit the network yet.
 
-/// Receipt from submitting a community join request.
-#[derive(Clone, Debug)]
-pub struct JoinReceipt {
-    /// Correlates the VTC's asynchronous accept/reject decision (R-B-8).
-    pub request_id: uuid::Uuid,
-}
-
 /// Create the per-community sub-context under the account's top context (D9).
 ///
 /// The id is already derived client-side via
@@ -338,20 +331,4 @@ pub async fn create_sub_context(
 ) -> Result<String> {
     let _ = (client, parent_id);
     Ok(sub_context_id.to_string())
-}
-
-/// Submit a join request to a community (VTC), presenting the chosen persona.
-///
-/// STUB: synthesizes a local `request_id`. The real VTA/VTC submission (with the
-/// holder's verifiable presentation) is a later body swap.
-#[allow(clippy::unused_async)]
-pub async fn submit_join(
-    client: &VtaClient,
-    vtc_did: &str,
-    sub_context_id: &str,
-) -> Result<JoinReceipt> {
-    let _ = (client, vtc_did, sub_context_id);
-    Ok(JoinReceipt {
-        request_id: uuid::Uuid::new_v4(),
-    })
 }

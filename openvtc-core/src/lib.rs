@@ -18,6 +18,7 @@ pub mod config;
 pub mod display;
 pub mod errors;
 pub mod identity;
+pub mod join;
 pub mod logs;
 pub mod maintainers;
 #[cfg(feature = "openpgp-card")]
