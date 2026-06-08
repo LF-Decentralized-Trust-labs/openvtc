@@ -205,6 +205,15 @@ pub struct CommunityRecord {
     /// VRCs we have received within this community.
     #[serde(default)]
     pub vrcs_received: Vrcs,
+    /// The membership credential (VMC) the VTC issued on admission, delivered
+    /// over DIDComm. `None` until the join is accepted and the credential
+    /// arrives (R-B-8). Stored as the signed W3C VC JSON.
+    #[serde(default)]
+    pub membership_credential: Option<serde_json::Value>,
+    /// The role endorsement credential (VEC) the VTC issued alongside the VMC.
+    /// `None` until it arrives.
+    #[serde(default)]
+    pub role_credential: Option<serde_json::Value>,
 }
 
 /// Client-side timeout for an unanswered `Pending` join (D16 / R-B-7): a join
@@ -240,6 +249,8 @@ impl CommunityRecord {
             relationships: Relationships::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
+            membership_credential: None,
+            role_credential: None,
         }
     }
 
@@ -537,6 +548,8 @@ mod tests {
             relationships: Relationships::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
+            membership_credential: None,
+            role_credential: None,
         }
     }
 
