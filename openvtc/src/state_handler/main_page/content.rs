@@ -331,6 +331,9 @@ pub struct CredentialsState {
     pub received: Vec<VrcSummary>,
     /// VRCs we issued
     pub issued: Vec<VrcSummary>,
+    /// Membership (VMC) + role (VEC) credentials issued to us by the VTCs we've
+    /// joined, one or two entries per community (reuses [`VrcSummary`]).
+    pub membership: Vec<VrcSummary>,
     /// Which tab is active
     pub selected_tab: CredentialTab,
     /// Currently selected index in the active tab's list
@@ -342,11 +345,13 @@ pub struct CredentialsState {
 }
 
 /// Which credential tab is active.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CredentialTab {
     #[default]
     Received,
     Issued,
+    /// Membership (VMC) + role (VEC) credentials issued to us by joined VTCs.
+    Membership,
 }
 
 /// Display modes for the credentials panel.

@@ -922,8 +922,14 @@ impl MainPage {
                         let active_list = match creds.selected_tab {
                             CredentialTab::Received => &creds.received,
                             CredentialTab::Issued => &creds.issued,
+                            CredentialTab::Membership => &creds.membership,
                         };
-                        if let Some(vrc) = active_list.get(detail_index) {
+                        // Membership/role credentials are community-bound — there
+                        // is no local-only removal, so `d` is a no-op there (the
+                        // Remove action won't find a matching VRC).
+                        if creds.selected_tab != CredentialTab::Membership
+                            && let Some(vrc) = active_list.get(detail_index)
+                        {
                             let _ =
                                 self.action_tx
                                     .send(Action::Credential(CredentialAction::Remove {
@@ -936,9 +942,10 @@ impl MainPage {
                         let active_list = match creds.selected_tab {
                             CredentialTab::Received => &creds.received,
                             CredentialTab::Issued => &creds.issued,
+                            CredentialTab::Membership => &creds.membership,
                         };
                         if let Some(vrc) = active_list.get(detail_index) {
-                            copy_to_clipboard(&vrc.raw_json, "VRC credential", &self.action_tx);
+                            copy_to_clipboard(&vrc.raw_json, "credential", &self.action_tx);
                         }
                         true
                     }
@@ -949,6 +956,7 @@ impl MainPage {
                 let active_list_len = match creds.selected_tab {
                     CredentialTab::Received => creds.received.len(),
                     CredentialTab::Issued => creds.issued.len(),
+                    CredentialTab::Membership => creds.membership.len(),
                 };
                 let selected = creds.selected_index;
 

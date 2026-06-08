@@ -265,6 +265,7 @@ impl MainPageState {
         self.content_panel.credentials.received =
             collect_vrcs(&config.private.vrcs_received, config);
         self.content_panel.credentials.issued = collect_vrcs(&config.private.vrcs_issued, config);
+        self.content_panel.credentials.membership = collect_membership_creds(config);
 
         // Sync settings
         self.content_panel.settings.friendly_name = config.public.friendly_name.clone();
@@ -455,6 +456,66 @@ fn collect_vrcs(vrcs: &openvtc_core::vrc::Vrcs, config: &Config) -> Vec<VrcSumma
                     valid_until: vrc.valid_until().map(|d| d.format("%Y-%m-%d").to_string()),
                 });
             }
+        }
+    }
+    result
+}
+
+/// Build display summaries for the membership (VMC) + role (VEC) credentials a
+/// VTC issued to us, stored on each community record. Reuses [`VrcSummary`]:
+/// `alias` carries "<community> — Membership/Role" and `remote_p_did` the VTC.
+fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
+    let mut result = Vec::new();
+    for c in config.account.communities.values() {
+        let community = c
+            .display_name
+            .clone()
+            .unwrap_or_else(|| sanitize_display(&c.vtc_did, 64));
+        for (kind, vc) in [
+            ("Membership", c.membership_credential.as_ref()),
+            ("Role", c.role_credential.as_ref()),
+        ] {
+            let Some(vc) = vc else { continue };
+            // `issuer` may be a bare string or an object `{ id, ... }`.
+            let issuer = vc
+                .get("issuer")
+                .and_then(|i| {
+                    i.as_str()
+                        .map(str::to_string)
+                        .or_else(|| i.get("id").and_then(|x| x.as_str()).map(str::to_string))
+                })
+                .unwrap_or_default();
+            let subject = vc
+                .pointer("/credentialSubject/id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let valid_from = vc
+                .get("validFrom")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let valid_until = vc
+                .get("validUntil")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let vc_id = vc
+                .get("id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let raw_json = serde_json::to_string_pretty(vc)
+                .unwrap_or_else(|_| "Failed to serialize credential".to_string());
+            result.push(VrcSummary {
+                vrc_id: vc_id,
+                remote_p_did: sanitize_display(&c.vtc_did, 256),
+                raw_json,
+                alias: Some(format!("{community} — {kind}")),
+                issuer: sanitize_display(&issuer, 256),
+                subject: sanitize_display(&subject, 256),
+                valid_from,
+                valid_until,
+            });
         }
     }
     result
