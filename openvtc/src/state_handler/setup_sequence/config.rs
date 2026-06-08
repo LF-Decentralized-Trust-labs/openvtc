@@ -1,6 +1,6 @@
 /*! Contains specific Config extensions for the CLI Application. */
 
-use affinidi_tdk::{TDK, messaging::profiles::ATMProfile};
+use affinidi_tdk::{TDK, messaging::profiles::ATMProfile, secrets_resolver::SecretsResolver};
 use anyhow::{Result, bail};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use chrono::Utc;
@@ -22,7 +22,6 @@ use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::{
     collections::{HashMap, VecDeque},
     fs,
-    sync::Arc,
 };
 use tokio::sync::watch;
 
@@ -385,17 +384,36 @@ impl ConfigExtension for Config {
         // or from a load.
         let persona_did_str = state.webvh_address.did.to_string();
         let document = state.webvh_address.document.clone();
-        let persona_profile = Arc::new(
-            ATMProfile::new(
-                tdk.atm
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("TDK ATM not initialized"))?,
-                Some("Persona DID".to_string()),
-                persona_did_str.clone(),
-                Some(mediator_did.clone()),
-            )
-            .await?,
-        );
+        let atm = tdk
+            .atm
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("TDK ATM not initialized"))?;
+        let persona_profile = ATMProfile::new(
+            atm,
+            Some("Persona DID".to_string()),
+            persona_did_str.clone(),
+            Some(mediator_did.clone()),
+        )
+        .await?;
+        // Register the profile with the ATM (no socket) and load the persona's
+        // secrets into the live secrets resolver, mirroring the config-load path
+        // (`regenerate_persona_keys`). Without this a just-minted persona cannot
+        // pack/unpack DIDComm in THIS session — packing authcrypt fails with
+        // "sender has no usable key agreement key" because its X25519
+        // key-agreement secret isn't in the resolver yet.
+        let persona_profile = atm.profile_add(&persona_profile, false).await?;
+        tdk.get_shared_state()
+            .secrets_resolver()
+            .insert(persona_keys.signing.secret.clone())
+            .await;
+        tdk.get_shared_state()
+            .secrets_resolver()
+            .insert(persona_keys.authentication.secret.clone())
+            .await;
+        tdk.get_shared_state()
+            .secrets_resolver()
+            .insert(persona_keys.decryption.secret.clone())
+            .await;
         let persona_id = PersonaId::new();
         let persona_record = PersonaRecord {
             persona_id,
