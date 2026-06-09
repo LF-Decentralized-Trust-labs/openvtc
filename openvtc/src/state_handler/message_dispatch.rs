@@ -329,6 +329,19 @@ pub async fn process_inbound_message(
         }
     };
 
+    // The persona this message was addressed to — the DID any auto-reply must be
+    // sent *from*. Resolved from the envelope's `to`, falling back to the active
+    // persona when `to` is absent or not one of ours. For a single-persona
+    // account `to` is always that persona, so this is identical to the previous
+    // `config.persona_did()` behaviour; with multiple personas it routes the
+    // reply out of the right one.
+    let recipient_did: String = message
+        .to
+        .as_ref()
+        .and_then(|tos| tos.iter().find(|t| config.is_persona_did(t)))
+        .cloned()
+        .unwrap_or_else(|| config.persona_did().to_string());
+
     // Validate message body size to prevent DoS via oversized payloads
     let body_size = serde_json::to_string(&message.body)
         .map(|s| s.len())
@@ -407,12 +420,9 @@ pub async fn process_inbound_message(
             let listener_to_remove = if let Some(rel_arc) =
                 config.private.relationships.find_by_task_id(&task_id)
                 && let Ok(lock) = rel_arc.lock()
-                && lock.our_did.as_str() != config.persona_did()
+                && !config.is_persona_did(lock.our_did.as_str())
             {
-                Some(super::didcomm::listener_id_for_did(
-                    &lock.our_did,
-                    config.persona_did(),
-                ))
+                Some(super::didcomm::listener_id_for_did(&lock.our_did, config))
             } else {
                 None
             };
@@ -482,13 +492,13 @@ pub async fn process_inbound_message(
 
             // Send finalize using persona DIDs (same as request and accept).
             // If the send fails, still persist the Established state.
-            let finalize_msg = create_finalize_message(config.persona_did(), &from_did, &task_id)?;
+            let finalize_msg = create_finalize_message(&recipient_did, &from_did, &task_id)?;
 
             if let Err(e) = super::didcomm::send_message(
                 service,
                 config,
                 &finalize_msg,
-                config.persona_did(),
+                &recipient_did,
                 &from_did,
             )
             .await
