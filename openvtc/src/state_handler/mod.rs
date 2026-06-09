@@ -123,7 +123,7 @@ impl StateHandler {
         // The third element is the live admin VTA session handed back by
         // `load_step2` (PERF #1) for reuse below; `None` for the modes that
         // don't open one (they fall back to building one as before).
-        let (tdk, mut config, loaded_admin_vta) = match starting_mode {
+        let (tdk, config, loaded_admin_vta) = match starting_mode {
             StartingMode::MainPage(config, tdk) => {
                 state.active_page = ActivePage::Main;
                 state.main_page.menu_panel.selected = true;
@@ -321,7 +321,7 @@ impl StateHandler {
                                     let _ = self.state_tx.send(state.clone());
                                     // No config loaded here — join is unavailable.
                                     return self
-                                        .run_degraded_loop(
+                                        .run_degraded_loop_terminal(
                                             &mut action_rx,
                                             &mut interrupt_rx,
                                             &mut terminator,
@@ -338,7 +338,7 @@ impl StateHandler {
                                         );
                                     let _ = self.state_tx.send(state.clone());
                                     return self
-                                        .run_degraded_loop(
+                                        .run_degraded_loop_terminal(
                                             &mut action_rx,
                                             &mut interrupt_rx,
                                             &mut terminator,
@@ -439,19 +439,28 @@ impl StateHandler {
         // DID to open a DIDComm session for. Skip the persona listener entirely
         // and run the responsive degraded loop so the user can still navigate,
         // open the Communities page, and start a join.
-        if config.active_identity().is_none() {
+        //
+        // Hot-start: if the user *joins* a community in the degraded loop, the
+        // join mints a persona into `config.identities` (so `active_identity()`
+        // flips None→Some). The degraded loop detects that and hands the runtime
+        // context back as `DegradedOutcome::Joined` instead of looping, so we
+        // fall through to the messaging setup below and bring up the persona
+        // listener immediately — no process restart needed to receive the
+        // approval credential.
+        let (tdk, mut config, admin_vta) = if config.active_identity().is_none() {
             state.connection.status = state::MediatorStatus::NoActiveCommunity;
             let _ = self.state_tx.send(state.clone());
             // No persona yet (State A). Hand the always-on admin session to the
             // degraded loop so the Communities `j` → join flow (R-A-5 Stage 4)
-            // can reuse it; the loop closes it on exit.
+            // can reuse it; the loop closes it on exit (or hands it back on a
+            // successful in-session join).
             let join_ctx = DegradedJoinContext {
                 tdk,
                 config,
                 admin_vta,
                 profile: self.profile.clone(),
             };
-            return self
+            match self
                 .run_degraded_loop(
                     &mut action_rx,
                     &mut interrupt_rx,
@@ -459,8 +468,17 @@ impl StateHandler {
                     &mut state,
                     Some(join_ctx),
                 )
-                .await;
-        }
+                .await?
+            {
+                DegradedOutcome::Exit(interrupted) => return Ok(interrupted),
+                DegradedOutcome::Joined(ctx) => {
+                    state.main_page.sync_from_config(&ctx.config);
+                    (ctx.tdk, ctx.config, ctx.admin_vta)
+                }
+            }
+        } else {
+            (tdk, config, admin_vta)
+        };
 
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
@@ -500,7 +518,7 @@ impl StateHandler {
                     profile: self.profile.clone(),
                 };
                 return self
-                    .run_degraded_loop(
+                    .run_degraded_loop_terminal(
                         &mut action_rx,
                         &mut interrupt_rx,
                         &mut terminator,
@@ -1075,6 +1093,11 @@ impl StateHandler {
     /// `Config`, the always-on admin VTA session, profile). The early
     /// load-failure callers have no loaded config, so they pass `None` and
     /// `StartJoin` is a no-op there.
+    ///
+    /// Returns [`DegradedOutcome::Joined`] when an in-session join mints the
+    /// account's first persona (State-A → member). The caller then brings up the
+    /// persona's DIDComm listener without a restart (hot-start). All other exits
+    /// return [`DegradedOutcome::Exit`] after closing the admin session.
     async fn run_degraded_loop(
         &self,
         action_rx: &mut UnboundedReceiver<Action>,
@@ -1082,7 +1105,7 @@ impl StateHandler {
         terminator: &mut Terminator,
         state: &mut State,
         mut join_ctx: Option<DegradedJoinContext>,
-    ) -> Result<Interrupted> {
+    ) -> Result<DegradedOutcome> {
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -1090,13 +1113,13 @@ impl StateHandler {
                         if let Err(e) = terminator.terminate(Interrupted::UserInt) {
                             debug!("Failed to send terminate signal: {e}");
                         }
-                        break Interrupted::UserInt;
+                        break DegradedOutcome::Exit(Interrupted::UserInt);
                     }
                     Action::UXError(interrupted) => {
                         if let Err(e) = terminator.terminate(interrupted.clone()) {
                             debug!("Failed to send terminate signal: {e}");
                         }
-                        break interrupted;
+                        break DegradedOutcome::Exit(interrupted);
                     }
                     Action::DismissLoading => {
                         state.active_page = state::ActivePage::Main;
@@ -1131,7 +1154,15 @@ impl StateHandler {
                         }
                     }
                     Action::StartJoin => {
+                        // Set when the join minted our first persona: the loop
+                        // then breaks `Joined` so `run()` can start messaging.
+                        let mut joined_with_identity = false;
                         if let Some(ctx) = join_ctx.as_mut() {
+                            // A State-A account has no identity yet; a successful
+                            // join flips this None→Some. (An account that already
+                            // had one — the messaging-startup-failure path — never
+                            // transitions here.)
+                            let had_identity = ctx.config.active_identity().is_some();
                             match self
                                 .join_flow(
                                     action_rx,
@@ -1147,12 +1178,14 @@ impl StateHandler {
                                 Ok(join_flow::JoinExit::Returned) => {
                                     // Back on the main page; resume the degraded loop.
                                     state.active_page = state::ActivePage::Main;
+                                    joined_with_identity =
+                                        !had_identity && ctx.config.active_identity().is_some();
                                 }
                                 Ok(join_flow::JoinExit::Exit(interrupted)) => {
                                     if let Err(e) = terminator.terminate(interrupted.clone()) {
                                         debug!("Failed to send terminate signal: {e}");
                                     }
-                                    break interrupted;
+                                    break DegradedOutcome::Exit(interrupted);
                                 }
                                 Err(e) => {
                                     state
@@ -1166,17 +1199,34 @@ impl StateHandler {
                                 .main_page
                                 .log("Cannot join: no active VTA session.");
                         }
+                        // Hot-start: the borrow on `join_ctx` has ended, so take
+                        // the context and hand it back to `run()`, which brings up
+                        // the new persona's DIDComm listener without a restart.
+                        if joined_with_identity {
+                            state
+                                .main_page
+                                .log("Joined — starting secure messaging…");
+                            let _ = self.state_tx.send(state.clone());
+                            break DegradedOutcome::Joined(
+                                join_ctx
+                                    .take()
+                                    .expect("join_ctx present when join succeeded"),
+                            );
+                        }
                     }
                     _ => {}
                 },
                 Ok(interrupted) = interrupt_rx.recv() => {
-                    break interrupted;
+                    break DegradedOutcome::Exit(interrupted);
                 }
             }
             let _ = self.state_tx.send(state.clone());
         };
 
-        // Close the always-on admin VTA session owned by the join context, if any.
+        // Close the always-on admin VTA session owned by the join context, if
+        // any. On a `Joined` outcome the context was already `take`n above (so
+        // `join_ctx` is None here) and the session is carried into the messaging
+        // path — this shutdown is correctly skipped.
         if let Some(ctx) = join_ctx
             && let Some(c) = ctx.admin_vta
         {
@@ -1184,6 +1234,29 @@ impl StateHandler {
         }
 
         Ok(result)
+    }
+
+    /// Run the degraded loop for a path that cannot hot-start (no loaded config,
+    /// or messaging already failed for an existing member), collapsing the
+    /// outcome to an [`Interrupted`]. `DegradedOutcome::Joined` is unreachable
+    /// for these callers — only the State-A entry can transition None→Some.
+    async fn run_degraded_loop_terminal(
+        &self,
+        action_rx: &mut UnboundedReceiver<Action>,
+        interrupt_rx: &mut broadcast::Receiver<Interrupted>,
+        terminator: &mut Terminator,
+        state: &mut State,
+        join_ctx: Option<DegradedJoinContext>,
+    ) -> Result<Interrupted> {
+        match self
+            .run_degraded_loop(action_rx, interrupt_rx, terminator, state, join_ctx)
+            .await?
+        {
+            DegradedOutcome::Exit(interrupted) => Ok(interrupted),
+            DegradedOutcome::Joined(_) => {
+                unreachable!("degraded loop transitioned to messaging on a terminal path")
+            }
+        }
     }
 }
 
@@ -1197,6 +1270,17 @@ struct DegradedJoinContext {
     config: Box<Config>,
     admin_vta: Option<vta_sdk::client::VtaClient>,
     profile: String,
+}
+
+/// Outcome of [`StateHandler::run_degraded_loop`].
+enum DegradedOutcome {
+    /// The user exited or an interrupt fired. The admin session (if any) was
+    /// closed by the loop before returning.
+    Exit(Interrupted),
+    /// An in-session join minted the account's first persona. The runtime
+    /// context (with its still-open admin session) is handed back so `run()` can
+    /// bring up the persona's DIDComm listener without a process restart.
+    Joined(DegradedJoinContext),
 }
 
 // Per-domain action dispatch lives in the corresponding sub-module:
