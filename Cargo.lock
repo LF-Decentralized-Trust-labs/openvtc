@@ -357,7 +357,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk",
+ "vta-sdk 0.9.11",
 ]
 
 [[package]]
@@ -2284,7 +2284,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk",
+ "vta-sdk 0.10.0",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -5192,7 +5192,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk",
+ "vta-sdk 0.10.0",
  "windows-native-keyring-store",
  "x25519-dalek",
  "zeroize",
@@ -5240,7 +5240,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk",
+ "vta-sdk 0.10.0",
  "x25519-dalek",
  "zeroize",
 ]
@@ -8504,6 +8504,36 @@ name = "vta-sdk"
 version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c72e9ca533c5452a06b69fa4fd0e1c15d0d146c8fbe06c78b20211cf0c0ebc05"
+dependencies = [
+ "affinidi-crypto",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-didcomm",
+ "affinidi-openid4vci",
+ "affinidi-openid4vp",
+ "affinidi-tdk",
+ "base64 0.22.1",
+ "chrono",
+ "curve25519-dalek",
+ "didwebvh-rs",
+ "ed25519-dalek",
+ "getrandom 0.4.2",
+ "multibase",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "vta-sdk"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af1e8bd4a1747816874aacfe79f868331875e5f432976990fc6c97511d7b5c45"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
