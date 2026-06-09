@@ -184,7 +184,7 @@ pub async fn ping_relationship(
     info!(
         our_did = %our_did,
         remote_did = %remote_did,
-        is_r_did = our_did.as_str() != config.persona_did(),
+        is_r_did = !config.is_persona_did(our_did.as_str()),
         "ping using relationship DIDs"
     );
     let ping_msg = {
@@ -240,12 +240,9 @@ pub async fn remove_relationship(
     // Extract listener ID before any async work to avoid holding MutexGuard across await
     let listener_to_remove = if let Some(rel_arc) = config.private.relationships.get(&key)
         && let Ok(lock) = rel_arc.lock()
-        && lock.our_did.as_str() != config.persona_did()
+        && !config.is_persona_did(lock.our_did.as_str())
     {
-        Some(super::didcomm::listener_id_for_did(
-            &lock.our_did,
-            config.persona_did(),
-        ))
+        Some(super::didcomm::listener_id_for_did(&lock.our_did, config))
     } else {
         None
     };
@@ -648,7 +645,7 @@ async fn handle_submit(
                          Task ID:       {}",
                         r.remote_p_did,
                         r.our_did,
-                        if r.our_did.as_str() != config.persona_did() {
+                        if !config.is_persona_did(r.our_did.as_str()) {
                             "yes"
                         } else {
                             "no"
@@ -703,7 +700,7 @@ async fn handle_ping(
                 state.main_page.log_error("Failed to save config", &e);
             }
             state.main_page.sync_from_config(config);
-            let using_rdid = our_did_str != config.persona_did();
+            let using_rdid = !config.is_persona_did(&our_did_str);
             state.main_page.log_detailed(
                 format!(
                     "Trust-ping sent to {display_name}{}",

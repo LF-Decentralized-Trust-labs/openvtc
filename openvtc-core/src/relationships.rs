@@ -25,7 +25,7 @@ use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Display,
     sync::{Arc, Mutex},
     time::SystemTime,
@@ -166,10 +166,15 @@ impl Relationships {
     ///
     /// Returns an error if the TDK ATM service is not initialized, VTA authentication
     /// fails, a mutex is poisoned, or secret derivation/import fails.
+    /// `our_p_dids` is the set of *our* persona DIDs. Relationships served
+    /// directly by a persona DID (rather than a dedicated R-DID) are skipped
+    /// here — that persona's own listener carries them. With multiple personas
+    /// the set must contain all of them, or another persona's DID would be
+    /// mistaken for an R-DID and get a spurious `rel-` profile.
     pub async fn generate_profiles(
         &self,
         tdk: &TDK,
-        our_p_did: &Arc<String>,
+        our_p_dids: &HashSet<String>,
         mediator: &str,
         key_backend: &KeyBackend,
         key_info: &HashMap<String, KeyInfoConfig>,
@@ -221,7 +226,7 @@ impl Relationships {
                         RelationshipState::Established
                             | RelationshipState::RequestSent
                             | RelationshipState::RequestAccepted
-                    ) && &lock.our_did != our_p_did
+                    ) && !our_p_dids.contains(lock.our_did.as_str())
                     {
                         Some(lock.our_did.clone())
                     } else {

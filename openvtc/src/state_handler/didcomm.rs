@@ -106,6 +106,9 @@ pub enum ReconnectOutcome {
 /// settings action — both did the same dance inline. Returns:
 ///   * `Connected` once the listener reaches the connected state, or
 ///   * `Failed(reason)` on any error during the replace / connect path.
+///
+/// Active-persona only (these manual actions act on the active identity);
+/// per-persona reconnect lands with the persona-selection slice.
 pub async fn reconnect_persona_listener(
     service: &DIDCommService,
     config: &Config,
@@ -287,9 +290,9 @@ fn default_listener_restart_policy() -> RestartPolicy {
 
 /// Build `ListenerConfig`s from the loaded `Config`.
 ///
-/// Always includes a "persona" listener. Adds per-relationship listeners
-/// for established relationships that use a dedicated R-DID (different
-/// from the persona DID).
+/// Includes one persona listener per resolved identity (so every community's
+/// persona receives messages), plus per-relationship listeners for established
+/// relationships that use a dedicated R-DID (different from any persona DID).
 ///
 /// Secrets for each DID are extracted from the TDK's secrets resolver
 /// so that each listener can authenticate with the mediator.
@@ -299,35 +302,45 @@ pub async fn build_listener_configs(
 ) -> Vec<ListenerConfig> {
     let restart = default_listener_restart_policy();
 
-    let persona_secrets = get_secrets_for_did(tdk, config, config.persona_did()).await;
-
-    let persona_label = config.persona_profile_label();
-    let mut configs = vec![ListenerConfig {
-        id: persona_listener_id(config.persona_did()),
-        profile: make_profile(
-            config.persona_did(),
-            config.mediator_did(),
-            &persona_label,
-            persona_secrets,
-        ),
-        restart_policy: restart.clone(),
-        // Keep `auto_delete: true`. It delegates message deletion to the
-        // mediator's live-stream protocol, which uses the mediator-native
-        // storage id. If you ever set this to false and delete from app
-        // code, you MUST delete by `UnpackMetadata.sha256_hash` (the
-        // mediator-native id), NOT by the DIDComm protocol id `msg.id` —
-        // they are different domains and the mediator's delete API only
-        // accepts the former. Mixing them silently leaks messages and
-        // causes duplicate processing on reconnect (see issue #44).
-        auto_delete: true,
-        ..Default::default()
-    }];
+    // One persona listener per resolved identity. A single-persona account
+    // yields exactly one — identical to the previous behaviour. `persona_dids`
+    // is also the exclusion set for the R-DID listeners below.
+    let mut configs = Vec::new();
+    let mut persona_dids = std::collections::HashSet::new();
+    for identity in config.identities.values() {
+        let did = identity.did.as_str();
+        if !persona_dids.insert(did.to_string()) {
+            continue;
+        }
+        let persona_secrets = get_secrets_for_did(tdk, config, did).await;
+        let mediator = identity
+            .mediator_did
+            .as_deref()
+            .unwrap_or(config.mediator_did());
+        let label = config.persona_profile_label_for(identity.persona_id);
+        configs.push(ListenerConfig {
+            id: persona_listener_id(did),
+            profile: make_profile(did, mediator, &label, persona_secrets),
+            restart_policy: restart.clone(),
+            // Keep `auto_delete: true`. It delegates message deletion to the
+            // mediator's live-stream protocol, which uses the mediator-native
+            // storage id. If you ever set this to false and delete from app
+            // code, you MUST delete by `UnpackMetadata.sha256_hash` (the
+            // mediator-native id), NOT by the DIDComm protocol id `msg.id` —
+            // they are different domains and the mediator's delete API only
+            // accepts the former. Mixing them silently leaks messages and
+            // causes duplicate processing on reconnect (see issue #44).
+            auto_delete: true,
+            ..Default::default()
+        });
+    }
 
     // Add listeners for each relationship with a dedicated R-DID.
     // Include pending relationships (RequestSent, RequestAccepted) so that
     // messages arriving during an in-progress handshake are received after restart.
     // Deduplicate by our_did to prevent multiple listeners for the same DID,
     // which would cause a reconnect loop as the mediator detects duplicates.
+    // Exclude ALL persona DIDs (their own listeners carry those relationships).
     // Extract data from the Mutex before any .await to avoid holding the guard.
     let mut seen_dids = std::collections::HashSet::new();
     let r_did_entries: Vec<(String, String)> = config
@@ -342,7 +355,7 @@ pub async fn build_listener_configs(
                 RelationshipState::Established
                     | RelationshipState::RequestSent
                     | RelationshipState::RequestAccepted
-            ) && rel.our_did.as_str() != config.persona_did()
+            ) && !persona_dids.contains(rel.our_did.as_str())
                 && seen_dids.insert(rel.our_did.to_string())
             {
                 Some((rel.our_did.to_string(), remote_p_did.to_string()))
@@ -372,7 +385,7 @@ pub async fn build_listener_configs(
     }
 
     debug!(
-        persona = %config.persona_did(),
+        persona_listeners = persona_dids.len(),
         r_did_listeners = r_did_entries.len(),
         total = configs.len(),
         "built listener configs"
@@ -383,11 +396,11 @@ pub async fn build_listener_configs(
 
 /// Determine the listener ID to use for sending messages from a given DID.
 ///
-/// If `our_did` matches the persona DID, use "persona". Otherwise, use
-/// the relationship-listener naming convention.
-pub fn listener_id_for_did(our_did: &str, persona_did: &str) -> String {
-    if our_did == persona_did {
-        persona_listener_id(persona_did)
+/// If `our_did` is one of our persona DIDs, use that persona's listener.
+/// Otherwise, use the relationship-listener naming convention.
+pub fn listener_id_for_did(our_did: &str, config: &Config) -> String {
+    if config.is_persona_did(our_did) {
+        persona_listener_id(our_did)
     } else {
         format!("rel-{}", short_did_id(our_did))
     }
@@ -402,7 +415,7 @@ pub async fn send_message(
     from_did: &str,
     to_did: &str,
 ) -> Result<(), DIDCommServiceError> {
-    let listener_id = listener_id_for_did(from_did, config.persona_did());
+    let listener_id = listener_id_for_did(from_did, config);
     send_message_via(service, message, &listener_id, to_did).await
 }
 

@@ -317,7 +317,7 @@ impl MainPageState {
         }
         for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
             if let Ok(rel) = rel_arc.lock()
-                && rel.our_did.as_str() != config.persona_did()
+                && !config.is_persona_did(rel.our_did.as_str())
             {
                 let alias = config
                     .private

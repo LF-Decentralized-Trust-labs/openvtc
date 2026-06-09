@@ -202,44 +202,60 @@ impl Config {
             KeyBackend::Vta { mediator_did, .. } => mediator_did.clone().unwrap_or_default(),
             KeyBackend::Bip32 { .. } => String::new(),
         };
-        let active_persona = account.personas.values().next().map(|p| {
-            // A persona minted before the mediator fix was stored with an empty
-            // mediator, which leaves its DIDComm listener failing with "No
-            // Mediator is configured" in an endless reconnect loop. Repair it at
-            // load by falling back to the account's VTA mediator — the persona
-            // DID was minted with the VTA's mediator service, so they match — so
-            // an already-broken persona comes good on the next launch with no
-            // re-join. (Runtime-only; the record is rewritten on the next save.)
-            let mediator = {
-                let stored = p.mediator_did.clone().unwrap_or_default();
-                if stored.is_empty() {
-                    if account_mediator.is_empty() {
-                        warn!(
-                            persona = %p.did,
-                            "persona has no mediator and the account has none either — \
-                             the persona listener will not connect"
-                        );
+        // Resolve a runtime identity for EVERY persona in the account, not just
+        // the first: each persona gets its own DIDComm listener at runtime, so
+        // all of them must be hydrated here (keys regenerated + an ATM messaging
+        // profile registered). A State-A account has zero personas, so the loop
+        // below never runs and `identities` stays empty.
+        type PersonaSeed = (
+            crate::config::account::PersonaId,
+            std::sync::Arc<String>,
+            String,
+            Option<affinidi_tdk::did_common::Document>,
+        );
+        let personas: Vec<PersonaSeed> = account
+            .personas
+            .values()
+            .map(|p| {
+                // A persona minted before the mediator fix was stored with an
+                // empty mediator, which leaves its DIDComm listener failing with
+                // "No Mediator is configured" in an endless reconnect loop.
+                // Repair it at load by falling back to the account's VTA mediator
+                // — the persona DID was minted with the VTA's mediator service,
+                // so they match — so an already-broken persona comes good on the
+                // next launch with no re-join. (Runtime-only; the record is
+                // rewritten on the next save.)
+                let mediator = {
+                    let stored = p.mediator_did.clone().unwrap_or_default();
+                    if stored.is_empty() {
+                        if account_mediator.is_empty() {
+                            warn!(
+                                persona = %p.did,
+                                "persona has no mediator and the account has none either — \
+                                 the persona listener will not connect"
+                            );
+                        } else {
+                            warn!(
+                                persona = %p.did,
+                                "persona stored without a mediator — falling back to the \
+                                 account VTA mediator"
+                            );
+                        }
+                        account_mediator.clone()
                     } else {
-                        warn!(
-                            persona = %p.did,
-                            "persona stored without a mediator — falling back to the \
-                             account VTA mediator"
-                        );
+                        stored
                     }
-                    account_mediator.clone()
-                } else {
-                    stored
-                }
-            };
-            (
-                p.persona_id,
-                std::sync::Arc::new(p.did.clone()),
-                mediator,
-                // PERF #3: the cached DID document, used instead of a network
-                // resolve when present.
-                p.did_document.clone(),
-            )
-        });
+                };
+                (
+                    p.persona_id,
+                    std::sync::Arc::new(p.did.clone()),
+                    mediator,
+                    // PERF #3: the cached DID document, used instead of a network
+                    // resolve when present.
+                    p.did_document.clone(),
+                )
+            })
+            .collect();
 
         // Open the admin VTA session ONLY when there's a persona to rehydrate
         // (regenerate its keys + register messaging profiles). A State-A account
@@ -249,54 +265,52 @@ impl Config {
         // mediator (WebSocket churn → a dropped response on the first burst of
         // requests, e.g. the join's key creation). Skipping it leaves a single
         // admin session for the whole runtime.
-        let vta_client =
-            if matches!(&key_backend, KeyBackend::Vta { .. }) && active_persona.is_some() {
-                report_progress(&on_progress, "VTA establishment", "Connecting to VTA");
-                Some(super::build_runtime_vta_client(&key_backend).await?)
-            } else {
-                None
-            };
+        let vta_client = if matches!(&key_backend, KeyBackend::Vta { .. }) && !personas.is_empty() {
+            report_progress(&on_progress, "VTA establishment", "Connecting to VTA");
+            Some(super::build_runtime_vta_client(&key_backend).await?)
+        } else {
+            None
+        };
 
         let mut identities = HashMap::new();
-        if let Some((active_persona_id, active_persona_did, active_mediator_did, cached_document)) =
-            active_persona
-        {
-            // Name the persona's messaging profile after its community so it is
-            // identifiable (not a generic "Persona") — matches the runtime
-            // listener label (`Config::persona_profile_label`).
-            let profile_label = account
-                .communities
-                .values()
-                .find(|c| c.persona_ref == active_persona_id)
-                .map(|c| {
-                    c.display_name.clone().unwrap_or_else(|| {
-                        crate::config::context_path::render_for_display(&c.vtc_did).to_string()
-                    })
-                })
-                .unwrap_or_else(|| "Persona".to_string());
 
-            // Resolve + key/profile setup for the active persona. Wrapped in an
-            // inner future so that, on the `?` error paths below, the admin VTA
-            // session is shut down before the error propagates (a leaked session
-            // would trip the SDK `LeakGuard` and duel other sessions on the
-            // mediator). On SUCCESS the session is returned to the caller alive
-            // (PERF #1) — it is NOT shut down here.
-            let persona_identity: Result<crate::identity::IdentityContext, OpenVTCError> = async {
+        // Hydrate every persona, then register relationship profiles once. The
+        // whole block is wrapped in an inner future so that on ANY `?` error the
+        // admin VTA session is shut down before the error propagates (a leaked
+        // session trips the SDK `LeakGuard` and duels other sessions on the
+        // mediator). On SUCCESS the session is returned to the caller alive
+        // (PERF #1) — it is NOT shut down here.
+        let hydrate: Result<(), OpenVTCError> = async {
+            for (persona_id, persona_did, persona_mediator, cached_document) in &personas {
+                // Name the persona's messaging profile after its community so it
+                // is identifiable (not a generic "Persona") — matches the runtime
+                // listener label (`Config::persona_profile_label`).
+                let profile_label = account
+                    .communities
+                    .values()
+                    .find(|c| c.persona_ref == *persona_id)
+                    .map(|c| {
+                        c.display_name.clone().unwrap_or_else(|| {
+                            crate::config::context_path::render_for_display(&c.vtc_did).to_string()
+                        })
+                    })
+                    .unwrap_or_else(|| "Persona".to_string());
+
                 // PERF #3: prefer the persisted persona DID document over a fresh
                 // network resolve (~1s). did:webvh docs change rarely between
                 // launches; a stale doc only matters if the persona rotated keys
                 // out-of-band — rare, and recoverable on the next mint/resolve.
-                let document = if let Some(doc) = cached_document {
+                let document = if let Some(doc) = cached_document.clone() {
                     report_progress(&on_progress, "Identity", "Loading DID document (cached)");
                     doc
                 } else {
                     report_progress(&on_progress, "Identity", "Resolving DID document");
                     tdk.did_resolver()
-                        .resolve(&active_persona_did)
+                        .resolve(persona_did)
                         .await
                         .map_err(|e| {
                             OpenVTCError::Resolver(format!(
-                                "Couldn't resolve Persona DID ({active_persona_did}): {e}"
+                                "Couldn't resolve Persona DID ({persona_did}): {e}"
                             ))
                         })?
                         .doc
@@ -308,11 +322,11 @@ impl Config {
                 // DIDCommMessaging service whose endpoint IS the mediator, so it
                 // is always authoritative. Without this the persona listener
                 // fails with "No Mediator is configured" and reconnect-loops.
-                let active_mediator_did = if active_mediator_did.is_empty() {
+                let persona_mediator = if persona_mediator.is_empty() {
                     match super::did::mediator_from_document(&document) {
                         Some(m) => {
                             warn!(
-                                persona = %active_persona_did,
+                                persona = %persona_did,
                                 mediator = %m,
                                 "recovered persona mediator from its DID document"
                             );
@@ -320,15 +334,15 @@ impl Config {
                         }
                         None => {
                             warn!(
-                                persona = %active_persona_did,
+                                persona = %persona_did,
                                 "persona has no mediator anywhere (record, account, \
                                  or DID document) — its listener will not connect"
                             );
-                            active_mediator_did
+                            persona_mediator.clone()
                         }
                     }
                 } else {
-                    active_mediator_did
+                    persona_mediator.clone()
                 };
 
                 report_progress(&on_progress, "Identity", "Fetching persona keys");
@@ -347,8 +361,8 @@ impl Config {
                         OpenVTCError::Config("TDK ATM service not initialized".to_string())
                     })?,
                     Some(profile_label.clone()),
-                    active_persona_did.to_string(),
-                    Some(active_mediator_did.clone()),
+                    persona_did.to_string(),
+                    Some(persona_mediator.clone()),
                 )
                 .await?;
 
@@ -359,51 +373,54 @@ impl Config {
                 })?;
                 let persona_profile = atm.profile_add(&persona_profile, false).await?;
 
+                identities.insert(
+                    *persona_id,
+                    crate::identity::IdentityContext {
+                        persona_id: *persona_id,
+                        did: persona_did.to_string(),
+                        document,
+                        profile: persona_profile,
+                        mediator_did: Some(persona_mediator.clone()),
+                    },
+                );
+            }
+
+            // Register relationship (R-DID) profiles ONCE, excluding ALL persona
+            // DIDs (each persona's own listener carries the relationships served
+            // by its DID). Personas share the account VTA mediator, so any
+            // persona's mediator is correct for the R-DID profiles — use the
+            // first. Registers each profile with the ATM service as a side-effect;
+            // the returned map is no longer stored on `Config`.
+            if let Some((_, _, first_mediator, _)) = personas.first() {
                 report_progress(&on_progress, "Identity", "Loading relationships");
-                // Registers each relationship profile with the ATM service as a
-                // side-effect; the returned map is no longer stored on `Config`.
+                let our_p_dids: std::collections::HashSet<String> = personas
+                    .iter()
+                    .map(|(_, did, _, _)| did.to_string())
+                    .collect();
                 private_cfg
                     .relationships
                     .generate_profiles(
                         tdk,
-                        &active_persona_did,
-                        &active_mediator_did,
+                        &our_p_dids,
+                        first_mediator,
                         &key_backend,
                         &sc.key_info,
                         vta_client.as_ref(),
                     )
                     .await?;
-
-                Ok(crate::identity::IdentityContext {
-                    persona_id: active_persona_id,
-                    did: active_persona_did.to_string(),
-                    document,
-                    profile: persona_profile,
-                    mediator_did: Some(active_mediator_did.clone()),
-                })
             }
-            .await;
+            Ok(())
+        }
+        .await;
 
-            // On ERROR, close the admin session before propagating (a leaked
-            // session would duel others on the mediator). On SUCCESS, the
-            // session is returned to the caller alive (PERF #1) and is NOT shut
-            // down here.
-            match persona_identity {
-                Ok(identity) => {
-                    identities.insert(active_persona_id, identity);
-                }
-                Err(e) => {
-                    if let Some(client) = &vta_client {
-                        client.shutdown().await;
-                    }
-                    return Err(e);
-                }
+        // On ERROR, close the admin session before propagating (a leaked session
+        // would duel others on the mediator). On SUCCESS, the session is returned
+        // to the caller alive (PERF #1) and is NOT shut down here.
+        if let Err(e) = hydrate {
+            if let Some(client) = &vta_client {
+                client.shutdown().await;
             }
-        } else if let Some(client) = &vta_client {
-            // No persona to resolve, but a VTA client was somehow built — close
-            // it (this branch is unreachable: the client is only built when a
-            // persona is present, but kept defensively).
-            client.shutdown().await;
+            return Err(e);
         }
 
         Ok((
