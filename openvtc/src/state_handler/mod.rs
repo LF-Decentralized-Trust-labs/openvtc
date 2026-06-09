@@ -551,9 +551,14 @@ impl StateHandler {
         // moment a `ListenerEvent::Connected` arrives — and back to Connecting on
         // a disconnect. Subscribe to typed lifecycle events for that.
         let mut listener_events = didcomm_service.subscribe();
-        // The persona listener's id (community-scoped, derived from its DID) is
-        // stable for the life of this loop — compute it once for event matching.
-        let persona_lid = didcomm::persona_listener_id(config.persona_did());
+        // The persona listener ids (one per resolved identity, derived from each
+        // DID) are stable for the life of this loop — compute them once for event
+        // matching. A single-persona account yields a one-element set.
+        let persona_lids: std::collections::HashSet<String> = config
+            .identities
+            .values()
+            .map(|i| didcomm::persona_listener_id(&i.did))
+            .collect();
         state.connection.status = state::MediatorStatus::Connecting;
         state.main_page.log("Connecting to the mediator…");
         let _ = self.state_tx.send(state.clone());
@@ -612,32 +617,46 @@ impl StateHandler {
                         state.main_page.content_panel.communities.confirm_delete = None;
                     },
                     Action::DeleteCommunity(i) => {
-                        // Capture the listener id before the delete, while the
-                        // persona/community are still present.
-                        let listener_id = didcomm::persona_listener_id(config.persona_did());
+                        // Identify the deleted community's persona BEFORE the
+                        // delete so we can tear down *its* listener (not the
+                        // active one) if it ends up with no live community.
+                        let target_persona = config
+                            .account
+                            .communities_for_display(false)
+                            .get(i)
+                            .map(|c| c.persona_ref);
                         self.remove_community(&mut state, &mut config, i);
                         // A deleted community must not leave its persona's
-                        // mediator connection running. If the active persona no
-                        // longer has any live community, stop and remove its
-                        // listener so the connection is torn down with the
-                        // community (not left dangling).
-                        let persona_id = config.active_identity().map(|id| id.persona_id);
-                        let still_live = persona_id.is_some_and(|pid| {
-                            config
+                        // mediator connection running. If that persona no longer
+                        // has any live community, stop and remove its listener so
+                        // the connection is torn down with the community (not left
+                        // dangling).
+                        if let Some(pid) = target_persona {
+                            let still_live = config
                                 .account
                                 .communities
                                 .values()
-                                .any(|c| c.persona_ref == pid && c.is_live())
-                        });
-                        if !still_live {
-                            if let Err(e) = didcomm_service.remove_listener(&listener_id).await {
-                                debug!("remove_listener after community delete: {e}");
+                                .any(|c| c.persona_ref == pid && c.is_live());
+                            if !still_live
+                                && let Some(did) =
+                                    config.identities.get(&pid).map(|id| id.did.clone())
+                            {
+                                let listener_id = didcomm::persona_listener_id(&did);
+                                if let Err(e) =
+                                    didcomm_service.remove_listener(&listener_id).await
+                                {
+                                    debug!("remove_listener after community delete: {e}");
+                                }
+                                state
+                                    .main_page
+                                    .log("Community removed — persona listener stopped.");
                             }
+                        }
+                        // Drop the global messaging status only when NO persona
+                        // has a live community left.
+                        if !config.account.communities.values().any(|c| c.is_live()) {
                             state.connection.status = state::MediatorStatus::NoActiveCommunity;
                             state.connection.messaging_active = false;
-                            state
-                                .main_page
-                                .log("Community removed — persona listener stopped.");
                         }
                     },
                     Action::DidSelect(i) => {
@@ -923,14 +942,16 @@ impl StateHandler {
                     use affinidi_messaging_didcomm_service::ListenerEvent;
                     if let Ok(ev) = ev {
                         match ev {
+                            // Any persona listener connecting marks messaging
+                            // live; a per-persona status panel is future work.
                             ListenerEvent::Connected { listener_id }
-                                if listener_id == persona_lid =>
+                                if persona_lids.contains(&listener_id) =>
                             {
                                 state.connection.status = state::MediatorStatus::Connected;
                                 state.connection.messaging_active = true;
                             }
                             ListenerEvent::Disconnected { listener_id, .. }
-                                if listener_id == persona_lid =>
+                                if persona_lids.contains(&listener_id) =>
                             {
                                 state.connection.status = state::MediatorStatus::Connecting;
                                 state.connection.messaging_active = false;

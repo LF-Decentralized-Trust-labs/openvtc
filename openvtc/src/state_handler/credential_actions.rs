@@ -88,7 +88,8 @@ fn handle_switch_tab(state: &mut State) {
     state.main_page.content_panel.credentials.selected_tab =
         match state.main_page.content_panel.credentials.selected_tab {
             CredentialTab::Received => CredentialTab::Issued,
-            CredentialTab::Issued => CredentialTab::Received,
+            CredentialTab::Issued => CredentialTab::Membership,
+            CredentialTab::Membership => CredentialTab::Received,
         };
     state.main_page.content_panel.credentials.selected_index = 0;
 }

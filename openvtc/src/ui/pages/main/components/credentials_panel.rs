@@ -53,24 +53,33 @@ fn render_list(state: &CredentialsState) -> Vec<Line<'static>> {
     let active_list = match state.selected_tab {
         CredentialTab::Received => &state.received,
         CredentialTab::Issued => &state.issued,
+        CredentialTab::Membership => &state.membership,
     };
 
     // Tab bar
-    let (recv_style, issued_style) = match state.selected_tab {
-        CredentialTab::Received => (
-            Style::new().fg(COLOR_SUCCESS).bold(),
-            Style::new().fg(COLOR_DARK_GRAY),
-        ),
-        CredentialTab::Issued => (
-            Style::new().fg(COLOR_DARK_GRAY),
-            Style::new().fg(COLOR_SUCCESS).bold(),
-        ),
+    let tab_style = |tab: CredentialTab| {
+        if state.selected_tab == tab {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_DARK_GRAY)
+        }
     };
-
+    let sep = || Span::styled(" | ", Style::new().fg(COLOR_DARK_GRAY));
     lines.push(Line::from(vec![
-        Span::styled(format!(" Received ({}) ", state.received.len()), recv_style),
-        Span::styled(" | ", Style::new().fg(COLOR_DARK_GRAY)),
-        Span::styled(format!(" Issued ({}) ", state.issued.len()), issued_style),
+        Span::styled(
+            format!(" Received ({}) ", state.received.len()),
+            tab_style(CredentialTab::Received),
+        ),
+        sep(),
+        Span::styled(
+            format!(" Issued ({}) ", state.issued.len()),
+            tab_style(CredentialTab::Issued),
+        ),
+        sep(),
+        Span::styled(
+            format!(" Membership ({}) ", state.membership.len()),
+            tab_style(CredentialTab::Membership),
+        ),
     ]));
     lines.push(Line::from(""));
 
@@ -122,6 +131,7 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
     let active_list = match state.selected_tab {
         CredentialTab::Received => &state.received,
         CredentialTab::Issued => &state.issued,
+        CredentialTab::Membership => &state.membership,
     };
 
     let Some(vrc) = active_list.get(index) else {

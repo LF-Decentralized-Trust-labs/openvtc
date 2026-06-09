@@ -271,8 +271,10 @@ pub struct Config {
     /// Runtime-resolved identities (resolved DID document + ATM profile),
     /// keyed by persona id. Not persisted — rebuilt at load from `account`.
     ///
-    /// For the single-persona case this holds one entry, surfaced by
-    /// [`Config::active_identity`]. Multi-persona population + selection land in
+    /// Holds one entry per persona — load resolves an [`IdentityContext`] for
+    /// every persona in the account, and a DIDComm listener is started for each.
+    /// [`Config::active_identity`] still surfaces the first as the "active" one
+    /// for user-initiated outbound actions; explicit persona *selection* lands in
     /// a later slice.
     pub identities: HashMap<account::PersonaId, crate::identity::IdentityContext>,
 }
@@ -343,13 +345,20 @@ impl Config {
     /// profile is identifiable rather than a generic "Persona". Falls back to
     /// "Persona" when the persona has no community yet.
     pub fn persona_profile_label(&self) -> String {
-        let Some(pid) = self.active_identity().map(|i| i.persona_id) else {
-            return "Persona".to_string();
-        };
+        match self.active_identity().map(|i| i.persona_id) {
+            Some(pid) => self.persona_profile_label_for(pid),
+            None => "Persona".to_string(),
+        }
+    }
+
+    /// Human label for a *specific* persona's messaging profile (see
+    /// [`Config::persona_profile_label`]). Used when building one DIDComm
+    /// listener per persona so each is named after its community.
+    pub fn persona_profile_label_for(&self, persona_id: account::PersonaId) -> String {
         self.account
             .communities
             .values()
-            .find(|c| c.persona_ref == pid)
+            .find(|c| c.persona_ref == persona_id)
             .map(|c| {
                 c.display_name.clone().unwrap_or_else(|| {
                     crate::config::context_path::render_for_display(&c.vtc_did).to_string()
@@ -371,6 +380,13 @@ impl Config {
         if let Some(ctx) = self.identities.get_mut(&id) {
             ctx.mediator_did = Some(did.to_string());
         }
+    }
+
+    /// Whether `did` is one of our resolved persona DIDs (vs. a relationship
+    /// R-DID or a remote party's DID). Used to route inbound replies out of the
+    /// addressed persona and to map a persona DID to its DIDComm listener.
+    pub fn is_persona_did(&self, did: &str) -> bool {
+        self.identities.values().any(|i| i.did == did)
     }
 }
 
