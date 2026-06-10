@@ -103,16 +103,21 @@ pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()
     Ok(())
 }
 
-/// Import a config from file. Currently only validates and advises restart.
+/// Validate an import file, then direct the operator to the real restore flow.
+///
+/// Importing into a *running* profile would require swapping the live config
+/// and reconnecting messaging, so it is intentionally not performed from the
+/// Settings panel. The supported restore path lives in the setup wizard:
+/// run `openvtc setup` and choose "Import" / "Restore Backup".
 pub fn import_config(path: &str, _passphrase: &str) -> Result<String> {
     validate_file_path(path)?;
     // Validate the file exists
     if !std::path::Path::new(path).exists() {
         anyhow::bail!("File not found: {}", path);
     }
-    // Full implementation would load ExportedConfig, decrypt, and replace
     Ok(format!(
-        "Import from {} would require app restart — use openvtc setup import",
+        "Import from {} is not supported here — run `openvtc setup` and choose \
+         Import / Restore Backup to restore an exported config.",
         path
     ))
 }
@@ -171,6 +176,7 @@ pub fn remove_contact(config: &mut Config, profile: &str, did: &str) -> Result<(
 use crate::state_handler::{
     actions::{ContactAction, SettingsAction},
     didcomm::{self, ReconnectOutcome},
+    dispatch_util,
     main_page::content::SettingsMode,
     state::{self, State},
 };
@@ -325,16 +331,25 @@ fn handle_submit_edit(
                 _ => "Setting",
             };
             state.main_page.content_panel.settings.mode = SettingsMode::View;
-            state.main_page.content_panel.settings.status_message =
-                Some("Setting saved".to_string());
-            state.main_page.sync_from_config(config);
-            state.main_page.log(format!("{} updated", setting_name));
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SyncOnly,
+                |mp| &mut mp.content_panel.settings.status_message,
+                "Setting saved",
+                dispatch_util::SyncLog::Plain(format!("{} updated", setting_name)),
+            );
             // Mediator DID is index 1 — caller should trigger reconnect
             idx == 1
         }
         Err(e) => {
-            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e:#}"));
-            state.main_page.log_error("Failed to save setting", &e);
+            dispatch_util::record_error(
+                &mut state.main_page,
+                |mp| &mut mp.content_panel.settings.status_message,
+                "Failed to save setting",
+                &e,
+            );
             false
         }
     }
@@ -359,9 +374,15 @@ fn handle_export_config_action(
                     .log_error("Failed to persist export-log entry", &e);
             }
             state.main_page.content_panel.settings.mode = SettingsMode::View;
-            state.main_page.content_panel.settings.status_message =
-                Some(format!("Config exported to {}", path));
-            state.main_page.log(format!("Config exported to {}", path));
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::None,
+                |mp| &mut mp.content_panel.settings.status_message,
+                format!("Config exported to {}", path),
+                dispatch_util::SyncLog::Plain(format!("Config exported to {}", path)),
+            );
         }
         Err(e) => {
             state.main_page.content_panel.settings.status_message =
@@ -390,8 +411,15 @@ fn handle_import_config_action(
                     .log_error("Failed to persist import-log entry", &e);
             }
             state.main_page.content_panel.settings.mode = SettingsMode::View;
-            state.main_page.content_panel.settings.status_message = Some(msg.clone());
-            state.main_page.log(msg);
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::None,
+                |mp| &mut mp.content_panel.settings.status_message,
+                msg.clone(),
+                dispatch_util::SyncLog::Plain(msg),
+            );
         }
         Err(e) => {
             state.main_page.content_panel.settings.status_message =
@@ -419,14 +447,23 @@ fn handle_set_passphrase(
     match set_passphrase(config, profile, passphrase) {
         Ok(()) => {
             state.main_page.content_panel.settings.mode = SettingsMode::View;
-            state.main_page.content_panel.settings.status_message =
-                Some("Passphrase protection enabled".to_string());
-            state.main_page.sync_from_config(config);
-            state.main_page.log("Passphrase protection enabled");
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SyncOnly,
+                |mp| &mut mp.content_panel.settings.status_message,
+                "Passphrase protection enabled",
+                dispatch_util::SyncLog::Plain("Passphrase protection enabled".to_string()),
+            );
         }
         Err(e) => {
-            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e:#}"));
-            state.main_page.log_error("Failed to set passphrase", &e);
+            dispatch_util::record_error(
+                &mut state.main_page,
+                |mp| &mut mp.content_panel.settings.status_message,
+                "Failed to set passphrase",
+                &e,
+            );
         }
     }
 }
@@ -435,14 +472,23 @@ fn handle_remove_passphrase(config: &mut Box<Config>, state: &mut State, profile
     match remove_passphrase(config, profile) {
         Ok(()) => {
             state.main_page.content_panel.settings.mode = SettingsMode::View;
-            state.main_page.content_panel.settings.status_message =
-                Some("Protection reverted to keyring only".to_string());
-            state.main_page.sync_from_config(config);
-            state.main_page.log("Protection reverted to keyring only");
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SyncOnly,
+                |mp| &mut mp.content_panel.settings.status_message,
+                "Protection reverted to keyring only",
+                dispatch_util::SyncLog::Plain("Protection reverted to keyring only".to_string()),
+            );
         }
         Err(e) => {
-            state.main_page.content_panel.settings.status_message = Some(format!("Error: {e:#}"));
-            state.main_page.log_error("Failed to remove passphrase", &e);
+            dispatch_util::record_error(
+                &mut state.main_page,
+                |mp| &mut mp.content_panel.settings.status_message,
+                "Failed to remove passphrase",
+                &e,
+            );
         }
     }
 }

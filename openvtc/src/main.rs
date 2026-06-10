@@ -91,14 +91,21 @@ async fn main() -> Result<()> {
     // sessions (no D-Bus, no GUI) work without extra setup.
     init_default_keyring_store()?;
 
+    // Parse the command line exactly once; thread the parsed values down to
+    // the call sites that need them (profile resolution, setup detection, and
+    // the unlock-code passed into `load_fast`). Unknown subcommands and
+    // `--help`/`--version` are handled here by clap (process exits).
+    let matches = cli().get_matches();
+    let cli_profile = matches
+        .get_one::<String>("profile")
+        .cloned()
+        .unwrap_or_else(|| "default".to_string());
+    let unlock_code_arg = matches.get_one::<String>("unlock-code").cloned();
+    let setup_requested = matches!(matches.subcommand(), Some(("setup", _)));
+
     // Which configuration profile to use?
     let profile = if let Ok(env_profile) = env::var("OPENVTC_CONFIG_PROFILE") {
         // ENV Profile will override the CLI Argument
-        let cli_profile = cli()
-            .get_matches()
-            .get_one::<String>("profile")
-            .cloned()
-            .unwrap_or_else(|| "default".to_string());
         if cli_profile != "default" && cli_profile != env_profile {
             println!("{}", 
                 style("WARNING: Using both ENV OPENVTC_CONFIG_PROFILE and CLI profile! These do not match!").color256(CLI_ORANGE)
@@ -119,11 +126,7 @@ async fn main() -> Result<()> {
             env_profile
         }
     } else {
-        cli()
-            .get_matches()
-            .get_one::<String>("profile")
-            .cloned()
-            .unwrap_or_else(|| "default".to_string())
+        cli_profile
     };
 
     // The profile name is interpolated into lock-file and config paths and
@@ -149,12 +152,12 @@ async fn main() -> Result<()> {
     let mut starting_mode = StartingMode::NotSet;
 
     // Is there a CLI command to force setup wizard?
-    if let Some(("setup", _)) = cli().get_matches().subcommand() {
+    if setup_requested {
         starting_mode = StartingMode::SetupWizard;
     }
 
     if let StartingMode::NotSet = starting_mode {
-        match load_fast(&profile) {
+        match load_fast(&profile, unlock_code_arg.as_deref()) {
             Ok(deferred) => {
                 starting_mode = StartingMode::MainPageDeferred(deferred);
             }
@@ -335,13 +338,13 @@ const MAX_UNLOCK_ATTEMPTS: usize = 5;
 
 /// Fast, synchronous load — only does local config read + terminal prompts.
 /// Network-heavy work (TDK init, DID resolution, VTA auth) is deferred to the state handler.
-fn load_fast(profile: &str) -> Result<DeferredLoad, OpenVTCError> {
+fn load_fast(profile: &str, unlock_code_arg: Option<&str>) -> Result<DeferredLoad, OpenVTCError> {
     let public_config = Config::load_step1(profile)?;
 
     let unlock_passphrase = match &public_config.protection {
         ConfigProtectionType::Token { .. } => None,
         ConfigProtectionType::Encrypted => {
-            if let Some(passphrase) = cli().get_matches().get_one::<String>("unlock-code") {
+            if let Some(passphrase) = unlock_code_arg {
                 eprintln!(
                     "{}",
                     style(

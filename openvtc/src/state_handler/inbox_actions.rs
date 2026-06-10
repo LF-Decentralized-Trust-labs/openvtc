@@ -468,6 +468,7 @@ fn build_reject_message(from: &str, to: &str, reason: Option<&str>, thid: &str) 
 
 use crate::state_handler::{
     actions::InboxAction,
+    dispatch_util,
     main_page::content::{ActiveTaskView, TaskKind},
     settings_actions,
     state::State,
@@ -534,17 +535,24 @@ fn save_and_sync(
     success_log: &str,
 ) {
     state.main_page.content_panel.inbox.active_task = None;
-    state.main_page.content_panel.inbox.status_message = Some(success_status.to_string());
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log(success_log);
+    dispatch_util::save_and_sync(
+        &mut state.main_page,
+        config,
+        profile,
+        dispatch_util::Persist::SaveAndSync,
+        |mp| &mut mp.content_panel.inbox.status_message,
+        success_status.to_string(),
+        dispatch_util::SyncLog::Plain(success_log.to_string()),
+    );
 }
 
 fn record_error(state: &mut State, context: &str, err: &anyhow::Error) {
-    state.main_page.content_panel.inbox.status_message = Some(format!("Error: {err:#}"));
-    state.main_page.log_error(context, err);
+    dispatch_util::record_error(
+        &mut state.main_page,
+        |mp| &mut mp.content_panel.inbox.status_message,
+        context,
+        err,
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
