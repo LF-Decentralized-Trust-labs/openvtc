@@ -139,6 +139,12 @@ pub(crate) enum DispatchOutcome {
     /// A context-DID deletion finished (VTA delete + listener teardown done in
     /// the task; local cleanup + save applied here).
     Did(DidDeleteOutcome),
+    /// A spawned dispatch job panicked (or was cancelled) and so never produced a
+    /// real outcome. Synthesised by [`spawn_dispatch`] from the `JoinError` so the
+    /// domain's busy-flag is still cleared (a panicking job that sent nothing would
+    /// otherwise leave its domain busy forever) and a generic failure status is
+    /// surfaced. Carries the domain to release + label.
+    Panicked(DispatchDomain),
 }
 
 impl DispatchOutcome {
@@ -149,8 +155,34 @@ impl DispatchOutcome {
             DispatchOutcome::Relationship(_) => DispatchDomain::Relationship,
             DispatchOutcome::Inbox(_) => DispatchDomain::Inbox,
             DispatchOutcome::Did(_) => DispatchDomain::Did,
+            DispatchOutcome::Panicked(domain) => *domain,
         }
     }
+}
+
+/// Spawn a background dispatch job whose future resolves to a [`DispatchOutcome`],
+/// delivering the result over `tx`. **Resilience guarantee:** if the job panics or
+/// is cancelled it produces no outcome, which would leave `domain`'s busy-flag set
+/// forever (every subsequent action on that domain rejected as "in progress").
+/// This wrapper joins the inner task and, on a `JoinError`, synthesises a
+/// [`DispatchOutcome::Panicked`] so `apply_outcome` always clears the flag.
+pub(crate) fn spawn_dispatch<F>(
+    tx: tokio::sync::mpsc::UnboundedSender<DispatchOutcome>,
+    domain: DispatchDomain,
+    fut: F,
+) where
+    F: std::future::Future<Output = DispatchOutcome> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let outcome = match tokio::spawn(fut).await {
+            Ok(outcome) => outcome,
+            Err(e) => {
+                tracing::error!(domain = ?domain, error = %e, "dispatch job panicked/cancelled");
+                DispatchOutcome::Panicked(domain)
+            }
+        };
+        let _ = tx.send(outcome);
+    });
 }
 
 /// Apply a completed [`DispatchOutcome`] to `state` and clear the domain's
@@ -168,8 +200,18 @@ impl DispatchOutcome {
 /// inbox / delete-DID paths persist config changes (the relationship record, the
 /// task removal, the issued VRC) that today happen *after* the network send.
 /// Doing them here — on the loop thread, only on success — preserves the
-/// pre-R14 ordering and durability: a send failure leaves config untouched, just
-/// as the old inline `match … { Ok => persist, Err => status }` did.
+/// pre-R14 ordering and durability.
+///
+/// A send failure records an error status and creates no *task/record that the
+/// old inline `Ok` branch would have created* — matching the pre-R14
+/// `match … { Ok => persist, Err => status }`. It is not a literal no-op on
+/// `Config`, and was never meant to be: it mirrors the in-memory state the old
+/// inline path had reached *before* the send. Specifically, the relationship
+/// Create path records the minted R-DID `key_info` on both success and failure
+/// (key creation happened before the send pre-R14; only the success save
+/// persists it), and removes the provisional `RequestSent` record it pre-inserted
+/// (see [`RelationshipOutcome::apply`]) so a failed send leaves no relationship
+/// record — exactly the pre-R14 net state.
 pub(crate) fn apply_outcome(
     state: &mut State,
     config: &mut Config,
@@ -193,6 +235,13 @@ pub(crate) fn apply_outcome(
         DispatchOutcome::Relationship(outcome) => outcome.apply(state, config, profile),
         DispatchOutcome::Inbox(outcome) => outcome.apply(state, config, profile),
         DispatchOutcome::Did(outcome) => outcome.apply(state, config, profile),
+        DispatchOutcome::Panicked(domain) => {
+            // The job panicked and produced no real outcome. Surface a generic
+            // failure so the user isn't left staring at a stuck "in progress"; the
+            // busy-flag is cleared below (via `domain()`), freeing the domain.
+            let msg = format!("{} failed (internal error)", domain.label());
+            state.main_page.log(msg);
+        }
     }
     in_flight.finish(domain);
 }
@@ -310,6 +359,50 @@ mod tests {
         }
         assert!(!state.connection.messaging_active);
         assert!(!in_flight.is_busy(DispatchDomain::Mediator));
+    }
+
+    /// Applying a `Panicked` outcome clears the busy-flag (so the domain isn't
+    /// stuck "in progress" forever) and surfaces a generic failure log line. This
+    /// backs the Fix-3 resilience guarantee: a spawned job that panics still frees
+    /// its domain.
+    #[test]
+    fn apply_panicked_outcome_clears_flag() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut in_flight = InFlight::default();
+        assert!(in_flight.try_begin(DispatchDomain::Relationship));
+
+        apply_outcome(
+            &mut state,
+            &mut config,
+            "test",
+            &mut in_flight,
+            DispatchOutcome::Panicked(DispatchDomain::Relationship),
+        );
+
+        assert!(
+            !in_flight.is_busy(DispatchDomain::Relationship),
+            "a panicked job's domain must be freed, not left busy forever"
+        );
+    }
+
+    /// `spawn_dispatch` converts a panicking job into a synthetic
+    /// [`DispatchOutcome::Panicked`] for the right domain, rather than silently
+    /// dropping the outcome (which would leave the domain busy forever).
+    #[tokio::test]
+    async fn spawn_dispatch_panic_yields_panicked_outcome() {
+        use tokio::sync::mpsc;
+        let (tx, mut rx) = mpsc::unbounded_channel::<DispatchOutcome>();
+        spawn_dispatch(tx, DispatchDomain::Inbox, async {
+            panic!("boom");
+            #[allow(unreachable_code)]
+            DispatchOutcome::Panicked(DispatchDomain::Inbox)
+        });
+        let outcome = rx.recv().await.expect("an outcome must be delivered");
+        assert!(matches!(
+            outcome,
+            DispatchOutcome::Panicked(DispatchDomain::Inbox)
+        ));
     }
 
     /// The busy message names the domain so the UI tells the user *what* is

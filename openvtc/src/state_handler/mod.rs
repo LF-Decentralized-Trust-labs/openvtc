@@ -664,12 +664,13 @@ impl StateHandler {
                             &didcomm_service,
                             i,
                         ) {
-                            let tx = dispatch_tx.clone();
-                            tokio::spawn(async move {
-                                let _ = tx.send(background_dispatch::DispatchOutcome::Did(
-                                    job.run().await,
-                                ));
-                            });
+                            background_dispatch::spawn_dispatch(
+                                dispatch_tx.clone(),
+                                domain,
+                                async move {
+                                    background_dispatch::DispatchOutcome::Did(job.run().await)
+                                },
+                            );
                         } else {
                             // Guard rejected the delete (logged inline); release.
                             in_flight.finish(domain);
@@ -732,14 +733,15 @@ impl StateHandler {
                                 .await
                                 {
                                     inbox_actions::InboxDispatch::Spawn(job) => {
-                                        let tx = dispatch_tx.clone();
-                                        tokio::spawn(async move {
-                                            let _ = tx.send(
+                                        background_dispatch::spawn_dispatch(
+                                            dispatch_tx.clone(),
+                                            domain,
+                                            async move {
                                                 background_dispatch::DispatchOutcome::Inbox(
                                                     job.run().await,
-                                                ),
-                                            );
-                                        });
+                                                )
+                                            },
+                                        );
                                     }
                                     // Pre-send failure recorded a status; nothing
                                     // was spawned, so release the domain now.
@@ -796,14 +798,15 @@ impl StateHandler {
                                         if is_ping {
                                             ping_sent_at = Some(std::time::Instant::now());
                                         }
-                                        let tx = dispatch_tx.clone();
-                                        tokio::spawn(async move {
-                                            let _ = tx.send(
+                                        background_dispatch::spawn_dispatch(
+                                            dispatch_tx.clone(),
+                                            domain,
+                                            async move {
                                                 background_dispatch::DispatchOutcome::Relationship(
                                                     job.run().await,
-                                                ),
-                                            );
-                                        });
+                                                )
+                                            },
+                                        );
                                     }
                                     relationship_actions::RelationshipDispatch::Handled => {
                                         in_flight.finish(domain);
@@ -879,21 +882,22 @@ impl StateHandler {
                                     let new_listener_config =
                                         didcomm::persona_listener_config(&config, &tdk).await;
                                     let service = didcomm_service.clone();
-                                    let tx = dispatch_tx.clone();
-                                    tokio::spawn(async move {
-                                        let outcome =
-                                            didcomm::reconnect_persona_listener_io(
-                                                &service,
-                                                listener_id,
-                                                new_listener_config,
-                                            )
-                                            .await;
-                                        let _ = tx.send(
+                                    background_dispatch::spawn_dispatch(
+                                        dispatch_tx.clone(),
+                                        background_dispatch::DispatchDomain::Mediator,
+                                        async move {
+                                            let outcome =
+                                                didcomm::reconnect_persona_listener_io(
+                                                    &service,
+                                                    listener_id,
+                                                    new_listener_config,
+                                                )
+                                                .await;
                                             background_dispatch::DispatchOutcome::MediatorReconnect(
                                                 outcome,
-                                            ),
-                                        );
-                                    });
+                                            )
+                                        },
+                                    );
                                 }
                             }
                         }

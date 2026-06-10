@@ -663,19 +663,56 @@ impl RelationshipOutcome {
                 }
                 match self.result {
                     Ok(()) => {
-                        // Insert the relationship + outbound task (post-send tail of
+                        // Finalise the provisional record `prepare_submit` inserted.
+                        // We must NOT blindly re-insert: a racing
+                        // `RelationshipRequestAccepted` (the event loop kept draining
+                        // while the send ran off-loop) may have already advanced this
+                        // record to `Established`. Re-inserting a fresh `RequestSent`
+                        // would clobber that established state and create a stale
+                        // outbound task.
+                        // Returns `Some(still_request_sent)` if the record exists,
+                        // `None` if it went missing.
+                        let outcome =
+                            config
+                                .private
+                                .relationships
+                                .get(&respondent_did)
+                                .and_then(|rel| {
+                                    rel.lock().ok().map(|mut lock| {
+                                        // Always record the real local DID so future
+                                        // messages use the correct `our_did`.
+                                        lock.our_did = Arc::clone(&our_did);
+                                        if lock.state == RelationshipState::RequestSent {
+                                            // No accept raced us: fill in the real
+                                            // `task_id` (the send's msg_id) too.
+                                            lock.task_id = Arc::clone(&msg_id);
+                                            true
+                                        } else {
+                                            // A racing accept already finalised this
+                                            // relationship; leave its state + task_id.
+                                            false
+                                        }
+                                    })
+                                });
+
+                        if outcome != Some(true) {
+                            // Either the provisional record was raced to
+                            // `Established` (the accept handler already logged +
+                            // finalised, and creating an outbound task now would be
+                            // stale) or it went missing — skip the outbound task +
+                            // "request sent" UI. If the record exists, persist the
+                            // `our_did` update made above; otherwise nothing changed.
+                            if outcome == Some(false) {
+                                if let Err(e) = settings_actions::save_config(config, profile) {
+                                    state.main_page.log_error("Failed to save config", &e);
+                                }
+                                state.main_page.sync_from_config(config);
+                            }
+                            return;
+                        }
+
+                        // No race: create the outbound task + log (post-send tail of
                         // `send_relationship_request`).
-                        config.private.relationships.relationships.insert(
-                            Arc::clone(&respondent_did),
-                            Arc::new(Mutex::new(RelRecord {
-                                task_id: Arc::clone(&msg_id),
-                                our_did: Arc::clone(&our_did),
-                                remote_p_did: Arc::clone(&respondent_did),
-                                remote_did: Arc::clone(&respondent_did),
-                                created: Utc::now(),
-                                state: RelationshipState::RequestSent,
-                            })),
-                        );
                         config.private.tasks.new_task(
                             &msg_id,
                             TaskType::RelationshipRequestOutbound {
@@ -717,6 +754,30 @@ impl RelationshipOutcome {
                         );
                     }
                     Err(e) => {
+                        // The send failed, so the peer never received the request and
+                        // no accept can have arrived — remove the provisional record
+                        // so the failure state matches pre-R14 (contact + key_info
+                        // in-memory, but NO relationship record). Guard on
+                        // `RequestSent` defensively: should always hold here (an
+                        // accept implies the send reached the peer), but never clobber
+                        // a record an accept somehow advanced.
+                        let still_request_sent = config
+                            .private
+                            .relationships
+                            .get(&respondent_did)
+                            .and_then(|rel| {
+                                rel.lock()
+                                    .ok()
+                                    .map(|lock| lock.state == RelationshipState::RequestSent)
+                            })
+                            .unwrap_or(false);
+                        if still_request_sent {
+                            config
+                                .private
+                                .relationships
+                                .relationships
+                                .remove(&respondent_did);
+                        }
                         let err = anyhow::anyhow!("failed to send relationship request: {e}");
                         dispatch_util::record_error(
                             &mut state.main_page,
@@ -1060,6 +1121,31 @@ async fn prepare_submit(
     };
     let persona_did = config.persona_did_arc();
     let persona_listener_id = super::didcomm::listener_id_for_did(&persona_did, config);
+
+    // Insert a *provisional* `RequestSent` record keyed by the respondent's
+    // persona DID, BEFORE the send is even spawned. This closes a lost-update
+    // race: the send runs off-loop while `didcomm_event_rx` keeps draining, so a
+    // peer's `RelationshipRequestAccepted` can arrive before the Create outcome is
+    // applied. The accept handler looks up `find_by_task_id(thid).or_else(get(
+    // from_did))`; without this record both miss and the accept is dropped,
+    // leaving the relationship stuck. We don't yet know the real `task_id`
+    // (the send's msg_id) or any minted R-DID, so use placeholders: `task_id` is
+    // empty (the accept's primary `find_by_task_id` misses harmlessly and falls
+    // back to `get(from_did)`), and `our_did`/`remote_did`/`remote_p_did` are the
+    // respondent DID. The accept's `from_did` equals this respondent DID, so the
+    // `get(from_did)` fallback finds it and the `remote_p_did == from_did` check
+    // passes. The Create outcome later fills in the real `task_id`/`our_did`.
+    config.private.relationships.relationships.insert(
+        Arc::clone(&respondent_arc),
+        Arc::new(Mutex::new(RelRecord {
+            task_id: Arc::new(String::new()),
+            our_did: Arc::clone(&persona_did),
+            remote_p_did: Arc::clone(&respondent_arc),
+            remote_did: Arc::clone(&respondent_arc),
+            created: Utc::now(),
+            state: RelationshipState::RequestSent,
+        })),
+    );
 
     // In-progress status (shown by the loop's post-arm state send).
     if generate_r_did {
@@ -1549,14 +1635,34 @@ mod tests {
         );
     }
 
-    /// A successful Create outcome inserts the relationship + outbound task and
-    /// records the minted R-DID key_info, reproducing the post-send tail of
+    /// Insert the provisional `RequestSent` record that `prepare_submit` writes
+    /// before the send is spawned (placeholder `task_id`, persona DID as
+    /// `our_did`). Tests that exercise the Create `apply` start from this record,
+    /// mirroring the real flow.
+    fn insert_provisional(config: &mut Config, respondent: &Arc<String>) {
+        config.private.relationships.relationships.insert(
+            Arc::clone(respondent),
+            Arc::new(Mutex::new(RelRecord {
+                task_id: Arc::new(String::new()),
+                our_did: Arc::clone(respondent),
+                remote_p_did: Arc::clone(respondent),
+                remote_did: Arc::clone(respondent),
+                created: Utc::now(),
+                state: RelationshipState::RequestSent,
+            })),
+        );
+    }
+
+    /// A successful Create outcome finalises the provisional record (real
+    /// `task_id`/`our_did`), creates the outbound task, and records the minted
+    /// R-DID key_info, reproducing the post-send tail of
     /// `send_relationship_request`.
     #[test]
     fn create_success_inserts_relationship_and_keyinfo() {
         let mut config = test_config();
         let mut state = State::default();
         let respondent = Arc::new("did:peer:respondent".to_string());
+        insert_provisional(&mut config, &respondent);
         let our_did = Arc::new("did:peer:our-rdid".to_string());
         let key_info = vec![(
             "z-some-key".to_string(),
@@ -1582,9 +1688,36 @@ mod tests {
         };
         outcome.apply(&mut state, &mut config, "test");
 
+        let rel = config
+            .private
+            .relationships
+            .get(&respondent)
+            .expect("relationship record present on success");
+        {
+            let lock = rel.lock().unwrap();
+            assert_eq!(
+                lock.state,
+                RelationshipState::RequestSent,
+                "stays RequestSent (no accept raced)"
+            );
+            assert_eq!(
+                lock.task_id.as_str(),
+                "req-msg",
+                "provisional placeholder task_id replaced by the real msg_id"
+            );
+            assert_eq!(
+                lock.our_did.as_str(),
+                "did:peer:our-rdid",
+                "provisional persona our_did replaced by the minted R-DID"
+            );
+        }
         assert!(
-            config.private.relationships.get(&respondent).is_some(),
-            "relationship record inserted on success"
+            config
+                .private
+                .tasks
+                .get_by_id(&Arc::new("req-msg".to_string()))
+                .is_some(),
+            "an outbound RelationshipRequestOutbound task is created on success"
         );
         assert!(
             config.key_info.contains_key("z-some-key"),
@@ -1601,14 +1734,74 @@ mod tests {
         );
     }
 
+    /// Race guard: if a peer's `RelationshipRequestAccepted` advances the
+    /// provisional record to `Established` *before* the Create SUCCESS outcome is
+    /// applied, the success apply must NOT clobber that state back to
+    /// `RequestSent`, must NOT create a stale outbound task, but must still update
+    /// `our_did` to the real minted local DID.
+    #[test]
+    fn create_success_does_not_clobber_raced_established() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let respondent = Arc::new("did:peer:respondent".to_string());
+        insert_provisional(&mut config, &respondent);
+        // Simulate the racing accept: advance the provisional record to
+        // Established (as the accept handler's `get(from_did)` fallback does).
+        {
+            let rel = config.private.relationships.get(&respondent).unwrap();
+            let mut lock = rel.lock().unwrap();
+            lock.state = RelationshipState::Established;
+            lock.remote_did = Arc::new("did:peer:respondent-rdid".to_string());
+        }
+
+        let our_did = Arc::new("did:peer:our-rdid".to_string());
+        let outcome = RelationshipOutcome {
+            effect: RelationshipEffect::Create {
+                respondent_did: Arc::clone(&respondent),
+                our_did,
+                msg_id: Arc::new("req-msg".to_string()),
+                used_r_did: true,
+                key_info: Vec::new(),
+                contact_to_add: None,
+            },
+            result: Ok(()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        let rel = config.private.relationships.get(&respondent).unwrap();
+        let lock = rel.lock().unwrap();
+        assert_eq!(
+            lock.state,
+            RelationshipState::Established,
+            "raced Established state must be preserved, not reset to RequestSent"
+        );
+        assert_eq!(
+            lock.our_did.as_str(),
+            "did:peer:our-rdid",
+            "our_did is still updated to the real minted local DID"
+        );
+        assert!(
+            config
+                .private
+                .tasks
+                .get_by_id(&Arc::new("req-msg".to_string()))
+                .is_none(),
+            "no stale outbound task for an already-established relationship"
+        );
+    }
+
     /// A failed Create still records the minted key_info in-memory (matching the
-    /// pre-R14 ordering where key creation happened before the send) but inserts
-    /// NO relationship record, and surfaces the error status.
+    /// pre-R14 ordering where key creation happened before the send) but removes
+    /// the provisional relationship record (failure parity: contact + key_info
+    /// in-memory, NO relationship record), and surfaces the error status.
     #[test]
     fn create_failure_records_keyinfo_but_no_relationship() {
         let mut config = test_config();
         let mut state = State::default();
         let respondent = Arc::new("did:peer:respondent".to_string());
+        // `prepare_submit` pre-inserted a provisional record; a send failure must
+        // remove it so no stuck `RequestSent` relationship is left behind.
+        insert_provisional(&mut config, &respondent);
 
         let outcome = RelationshipOutcome {
             effect: RelationshipEffect::Create {
@@ -1634,7 +1827,15 @@ mod tests {
 
         assert!(
             config.private.relationships.get(&respondent).is_none(),
-            "no relationship on a failed send"
+            "provisional relationship removed on a failed send"
+        );
+        assert!(
+            config
+                .private
+                .tasks
+                .get_by_id(&Arc::new("req-msg".to_string()))
+                .is_none(),
+            "no outbound task on a failed send"
         );
         assert!(
             config.key_info.contains_key("z-orphan"),
