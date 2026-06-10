@@ -149,8 +149,15 @@ pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyh
                 tracing::info!(
                     listener = %ctx.listener_id,
                     msg_type = %msg.typ,
-                    from = ?msg.from,
-                    to = ?msg.to,
+                    from = ?msg
+                        .from
+                        .as_deref()
+                        .map(|d| openvtc_core::display::truncate_did(d, 32)),
+                    to = ?msg.to.as_ref().map(|dids| {
+                        dids.iter()
+                            .map(|d| openvtc_core::display::truncate_did(d, 32))
+                            .collect::<Vec<_>>()
+                    }),
                     thid = ?msg.thid,
                     "inbound OpenVTC message received"
                 );
@@ -433,8 +440,11 @@ pub async fn send_message_via(
     tracing::info!(
         listener = %listener_id,
         msg_type = %message.typ,
-        from = ?message.from,
-        to = %to_did,
+        from = ?message
+            .from
+            .as_deref()
+            .map(|d| openvtc_core::display::truncate_did(d, 32)),
+        to = %openvtc_core::display::truncate_did(to_did, 32),
         thid = ?message.thid,
         "sending DIDComm message"
     );
