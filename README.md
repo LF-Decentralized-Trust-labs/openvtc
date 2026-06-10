@@ -36,6 +36,7 @@ Personhood Credentials (PHCs) and Verifiable Relationship Credentials (VRCs).
   - [Host Your DID Document](#host-your-did-document)
 - [Check Setup Status](#check-setup-status)
 - [Usage](#usage)
+- [Planned Commands](#planned-commands)
 - [DID Git Signing](#did-git-signing)
 - [Additional Resources](#additional-resources)
 
@@ -44,7 +45,7 @@ Personhood Credentials (PHCs) and Verifiable Relationship Credentials (VRCs).
 Install from source.
 
 ```bash
-cargo install --path .
+cargo install --path openvtc
 ```
 
 Run setup wizard.
@@ -53,16 +54,22 @@ Run setup wizard.
 openvtc setup
 ```
 
-Check status.
+Launch the TUI (review status, contacts, relationships, and credentials).
 
 ```bash
-openvtc status
+openvtc
 ```
 
 View available commands.
 
 ```bash
 openvtc --help
+```
+
+Print the version.
+
+```bash
+openvtc --version
 ```
 
 ## Core Concepts
@@ -215,10 +222,12 @@ OpenVTC currently supports `openpgp-card` as an option to perform cryptographic 
 | -------------- | ----------------------------------------- | ------- |
 | `openpgp-card` | OpenPGP-compatible hardware token support | Enabled |
 
-To turn off default features, use `--no-default-features` flag on the setup command.
+`--no-default-features` is a Cargo flag applied at build/install time (not a
+flag on the `openvtc` binary itself). To build or install without the
+OpenPGP-card feature:
 
 ```bash
-openvtc --no-default-features setup
+cargo install --path openvtc --no-default-features
 ```
 
 ## Getting Started
@@ -271,7 +280,7 @@ cargo test -p openvtc-core
 1. Install locally from the source.
 
    ```bash
-   cargo install --path .
+   cargo install --path openvtc
    ```
 
    > **Note:** This will change once the tool is published.
@@ -321,21 +330,21 @@ To set up multiple profiles for the same domain, see the [Multiple DIDs on Same 
 
 ## Check Setup Status
 
-The OpenVTC configures your environment to ensure your setup is safe, secure, and private when running the tool.
+OpenVTC configures your environment to ensure your setup is safe, secure, and private when running the tool.
 
-To check the status or health of your current environment, run the following command.
-
-```bash
-openvtc status
-```
-
-If you wish to check the status for a specific profile, run the following the command.
+Once setup is complete, launch the TUI to review the status and health of your current environment:
 
 ```bash
-openvtc -p profile-1 status
+openvtc
 ```
 
-When successful, it displays the following info:
+To launch with a specific profile:
+
+```bash
+openvtc -p profile-1
+```
+
+The TUI surfaces, among other things:
 
 - Tool version.
 - Your Persona DIDs, and whether your Persona DID is resolvable.
@@ -345,19 +354,31 @@ When successful, it displays the following info:
 
 ## Usage
 
-To run commands from installed binary:
+OpenVTC today is a terminal UI (TUI) plus a `setup` subcommand. Launch the
+TUI from the installed binary:
 
 ```bash
-openvtc status
+openvtc
 ```
 
-To run commands from the source:
+Or from the source checkout:
 
 ```bash
-cargo run -- status
+cargo run -p openvtc
 ```
 
-Refer to the complete [command reference](./docs/openvtc-tool-commands.md).
+The only non-TUI subcommand currently implemented is `setup`. Refer to the
+complete [command reference](./docs/openvtc-tool-commands.md) for the full
+list of flags and the roadmap of planned commands.
+
+## Planned Commands
+
+A number of standalone subcommands (`status`, `logs`, `contacts`,
+`relationships`, `tasks`, `vrcs`, and config `export`/`import`) are planned but
+not yet implemented as CLI commands — those capabilities are currently reached
+through the TUI. See the
+[command reference](./docs/openvtc-tool-commands.md#planned-commands-not-yet-implemented)
+for details.
 
 ## DID Git Signing
 

@@ -289,3 +289,186 @@ fn v2_blob_tampering_fails_decrypt() {
     blob[8] ^= 0x01;
     assert!(passphrase_decrypt(b"pass", b"info", &blob).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Export → import round-trip (task R1).
+//
+// `Config::export` writes a v2 blob (`passphrase_encrypt_v2`, OPV2 magic +
+// random salt). The TUI import path must therefore decrypt through the
+// format-auto-detecting `passphrase_decrypt` with the same domain-separation
+// label. These tests pin that contract at the openvtc-core layer, exercising
+// the exact decrypt steps the import site performs.
+// ---------------------------------------------------------------------------
+
+mod export_import {
+    use super::*;
+    use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
+    use ed25519_dalek_bip32::ExtendedSigningKey;
+    use openvtc_core::{
+        config::{
+            Config, ConfigProtectionType, ExportedConfig, KeyBackend,
+            account::Account,
+            protected_config::ProtectedConfig,
+            public_config::{CONFIG_VERSION, PublicConfig},
+            secured_config::ProtectionMethod,
+        },
+        logs::Logs,
+    };
+    use secrecy::{ExposeSecret, SecretString};
+    use std::collections::HashMap;
+
+    const EXPORT_INFO: &[u8] = b"openvtc-export-v1";
+
+    /// Builds a populated Config with a BIP32 key backend, suitable for
+    /// exercising `Config::export`.
+    fn populated_config(seed_b64: &str) -> Config {
+        let seed_bytes = BASE64_URL_SAFE_NO_PAD.decode(seed_b64).unwrap();
+        let root = ExtendedSigningKey::from_seed(&seed_bytes).unwrap();
+        Config {
+            public: PublicConfig {
+                config_version: CONFIG_VERSION,
+                protection: ConfigProtectionType::Encrypted,
+                friendly_name: "R1 Round Trip".to_string(),
+                logs: Logs::default(),
+                private: None,
+            },
+            private: ProtectedConfig::default(),
+            key_backend: KeyBackend::Bip32 {
+                root,
+                seed: SecretString::new(seed_b64.into()),
+            },
+            key_info: HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+            #[cfg(feature = "openpgp-card")]
+            token_admin_pin: None,
+            #[cfg(feature = "openpgp-card")]
+            token_user_pin: SecretString::new(String::new().into()),
+            unlock_code: None,
+            account: Account::default(),
+            // Type-inferred so this fixture is agnostic to the `identities`
+            // map type (HashMap today, BTreeMap after the determinism fix).
+            identities: Default::default(),
+        }
+    }
+
+    /// Reproduces the import-side decrypt-and-parse steps performed by the
+    /// TUI (`ConfigExtension::import`): base64url decode the file contents,
+    /// decrypt via the format-auto-detecting `passphrase_decrypt`, then
+    /// deserialize the `ExportedConfig`.
+    fn import_decrypt(
+        content: &str,
+        passphrase: &str,
+    ) -> Result<ExportedConfig, Box<dyn std::error::Error>> {
+        let decoded = BASE64_URL_SAFE_NO_PAD.decode(content)?;
+        let decrypted = passphrase_decrypt(passphrase.as_bytes(), EXPORT_INFO, &decoded)?;
+        Ok(serde_json::from_slice(&decrypted)?)
+    }
+
+    /// (a) A real `Config::export` output must round-trip through the
+    /// import decrypt path on a populated config.
+    #[test]
+    fn export_import_roundtrip_with_populated_config() {
+        let seed_b64 = BASE64_URL_SAFE_NO_PAD.encode([7u8; 32]);
+        let config = populated_config(&seed_b64);
+        let passphrase = "round-trip-passphrase";
+
+        let file =
+            std::env::temp_dir().join(format!("openvtc-r1-roundtrip-{}", std::process::id()));
+        let file = file.to_str().unwrap().to_string();
+        config
+            .export(SecretString::new(passphrase.into()), &file)
+            .expect("export should succeed");
+
+        let content = std::fs::read_to_string(&file).expect("read export file");
+        let _ = std::fs::remove_file(&file);
+
+        let imported = import_decrypt(&content, passphrase)
+            .expect("import decrypt path must read the current export format");
+        assert_eq!(imported.pc.friendly_name, "R1 Round Trip");
+        let imported_seed = imported
+            .sc
+            .bip32_seed
+            .as_ref()
+            .expect("exported SecuredConfig carries the BIP32 seed");
+        assert_eq!(imported_seed.expose_secret(), seed_b64);
+    }
+
+    /// Pins the R1 root cause: the legacy v1 decrypt path the import used
+    /// to hard-code (deterministic info-salt key + `unlock_code_decrypt`)
+    /// cannot read a v2 export blob — it misreads the OPV2 header as the
+    /// AES-GCM nonce and fails authentication.
+    #[test]
+    fn v1_decrypt_path_cannot_read_v2_export() {
+        let passphrase = b"round-trip-passphrase";
+        let blob = passphrase_encrypt_v2(passphrase, EXPORT_INFO, b"{\"any\":\"payload\"}")
+            .expect("encrypt v2");
+        let v1_key = derive_passphrase_key(passphrase, EXPORT_INFO).unwrap();
+        assert!(
+            unlock_code_decrypt(&v1_key, &blob).is_err(),
+            "the legacy v1 path must not be used to import v2 exports"
+        );
+    }
+
+    /// (b) A legacy v1-format export (deterministic info-salt key +
+    /// `unlock_code_encrypt`, no OPV2 magic) must still decrypt through the
+    /// import path — `passphrase_decrypt` falls back to the v1 KDF.
+    #[test]
+    fn legacy_v1_export_still_imports() {
+        let seed_b64 = BASE64_URL_SAFE_NO_PAD.encode([9u8; 32]);
+        let config = populated_config(&seed_b64);
+        let passphrase = "legacy-export-passphrase";
+
+        // Reproduce the pre-v2 export format byte-for-byte.
+        let serialized = serde_json::to_vec(&ExportedConfig {
+            pc: PublicConfig::from(&config),
+            sc: openvtc_core::config::secured_config::SecuredConfig::from(&config),
+        })
+        .unwrap();
+        let v1_key = derive_passphrase_key(passphrase.as_bytes(), EXPORT_INFO).unwrap();
+        let v1_blob = unlock_code_encrypt(&v1_key, &serialized).unwrap();
+        let content = BASE64_URL_SAFE_NO_PAD.encode(&v1_blob);
+
+        let imported =
+            import_decrypt(&content, passphrase).expect("legacy v1 exports must remain importable");
+        assert_eq!(
+            imported
+                .sc
+                .bip32_seed
+                .as_ref()
+                .expect("seed present")
+                .expose_secret(),
+            seed_b64
+        );
+    }
+
+    /// (c) A tampered v2 export must fail with a clear error — never panic.
+    #[test]
+    fn tampered_v2_export_fails_with_error() {
+        let seed_b64 = BASE64_URL_SAFE_NO_PAD.encode([11u8; 32]);
+        let config = populated_config(&seed_b64);
+        let passphrase = "tamper-test-passphrase";
+
+        let file = std::env::temp_dir().join(format!("openvtc-r1-tamper-{}", std::process::id()));
+        let file = file.to_str().unwrap().to_string();
+        config
+            .export(SecretString::new(passphrase.into()), &file)
+            .expect("export should succeed");
+        let content = std::fs::read_to_string(&file).expect("read export file");
+        let _ = std::fs::remove_file(&file);
+
+        // Flip a byte in the middle of the ciphertext body and re-encode.
+        let mut blob = BASE64_URL_SAFE_NO_PAD.decode(&content).unwrap();
+        let mid = blob.len() / 2;
+        blob[mid] ^= 0x80;
+        let tampered = BASE64_URL_SAFE_NO_PAD.encode(&blob);
+
+        let err = match import_decrypt(&tampered, passphrase) {
+            Ok(_) => panic!("tampered export must fail decryption"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().to_lowercase().contains("decrypt"),
+            "error should clearly indicate a decryption failure, got: {err}"
+        );
+    }
+}

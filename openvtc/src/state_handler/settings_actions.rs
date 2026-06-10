@@ -103,16 +103,21 @@ pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()
     Ok(())
 }
 
-/// Import a config from file. Currently only validates and advises restart.
+/// Validate an import file, then direct the operator to the real restore flow.
+///
+/// Importing into a *running* profile would require swapping the live config
+/// and reconnecting messaging, so it is intentionally not performed from the
+/// Settings panel. The supported restore path lives in the setup wizard:
+/// run `openvtc setup` and choose "Import" / "Restore Backup".
 pub fn import_config(path: &str, _passphrase: &str) -> Result<String> {
     validate_file_path(path)?;
     // Validate the file exists
     if !std::path::Path::new(path).exists() {
         anyhow::bail!("File not found: {}", path);
     }
-    // Full implementation would load ExportedConfig, decrypt, and replace
     Ok(format!(
-        "Import from {} would require app restart — use openvtc setup import",
+        "Import from {} is not supported here — run `openvtc setup` and choose \
+         Import / Restore Backup to restore an exported config.",
         path
     ))
 }

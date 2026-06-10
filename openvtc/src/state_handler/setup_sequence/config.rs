@@ -13,7 +13,7 @@ use openvtc_core::{
         derive_passphrase_key,
         protected_config::ProtectedConfig,
         public_config::PublicConfig,
-        secured_config::{KeyInfoConfig, ProtectionMethod, unlock_code_decrypt},
+        secured_config::{KeyInfoConfig, ProtectionMethod, passphrase_decrypt},
     },
     identity::IdentityContext,
     logs::{LogFamily, LogMessage, Logs},
@@ -126,11 +126,15 @@ impl ConfigExtension for Config {
             }
         };
 
-        let seed_bytes = derive_passphrase_key(
+        // Exports are written by `passphrase_encrypt_v2` (v2: OPV2 magic +
+        // random Argon2 salt embedded in the blob). `passphrase_decrypt`
+        // auto-detects the format and falls back to the legacy v1
+        // deterministic-salt KDF for pre-v2 export files.
+        let decoded = passphrase_decrypt(
             import_unlock_passphrase.expose_secret().as_bytes(),
             b"openvtc-export-v1",
+            &decoded,
         )?;
-        let decoded = unlock_code_decrypt(&seed_bytes, &decoded)?;
 
         let config: ExportedConfig = match serde_json::from_slice(&decoded) {
             Ok(config) => config,
