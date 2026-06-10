@@ -128,12 +128,10 @@ pub fn import_config(path: &str, _passphrase: &str) -> Result<String> {
 
 use crate::state_handler::{
     actions::SettingsAction,
-    didcomm::{self, ReconnectOutcome},
     dispatch_util,
     main_page::content::SettingsMode,
     state::{self, State},
 };
-use affinidi_messaging_didcomm_service::DIDCommService;
 
 fn handle_select(state: &mut State, index: usize) {
     #[cfg(feature = "openpgp-card")]
@@ -611,45 +609,39 @@ fn handle_token_back(state: &mut State) {
     state.main_page.content_panel.settings.token.reset_completed = false;
 }
 
-async fn run_persona_reconnect(
-    service: &DIDCommService,
-    config: &Config,
-    tdk: &affinidi_tdk::TDK,
-    state: &mut State,
-) {
+/// Set the synchronous "reconnecting" state — the immediate, non-blocking part
+/// of a mediator reconnect. The slow `wait_connected` I/O is performed by a
+/// background task spawned by the runtime loop (R13); its completion drives the
+/// final `Connected`/`Failed` state via
+/// [`crate::state_handler::background_dispatch::apply_outcome`]. The strings here
+/// match the pre-R13 inline path so the activity log is unchanged.
+fn begin_reconnect_status(state: &mut State) {
     state.connection.status = state::MediatorStatus::Connecting;
     state.connection.messaging_active = false;
     state.main_page.log("Reconnecting to mediator...");
-    match didcomm::reconnect_persona_listener(service, config, tdk).await {
-        ReconnectOutcome::Connected => {
-            state.connection.status = state::MediatorStatus::Connected;
-            state.connection.messaging_active = true;
-            state.main_page.log("Reconnected to mediator");
-        }
-        ReconnectOutcome::Failed(reason) => {
-            state.connection.status = state::MediatorStatus::Failed(reason.clone());
-            state.main_page.log(format!("Reconnect failed: {reason}"));
-        }
-    }
 }
 
-/// Outcome of dispatching a `SettingsAction`. The TUI loop ignores
-/// `Continue` and breaks out with `UserInt` when the operator wipes
-/// the profile (the binary can no longer authenticate after a wipe).
+/// Outcome of dispatching a `SettingsAction`.
+///
+/// The TUI loop ignores `Continue`, breaks out with `UserInt` when the operator
+/// wipes the profile (the binary can no longer authenticate after a wipe), and
+/// on `ReconnectMediator` spawns a background mediator reconnect (R13) — the slow
+/// `wait_connected` wait runs off the select loop so the UI stays responsive.
 pub(crate) enum SettingsOutcome {
     Continue,
     ExitUserInt,
+    /// A mediator change or manual reconnect was requested. The loop builds the
+    /// listener config and spawns the I/O; `begin_reconnect_status` has already
+    /// set the synchronous "Connecting" state.
+    ReconnectMediator,
 }
 
 /// Dispatch a single `SettingsAction`. Returns `ExitUserInt` if the
 /// operator confirmed a profile wipe — caller is responsible for
 /// driving the terminator afterwards.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch(
     action: SettingsAction,
     config: &mut Box<Config>,
-    tdk: &affinidi_tdk::TDK,
-    service: &DIDCommService,
     state: &mut State,
     profile: &str,
 ) -> SettingsOutcome {
@@ -678,7 +670,10 @@ pub(crate) async fn dispatch(
         SettingsAction::PassphraseLen(len) => handle_passphrase_len(state, len),
         SettingsAction::SubmitEdit { value } => {
             if handle_submit_edit(config, state, profile, &value) {
-                run_persona_reconnect(service, config, tdk, state).await;
+                // The mediator DID was changed. Set the synchronous "Connecting"
+                // state now; the loop spawns the slow reconnect I/O (R13).
+                begin_reconnect_status(state);
+                return SettingsOutcome::ReconnectMediator;
             }
         }
         SettingsAction::ExportConfig { path, passphrase } => {
@@ -712,7 +707,8 @@ pub(crate) async fn dispatch(
             }
         }
         SettingsAction::ReconnectMediator => {
-            run_persona_reconnect(service, config, tdk, state).await;
+            begin_reconnect_status(state);
+            return SettingsOutcome::ReconnectMediator;
         }
     }
     SettingsOutcome::Continue

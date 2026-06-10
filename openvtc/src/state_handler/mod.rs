@@ -50,6 +50,7 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
 }
 
 pub mod actions;
+mod background_dispatch;
 mod credential_actions;
 pub mod didcomm;
 mod dispatch_util;
@@ -569,6 +570,16 @@ impl StateHandler {
         // Track when a manual trust-ping was sent (for activity log latency display).
         let mut ping_sent_at: Option<std::time::Instant> = None;
 
+        // Background-dispatch plumbing (R13). Network-bound actions whose await
+        // would otherwise park the whole select loop are spawned as background
+        // tasks; they do I/O only and send their result back as a
+        // `DispatchOutcome` on this channel. The select arm below applies the
+        // outcome on the loop thread (the single mutator), keeping the loop live
+        // during the wait. `in_flight` rejects a second action on a busy domain.
+        let (dispatch_tx, mut dispatch_rx) =
+            mpsc::unbounded_channel::<background_dispatch::DispatchOutcome>();
+        let mut in_flight = background_dispatch::InFlight::default();
+
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -717,8 +728,6 @@ impl StateHandler {
                         match settings_actions::dispatch(
                             sa,
                             &mut config,
-                            &tdk,
-                            &didcomm_service,
                             &mut state,
                             &self.profile,
                         )
@@ -730,6 +739,52 @@ impl StateHandler {
                                     debug!("Failed to send terminate signal: {e}");
                                 }
                                 break Interrupted::UserInt;
+                            }
+                            settings_actions::SettingsOutcome::ReconnectMediator => {
+                                // R13 proving case: the up-to-30s mediator
+                                // reconnect ran inline here before, freezing the
+                                // UI (queued keys, dropped inbound events, dead
+                                // `q`). Now it runs as a background task and the
+                                // loop stays live.
+                                //
+                                // The busy-guard rejects a second reconnect while
+                                // one is in flight (matching the old effectively
+                                // serialised behaviour) with a visible status.
+                                if !in_flight
+                                    .try_begin(background_dispatch::DispatchDomain::Mediator)
+                                {
+                                    let msg = background_dispatch::InFlight::busy_message(
+                                        background_dispatch::DispatchDomain::Mediator,
+                                    );
+                                    state.connection.status =
+                                        state::MediatorStatus::Connecting;
+                                    state.main_page.log(msg);
+                                } else {
+                                    // Build the new listener config on the loop
+                                    // thread (cheap, local: reads secrets from the
+                                    // TDK resolver, no network), then hand only the
+                                    // slow connect I/O to a background task.
+                                    let listener_id =
+                                        didcomm::persona_listener_id(config.persona_did());
+                                    let new_listener_config =
+                                        didcomm::persona_listener_config(&config, &tdk).await;
+                                    let service = didcomm_service.clone();
+                                    let tx = dispatch_tx.clone();
+                                    tokio::spawn(async move {
+                                        let outcome =
+                                            didcomm::reconnect_persona_listener_io(
+                                                &service,
+                                                listener_id,
+                                                new_listener_config,
+                                            )
+                                            .await;
+                                        let _ = tx.send(
+                                            background_dispatch::DispatchOutcome::MediatorReconnect(
+                                                outcome,
+                                            ),
+                                        );
+                                    });
+                                }
                             }
                         }
                     },
@@ -893,6 +948,16 @@ impl StateHandler {
                             );
                         }
                     }
+                },
+                // Background-dispatch completions (R13). A network-bound action
+                // that was spawned off the loop (e.g. the mediator reconnect)
+                // delivers its result here; the outcome is applied on this thread
+                // (the single mutator) and the domain's busy-flag is cleared.
+                // Because this is just another select arm, nav actions, `q`/Exit,
+                // and inbound DIDComm events are all serviced *while* the spawned
+                // I/O is still pending.
+                Some(outcome) = dispatch_rx.recv() => {
+                    background_dispatch::apply_outcome(&mut state, &mut in_flight, outcome);
                 },
                 // Lifecycle log messages from the DIDCommService
                 Some(log_msg) = lifecycle_log_rx.recv() => {

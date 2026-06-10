@@ -103,27 +103,38 @@ pub enum ReconnectOutcome {
 
 /// Replace the persona listener and wait for it to come up. Used by the
 /// mediator-change branch of SubmitEdit and by the manual ReconnectMediator
-/// settings action — both did the same dance inline. Returns:
+/// settings action — both go through this dance.
+///
+/// The work is split in two: `persona_listener_config` builds the new listener
+/// config (local-only: reads secrets from the TDK resolver, no network), and
+/// [`reconnect_persona_listener_io`] does the slow connect I/O. The runtime loop
+/// (R13) drives them separately — building the config on its own thread and
+/// handing only the I/O half to a background task — so the up-to-30 s wait no
+/// longer parks the select loop. Returns:
 ///   * `Connected` once the listener reaches the connected state, or
 ///   * `Failed(reason)` on any error during the replace / connect path.
 ///
+/// This is the I/O-only half: it tears down the existing persona listener,
+/// installs the prebuilt `new_config`, and waits up to 30 s for it to connect.
+/// It borrows nothing tied to the loop's `Config`/`TDK` — `DIDCommService` is
+/// cheap to clone (`Arc`-based) and `ListenerConfig`/`listener_id` are owned —
+/// which makes it `tokio::spawn`-friendly.
+///
 /// Active-persona only (these manual actions act on the active identity);
 /// per-persona reconnect lands with the persona-selection slice.
-pub async fn reconnect_persona_listener(
+pub async fn reconnect_persona_listener_io(
     service: &DIDCommService,
-    config: &Config,
-    tdk: &affinidi_tdk::TDK,
+    listener_id: String,
+    new_config: ListenerConfig,
 ) -> ReconnectOutcome {
-    let lid = persona_listener_id(config.persona_did());
-    if let Err(e) = service.remove_listener(&lid).await {
+    if let Err(e) = service.remove_listener(&listener_id).await {
         debug!("remove_listener during reconnect: {e}");
     }
-    let new_config = persona_listener_config(config, tdk).await;
     if let Err(e) = service.add_listener(new_config).await {
         return ReconnectOutcome::Failed(format!("{e:#}"));
     }
     match service
-        .wait_connected(&lid, std::time::Duration::from_secs(30))
+        .wait_connected(&listener_id, std::time::Duration::from_secs(30))
         .await
     {
         Ok(()) => ReconnectOutcome::Connected,
