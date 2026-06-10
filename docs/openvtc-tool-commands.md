@@ -1,741 +1,175 @@
 # OpenVTC Tool Commands
 
-Complete command reference for the OpenVTC CLI tool.
+Command reference for the OpenVTC CLI tool.
+
+> **Status:** OpenVTC is currently a terminal UI (TUI) application plus a single
+> `setup` subcommand. Running `openvtc` with no subcommand launches the TUI,
+> where contacts, relationships, tasks, credentials, logs, and config
+> export/import are managed interactively. A number of standalone subcommands
+> are planned but **not yet implemented** — see
+> [Planned commands](#planned-commands-not-yet-implemented).
 
 ## Table of Contents
 
 - [Quick Reference](#quick-reference)
-- [Common Patterns](#common-patterns)
 - [Global Options](#global-options)
 - [Commands](#commands)
+  - [openvtc (no subcommand) — launch the TUI](#openvtc-no-subcommand--launch-the-tui)
   - [setup](#openvtc-setup)
-  - [status](#openvtc-status)
-  - [logs](#openvtc-logs)
-  - [export](#openvtc-export)
-  - [contacts](#openvtc-contacts)
-  - [relationships](#openvtc-relationships)
-  - [tasks](#openvtc-tasks)
-  - [vrcs](#openvtc-vrcs)
+- [Profiles](#profiles)
+- [Planned commands (not yet implemented)](#planned-commands-not-yet-implemented)
 
 ## Quick Reference
 
-| Command             | Description                                |
-| ------------------- | ------------------------------------------ |
-| `openvtc setup`         | Initialise environment and create profile  |
-| `openvtc status`        | View current configuration                 |
-| `openvtc logs`          | Display log history                        |
-| `openvtc export`        | Export settings or PGP keys                |
-| `openvtc contacts`      | Manage known contacts                      |
-| `openvtc relationships` | Manage relationships with other DIDs       |
-| `openvtc tasks`         | Handle outstanding tasks and messages      |
-| `openvtc vrcs`          | Manage Verifiable Relationship Credentials |
-
-## Common Patterns
-
-### Profile Management
-
-All commands support the `-p, --profile` flag to specify which profile to use:
-
-```bash
-openvtc -p <profile-name> <command>
-```
-
-**Environment Variable:** Set `OPENVTC_CONFIG_PROFILE` to override the default profile globally.
-
-### Unlock Code
-
-When using an unlock code to protect secured configuration, use `-u, --unlock-code` to avoid repeated prompts:
-
-```bash
-openvtc -u <unlock-code> <command>
-```
-
-> **Warning:** This exposes your unlock code to the command line history. Avoid using this unless you are using a test profile.
-
-### DID Formats
-
-DIDs should follow the format: `did:webvh:<scid>:<domain>`
-
-Example: `did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com`
-
----
+| Command         | Description                                            |
+| --------------- | ----------------------------------------------------- |
+| `openvtc`       | Launch the TUI (status, contacts, relationships, etc.) |
+| `openvtc setup` | Run the setup wizard (create or import a profile)      |
+| `openvtc --help`    | Display help information                          |
+| `openvtc --version` | Print the tool version                            |
 
 ## Global Options
 
-These options work with all commands:
+These options apply to `openvtc` and its `setup` subcommand:
 
-| Flag                       | Description                          |
-| -------------------------- | ------------------------------------ |
-| `-p, --profile <NAME>`     | Use a specific profile configuration |
-| `-u, --unlock-code <CODE>` | Provide unlock code to skip prompts  |
-| `-h, --help`               | Display help information             |
+| Flag                       | Description                                              |
+| -------------------------- | ------------------------------------------------------- |
+| `-p, --profile <NAME>`     | Use a specific profile configuration (default: `default`) |
+| `-u, --unlock-code <CODE>` | Provide the unlock passphrase for an encrypted config   |
+| `-h, --help`               | Display help information                                |
+| `-V, --version`            | Print the tool version                                  |
+
+> **Warning:** `-u, --unlock-code` exposes the passphrase in the process list
+> (`ps`, `/proc`) to other local users. Prefer the interactive prompt on shared
+> systems.
+
+**Environment variable:** Set `OPENVTC_CONFIG_PROFILE` to select the profile
+globally. If both the env var and `-p/--profile` are set and disagree, the CLI
+flag wins and a warning is printed.
 
 **Examples:**
 
 ```bash
-# View help for main command
+# Launch the TUI
+openvtc
+
+# View help
 openvtc --help
 
-# View help for specific command
-openvtc setup --help
+# Print the version
+openvtc --version
 
-# Use specific profile
-openvtc -p profile-1 status
-
-# Use unlock code
-openvtc -u MyUnlockCode status
+# Launch the TUI for a specific profile
+openvtc -p profile-1
 ```
 
 ---
 
 ## Commands
 
+## openvtc (no subcommand) — launch the TUI
+
+Running `openvtc` with no subcommand launches the terminal UI. If no
+configuration exists for the selected profile, the TUI starts in the setup
+wizard automatically (equivalent to `openvtc setup`).
+
+The TUI is where you currently:
+
+- Review status — tool version, your Persona DID(s) and whether they resolve,
+  configured authentication/encryption/signing keys, and DIDComm mediator
+  connectivity.
+- Manage contacts (add/remove known DIDs and aliases).
+- Manage relationships and Verifiable Relationship Credentials (VRCs).
+- Review tasks and incoming messages.
+- View the action/event log.
+- Export and (with caveats) restore configuration backups in Settings.
+
+**Usage:**
+
+```bash
+openvtc
+openvtc -p profile-1
+```
+
+---
+
 ## openvtc setup
 
-Initialise your OpenVTC environment by creating a profile, generating a Persona DID, and setting up cryptographic keys.
+Initialise your OpenVTC environment by creating a profile, generating a Persona
+DID, and setting up cryptographic keys. The setup wizard also offers an
+**Import / Restore Backup** path for restoring a previously exported
+configuration.
 
 **Usage:**
 
 ```bash
 openvtc setup
-openvtc setup import [OPTIONS]
 ```
 
 **Examples:**
 
-Setup a default profile:
+Set up the default profile:
 
 ```bash
 openvtc setup
 ```
 
-Create a named profile:
+Create (or set up) a named profile:
 
 ```bash
 openvtc -p profile-1 setup
 ```
 
-### openvtc setup import
+> **Note:** There is no `openvtc setup import` subcommand. To restore an
+> exported configuration, run `openvtc setup` and choose the
+> **Import / Restore Backup** option in the wizard.
 
-Import previously exported OpenVTC settings into a new profile or machine.
+---
 
-**Options:**
+## Profiles
 
-| Flag                      | Description                    | Default      |
-| ------------------------- | ------------------------------ | ------------ |
-| `-f, --file <PATH>`       | Path to exported settings file | `export.openvtc` |
-| `-p, --passphrase <PASS>` | Passphrase to decrypt settings | Prompted     |
+OpenVTC supports multiple profiles, allowing you to represent different
+identities across various contexts.
 
-**Examples:**
-
-Import with default filename from the current directory:
+- Select a profile with `-p, --profile <NAME>` or the
+  `OPENVTC_CONFIG_PROFILE` environment variable.
+- Profile names may contain only `[A-Za-z0-9._-]` and must not contain `..`.
 
 ```bash
-openvtc setup import
+# Per-invocation
+openvtc -p profile-1
+
+# Globally, for the current shell session
+export OPENVTC_CONFIG_PROFILE=profile-1
+openvtc
 ```
 
-Import from specific file:
+DIDs follow the format `did:webvh:<scid>:<domain>`, for example:
 
-```bash
-openvtc setup import -f ~/Downloads/backup.openvtc
 ```
-
-Import with passphrase:
-
-```bash
-openvtc setup import -f ~/Downloads/backup.openvtc -p MyPassphrase
-```
-
-Import to named profile:
-
-```bash
-openvtc -p new-profile setup import -f ~/Downloads/backup.openvtc
+did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com
 ```
 
 ---
 
-## openvtc status
-
-Display current environment and configuration information.
-
-**Usage:**
-
-```bash
-openvtc status
-```
-
-**Examples:**
-
-Check default profile status:
-
-```bash
-openvtc status
-```
-
-Check specific profile status:
-
-```bash
-openvtc -p profile-1 status
-```
-
----
-
-## openvtc logs
-
-Display log history of actions and events within OpenVTC. Logs include relationship events, contact changes, task operations, vrc operations, and configuration updates.
-
-**Usage:**
-
-```bash
-openvtc logs
-```
-
-> **Note:** By default, the log maintains up to 100 most recent entries. Older entries are automatically removed. You can update this number by updating the public configuration `limit` property.
-
-**Examples:**
-
-View all log entries:
-
-```bash
-openvtc logs
-```
-
-View logs for a specific profile:
-
-```bash
-openvtc -p profile-1 logs
-```
-
----
-
-## openvtc export
-
-Export settings or cryptographic keys from your environment.
-
-**Usage:**
-
-```bash
-openvtc export pgp-keys [OPTIONS]
-openvtc export settings [OPTIONS]
-```
-
-### openvtc export pgp-keys
-
-Export the primary PGP keys used in your Persona DID for signing, authentication, and decryption.
-
-**Options:**
-
-| Flag                      | Description                          | Required |
-| ------------------------- | ------------------------------------ | -------- |
-| `-p, --passphrase <PASS>` | Passphrase to protect exported keys  | Yes      |
-| `-u, --user-id <ID>`      | PGP User ID: `"Name <email@domain>"` | Yes      |
-
-**Examples:**
-
-Export with interactive prompts:
-
-```bash
-openvtc export pgp-keys
-```
-
-Export with inline parameters:
-
-```bash
-openvtc export pgp-keys -p SecurePass123 -u "John Doe <john@example.com>"
-```
-
-Export from specific profile:
-
-```bash
-openvtc -p profile-1 export pgp-keys
-```
-
-### openvtc export settings
-
-Export settings for importing into another profile or machine.
-
-**Options:**
-
-| Flag                      | Description                    | Default      |
-| ------------------------- | ------------------------------ | ------------ |
-| `-p, --passphrase <PASS>` | Passphrase to encrypt settings | Prompted     |
-| `-f, --file <PATH>`       | Output file path               | `export.openvtc` |
-
-**Examples:**
-
-Export to default file:
-
-```bash
-openvtc export settings
-```
-
-Export to specific location:
-
-```bash
-openvtc export settings -f ~/backups/profile-backup.openvtc
-```
-
-Export with inline passphrase:
-
-```bash
-openvtc export settings -p SecurePass123 -f ~/backups/profile-backup.openvtc
-```
-
----
-
-## openvtc contacts
-
-Manage your list of known DIDs and their aliases.
-
-**Usage:**
-
-```bash
-openvtc contacts add [OPTIONS]
-openvtc contacts remove [OPTIONS]
-openvtc contacts list
-```
-
-### openvtc contacts add
-
-Add a new contact or update an existing one. If the DID already exists, it will be replaced.
-
-**Options:**
-
-| Flag                 | Description          | Required |
-| -------------------- | -------------------- | -------- |
-| `-d, --did <DID>`    | DID of the contact   | Yes      |
-| `-a, --alias <NAME>` | Human-readable alias | No       |
-| `-s, --skip`         | Skip DID validation  | No       |
-
-> **Note:** By default, DIDs are verified before adding. Use `--skip` to bypass validation.
-
-**Examples:**
-
-Add contact with verification:
-
-```bash
-openvtc contacts add -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com -a "John Doe"
-```
-
-Add contact without verification:
-
-```bash
-openvtc contacts add -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com -a "John Doe" -s
-```
-
-Add contact without alias:
-
-```bash
-openvtc contacts add -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com
-```
-
-### openvtc contacts remove
-
-Remove a contact by DID or alias.
-
-**Options:**
-
-| Flag                 | Description     | Required     |
-| -------------------- | --------------- | ------------ |
-| `-d, --did <DID>`    | Remove by DID   | One required |
-| `-a, --alias <NAME>` | Remove by alias | One required |
-
-> **Note:** Provide either `--did` or `--alias` to remove contact.
-
-**Examples:**
-
-Remove by DID:
-
-```bash
-openvtc contacts remove -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com
-```
-
-Remove by alias:
-
-```bash
-openvtc contacts remove -a "John Doe"
-```
-
-### openvtc contacts list
-
-Display all contacts in the current profile.
-
-**Usage:**
-
-```bash
-openvtc contacts list
-```
-
-**Examples:**
-
-List all contacts:
-
-```bash
-openvtc contacts list
-```
-
----
-
-## openvtc relationships
-
-Manage relationships with other DIDs for secure communication and VRC issuance.
-
-**Usage:**
-
-```bash
-openvtc relationships request [OPTIONS]
-openvtc relationships ping [OPTIONS]
-openvtc relationships remove [OPTIONS]
-openvtc relationships list
-```
-
-> **See also:** [Relationships and VRCs Guide](./relationships-vrcs.md)
-
-### openvtc relationships request
-
-Send a relationship request to another DID.
-
-**Options:**
-
-| Flag                     | Description                 | Required |
-| ------------------------ | --------------------------- | -------- |
-| `-d, --respondent <DID>` | Respondent's DID or alias   | Yes      |
-| `-a, --alias <NAME>`     | Alias for the respondent    | Yes      |
-| `-r, --reason <TEXT>`    | Reason for the relationship | No       |
-| `-g, --generate-did`     | Generate a local R-DID      | No       |
-
-> **Tip:** Use `--generate-did` to create a Relationship DID (R-DID) for private channel communication. Without it, your Persona DID (P-DID) will be used.
-
-**Examples:**
-
-Send basic relationship request:
-
-```bash
-openvtc relationships request -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com -a "JohnD"
-```
-
-Send with reason:
-
-```bash
-openvtc relationships request -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com -a "JohnD" -r "Coworker connection"
-```
-
-Send with R-DID generation:
-
-```bash
-openvtc relationships request -d did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com -a "JohnD" -g
-```
-
-Use contact alias:
-
-```bash
-openvtc relationships request -d "JohnD" -a "John Doe" -r "Conference attendee"
-```
-
-### openvtc relationships ping
-
-Send a trust ping message to test connectivity with an established relationship. The remote recipient must check their messages to respond with a pong.
-
-**Options:**
-
-| Flag                 | Description         | Required |
-| -------------------- | ------------------- | -------- |
-| `-r, --remote <DID>` | Remote DID or alias | Yes      |
-
-> **Note:** This command requires an established relationship. Check for pong responses using `openvtc tasks interact`.
-
-**Examples:**
-
-Ping by DID:
-
-```bash
-openvtc relationships ping -r did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com
-```
-
-Ping by alias:
-
-```bash
-openvtc relationships ping -r "JohnD"
-```
-
-### openvtc relationships remove
-
-Remove an existing relationship and all associated VRCs (both issued and received).
-
-**Options:**
-
-| Flag                 | Description         | Required |
-| -------------------- | ------------------- | -------- |
-| `-r, --remote <DID>` | Remote DID or alias | Yes      |
-
-> **Warning:** This action cannot be undone. All VRCs associated with this relationship will be permanently deleted.
-
-**Examples:**
-
-Remove by DID:
-
-```bash
-openvtc relationships remove -r did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com
-```
-
-Remove by alias:
-
-```bash
-openvtc relationships remove -r "JohnD"
-```
-
-### openvtc relationships list
-
-Display all relationships and their status.
-
-**Usage:**
-
-```bash
-openvtc relationships list
-```
-
-**Examples:**
-
-List all relationships:
-
-```bash
-openvtc relationships list
-```
-
----
-
-## openvtc tasks
-
-Manage outstanding tasks including messages from the mediator, relationship requests, and VRC requests.
-
-**Usage:**
-
-```bash
-openvtc tasks list
-openvtc tasks fetch
-openvtc tasks remove [OPTIONS]
-openvtc tasks interact [OPTIONS]
-openvtc tasks clear [OPTIONS]
-```
-
-### openvtc tasks list
-
-Display all outstanding tasks.
-
-**Usage:**
-
-```bash
-openvtc tasks list
-```
-
-**Examples:**
-
-List all tasks:
-
-```bash
-openvtc tasks list
-```
-
-### openvtc tasks fetch
-
-Retrieve new messages and tasks from the mediator.
-
-**Usage:**
-
-```bash
-openvtc tasks fetch
-```
-
-**Examples:**
-
-Fetch new tasks:
-
-```bash
-openvtc tasks fetch
-```
-
-### openvtc tasks remove
-
-Remove a specific task by ID.
-
-**Options:**
-
-| Flag              | Description       | Required |
-| ----------------- | ----------------- | -------- |
-| `-i, --id <UUID>` | Task ID to remove | Yes      |
-
-**Examples:**
-
-Remove specific task:
-
-```bash
-openvtc tasks remove --id 50ff0179-6d82-4424-8dab-bdf3b0c24b44
-```
-
-### openvtc tasks interact
-
-Interactive CLI manager for fetching and processing tasks (relationship requests, VRC requests, etc.).
-
-**Options:**
-
-| Flag              | Description                       | Required |
-| ----------------- | --------------------------------- | -------- |
-| `-i, --id <UUID>` | Specific task ID to interact with | No       |
-
-**Examples:**
-
-Enter interactive mode to fetch and process all tasks:
-
-```bash
-openvtc tasks interact
-```
-
-Interact with specific task:
-
-```bash
-openvtc tasks interact --id 50ff0179-6d82-4424-8dab-bdf3b0c24b44
-```
-
-openvtcopenvtc tasks clear
-
-Clear all local tasks and optionally remote messages from the mediator.
-
-**Options:**
-
-| Flag       | Description                                            |
-| ---------- | ------------------------------------------------------ |
-| `--force`  | Skip confirmation prompt                               |
-| `--remote` | Remove remote messages from OpenVTC Task Queue on mediator |
-
-> **Warning:** This action cannot be undone. All tasks and messages will be permanently deleted.
-
-**Examples:**
-
-Clear with confirmation:
-
-```bash
-openvtc tasks clear
-```
-
-Force clear without confirmation:
-
-```bash
-openvtc tasks clear --force
-```
-
-Clear all tasks including remote messages:
-
-```bash
-openvtc tasks clear --remote
-```
-
----
-
-## openvtc vrcs
-
-Manage Verifiable Relationship Credentials (VRCs).
-
-**Usage:**
-
-```bash
-openvtc vrcs request
-openvtc vrcs list [OPTIONS]
-openvtc vrcs show <ID>
-openvtc vrcs remove <ID>
-```
-
-> **See also:** [Relationships and VRCs Guide](./relationships-vrcs.md#request-verifiable-relationship-credential-vrc)
-
-### openvtc vrcs request
-
-Request a VRC from an established relationship.
-
-**Usage:**
-
-```bash
-openvtc vrcs request
-```
-
-> **Note:** You must have an [established relationship](./relationships-vrcs.md#establish-relationship) before requesting a VRC. Use interactive prompts to select the relationship and provide credential details.
-
-**Examples:**
-
-Request VRC interactively:
-
-```bash
-openvtc vrcs request
-```
-
-### openvtc vrcs list
-
-Display all VRCs (both issued and received). Optionally filter by relationship.
-
-**Options:**
-
-| Flag                 | Description                                  | Required |
-| -------------------- | -------------------------------------------- | -------- |
-| `-r, --remote <DID>` | Show VRCs for a specific remote DID or alias | No       |
-
-**Usage:**
-
-```bash
-openvtc vrcs list [OPTIONS]
-```
-
-**Examples:**
-
-List all VRCs:
-
-```bash
-openvtc vrcs list
-```
-
-List VRCs for a specific relationship by DID:
-
-```bash
-openvtc vrcs list -r did:webvh:QmbeaiTRfLnkzWvagfAUUuQ8XymXenxNaLVjctqVLafE7u:example.com
-```
-
-List VRCs for a specific relationship by alias:
-
-```bash
-openvtc vrcs list -r "JohnD"
-```
-
-### openvtc vrcs show
-
-Display a specific VRC by ID.
-
-**Usage:**
-
-```bash
-openvtc vrcs show <ID>
-```
-
-**Examples:**
-
-View specific VRC:
-
-```bash
-openvtc vrcs show be85696ebea0e947bde696754be67d640a36b63e1ff9da0c7637c933a6cb469f
-```
-
-### openvtc vrcs remove
-
-Remove a VRC from local storage.
-
-**Usage:**
-
-```bash
-openvtc vrcs remove <ID>
-```
-
-**Examples:**
-
-Remove specific VRC:
-
-```bash
-openvtc vrcs remove be85696ebea0e947bde696754be67d640a36b63e1ff9da0c7637c933a6cb469f
-```
-
----
+## Planned commands (not yet implemented)
+
+The following standalone subcommands are part of the intended CLI surface but
+are **not implemented yet**. Today the equivalent functionality is reached
+through the TUI (launched by running `openvtc` with no subcommand). They are
+documented here to capture intent; invoking any of them on the current build
+produces a clap "unrecognized subcommand" error.
+
+| Planned command         | Intended description                                 | Today, use instead |
+| ----------------------- | ---------------------------------------------------- | ------------------- |
+| `openvtc status`        | View current configuration and connectivity          | TUI status view     |
+| `openvtc logs`          | Display action/event log history                     | TUI log view        |
+| `openvtc export`        | Export settings or PGP keys                          | TUI Settings → Export |
+| `openvtc contacts`      | Manage known contacts (add/remove/list)              | TUI contacts panel  |
+| `openvtc relationships` | Manage relationships (request/ping/remove/list)      | TUI relationships panel |
+| `openvtc tasks`         | Handle outstanding tasks and messages                | TUI tasks panel     |
+| `openvtc vrcs`          | Manage Verifiable Relationship Credentials           | TUI VRC views       |
+
+> This table reflects the original design intent. As each command lands, it
+> should move up into the [Commands](#commands) section with full flag
+> documentation.

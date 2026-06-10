@@ -31,7 +31,7 @@ pub type VtcDid = String;
 /// Decoupled from the persona's `did:webvh` (which can rotate) so that a
 /// community's `persona_ref` survives DID rotation (fork resolution: stable
 /// UUID).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct PersonaId(pub Uuid);
 
 impl PersonaId {
