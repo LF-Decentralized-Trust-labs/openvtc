@@ -20,6 +20,30 @@ use secrecy::{ExposeSecret, SecretBox};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 
+/// Current schema version of the encrypted [`ProtectedConfig`] payload.
+/// Increment when the shape changes in a way `#[serde(default)]` can't absorb
+/// (e.g. renaming/removing fields, or changing enum variants in nested types
+/// like `CommunityStatus`/`RelationshipState`).
+///
+/// Bump-and-migrate pattern for the next editor:
+/// 1. Increment this constant.
+/// 2. In [`ProtectedConfig::load`], inspect the deserialized `schema_version`
+///    (or pre-parse to `serde_json::Value` if the new shape can't deserialize
+///    the old payload) and migrate older payloads forward instead of
+///    resetting the user.
+///
+/// Payloads saved before this field existed deserialize as version 1 via the
+/// serde default — v1 is the shape at the time the field was introduced.
+pub const PROTECTED_SCHEMA_VERSION: u32 = 1;
+
+/// Serde default for [`ProtectedConfig::schema_version`]: payloads written
+/// before the field existed are the v1 shape. Deliberately a literal `1`
+/// (not [`PROTECTED_SCHEMA_VERSION`]) so that bumping the constant doesn't
+/// silently relabel old unversioned payloads as the new version.
+fn default_protected_schema_version() -> u32 {
+    1
+}
+
 /// A record for a single known Contact
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Contact {
@@ -174,8 +198,14 @@ impl From<ContactsShadow> for Contacts {
 
 /// Primary structure used for storing protected [crate::config::Config] data that is sensitive but
 /// not key data
-#[derive(Clone, Default, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct ProtectedConfig {
+    /// Internal schema version of this encrypted payload.
+    /// See [`PROTECTED_SCHEMA_VERSION`] for the bump-and-migrate pattern.
+    /// Defaults to 1 when absent — payloads saved before this field existed.
+    #[serde(default = "default_protected_schema_version")]
+    pub schema_version: u32,
+
     /// Config v2 multi-community account model (personas + communities).
     ///
     /// The encrypted source of truth for the account's personas and community
@@ -203,6 +233,22 @@ pub struct ProtectedConfig {
     /// VRCs received
     /// key = remote P-DID
     pub vrcs_received: Vrcs,
+}
+
+/// Manual impl so freshly created configs are stamped with the current
+/// schema version (a derived `Default` would set `schema_version` to 0).
+impl Default for ProtectedConfig {
+    fn default() -> Self {
+        ProtectedConfig {
+            schema_version: PROTECTED_SCHEMA_VERSION,
+            account: Account::default(),
+            contacts: Contacts::default(),
+            relationships: Relationships::default(),
+            tasks: Tasks::default(),
+            vrcs_issued: Vrcs::default(),
+            vrcs_received: Vrcs::default(),
+        }
+    }
 }
 
 impl ProtectedConfig {
@@ -380,6 +426,37 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: ProtectedConfig = serde_json::from_str(&json).unwrap();
         assert!(deserialized.contacts.is_empty());
+    }
+
+    #[test]
+    fn test_schema_version_defaults_to_one_when_absent() {
+        // Simulates configs saved before schema_version existed — they must
+        // deserialize as the v1 shape, not 0.
+        let json = r#"{
+            "contacts": { "contacts": {} },
+            "vrcs_issued": { "vrcs": {} },
+            "vrcs_received": { "vrcs": {} }
+        }"#;
+        let config: ProtectedConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.schema_version, 1);
+    }
+
+    #[test]
+    fn test_schema_version_round_trips() {
+        let config = ProtectedConfig::default();
+        assert_eq!(config.schema_version, PROTECTED_SCHEMA_VERSION);
+
+        // Plain serde round-trip preserves the field.
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"schema_version\":"));
+        let deserialized: ProtectedConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.schema_version, PROTECTED_SCHEMA_VERSION);
+
+        // Encrypted save/load round-trip preserves the field too.
+        let seed = test_seed();
+        let saved = config.save(&seed).unwrap();
+        let loaded = ProtectedConfig::load(&seed, &saved).unwrap();
+        assert_eq!(loaded.schema_version, PROTECTED_SCHEMA_VERSION);
     }
 
     #[test]
