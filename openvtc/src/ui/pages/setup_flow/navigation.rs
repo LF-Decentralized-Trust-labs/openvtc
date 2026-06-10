@@ -94,7 +94,6 @@ pub enum SetupEvent {
 }
 
 /// What should happen after a navigation decision.
-#[allow(dead_code)]
 pub enum NavResult {
     /// Navigate to a specific page.
     GoTo(SetupPage),
@@ -105,6 +104,9 @@ pub enum NavResult {
     /// Send an action, then send SetupCompleted.
     SendActionThenCompleteSetup(Action),
     /// Do nothing.
+    // No navigation branch currently returns this no-op, but the dispatcher
+    // handles it; kept so `navigate` can express "stay put" without a new arm.
+    #[allow(dead_code)]
     None,
 }
 

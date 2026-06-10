@@ -77,10 +77,6 @@ pub struct Relationships {
     /// Map from remote P-DID to the relationship state.
     pub relationships: HashMap<Arc<String>, Arc<Mutex<Relationship>>>,
 
-    /*
-    /// Mapping relationships by our R-DIDs
-    pub r_map: HashMap<Arc<String>, Vec<HashSet<Arc<Relationship>>>>,
-    */
     /// Next BIP32 derivation path index to use when creating keys for a new relationship.
     pub path_pointer: u32,
 }
@@ -111,7 +107,6 @@ pub struct Relationship {
 impl From<RelationshipsShadow> for Relationships {
     fn from(value: RelationshipsShadow) -> Self {
         let mut relationships: HashMap<Arc<String>, Arc<Mutex<Relationship>>> = HashMap::new();
-        //let mut r_map: HashMap<Arc<String>, Vec<HashSet<Arc<Relationship>>>> = HashMap::new();
 
         for relationship in value.relationships {
             let remote_did = match relationship.lock() {
@@ -119,18 +114,10 @@ impl From<RelationshipsShadow> for Relationships {
                 Err(e) => e.into_inner().remote_p_did.clone(),
             };
             relationships.insert(remote_did.clone(), relationship.clone());
-
-            /*
-                        r_map
-                            .entry(relationship.our_did.clone())
-                            .or_default()
-                            .push(HashSet::from([relationship.clone()]));
-            */
         }
 
         Relationships {
             relationships,
-            //r_map,
             path_pointer: value.path_pointer,
         }
     }

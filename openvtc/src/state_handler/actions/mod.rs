@@ -22,7 +22,6 @@ use crate::{
 // Domain sub-enums
 // ============================================================================
 
-#[allow(dead_code)]
 pub enum InboxAction {
     SelectTask(usize),
     OpenDetail(usize),
@@ -51,7 +50,6 @@ pub enum InboxAction {
     Back,
 }
 
-#[allow(dead_code)]
 pub enum RelationshipAction {
     Select(usize),
     OpenDetail(usize),
@@ -99,7 +97,6 @@ pub enum RelationshipAction {
     },
 }
 
-#[allow(dead_code)]
 pub enum CredentialAction {
     SwitchTab,
     Select(usize),
@@ -118,13 +115,6 @@ pub enum CredentialAction {
     },
 }
 
-#[allow(dead_code)]
-pub enum ContactAction {
-    Add { did: String, alias: Option<String> },
-    Remove { did: String },
-}
-
-#[allow(dead_code)]
 pub enum SettingsAction {
     Select(usize),
     StartEdit,
@@ -157,6 +147,9 @@ pub enum SettingsAction {
         passphrase: String,
     },
     RemovePassphrase,
+    // Manual mediator-reconnect path: handler is live, but the Settings UI does
+    // not yet expose a control that emits it.
+    #[allow(dead_code)]
     ReconnectMediator,
     /// Open the wipe-profile confirmation dialog from the Settings menu.
     WipeProfileStart,
@@ -180,14 +173,13 @@ pub enum SettingsAction {
 // Top-level Action enum
 // ============================================================================
 
-// Some variants (e.g. ContactAction::Add, ContactAction::Remove) are defined
-// for the handler but not yet wired to UI construction; others are gated behind
-// cfg features.
-#[allow(dead_code)]
 pub enum Action {
     Exit,
 
-    /// An unrecoverable error has occurred on the UX Side
+    /// An unrecoverable error has occurred on the UX Side.
+    // Error-propagation channel: handled in every action loop, but no producer
+    // emits it yet (the UX side currently fails via `Interrupted` directly).
+    #[allow(dead_code)]
     UXError(Interrupted),
 
     /// Make MainMenu active
@@ -204,7 +196,6 @@ pub enum Action {
     Inbox(InboxAction),
     Relationship(RelationshipAction),
     Credential(CredentialAction),
-    Contact(ContactAction),
     Settings(SettingsAction),
 
     /// Dismiss the startup loading screen (Enter, once loading has completed) and
@@ -264,7 +255,10 @@ pub enum Action {
     /// 2. The next page to render
     SetProtection(ConfigProtection, SetupPage),
 
-    /// Sets the DID Persona Keys
+    /// Sets the DID Persona Keys.
+    // Handled by the setup wizard, but no page constructs it under the current
+    // online provisioning flow; retained for the manual key-set setup path.
+    #[allow(dead_code)]
     SetDIDKeys(Box<PersonaDIDKeys>),
 
     /// Export DID Private keys as PGP Armored file

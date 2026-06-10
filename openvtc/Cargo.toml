@@ -36,7 +36,6 @@ base64.workspace = true
 byteorder.workspace = true
 chrono.workspace = true
 clap.workspace = true
-# cli-clipboard.workspace = true
 arboard.workspace = true
 console.workspace = true
 crossterm.workspace = true

@@ -117,59 +117,12 @@ pub fn import_config(path: &str, _passphrase: &str) -> Result<String> {
     ))
 }
 
-/// Add a contact by DID with an optional alias (synchronous, no DID resolution).
-pub fn add_contact(
-    config: &mut Config,
-    profile: &str,
-    did: &str,
-    alias: Option<&str>,
-) -> Result<()> {
-    use openvtc_core::config::protected_config::Contact;
-    use std::sync::Arc;
-
-    let contact_did = Arc::new(did.to_string());
-    let alias_str = alias.map(|a| a.to_string());
-    let contact = Arc::new(Contact {
-        did: contact_did.clone(),
-        alias: alias_str.clone(),
-    });
-
-    config
-        .private
-        .contacts
-        .contacts
-        .insert(contact_did, contact.clone());
-
-    if let Some(a) = &alias_str {
-        config.private.contacts.aliases.insert(a.clone(), contact);
-    }
-
-    config.public.logs.insert(
-        LogFamily::Config,
-        format!("Contact added: {} alias({})", did, alias.unwrap_or("N/A")),
-    );
-    save_config(config, profile)?;
-    info!(did = %did, "contact added");
-    Ok(())
-}
-
-/// Remove a contact by DID.
-pub fn remove_contact(config: &mut Config, profile: &str, did: &str) -> Result<()> {
-    config
-        .private
-        .contacts
-        .remove_contact(&mut config.public.logs, did);
-    save_config(config, profile)?;
-    info!(did = %did, "contact removed");
-    Ok(())
-}
-
 // ============================================================
 // State-handler dispatch wrappers
 // ============================================================
 
 use crate::state_handler::{
-    actions::{ContactAction, SettingsAction},
+    actions::SettingsAction,
     didcomm::{self, ReconnectOutcome},
     main_page::content::SettingsMode,
     state::{self, State},
@@ -717,42 +670,6 @@ pub(crate) async fn dispatch(
         }
     }
     SettingsOutcome::Continue
-}
-
-/// Dispatch a single `ContactAction`. Trivial enough to live alongside the
-/// other settings dispatch since contacts ride the same save_config path.
-pub(crate) fn dispatch_contact(
-    action: ContactAction,
-    config: &mut Box<Config>,
-    state: &mut State,
-    profile: &str,
-) {
-    match action {
-        ContactAction::Add { did, alias } => {
-            match add_contact(config, profile, &did, alias.as_deref()) {
-                Ok(()) => {
-                    state.main_page.sync_from_config(config);
-                    state
-                        .main_page
-                        .log(format!("Contact added: {}", super::log_did(&did)));
-                }
-                Err(e) => {
-                    state.main_page.log_error("Failed to add contact", &e);
-                }
-            }
-        }
-        ContactAction::Remove { did } => match remove_contact(config, profile, &did) {
-            Ok(()) => {
-                state.main_page.sync_from_config(config);
-                state
-                    .main_page
-                    .log(format!("Contact removed: {}", super::log_did(&did)));
-            }
-            Err(e) => {
-                state.main_page.log_error("Failed to remove contact", &e);
-            }
-        },
-    }
 }
 
 #[cfg(test)]
