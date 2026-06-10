@@ -27,7 +27,7 @@ pub struct SigningConfig {
 }
 
 /// VTA credentials and key configuration stored securely in the OS keyring.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct VtaCredentials {
     /// VTA service URL. May be empty for DIDComm-only VTAs (in which case
     /// `mediator_did` must be set).
@@ -49,6 +49,23 @@ pub struct VtaCredentials {
     /// loadable as REST-only configs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mediator_did: Option<String>,
+}
+
+/// Hand-written `Debug` that redacts `private_key_multibase` so a stray
+/// `{:?}` (e.g. `tracing::debug!(?creds)`) can never write the raw private
+/// key to a log. Mirrors the redacting-Debug pattern used by
+/// `KeyInfo`/`PersonaDIDKeys` in `openvtc-core`.
+impl std::fmt::Debug for VtaCredentials {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VtaCredentials")
+            .field("vta_url", &self.vta_url)
+            .field("vta_did", &self.vta_did)
+            .field("credential_did", &self.credential_did)
+            .field("private_key_multibase", &"<redacted>")
+            .field("key_id", &self.key_id)
+            .field("mediator_did", &self.mediator_did)
+            .finish()
+    }
 }
 
 impl SigningConfig {
@@ -232,6 +249,28 @@ mod tests {
         assert_eq!(parsed.vta_url, creds.vta_url);
         assert_eq!(parsed.key_id, creds.key_id);
         assert_eq!(parsed.credential_did, creds.credential_did);
+    }
+
+    #[test]
+    fn test_vta_credentials_debug_redacts_private_key() {
+        let creds = VtaCredentials {
+            vta_url: "https://vta.example.com".to_string(),
+            vta_did: "did:example:vta".to_string(),
+            credential_did: "did:key:z6Mk123".to_string(),
+            private_key_multibase: "MARKER_MUST_NOT_LEAK".to_string(),
+            key_id: "key-1".to_string(),
+            mediator_did: Some("did:example:mediator".to_string()),
+        };
+        let debug = format!("{creds:?}");
+        assert!(
+            !debug.contains("MARKER_MUST_NOT_LEAK"),
+            "private key leaked into Debug output: {debug}"
+        );
+        assert!(debug.contains("VtaCredentials"));
+        assert!(debug.contains("<redacted>"));
+        // Non-secret fields stay visible.
+        assert!(debug.contains("https://vta.example.com"));
+        assert!(debug.contains("did:example:mediator"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{TDK, didcomm::Message};
+use dtg_credentials::DTGCredential;
 use openvtc_core::{
     MessageType,
     config::{
@@ -16,8 +17,10 @@ use openvtc_core::{
         account::{Account, CommunityStatus},
     },
     logs::LogFamily,
-    relationships::{RelationshipAcceptBody, RelationshipRejectBody, RelationshipState},
-    tasks::TaskType,
+    relationships::{
+        RelationshipAcceptBody, RelationshipRejectBody, RelationshipState, Relationships,
+    },
+    tasks::{TaskType, Tasks},
     vrc::VRCRequestReject,
 };
 use serde_json::{Value, json};
@@ -276,6 +279,107 @@ fn handle_credential_issue(account: &mut Account, message: &Message, from_did: &
     }
 }
 
+/// Vet an inbound `VRCIssued` message against local state (task R2).
+///
+/// Gates enforced:
+/// 1. the authenticated DIDComm sender must map to an `Established`
+///    relationship (same gate as the `VRCRequest` arm);
+/// 2. the credential's `issuer` must be that relationship's remote persona
+///    DID. VRCs are signed with the issuer's persona DID while the DIDComm
+///    envelope may be sent from a relationship R-DID, so the binding goes
+///    through the relationship record rather than naive `issuer == from`
+///    string equality — this still pins the issuer to the authenticated
+///    sender and rejects forged issuer strings;
+/// 3. the message `thid` only resolves a pending task when that task is our
+///    *own* outbound VRC request to this same sender. An attacker-chosen
+///    `thid` must not be able to delete unrelated tasks.
+///
+/// Returns the task id of our pending outbound VRC request when the `thid`
+/// legitimately resolves one, `Ok(None)` when there is no (matching) `thid`,
+/// and `Err(reason)` when the message must be dropped.
+fn vet_vrc_issued(
+    relationships: &Relationships,
+    tasks: &Tasks,
+    vrc: &DTGCredential,
+    from_did: &Arc<String>,
+    thid: Option<&str>,
+) -> Result<Option<Arc<String>>, String> {
+    // Gate 1: sender must be an established relationship.
+    let relationship = relationships
+        .find_by_remote_did(from_did)
+        .ok_or_else(|| "no relationship with sender".to_string())?;
+    let remote_p_did = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| format!("mutex poisoned: {e}"))?;
+        if lock.state != RelationshipState::Established {
+            return Err(format!(
+                "relationship with sender is not established (state: {})",
+                lock.state
+            ));
+        }
+        Arc::clone(&lock.remote_p_did)
+    };
+
+    // Gate 2: issuer must be the authenticated sender's persona DID.
+    if vrc.issuer() != remote_p_did.as_str() {
+        return Err(format!(
+            "credential issuer ({}) is not the sender's persona DID ({})",
+            vrc.issuer(),
+            remote_p_did
+        ));
+    }
+
+    // Gate 3: the thid may only resolve our own pending outbound VRC
+    // request to this sender; anything else is ignored.
+    let pending_request = thid.and_then(|thid| {
+        let id = Arc::new(thid.to_string());
+        let task = tasks.get_by_id(&id)?;
+        let task = task.lock().ok()?;
+        let TaskType::VRCRequestOutbound { relationship } = &task.type_ else {
+            return None;
+        };
+        let lock = relationship.lock().ok()?;
+        (lock.remote_p_did == remote_p_did).then(|| Arc::clone(&id))
+    });
+
+    Ok(pending_request)
+}
+
+/// Cryptographically verify an inbound VRC's data-integrity proof (task R2).
+///
+/// The proof's `verificationMethod` must belong to the credential's issuer
+/// DID — without that binding an attacker could present a proof made with
+/// *their own* key over a credential naming someone else as issuer. The
+/// public key is then resolved from the issuer's DID Document via the TDK
+/// resolver and the proof verified over the proof-stripped credential.
+async fn verify_vrc_proof(tdk: &TDK, vrc: &DTGCredential) -> Result<(), String> {
+    let Some(proof) = vrc.credential().proof.clone() else {
+        return Err("credential has no data-integrity proof".to_string());
+    };
+
+    let vm_did = proof
+        .verification_method
+        .split_once('#')
+        .map_or(proof.verification_method.as_str(), |(did, _)| did);
+    if vm_did != vrc.issuer() {
+        return Err(format!(
+            "proof verification method ({}) does not belong to the issuer ({})",
+            proof.verification_method,
+            vrc.issuer()
+        ));
+    }
+
+    // `verify_data` expects the signed document with the proof stripped.
+    let mut unsigned = vrc.clone();
+    unsigned.credential_mut().proof = None;
+
+    tdk.verify_data(&unsigned, None, &proof)
+        .await
+        .map_err(|e| format!("proof verification failed: {e}"))?;
+    Ok(())
+}
+
 /// Process an inbound DIDComm message.
 ///
 /// Auto-processes messages that don't need human input (pong, accept, finalize, reject).
@@ -284,7 +388,7 @@ fn handle_credential_issue(account: &mut Account, message: &Message, from_did: &
 /// Returns `true` if Config was mutated and needs saving.
 pub async fn process_inbound_message(
     config: &mut Config,
-    _tdk: &TDK,
+    tdk: &TDK,
     service: &DIDCommService,
     seen: &mut SeenMessages,
     message: &Message,
@@ -710,12 +814,42 @@ pub async fn process_inbound_message(
         }
 
         MessageType::VRCIssued => {
-            let vrc: dtg_credentials::DTGCredential = serde_json::from_value(message.body.clone())?;
-            let task_id = Arc::new(message.thid.clone().unwrap_or_else(|| message.id.clone()));
+            let vrc: DTGCredential = serde_json::from_value(message.body.clone())?;
 
-            // Remove the outbound VRC request task that this issued VRC responds to.
-            // The thid links the issued VRC back to the original request.
-            config.private.tasks.remove(&task_id);
+            // Task R2 hardening: require an established relationship, bind the
+            // credential's issuer to the authenticated sender, and only let the
+            // thid resolve our own pending outbound VRC request to that sender.
+            let pending_request = match vet_vrc_issued(
+                &config.private.relationships,
+                &config.private.tasks,
+                &vrc,
+                &from_did,
+                message.thid.as_deref(),
+            ) {
+                Ok(pending) => pending,
+                Err(reason) => {
+                    warn!(from = %from_did, issuer = %vrc.issuer(), "dropping VRC-issued message: {reason}");
+                    return Ok(false);
+                }
+            };
+
+            // Task R2 gate 4: the data-integrity proof must verify against the
+            // issuer's resolved key before any state is touched.
+            if let Err(reason) = verify_vrc_proof(tdk, &vrc).await {
+                warn!(from = %from_did, issuer = %vrc.issuer(), "dropping VRC-issued message: {reason}");
+                return Ok(false);
+            }
+
+            // Only a verified response may resolve our pending outbound VRC
+            // request; the inbox task reuses its id so the request is replaced
+            // by the issued credential. Unsolicited (or unmatched-thid) VRCs
+            // are queued under the message id and leave other tasks untouched.
+            let task_id = pending_request
+                .clone()
+                .unwrap_or_else(|| Arc::new(message.id.clone()));
+            if let Some(request_id) = &pending_request {
+                config.private.tasks.remove(request_id);
+            }
 
             if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
@@ -1163,5 +1297,210 @@ mod tests {
     fn validate_did_rejects_msi_with_invalid_chars() {
         assert!(validate_did("did:web:exam ple.com").is_err()); // space
         assert!(validate_did("did:web:exam\u{200E}ple.com").is_err()); // LRM
+    }
+
+    // --- inbound VRC-issued vetting (task R2) ---
+
+    use affinidi_tdk::common::config::TDKConfig;
+    use affinidi_tdk::dids::{DID, KeyType};
+    use openvtc_core::relationships::Relationship;
+    use std::sync::Mutex;
+
+    fn relationship(
+        remote_p: &str,
+        remote_r: &str,
+        state: RelationshipState,
+    ) -> Arc<Mutex<Relationship>> {
+        Arc::new(Mutex::new(Relationship {
+            task_id: Arc::new(Uuid::new_v4().to_string()),
+            our_did: Arc::new("did:webvh:example:us".to_string()),
+            remote_did: Arc::new(remote_r.to_string()),
+            remote_p_did: Arc::new(remote_p.to_string()),
+            created: Utc::now(),
+            state,
+        }))
+    }
+
+    fn relationships_with(rel: &Arc<Mutex<Relationship>>) -> Relationships {
+        let mut rels = Relationships::default();
+        let key = Arc::clone(&rel.lock().unwrap().remote_p_did);
+        rels.relationships.insert(key, Arc::clone(rel));
+        rels
+    }
+
+    fn unsigned_vrc(issuer: &str) -> DTGCredential {
+        DTGCredential::new_vrc(
+            issuer.to_string(),
+            "did:webvh:example:subject".to_string(),
+            Utc::now(),
+            None,
+        )
+    }
+
+    #[test]
+    fn vrc_issued_with_forged_issuer_is_dropped_and_tasks_untouched() {
+        let sender = Arc::new("did:webvh:example:honest-sender".to_string());
+        let rel = relationship(&sender, &sender, RelationshipState::Established);
+        let rels = relationships_with(&rel);
+
+        // A pending task whose id the attacker guesses as the thid.
+        let mut tasks = Tasks::default();
+        let pending = Arc::new(Uuid::new_v4().to_string());
+        tasks.new_task(&pending, TaskType::VRCRequestOutbound { relationship: rel });
+
+        let vrc = unsigned_vrc("did:web:ATTACKER_FORGED");
+        let result = vet_vrc_issued(&rels, &tasks, &vrc, &sender, Some(pending.as_str()));
+        assert!(result.is_err(), "forged issuer must be rejected");
+        assert!(
+            tasks.get_by_id(&pending).is_some(),
+            "pending task must survive a rejected VRC"
+        );
+    }
+
+    #[test]
+    fn vrc_issued_without_relationship_is_dropped() {
+        let sender = Arc::new("did:webvh:example:stranger".to_string());
+        let rels = Relationships::default();
+        let tasks = Tasks::default();
+
+        let vrc = unsigned_vrc(sender.as_str());
+        assert!(vet_vrc_issued(&rels, &tasks, &vrc, &sender, None).is_err());
+    }
+
+    #[test]
+    fn vrc_issued_from_non_established_relationship_is_dropped() {
+        let sender = Arc::new("did:webvh:example:half-shaken".to_string());
+        let rel = relationship(&sender, &sender, RelationshipState::RequestSent);
+        let rels = relationships_with(&rel);
+        let tasks = Tasks::default();
+
+        let vrc = unsigned_vrc(sender.as_str());
+        assert!(vet_vrc_issued(&rels, &tasks, &vrc, &sender, None).is_err());
+    }
+
+    #[test]
+    fn vrc_issued_thid_matching_unrelated_task_is_ignored() {
+        let sender = Arc::new("did:webvh:example:sender".to_string());
+        let rel = relationship(&sender, &sender, RelationshipState::Established);
+        let rels = relationships_with(&rel);
+
+        let mut tasks = Tasks::default();
+        // An unrelated pending task (not an outbound VRC request).
+        let unrelated = Arc::new(Uuid::new_v4().to_string());
+        tasks.new_task(
+            &unrelated,
+            TaskType::RelationshipRequestOutbound {
+                to: Arc::new("did:webvh:example:third-party".to_string()),
+            },
+        );
+        // An outbound VRC request — but to a *different* sender.
+        let other_rel = relationship(
+            "did:webvh:example:other",
+            "did:webvh:example:other",
+            RelationshipState::Established,
+        );
+        let other_request = Arc::new(Uuid::new_v4().to_string());
+        tasks.new_task(
+            &other_request,
+            TaskType::VRCRequestOutbound {
+                relationship: other_rel,
+            },
+        );
+
+        let vrc = unsigned_vrc(sender.as_str());
+        for thid in [unrelated.as_str(), other_request.as_str()] {
+            let resolved = vet_vrc_issued(&rels, &tasks, &vrc, &sender, Some(thid))
+                .expect("message itself is acceptable");
+            assert!(
+                resolved.is_none(),
+                "thid pointing at an unrelated task must not resolve it"
+            );
+        }
+        assert!(tasks.get_by_id(&unrelated).is_some());
+        assert!(tasks.get_by_id(&other_request).is_some());
+    }
+
+    #[test]
+    fn vrc_issued_thid_resolves_our_matching_outbound_request() {
+        let sender_p = "did:webvh:example:sender";
+        let sender_r = "did:webvh:example:sender-rdid";
+        // Envelope arrives from the sender's R-DID; issuer is their P-DID.
+        let from = Arc::new(sender_r.to_string());
+        let rel = relationship(sender_p, sender_r, RelationshipState::Established);
+        let rels = relationships_with(&rel);
+
+        let mut tasks = Tasks::default();
+        let request = Arc::new(Uuid::new_v4().to_string());
+        tasks.new_task(&request, TaskType::VRCRequestOutbound { relationship: rel });
+
+        let vrc = unsigned_vrc(sender_p);
+        let resolved = vet_vrc_issued(&rels, &tasks, &vrc, &from, Some(request.as_str()))
+            .expect("legitimate VRC must pass vetting");
+        assert_eq!(resolved, Some(request));
+    }
+
+    // --- inbound VRC-issued proof verification (task R2 gate 4) ---
+
+    async fn test_tdk() -> TDK {
+        TDK::new(
+            TDKConfig::builder()
+                .with_load_environment(false)
+                .build()
+                .expect("TDK config builds"),
+            None,
+        )
+        .await
+        .expect("TDK builds")
+    }
+
+    #[tokio::test]
+    async fn vrc_proof_validly_signed_credential_is_accepted() {
+        let tdk = test_tdk().await;
+        let (issuer_did, issuer_secret) =
+            DID::generate_did_key(KeyType::Ed25519).expect("did:key generates");
+
+        let mut vrc = unsigned_vrc(&issuer_did);
+        vrc.sign(&issuer_secret, None).await.expect("signs");
+
+        assert!(verify_vrc_proof(&tdk, &vrc).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn vrc_proof_tampered_credential_is_rejected() {
+        let tdk = test_tdk().await;
+        let (issuer_did, issuer_secret) =
+            DID::generate_did_key(KeyType::Ed25519).expect("did:key generates");
+
+        let mut vrc = unsigned_vrc(&issuer_did);
+        vrc.sign(&issuer_secret, None).await.expect("signs");
+
+        // Tamper with the signed payload — the proof must no longer verify.
+        vrc.credential_mut()
+            .context
+            .push("https://attacker.example/context/v1".to_string());
+        assert!(verify_vrc_proof(&tdk, &vrc).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn vrc_proof_signed_by_non_issuer_key_is_rejected() {
+        let tdk = test_tdk().await;
+        let (_attacker_did, attacker_secret) =
+            DID::generate_did_key(KeyType::Ed25519).expect("did:key generates");
+        let (victim_did, _victim_secret) =
+            DID::generate_did_key(KeyType::Ed25519).expect("did:key generates");
+
+        // Attacker signs with their own key but names the victim as issuer:
+        // the proof's verificationMethod won't belong to the issuer DID.
+        let mut vrc = unsigned_vrc(&victim_did);
+        vrc.sign(&attacker_secret, None).await.expect("signs");
+
+        assert!(verify_vrc_proof(&tdk, &vrc).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn vrc_proof_unsigned_credential_is_rejected() {
+        let tdk = test_tdk().await;
+        let vrc = unsigned_vrc("did:webvh:example:issuer");
+        assert!(verify_vrc_proof(&tdk, &vrc).await.is_err());
     }
 }
