@@ -78,9 +78,8 @@ pub fn remove_vrc(config: &mut Config, vrc_id: &str) -> Result<()> {
 
 use crate::state_handler::{
     actions::CredentialAction,
-    log_did,
+    dispatch_util, log_did,
     main_page::content::{CredentialTab, CredentialsMode},
-    settings_actions,
     state::State,
 };
 
@@ -153,23 +152,26 @@ async fn handle_submit_request(
     match send_vrc_request(config, tdk, service, relationship_p_did, reason).await {
         Ok(()) => {
             state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-            state.main_page.content_panel.credentials.status_message = Some(format!(
-                "VRC request sent to {}",
-                log_did(relationship_p_did)
-            ));
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            state.main_page.sync_from_config(config);
-            state.main_page.log(format!(
-                "VRC request sent to {}",
-                log_did(relationship_p_did)
-            ));
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SaveAndSync,
+                |mp| &mut mp.content_panel.credentials.status_message,
+                format!("VRC request sent to {}", log_did(relationship_p_did)),
+                dispatch_util::SyncLog::Plain(format!(
+                    "VRC request sent to {}",
+                    log_did(relationship_p_did)
+                )),
+            );
         }
         Err(e) => {
-            state.main_page.content_panel.credentials.status_message =
-                Some(format!("Error: {e:#}"));
-            state.main_page.log_error("Failed to send VRC request", &e);
+            dispatch_util::record_error(
+                &mut state.main_page,
+                |mp| &mut mp.content_panel.credentials.status_message,
+                "Failed to send VRC request",
+                &e,
+            );
         }
     }
 }
@@ -181,12 +183,15 @@ fn handle_remove(config: &mut Box<Config>, state: &mut State, profile: &str, vrc
     }
     state.main_page.content_panel.credentials.mode = CredentialsMode::List;
     state.main_page.content_panel.credentials.selected_index = 0;
-    state.main_page.content_panel.credentials.status_message = Some("VRC removed".to_string());
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log("VRC removed");
+    dispatch_util::save_and_sync(
+        &mut state.main_page,
+        config,
+        profile,
+        dispatch_util::Persist::SaveAndSync,
+        |mp| &mut mp.content_panel.credentials.status_message,
+        "VRC removed",
+        dispatch_util::SyncLog::Plain("VRC removed".to_string()),
+    );
 }
 
 /// Dispatch a single `CredentialAction` to its handler.

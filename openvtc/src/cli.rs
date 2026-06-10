@@ -11,9 +11,9 @@ pub fn cli() -> Command {
     // Full CLI Set
     Command::new("openvtc")
         .about("Open Verifiable Trust Communities")
+        .version(env!("CARGO_PKG_VERSION"))
         .subcommand_required(false)
         .arg_required_else_help(false)
-        .allow_external_subcommands(true)
         .args([
             Arg::new("unlock-code").short('u').long("unlock-code").help(
                 "Unlock passphrase for the encrypted config. \
@@ -40,5 +40,60 @@ pub fn get_user_pin() -> anyhow::Result<SecretString> {
         Ok(SecretString::new("123456".into()))
     } else {
         Ok(SecretString::new(user_pin.into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cli_definition_is_valid() {
+        // Catches malformed arg/subcommand configuration at test time.
+        cli().debug_assert();
+    }
+
+    #[test]
+    fn unknown_subcommand_is_rejected() {
+        // `allow_external_subcommands` is intentionally NOT set: an unknown
+        // subcommand must produce a clap error (with a `--help` suggestion)
+        // rather than silently falling through to the TUI.
+        let err = cli()
+            .try_get_matches_from(["openvtc", "status"])
+            .expect_err("unknown subcommand `status` should be rejected");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::InvalidSubcommand,
+            "expected an InvalidSubcommand error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn version_flag_succeeds() {
+        let err = cli()
+            .try_get_matches_from(["openvtc", "--version"])
+            .expect_err("--version short-circuits parsing");
+        // `--version` is reported by clap as a (successful) DisplayVersion error.
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(
+            err.to_string().contains(env!("CARGO_PKG_VERSION")),
+            "version output should contain the package version"
+        );
+    }
+
+    #[test]
+    fn setup_subcommand_is_accepted() {
+        let matches = cli()
+            .try_get_matches_from(["openvtc", "setup"])
+            .expect("`setup` is a valid subcommand");
+        assert_eq!(matches.subcommand_name(), Some("setup"));
+    }
+
+    #[test]
+    fn no_subcommand_is_accepted() {
+        // Bare `openvtc` (launch the TUI) must still parse cleanly.
+        cli()
+            .try_get_matches_from(["openvtc"])
+            .expect("bare invocation should parse");
     }
 }

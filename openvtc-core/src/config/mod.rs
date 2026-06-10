@@ -23,7 +23,10 @@ use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, fmt::Display};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fmt::Display,
+};
 
 pub mod account;
 pub mod context_path;
@@ -276,7 +279,11 @@ pub struct Config {
     /// [`Config::active_identity`] still surfaces the first as the "active" one
     /// for user-initiated outbound actions; explicit persona *selection* lands in
     /// a later slice.
-    pub identities: HashMap<account::PersonaId, crate::identity::IdentityContext>,
+    ///
+    /// A `BTreeMap` (ordered by [`account::PersonaId`]) so that iteration — and
+    /// therefore [`Config::active_identity`] — is deterministic across process
+    /// runs and insertion orders.
+    pub identities: BTreeMap<account::PersonaId, crate::identity::IdentityContext>,
 }
 
 /// Serializable bundle of public and secured config, used for import/export.
@@ -307,8 +314,10 @@ impl Config {
     /// The currently-active runtime identity.
     ///
     /// T1 migration: for the single-persona case this returns the one resolved
-    /// identity. A proper "selected working community" selection replaces the
-    /// `.next()` heuristic when multi-community lands.
+    /// identity. With multiple personas the entry with the lowest
+    /// [`account::PersonaId`] wins — deterministic across runs because
+    /// `identities` is a `BTreeMap`. This is an interim heuristic until
+    /// explicit persona selection lands (T1 Stage 5).
     pub fn active_identity(&self) -> Option<&crate::identity::IdentityContext> {
         self.identities.values().next()
     }
@@ -639,12 +648,11 @@ mod tests {
         assert!(validate_passphrase("").is_err());
     }
 
-    /// A State-A (account-bootstrap, R-A-5) config carries an account but no
-    /// persona, so it resolves no runtime identity. The accessors must degrade
-    /// to the documented "no active community" sentinels rather than panic.
-    #[test]
-    fn zero_persona_config_has_no_active_identity() {
-        let config = Config {
+    /// Build a minimal [`Config`] carrying the given runtime identities.
+    fn test_config(
+        identities: BTreeMap<account::PersonaId, crate::identity::IdentityContext>,
+    ) -> Config {
+        Config {
             public: public_config::PublicConfig::default(),
             private: ProtectedConfig::default(),
             key_backend: KeyBackend::Bip32 {
@@ -659,11 +667,81 @@ mod tests {
             token_user_pin: SecretString::new("".into()),
             unlock_code: None,
             account: account::Account::default(),
-            identities: HashMap::new(),
-        };
+            identities,
+        }
+    }
+
+    /// Build a minimal [`crate::identity::IdentityContext`] for tests — no
+    /// network, no ATM service; the profile and DID document are constructed
+    /// directly from their (public) fields.
+    fn test_identity(
+        persona_id: account::PersonaId,
+        did: &str,
+    ) -> crate::identity::IdentityContext {
+        use affinidi_tdk::messaging::profiles::{ATMProfile, ATMProfileInner};
+        use std::sync::Arc;
+
+        let document: affinidi_tdk::did_common::Document =
+            serde_json::from_value(serde_json::json!({ "id": did }))
+                .expect("minimal DID document deserializes");
+        crate::identity::IdentityContext {
+            persona_id,
+            did: did.to_string(),
+            document,
+            profile: Arc::new(ATMProfile {
+                inner: Arc::new(ATMProfileInner {
+                    did: did.to_string(),
+                    alias: did.to_string(),
+                    mediator: Arc::new(None),
+                }),
+            }),
+            mediator_did: None,
+        }
+    }
+
+    /// A State-A (account-bootstrap, R-A-5) config carries an account but no
+    /// persona, so it resolves no runtime identity. The accessors must degrade
+    /// to the documented "no active community" sentinels rather than panic.
+    #[test]
+    fn zero_persona_config_has_no_active_identity() {
+        let config = test_config(BTreeMap::new());
 
         assert!(config.active_identity().is_none());
         assert_eq!(config.persona_did(), "");
         assert_eq!(config.mediator_did(), "");
+    }
+
+    /// R7: with multiple personas resolved, `active_identity()` must be
+    /// deterministic — the identity with the lowest `PersonaId` wins, and the
+    /// result is independent of the order entries were inserted. Interim
+    /// behaviour until explicit persona selection lands (T1 Stage 5).
+    #[test]
+    fn active_identity_is_deterministic_regardless_of_insertion_order() {
+        let pid_low = account::PersonaId(uuid::Uuid::from_u128(1));
+        let pid_high = account::PersonaId(uuid::Uuid::from_u128(2));
+        assert!(pid_low < pid_high);
+
+        // Insert low-id first…
+        let mut forward = BTreeMap::new();
+        forward.insert(pid_low, test_identity(pid_low, "did:example:low"));
+        forward.insert(pid_high, test_identity(pid_high, "did:example:high"));
+        let config_forward = test_config(forward);
+
+        // …and high-id first.
+        let mut reverse = BTreeMap::new();
+        reverse.insert(pid_high, test_identity(pid_high, "did:example:high"));
+        reverse.insert(pid_low, test_identity(pid_low, "did:example:low"));
+        let config_reverse = test_config(reverse);
+
+        // The lexicographically-first persona id is the active identity…
+        let active_forward = config_forward.active_identity().expect("identity resolved");
+        assert_eq!(active_forward.persona_id, pid_low);
+        assert_eq!(active_forward.did, "did:example:low");
+
+        // …regardless of insertion order.
+        let active_reverse = config_reverse.active_identity().expect("identity resolved");
+        assert_eq!(active_reverse.persona_id, active_forward.persona_id);
+        assert_eq!(active_reverse.did, active_forward.did);
+        assert_eq!(config_forward.persona_did(), config_reverse.persona_did());
     }
 }
