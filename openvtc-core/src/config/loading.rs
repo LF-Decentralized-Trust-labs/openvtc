@@ -181,7 +181,7 @@ impl Config {
             info!("Config will be re-encrypted with the updated seed derivation on next save");
         }
 
-        debug!("Private Config\n{:#?}", private_cfg);
+        log_private_config_shape(&private_cfg);
 
         // The v2 `account` persisted in the protected tier is the source of
         // truth. v1 (singleton) configs are reset before reaching here
@@ -444,5 +444,118 @@ impl Config {
             // `Some` only for a VTA backend with an active persona.
             vta_client,
         ))
+    }
+}
+
+/// Log the *shape* (collection sizes only) of the decrypted private config.
+///
+/// Deliberately never logs the contents: the protected tier holds contacts
+/// (DIDs + aliases), the full relationship graph, tasks, and credential
+/// claims, and the tracing sink can be a plaintext file on disk
+/// (`OPENVTC_DEBUG_LOG`). Counts are enough for debugging load issues.
+fn log_private_config_shape(private_cfg: &ProtectedConfig) {
+    tracing::debug!(
+        contacts = private_cfg.contacts.contacts.len(),
+        relationships = private_cfg.relationships.relationships.len(),
+        tasks = private_cfg.tasks.tasks.len(),
+        vrcs_issued = private_cfg.vrcs_issued.keys().len(),
+        vrcs_received = private_cfg.vrcs_received.keys().len(),
+        "private config loaded"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::protected_config::Contact,
+        relationships::{Relationship, RelationshipState},
+    };
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex},
+    };
+
+    /// `MakeWriter` that appends all output to a shared buffer so the test
+    /// can inspect exactly what the tracing layer emitted.
+    #[derive(Clone, Default)]
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+        type Writer = SharedWriter;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Regression test for the privacy finding where the entire decrypted
+    /// `ProtectedConfig` (contacts, relationships, tasks, credentials) was
+    /// pretty-printed to the debug log. The load-path log statement must emit
+    /// shape information only — none of the sensitive field values may leak.
+    #[test]
+    fn private_config_shape_log_does_not_leak_contents() {
+        const MARKER: &str = "MARKER_MUST_NOT_LEAK";
+
+        let mut private_cfg = ProtectedConfig::default();
+
+        // Contact whose DID and alias both carry the marker.
+        let did = Arc::new(format!("did:web:{MARKER}.example.com"));
+        private_cfg.contacts.contacts.insert(
+            did.clone(),
+            Arc::new(Contact {
+                did: did.clone(),
+                alias: Some(MARKER.to_string()),
+            }),
+        );
+
+        // Relationship whose DIDs all carry the marker.
+        private_cfg.relationships.relationships.insert(
+            did.clone(),
+            Arc::new(Mutex::new(Relationship {
+                task_id: Arc::new(MARKER.to_string()),
+                our_did: did.clone(),
+                remote_did: did.clone(),
+                remote_p_did: did.clone(),
+                created: chrono::Utc::now(),
+                state: RelationshipState::Established,
+            })),
+        );
+
+        let writer = SharedWriter::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .with_writer(writer.clone())
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            log_private_config_shape(&private_cfg);
+        });
+
+        let output = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("private config loaded"),
+            "shape log line was not captured; got: {output}"
+        );
+        assert!(
+            output.contains("contacts=1") && output.contains("relationships=1"),
+            "expected collection counts in the log line; got: {output}"
+        );
+        assert!(
+            !output.contains(MARKER),
+            "decrypted private-config contents leaked into log output: {output}"
+        );
     }
 }
