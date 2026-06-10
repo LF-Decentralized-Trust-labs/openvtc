@@ -52,6 +52,7 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
 pub mod actions;
 mod credential_actions;
 pub mod didcomm;
+mod dispatch_util;
 mod inbox_actions;
 pub mod join;
 mod join_flow;

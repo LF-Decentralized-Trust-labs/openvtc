@@ -530,7 +530,7 @@ fn create_request_message(
 // ============================================================
 
 use crate::state_handler::{
-    actions::RelationshipAction, credential_actions, log_did,
+    actions::RelationshipAction, credential_actions, dispatch_util, log_did,
     main_page::content::RelationshipsMode, resolve_did_to_display, settings_actions, state::State,
 };
 use openvtc_core::config::protected_config::Contact;
@@ -626,11 +626,6 @@ async fn handle_submit(
     {
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("Request sent to {}", log_did(did)));
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
             let detail = {
                 let rel_key = std::sync::Arc::new(did.to_string());
                 if let Some(rel_arc) = config.private.relationships.get(&rel_key)
@@ -656,18 +651,26 @@ async fn handle_submit(
                     String::new()
                 }
             };
-            state.main_page.sync_from_config(config);
-            state.main_page.log_detailed(
-                format!("Relationship request sent to {}", log_did(did)),
-                detail,
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SaveAndSync,
+                |mp| &mut mp.content_panel.relationships.status_message,
+                format!("Request sent to {}", log_did(did)),
+                dispatch_util::SyncLog::Detailed {
+                    summary: format!("Relationship request sent to {}", log_did(did)),
+                    detail,
+                },
             );
         }
         Err(e) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("Error: {e:#}"));
-            state
-                .main_page
-                .log_error("Failed to send relationship request", &e);
+            dispatch_util::record_error(
+                &mut state.main_page,
+                |mp| &mut mp.content_panel.relationships.status_message,
+                "Failed to send relationship request",
+                &e,
+            );
         }
     }
 }
@@ -694,29 +697,31 @@ async fn handle_ping(
     match ping_relationship(config, tdk, service, remote_p_did).await {
         Ok(()) => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-            state.main_page.content_panel.relationships.status_message =
-                Some("Ping sent".to_string());
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            state.main_page.sync_from_config(config);
             let using_rdid = !config.is_persona_did(&our_did_str);
-            state.main_page.log_detailed(
-                format!(
-                    "Trust-ping sent to {display_name}{}",
-                    if using_rdid { " (via R-DID)" } else { "" }
-                ),
-                format!(
-                    "Trust-Ping Sent\n\
-                     ───────────────\n\
-                     To:              {display_name}\n\
-                     Sent to DID:     {remote_did_str}\n\
-                     Sent from DID:   {our_did_str}\n\
-                     Remote persona:  {remote_p_did}\n\
-                     Using R-DIDs:    {}\n\
-                     Routed via:      mediator",
-                    if using_rdid { "yes" } else { "no" },
-                ),
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SaveAndSync,
+                |mp| &mut mp.content_panel.relationships.status_message,
+                "Ping sent",
+                dispatch_util::SyncLog::Detailed {
+                    summary: format!(
+                        "Trust-ping sent to {display_name}{}",
+                        if using_rdid { " (via R-DID)" } else { "" }
+                    ),
+                    detail: format!(
+                        "Trust-Ping Sent\n\
+                         ───────────────\n\
+                         To:              {display_name}\n\
+                         Sent to DID:     {remote_did_str}\n\
+                         Sent from DID:   {our_did_str}\n\
+                         Remote persona:  {remote_p_did}\n\
+                         Using R-DIDs:    {}\n\
+                         Routed via:      mediator",
+                        if using_rdid { "yes" } else { "no" },
+                    ),
+                },
             );
         }
         Err(e) => {
@@ -752,13 +757,15 @@ async fn handle_remove(
         return;
     }
     state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-    state.main_page.content_panel.relationships.status_message =
-        Some("Relationship removed".to_string());
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
-    state.main_page.sync_from_config(config);
-    state.main_page.log("Relationship removed");
+    dispatch_util::save_and_sync(
+        &mut state.main_page,
+        config,
+        profile,
+        dispatch_util::Persist::SaveAndSync,
+        |mp| &mut mp.content_panel.relationships.status_message,
+        "Relationship removed",
+        dispatch_util::SyncLog::Plain("Relationship removed".to_string()),
+    );
 }
 
 fn handle_edit_alias(
@@ -817,8 +824,15 @@ fn handle_edit_alias(
         index,
         selected_vrc: None,
     };
-    state.main_page.content_panel.relationships.status_message = Some("Alias updated".to_string());
-    state.main_page.log("Alias updated");
+    dispatch_util::save_and_sync(
+        &mut state.main_page,
+        config,
+        profile,
+        dispatch_util::Persist::None,
+        |mp| &mut mp.content_panel.relationships.status_message,
+        "Alias updated",
+        dispatch_util::SyncLog::Plain("Alias updated".to_string()),
+    );
 }
 
 async fn handle_request_vrc(
@@ -832,20 +846,22 @@ async fn handle_request_vrc(
     let display_name = resolve_did_to_display(config, remote_p_did);
     match credential_actions::send_vrc_request(config, tdk, service, remote_p_did, None).await {
         Ok(()) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("VRC requested from {display_name}"));
-            if let Err(e) = settings_actions::save_config(config, profile) {
-                state.main_page.log_error("Failed to save config", &e);
-            }
-            state.main_page.sync_from_config(config);
-            state.main_page.log_detailed(
+            dispatch_util::save_and_sync(
+                &mut state.main_page,
+                config,
+                profile,
+                dispatch_util::Persist::SaveAndSync,
+                |mp| &mut mp.content_panel.relationships.status_message,
                 format!("VRC requested from {display_name}"),
-                format!(
-                    "VRC Request Sent\n\
-                     ────────────────\n\
-                     To:      {display_name}\n\
-                     DID:     {remote_p_did}",
-                ),
+                dispatch_util::SyncLog::Detailed {
+                    summary: format!("VRC requested from {display_name}"),
+                    detail: format!(
+                        "VRC Request Sent\n\
+                         ────────────────\n\
+                         To:      {display_name}\n\
+                         DID:     {remote_p_did}",
+                    ),
+                },
             );
         }
         Err(e) => {
