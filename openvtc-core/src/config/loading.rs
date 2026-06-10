@@ -11,7 +11,7 @@ use affinidi_tdk::{TDK, messaging::profiles::ATMProfile};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tracing::{info, warn};
 use vta_sdk::credentials::CredentialBundle;
 
@@ -272,7 +272,7 @@ impl Config {
             None
         };
 
-        let mut identities = HashMap::new();
+        let mut identities = BTreeMap::new();
 
         // Hydrate every persona, then register relationship profiles once. The
         // whole block is wrapped in an inner future so that on ANY `?` error the

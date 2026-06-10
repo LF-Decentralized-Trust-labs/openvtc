@@ -20,7 +20,7 @@ use openvtc_core::{
 };
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     fs,
 };
 use tokio::sync::watch;
@@ -299,7 +299,7 @@ impl ConfigExtension for Config {
 
         let config = Config {
             account,
-            identities: HashMap::new(),
+            identities: BTreeMap::new(),
             key_backend,
             public: PublicConfig {
                 config_version: openvtc_core::config::public_config::CONFIG_VERSION,
