@@ -569,6 +569,11 @@ impl StateHandler {
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
+                    // Shared nav reducer first: pure-state nav arms live in exactly
+                    // one place (`handle_nav_action`). It returns true when it
+                    // handled the action; the loop-specific arms below run only when
+                    // it didn't.
+                    _ if handle_nav_action(&mut state, &action) => {},
                     Action::Exit => {
                         if let Err(e) = terminator.terminate(Interrupted::UserInt) {
                             debug!("Failed to send terminate signal: {e}");
@@ -583,38 +588,6 @@ impl StateHandler {
                         }
 
                         break interrupted;
-                    },
-                    Action::DismissLoading => {
-                        // Phase 1 done + user pressed Enter — reveal the main page
-                        // (phase-2 connection is already running in the background).
-                        state.active_page = state::ActivePage::Main;
-                    },
-                    Action::MainMenuSelected(menu_item) => {
-                        // User has changed main menu selection
-                        state.main_page.menu_panel.selected_menu = menu_item;
-                    },
-                    Action::MainPanelSwitch(panel) => {
-                        match panel {
-                            MainPanel::ContentPanel => {
-                                // When switching to ContentPanel, reset any content-specific state if needed
-                                state.main_page.menu_panel.selected = false;
-                                state.main_page.content_panel.selected = true;
-                            },
-                            MainPanel::MainMenu => {
-                                // When switching to MainMenu, reset any content-specific state if needed
-                                state.main_page.menu_panel.selected = true;
-                                state.main_page.content_panel.selected = false;
-                            }
-                        }
-                    },
-                    Action::CommunitySelect(i) => {
-                        state.main_page.content_panel.communities.selected_index = i;
-                    },
-                    Action::CommunityConfirmDelete(i) => {
-                        state.main_page.content_panel.communities.confirm_delete = Some(i);
-                    },
-                    Action::CommunityCancelDelete => {
-                        state.main_page.content_panel.communities.confirm_delete = None;
                     },
                     Action::DeleteCommunity(i) => {
                         // Identify the deleted community's persona BEFORE the
@@ -658,15 +631,6 @@ impl StateHandler {
                             state.connection.status = state::MediatorStatus::NoActiveCommunity;
                             state.connection.messaging_active = false;
                         }
-                    },
-                    Action::DidSelect(i) => {
-                        state.main_page.content_panel.vta.did_selected_index = i;
-                    },
-                    Action::DidConfirmDelete(i) => {
-                        state.main_page.content_panel.vta.confirm_delete_did = Some(i);
-                    },
-                    Action::DidCancelDelete => {
-                        state.main_page.content_panel.vta.confirm_delete_did = None;
                     },
                     Action::DeleteDid(i) => {
                         self.delete_context_did(
@@ -1130,6 +1094,11 @@ impl StateHandler {
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
+                    // Shared nav reducer first — degraded mode now routes the exact
+                    // same pure-state nav set as the runtime loop (previously these
+                    // arms were duplicated here and the VTA DID-manager nav arms were
+                    // silently dropped by the trailing `_ => {}`).
+                    _ if handle_nav_action(state, &action) => {}
                     Action::Exit => {
                         if let Err(e) = terminator.terminate(Interrupted::UserInt) {
                             debug!("Failed to send terminate signal: {e}");
@@ -1141,33 +1110,6 @@ impl StateHandler {
                             debug!("Failed to send terminate signal: {e}");
                         }
                         break DegradedOutcome::Exit(interrupted);
-                    }
-                    Action::DismissLoading => {
-                        state.active_page = state::ActivePage::Main;
-                    }
-                    Action::MainMenuSelected(menu_item) => {
-                        state.main_page.menu_panel.selected_menu = menu_item;
-                    }
-                    Action::MainPanelSwitch(panel) => {
-                        match panel {
-                            MainPanel::ContentPanel => {
-                                state.main_page.menu_panel.selected = false;
-                                state.main_page.content_panel.selected = true;
-                            }
-                            MainPanel::MainMenu => {
-                                state.main_page.menu_panel.selected = true;
-                                state.main_page.content_panel.selected = false;
-                            }
-                        }
-                    }
-                    Action::CommunitySelect(i) => {
-                        state.main_page.content_panel.communities.selected_index = i;
-                    }
-                    Action::CommunityConfirmDelete(i) => {
-                        state.main_page.content_panel.communities.confirm_delete = Some(i);
-                    }
-                    Action::CommunityCancelDelete => {
-                        state.main_page.content_panel.communities.confirm_delete = None;
                     }
                     Action::DeleteCommunity(i) => {
                         if let Some(ctx) = join_ctx.as_mut() {
@@ -1235,6 +1177,11 @@ impl StateHandler {
                             );
                         }
                     }
+                    // Messaging-only actions (Inbox / Relationship / Credential /
+                    // Settings / Contact, DeleteDid) are intentionally inert in the
+                    // degraded loop — there's no live messaging/admin context to
+                    // service them. The pure nav arms they previously shared this
+                    // catch-all with now go through `handle_nav_action` above.
                     _ => {}
                 },
                 Ok(interrupted) = interrupt_rx.recv() => {
@@ -1304,6 +1251,69 @@ enum DegradedOutcome {
     Joined(DegradedJoinContext),
 }
 
+/// Apply a pure navigation action to `state`, shared by the runtime loop and the
+/// degraded loop so both modes route the same nav set from exactly one place.
+///
+/// Returns `true` if `action` was a nav action and was handled here; `false`
+/// otherwise, signalling the caller to fall through to its loop-specific arms
+/// (DIDComm events for the runtime loop; join hot-start etc. for degraded).
+///
+/// Only arms that mutate `&mut State` and nothing else live here. Loop-local
+/// arms stay in their loops because they need resources this signature can't
+/// carry cleanly:
+///   * `Exit` / `UXError` — must signal the terminator and `break` with the
+///     loop's own outcome type (`Interrupted` vs `DegradedOutcome`).
+///   * `DeleteCommunity` / `DeleteDid` — `async`, and reach into the live
+///     `Config`, the admin VTA session, and the DIDComm service to tear down
+///     listeners; the two loops genuinely differ here.
+///   * `StartJoin` — `async`; drives `join_flow` with loop-specific context and
+///     (degraded only) the join hot-start handoff.
+fn handle_nav_action(state: &mut State, action: &Action) -> bool {
+    match action {
+        Action::DismissLoading => {
+            // Phase 1 done + user pressed Enter — reveal the main page
+            // (phase-2 connection is already running in the background).
+            state.active_page = state::ActivePage::Main;
+        }
+        Action::MainMenuSelected(menu_item) => {
+            // User has changed main menu selection.
+            state.main_page.menu_panel.selected_menu = menu_item.clone();
+        }
+        Action::MainPanelSwitch(panel) => match panel {
+            MainPanel::ContentPanel => {
+                // When switching to ContentPanel, move focus to the content panel.
+                state.main_page.menu_panel.selected = false;
+                state.main_page.content_panel.selected = true;
+            }
+            MainPanel::MainMenu => {
+                // When switching to MainMenu, move focus back to the menu.
+                state.main_page.menu_panel.selected = true;
+                state.main_page.content_panel.selected = false;
+            }
+        },
+        Action::CommunitySelect(i) => {
+            state.main_page.content_panel.communities.selected_index = *i;
+        }
+        Action::CommunityConfirmDelete(i) => {
+            state.main_page.content_panel.communities.confirm_delete = Some(*i);
+        }
+        Action::CommunityCancelDelete => {
+            state.main_page.content_panel.communities.confirm_delete = None;
+        }
+        Action::DidSelect(i) => {
+            state.main_page.content_panel.vta.did_selected_index = *i;
+        }
+        Action::DidConfirmDelete(i) => {
+            state.main_page.content_panel.vta.confirm_delete_did = Some(*i);
+        }
+        Action::DidCancelDelete => {
+            state.main_page.content_panel.vta.confirm_delete_did = None;
+        }
+        _ => return false,
+    }
+    true
+}
+
 // Per-domain action dispatch lives in the corresponding sub-module:
 //   inbox_actions::dispatch
 //   relationship_actions::dispatch
@@ -1334,4 +1344,110 @@ fn build_trust_pong(
     .finalize();
 
     Ok(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_handler::main_page::menu::MainMenu;
+
+    /// Drive `handle_nav_action` directly over a fresh `State`. Because the
+    /// reducer is the single code path both the runtime loop and the degraded
+    /// loop call, asserting it here proves *both* loops apply identical handling
+    /// for these actions — there is no per-loop copy to drift.
+    #[test]
+    fn nav_reducer_handles_shared_arms_identically() {
+        struct Case {
+            name: &'static str,
+            action: Action,
+            assert_fn: fn(&State),
+        }
+
+        let cases = [
+            Case {
+                name: "DismissLoading reveals the main page",
+                action: Action::DismissLoading,
+                assert_fn: |s| {
+                    assert!(
+                        matches!(s.active_page, state::ActivePage::Main),
+                        "expected ActivePage::Main"
+                    )
+                },
+            },
+            Case {
+                name: "MainMenuSelected updates the menu selection",
+                action: Action::MainMenuSelected(MainMenu::Settings),
+                assert_fn: |s| assert_eq!(s.main_page.menu_panel.selected_menu, MainMenu::Settings),
+            },
+            Case {
+                name: "MainPanelSwitch(ContentPanel) moves focus to the content panel",
+                action: Action::MainPanelSwitch(MainPanel::ContentPanel),
+                assert_fn: |s| {
+                    assert!(!s.main_page.menu_panel.selected);
+                    assert!(s.main_page.content_panel.selected);
+                },
+            },
+            Case {
+                name: "MainPanelSwitch(MainMenu) moves focus back to the menu",
+                action: Action::MainPanelSwitch(MainPanel::MainMenu),
+                assert_fn: |s| {
+                    assert!(s.main_page.menu_panel.selected);
+                    assert!(!s.main_page.content_panel.selected);
+                },
+            },
+            Case {
+                name: "CommunitySelect updates the selected index",
+                action: Action::CommunitySelect(3),
+                assert_fn: |s| assert_eq!(s.main_page.content_panel.communities.selected_index, 3),
+            },
+            Case {
+                name: "CommunityConfirmDelete arms the confirmation",
+                action: Action::CommunityConfirmDelete(2),
+                assert_fn: |s| {
+                    assert_eq!(
+                        s.main_page.content_panel.communities.confirm_delete,
+                        Some(2)
+                    )
+                },
+            },
+            Case {
+                name: "DidConfirmDelete arms the VTA DID confirmation (degraded mode used to drop this)",
+                action: Action::DidConfirmDelete(1),
+                assert_fn: |s| {
+                    assert_eq!(s.main_page.content_panel.vta.confirm_delete_did, Some(1))
+                },
+            },
+        ];
+
+        for case in cases {
+            let mut state = State::default();
+            let handled = handle_nav_action(&mut state, &case.action);
+            assert!(handled, "nav reducer should handle: {}", case.name);
+            (case.assert_fn)(&state);
+        }
+    }
+
+    /// Loop-local arms (terminating + async) must NOT be claimed by the shared
+    /// reducer; it returns `false` so each loop falls through to its own arm.
+    /// `Exit` in particular is signalled via the return value, not handled here.
+    #[test]
+    fn nav_reducer_defers_loop_local_arms() {
+        let mut state = State::default();
+        assert!(
+            !handle_nav_action(&mut state, &Action::Exit),
+            "Exit must be deferred to the loop (it breaks with the loop's outcome type)"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::DeleteCommunity(0)),
+            "DeleteCommunity is async/loop-local"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::DeleteDid(0)),
+            "DeleteDid is async/loop-local"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::StartJoin),
+            "StartJoin is async/loop-local"
+        );
+    }
 }
