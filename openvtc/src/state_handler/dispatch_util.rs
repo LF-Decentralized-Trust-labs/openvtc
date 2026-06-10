@@ -91,3 +91,32 @@ pub(crate) fn record_error(
     *status(main_page) = Some(format!("Error: {err:#}"));
     main_page.log_error(context, err);
 }
+
+/// Build a minimal BIP32-backed [`Config`] for the pure `apply`/`apply_outcome`
+/// tests across the `state_handler` modules. Mirrors openvtc-core's own (private)
+/// `test_config`; all fields are public so no cross-crate test constructor is
+/// needed.
+#[cfg(test)]
+pub(crate) fn test_config() -> Config {
+    use openvtc_core::config::{
+        KeyBackend, account::Account, protected_config::ProtectedConfig,
+        public_config::PublicConfig, secured_config::ProtectionMethod,
+    };
+    Config {
+        public: PublicConfig::default(),
+        private: ProtectedConfig::default(),
+        key_backend: KeyBackend::Bip32 {
+            root: ed25519_dalek_bip32::ExtendedSigningKey::from_seed(&[7u8; 32]).unwrap(),
+            seed: secrecy::SecretString::new("seed".into()),
+        },
+        key_info: std::collections::HashMap::new(),
+        protection_method: ProtectionMethod::default(),
+        #[cfg(feature = "openpgp-card")]
+        token_admin_pin: None,
+        #[cfg(feature = "openpgp-card")]
+        token_user_pin: secrecy::SecretString::new("".into()),
+        unlock_code: None,
+        account: Account::default(),
+        identities: std::collections::BTreeMap::new(),
+    }
+}

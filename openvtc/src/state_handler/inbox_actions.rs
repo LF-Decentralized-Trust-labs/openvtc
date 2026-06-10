@@ -14,207 +14,16 @@ use chrono::Utc;
 use openvtc_core::{
     config::Config,
     logs::LogFamily,
-    relationships::{
-        Relationship, RelationshipAcceptBody, RelationshipRejectBody, RelationshipState,
-    },
+    relationships::{RelationshipAcceptBody, RelationshipRejectBody, RelationshipState},
     tasks::TaskType,
 };
 use serde_json::json;
 use tracing::{debug, info, warn};
 
-/// Accept an inbound relationship request.
-///
-/// When `generate_r_did` is true and the key backend is BIP32, a unique
-/// relationship DID (did:peer) is derived for privacy. Otherwise the
-/// persona DID is used directly.
-pub async fn accept_relationship_request(
-    config: &mut Config,
-    tdk: &TDK,
-    service: &DIDCommService,
-    task_id: &str,
-    generate_r_did: bool,
-    admin_vta: Option<&vta_sdk::client::VtaClient>,
-) -> Result<()> {
-    let task_id = Arc::new(task_id.to_string());
-
-    // Find the task and extract request data
-    let (from_did, their_did, sender_name) = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        match &task.type_ {
-            TaskType::RelationshipRequestInbound { from, request, .. } => {
-                // Sanitize the sender-supplied name before it persists as a
-                // contact alias — strips ANSI / control chars / bidi-overrides
-                // / zero-width chars. Hard-cap at 64 chars so a hostile peer
-                // can't dominate the relationships list.
-                let sanitized_name = request
-                    .name
-                    .as_deref()
-                    .map(|n| super::main_page::sanitize_display(n, 64));
-                (Arc::clone(from), request.did.clone(), sanitized_name)
-            }
-            _ => anyhow::bail!("task {} is not an inbound relationship request", task_id),
-        }
-    };
-
-    // Optionally generate a random relationship DID for privacy.
-    // The R-DID is exchanged in the message body but NOT used for routing
-    // during the handshake — all handshake messages use persona DIDs for
-    // from/to so the mediator can route them and sender validation is simple.
-    // The R-DID listener is registered for post-establishment communication.
-    let our_did = if generate_r_did {
-        // Snapshot the mediator before the &mut config borrow below.
-        let mediator = config.mediator_did().to_string();
-        let r_did = Arc::new(
-            super::relationship_actions::create_relationship_did(tdk, config, &mediator, admin_vta)
-                .await?,
-        );
-        // Register listener for post-establishment use (no need to wait for connection)
-        let listener_config = super::didcomm::relationship_listener_config(
-            config,
-            tdk,
-            &r_did,
-            &from_did,
-            config.mediator_did(),
-        )
-        .await;
-        if let Err(e) = service.add_listener(listener_config).await {
-            tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
-        }
-        r_did
-    } else {
-        config.persona_did_arc()
-    };
-
-    // Add or update contact with sender's name as alias
-    if let Some(existing) = config.private.contacts.find_contact(&from_did) {
-        // Contact exists — update alias if sender provided a name and contact has no alias
-        if existing.alias.is_none() && sender_name.is_some() {
-            // Remove and re-add with the alias
-            config
-                .private
-                .contacts
-                .remove_contact(&mut config.public.logs, &from_did);
-            config
-                .private
-                .contacts
-                .add_contact(
-                    tdk,
-                    &from_did,
-                    sender_name.clone(),
-                    false,
-                    &mut config.public.logs,
-                )
-                .await?;
-        }
-    } else {
-        config
-            .private
-            .contacts
-            .add_contact(
-                tdk,
-                &from_did,
-                sender_name.clone(),
-                false,
-                &mut config.public.logs,
-            )
-            .await?;
-    }
-
-    // Build and send acceptance using persona DIDs for routing.
-    // The R-DID is carried in the body — the mediator only sees persona DIDs.
-    // from/to use persona DIDs so encryption keys match the persona listener.
-    let msg = build_accept_message(
-        config.persona_did(), // from: our persona
-        &from_did,            // to: their persona
-        &our_did,             // body.did: our R-DID (or persona if no R-DID)
-        &task_id,
-    )?;
-    super::didcomm::send_message(service, config, &msg, config.persona_did(), &from_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send acceptance: {e}"))?;
-
-    // Create relationship entry
-    config.private.relationships.relationships.insert(
-        Arc::clone(&from_did),
-        Arc::new(Mutex::new(Relationship {
-            task_id: Arc::clone(&task_id),
-            remote_did: Arc::new(their_did),
-            remote_p_did: Arc::clone(&from_did),
-            our_did,
-            created: Utc::now(),
-            state: RelationshipState::RequestAccepted,
-        })),
-    );
-
-    // Remove the task
-    config.private.tasks.remove(&task_id);
-
-    config.public.logs.insert(
-        LogFamily::Relationship,
-        format!("Accepted relationship request from ({})", from_did),
-    );
-    info!(from = %from_did, "relationship request accepted");
-    Ok(())
-}
-
-/// Reject an inbound relationship request.
-///
-/// Sends rejection message to the remote party and removes the task.
-pub async fn reject_relationship_request(
-    config: &mut Config,
-    service: &DIDCommService,
-    task_id: &str,
-    reason: Option<&str>,
-) -> Result<()> {
-    let task_id = Arc::new(task_id.to_string());
-
-    // Find the task and extract sender
-    let from_did = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        match &task.type_ {
-            TaskType::RelationshipRequestInbound { from, .. } => Arc::clone(from),
-            _ => anyhow::bail!("task {} is not an inbound relationship request", task_id),
-        }
-    };
-
-    // Build and send rejection message
-    let msg = build_reject_message(config.persona_did(), &from_did, reason, &task_id)?;
-    super::didcomm::send_message(service, config, &msg, config.persona_did(), &from_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send rejection: {e}"))?;
-
-    // Remove the task
-    config.private.tasks.remove(&task_id);
-
-    config.public.logs.insert(
-        LogFamily::Relationship,
-        format!(
-            "Rejected relationship request from ({}). Reason: {}",
-            from_did,
-            reason.unwrap_or("none")
-        ),
-    );
-    info!(from = %from_did, "relationship request rejected");
-    Ok(())
-}
+// NOTE (R14): the formerly-inline `accept_relationship_request` /
+// `reject_relationship_request` are now split into a loop-thread `prepare_*`
+// (below, in the dispatch-wrapper section) and an I/O-only job, so the slow
+// VTA round-trip + handshake send no longer park the runtime select loop.
 
 /// Accept a received VRC — store it in vrcs_received and remove the task.
 pub fn accept_vrc(config: &mut Config, task_id: &str) -> Result<()> {
@@ -256,157 +65,10 @@ pub fn accept_vrc(config: &mut Config, task_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Accept an inbound VRC request — create, sign, and send a VRC back to the requester.
-///
-/// Uses current timestamp as valid_from and no valid_until (simplest default).
-pub async fn accept_vrc_request(
-    config: &mut Config,
-    tdk: &TDK,
-    service: &DIDCommService,
-    task_id: &str,
-) -> Result<()> {
-    use dtg_credentials::DTGCredential;
-    use openvtc_core::vrc::DtgCredentialMessage;
-
-    let task_id = Arc::new(task_id.to_string());
-
-    // Find the task and extract relationship info
-    let relationship = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        match &task.type_ {
-            TaskType::VRCRequestInbound { relationship, .. } => Arc::clone(relationship),
-            _ => anyhow::bail!("task {} is not an inbound VRC request", task_id),
-        }
-    };
-
-    let (our_r_did, their_p_did, their_r_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (
-            Arc::clone(&lock.our_did),
-            Arc::clone(&lock.remote_p_did),
-            Arc::clone(&lock.remote_did),
-        )
-    };
-
-    // Create VRC with current timestamp
-    let valid_from = Utc::now();
-    let mut vrc = DTGCredential::new_vrc(
-        config.persona_did().to_string(),
-        their_r_did.to_string(),
-        valid_from,
-        None, // no valid_until
-    );
-
-    // Sign the VRC with our persona signing key. Goes through dtg-credentials'
-    // own signing helper to keep the proof type aligned with the version of
-    // affinidi-data-integrity that dtg-credentials brings in.
-    let persona_keys = config.get_persona_keys(tdk).await?;
-    vrc.sign(&persona_keys.signing.secret, None).await?;
-
-    // Send VRC back to the requester
-    let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
-
-    super::didcomm::send_message(service, config, &msg, &our_r_did, &their_r_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send VRC: {e}"))?;
-
-    // Store in issued VRCs
-    config
-        .private
-        .vrcs_issued
-        .insert(&their_p_did, Arc::new(vrc))?;
-
-    // Remove the task
-    config.private.tasks.remove(&task_id);
-
-    config.public.logs.insert(
-        LogFamily::Task,
-        format!("Issued VRC to ({}) Task ID ({})", their_p_did, task_id),
-    );
-
-    info!(to = %their_p_did, "VRC issued and sent");
-    Ok(())
-}
-
-/// Reject an inbound VRC request.
-///
-/// Sends a rejection message to the requester and removes the task.
-pub async fn reject_vrc_request(
-    config: &mut Config,
-    service: &DIDCommService,
-    task_id: &str,
-    reason: Option<&str>,
-) -> Result<()> {
-    use openvtc_core::vrc::VRCRequestReject;
-
-    let task_id = Arc::new(task_id.to_string());
-
-    // Find the task and extract relationship info
-    let relationship = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        match &task.type_ {
-            TaskType::VRCRequestInbound { relationship, .. } => Arc::clone(relationship),
-            _ => anyhow::bail!("task {} is not an inbound VRC request", task_id),
-        }
-    };
-
-    let (our_r_did, their_r_did, their_p_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (
-            Arc::clone(&lock.our_did),
-            Arc::clone(&lock.remote_did),
-            Arc::clone(&lock.remote_p_did),
-        )
-    };
-
-    // Build and send rejection message
-    let msg = VRCRequestReject::create_message(
-        &their_r_did,
-        &our_r_did,
-        &task_id,
-        reason.map(|s| s.to_string()),
-    )?;
-
-    super::didcomm::send_message(service, config, &msg, &our_r_did, &their_r_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send VRC rejection: {e}"))?;
-
-    // Remove the task
-    config.private.tasks.remove(&task_id);
-
-    config.public.logs.insert(
-        LogFamily::Task,
-        format!(
-            "Rejected VRC request from ({}). Reason: {}",
-            their_p_did,
-            reason.unwrap_or("none")
-        ),
-    );
-    info!(from = %their_p_did, "VRC request rejected");
-    Ok(())
-}
+// NOTE (R14): the formerly-inline `accept_vrc_request` / `reject_vrc_request`
+// are now split into a loop-thread `prepare_*` (in the dispatch-wrapper section
+// below) + an I/O-only send job, so the DIDComm send no longer parks the loop.
+// The VRC create + sign stays on the loop thread (local crypto, not network).
 
 /// Clear all tasks from the inbox.
 pub fn clear_all_tasks(config: &mut Config) -> Result<()> {
@@ -473,7 +135,6 @@ use crate::state_handler::{
     settings_actions,
     state::State,
 };
-use tokio::sync::watch;
 
 fn handle_inbox_select(state: &mut State, index: usize) {
     state.main_page.content_panel.inbox.selected_index = index;
@@ -555,65 +216,6 @@ fn record_error(state: &mut State, context: &str, err: &anyhow::Error) {
     );
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn handle_accept_relationship(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &DIDCommService,
-    state: &mut State,
-    state_tx: &watch::Sender<State>,
-    profile: &str,
-    task_id: &str,
-    generate_r_did: bool,
-    admin_vta: Option<&vta_sdk::client::VtaClient>,
-) {
-    if generate_r_did {
-        state.main_page.content_panel.inbox.status_message =
-            Some("Accepting with R-DID — creating keys...".to_string());
-        state
-            .main_page
-            .log("Accepting relationship request (creating R-DID)...");
-    } else {
-        state.main_page.content_panel.inbox.status_message =
-            Some("Accepting relationship request...".to_string());
-        state.main_page.log("Accepting relationship request...");
-    }
-    let _ = state_tx.send(state.clone());
-
-    match accept_relationship_request(config, tdk, service, task_id, generate_r_did, admin_vta)
-        .await
-    {
-        Ok(()) => save_and_sync(
-            config,
-            state,
-            profile,
-            "Relationship request accepted",
-            "Accepted relationship request",
-        ),
-        Err(e) => record_error(state, "Failed to accept relationship", &e),
-    }
-}
-
-async fn handle_reject_relationship(
-    config: &mut Box<Config>,
-    service: &DIDCommService,
-    state: &mut State,
-    profile: &str,
-    task_id: &str,
-    reason: Option<&str>,
-) {
-    match reject_relationship_request(config, service, task_id, reason).await {
-        Ok(()) => save_and_sync(
-            config,
-            state,
-            profile,
-            "Relationship request rejected",
-            "Rejected relationship request",
-        ),
-        Err(e) => record_error(state, "Failed to reject relationship", &e),
-    }
-}
-
 fn handle_accept_vrc(config: &mut Box<Config>, state: &mut State, profile: &str, task_id: &str) {
     match accept_vrc(config, task_id) {
         Ok(()) => save_and_sync(
@@ -627,44 +229,582 @@ fn handle_accept_vrc(config: &mut Box<Config>, state: &mut State, profile: &str,
     }
 }
 
-async fn handle_accept_vrc_request(
+// ============================================================
+// R14 backgrounded inbox network dispatch
+// ============================================================
+
+use openvtc_core::relationships::Relationship as RelRecord;
+
+/// A backgrounded inbox network action, ready to run off the loop thread.
+pub(crate) enum InboxJob {
+    /// Accept a relationship request: optionally mint an R-DID + listener (VTA /
+    /// BIP32, off-loop), then send the acceptance via the persona listener.
+    AcceptRelationship(Box<AcceptJob>),
+    /// A single DIDComm send (reject-relationship, accept/reject VRC request).
+    Send(InboxSend),
+}
+
+impl InboxJob {
+    pub(crate) async fn run(self) -> InboxOutcome {
+        match self {
+            InboxJob::AcceptRelationship(job) => job.run().await,
+            InboxJob::Send(send) => send.run().await,
+        }
+    }
+}
+
+/// Owned inputs for a backgrounded relationship-acceptance.
+pub(crate) struct AcceptJob {
+    tdk: TDK,
+    service: DIDCommService,
+    /// `Some` ⇒ mint an R-DID first; `None` ⇒ use the persona DID directly.
+    rdid_plan: Option<crate::state_handler::relationship_actions::RDidPlan>,
+    persona_did: Arc<String>,
+    persona_listener_id: String,
+    task_id: Arc<String>,
+    from_did: Arc<String>,
+    their_did: String,
+}
+
+impl AcceptJob {
+    async fn run(self) -> InboxOutcome {
+        let AcceptJob {
+            tdk,
+            service,
+            rdid_plan,
+            persona_did,
+            persona_listener_id,
+            task_id,
+            from_did,
+            their_did,
+        } = self;
+
+        // 1. Mint the R-DID + listener off the loop (if requested).
+        let (our_did, key_info) = match rdid_plan {
+            Some(plan) => match plan.create_io(&tdk, &service, &from_did).await {
+                Ok(created) => (Arc::new(created.r_did), created.key_info),
+                Err(e) => {
+                    return InboxOutcome {
+                        effect: InboxEffect::AcceptRelationship {
+                            task_id,
+                            from_did,
+                            their_did,
+                            our_did: persona_did,
+                            key_info: Vec::new(),
+                        },
+                        result: Err(format!("{e}")),
+                    };
+                }
+            },
+            None => (Arc::clone(&persona_did), Vec::new()),
+        };
+
+        // 2. Build + send the acceptance via the persona listener (handshake uses
+        //    persona DIDs for routing; the R-DID is carried in the body).
+        let result = match build_accept_message(&persona_did, &from_did, &our_did, &task_id) {
+            Ok(msg) => {
+                super::didcomm::send_message_via(&service, &msg, &persona_listener_id, &from_did)
+                    .await
+                    .map_err(|e| format!("{e}"))
+            }
+            Err(e) => Err(format!("{e}")),
+        };
+
+        InboxOutcome {
+            effect: InboxEffect::AcceptRelationship {
+                task_id,
+                from_did,
+                their_did,
+                our_did,
+                key_info,
+            },
+            result,
+        }
+    }
+}
+
+/// A single backgrounded inbox DIDComm send + the post-send effect.
+pub(crate) struct InboxSend {
+    service: DIDCommService,
+    listener_id: String,
+    to_did: Arc<String>,
+    message: Box<Message>,
+    effect: InboxEffect,
+}
+
+impl InboxSend {
+    async fn run(self) -> InboxOutcome {
+        let InboxSend {
+            service,
+            listener_id,
+            to_did,
+            message,
+            effect,
+        } = self;
+        let result = super::didcomm::send_message_via(&service, &message, &listener_id, &to_did)
+            .await
+            .map_err(|e| format!("{e}"));
+        InboxOutcome { effect, result }
+    }
+}
+
+/// Post-send mutation for an inbox network action, owning the data the old
+/// inline success block referenced.
+pub(crate) enum InboxEffect {
+    /// Accept relationship: insert relationship + remove task + log.
+    AcceptRelationship {
+        task_id: Arc<String>,
+        from_did: Arc<String>,
+        their_did: String,
+        our_did: Arc<String>,
+        /// R-DID `key_info` to record (empty when the persona DID was used).
+        key_info: Vec<(String, openvtc_core::config::secured_config::KeyInfoConfig)>,
+    },
+    /// Reject relationship: remove task + log.
+    RejectRelationship {
+        task_id: Arc<String>,
+        from_did: Arc<String>,
+        reason: Option<String>,
+    },
+    /// Accept VRC request: store the signed issued VRC + remove task + log.
+    AcceptVrcRequest {
+        task_id: Arc<String>,
+        their_p_did: Arc<String>,
+        vrc: Box<dtg_credentials::DTGCredential>,
+    },
+    /// Reject VRC request: remove task + log.
+    RejectVrcRequest {
+        task_id: Arc<String>,
+        their_p_did: Arc<String>,
+        reason: Option<String>,
+    },
+}
+
+/// Completed inbox network dispatch: the post-send effect + the send result.
+pub(crate) struct InboxOutcome {
+    effect: InboxEffect,
+    result: Result<(), String>,
+}
+
+impl InboxOutcome {
+    /// Apply the post-send mutation on the loop thread, reproducing the old
+    /// inline success/error block. The status slot is `inbox.status_message`; on
+    /// success the active task is cleared (as `save_and_sync` did before).
+    pub(crate) fn apply(self, state: &mut State, config: &mut Config, profile: &str) {
+        match self.effect {
+            InboxEffect::AcceptRelationship {
+                task_id,
+                from_did,
+                their_did,
+                our_did,
+                key_info,
+            } => {
+                // Record minted R-DID key metadata (success + failure, matching
+                // the pre-R14 in-memory state; only success persists via save).
+                for (id, info) in key_info {
+                    config.key_info.insert(id, info);
+                }
+                match self.result {
+                    Ok(()) => {
+                        config.private.relationships.relationships.insert(
+                            Arc::clone(&from_did),
+                            Arc::new(Mutex::new(RelRecord {
+                                task_id: Arc::clone(&task_id),
+                                remote_did: Arc::new(their_did),
+                                remote_p_did: Arc::clone(&from_did),
+                                our_did,
+                                created: Utc::now(),
+                                state: RelationshipState::RequestAccepted,
+                            })),
+                        );
+                        config.private.tasks.remove(&task_id);
+                        config.public.logs.insert(
+                            LogFamily::Relationship,
+                            format!("Accepted relationship request from ({from_did})"),
+                        );
+                        info!(from = %from_did, "relationship request accepted");
+                        save_and_sync(
+                            config,
+                            state,
+                            profile,
+                            "Relationship request accepted",
+                            "Accepted relationship request",
+                        );
+                    }
+                    Err(e) => record_error(
+                        state,
+                        "Failed to accept relationship",
+                        &anyhow::anyhow!("failed to send acceptance: {e}"),
+                    ),
+                }
+            }
+            InboxEffect::RejectRelationship {
+                task_id,
+                from_did,
+                reason,
+            } => match self.result {
+                Ok(()) => {
+                    config.private.tasks.remove(&task_id);
+                    config.public.logs.insert(
+                        LogFamily::Relationship,
+                        format!(
+                            "Rejected relationship request from ({from_did}). Reason: {}",
+                            reason.as_deref().unwrap_or("none")
+                        ),
+                    );
+                    info!(from = %from_did, "relationship request rejected");
+                    save_and_sync(
+                        config,
+                        state,
+                        profile,
+                        "Relationship request rejected",
+                        "Rejected relationship request",
+                    );
+                }
+                Err(e) => record_error(
+                    state,
+                    "Failed to reject relationship",
+                    &anyhow::anyhow!("failed to send rejection: {e}"),
+                ),
+            },
+            InboxEffect::AcceptVrcRequest {
+                task_id,
+                their_p_did,
+                vrc,
+            } => match self.result {
+                Ok(()) => {
+                    // Store the issued VRC (a fallible op today, surfaced as an
+                    // error if it fails — matching the old inline `?`).
+                    if let Err(e) = config
+                        .private
+                        .vrcs_issued
+                        .insert(&their_p_did, Arc::new(*vrc))
+                    {
+                        record_error(state, "Failed to issue VRC", &anyhow::anyhow!("{e}"));
+                        return;
+                    }
+                    config.private.tasks.remove(&task_id);
+                    config.public.logs.insert(
+                        LogFamily::Task,
+                        format!("Issued VRC to ({their_p_did}) Task ID ({task_id})"),
+                    );
+                    info!(to = %their_p_did, "VRC issued and sent");
+                    save_and_sync(
+                        config,
+                        state,
+                        profile,
+                        "VRC issued and sent",
+                        "VRC issued and sent",
+                    );
+                }
+                Err(e) => record_error(
+                    state,
+                    "Failed to issue VRC",
+                    &anyhow::anyhow!("failed to send VRC: {e}"),
+                ),
+            },
+            InboxEffect::RejectVrcRequest {
+                task_id,
+                their_p_did,
+                reason,
+            } => match self.result {
+                Ok(()) => {
+                    config.private.tasks.remove(&task_id);
+                    config.public.logs.insert(
+                        LogFamily::Task,
+                        format!(
+                            "Rejected VRC request from ({their_p_did}). Reason: {}",
+                            reason.as_deref().unwrap_or("none")
+                        ),
+                    );
+                    info!(from = %their_p_did, "VRC request rejected");
+                    save_and_sync(
+                        config,
+                        state,
+                        profile,
+                        "VRC request rejected",
+                        "Rejected VRC request",
+                    );
+                }
+                Err(e) => record_error(
+                    state,
+                    "Failed to reject VRC request",
+                    &anyhow::anyhow!("failed to send VRC rejection: {e}"),
+                ),
+            },
+        }
+    }
+}
+
+/// Loop-thread preparation for `AcceptRelationship`. Extracts the request data,
+/// reserves the R-DID plan, updates the contact, and snapshots message inputs.
+/// The slow VTA round-trip + handshake send run in the returned job.
+async fn prepare_accept_relationship(
+    config: &mut Box<Config>,
+    tdk: &TDK,
+    state: &mut State,
+    service: &DIDCommService,
+    task_id: &str,
+    generate_r_did: bool,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+) -> Result<InboxJob> {
+    let task_id = Arc::new(task_id.to_string());
+
+    let (from_did, their_did, sender_name) = {
+        let task_arc = Arc::clone(
+            config
+                .private
+                .tasks
+                .get_by_id(&task_id)
+                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
+        );
+        let task = task_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        match &task.type_ {
+            TaskType::RelationshipRequestInbound { from, request, .. } => {
+                let sanitized_name = request
+                    .name
+                    .as_deref()
+                    .map(|n| super::main_page::sanitize_display(n, 64));
+                (Arc::clone(from), request.did.clone(), sanitized_name)
+            }
+            _ => anyhow::bail!("task {task_id} is not an inbound relationship request"),
+        }
+    };
+
+    // Reserve the R-DID plan (BIP32 path-pointer reservation only; the key
+    // creation runs in the task).
+    let rdid_plan = if generate_r_did {
+        let mediator = config.mediator_did().to_string();
+        Some(
+            crate::state_handler::relationship_actions::plan_relationship_did(
+                config, &mediator, admin_vta,
+            )?,
+        )
+    } else {
+        None
+    };
+
+    // Add or update contact with sender's name as alias (done before the send).
+    if let Some(existing) = config.private.contacts.find_contact(&from_did) {
+        if existing.alias.is_none() && sender_name.is_some() {
+            config
+                .private
+                .contacts
+                .remove_contact(&mut config.public.logs, &from_did);
+            config
+                .private
+                .contacts
+                .add_contact(tdk, &from_did, sender_name, false, &mut config.public.logs)
+                .await?;
+        }
+    } else {
+        config
+            .private
+            .contacts
+            .add_contact(tdk, &from_did, sender_name, false, &mut config.public.logs)
+            .await?;
+    }
+
+    let persona_did = config.persona_did_arc();
+    let persona_listener_id = super::didcomm::listener_id_for_did(&persona_did, config);
+
+    if generate_r_did {
+        state.main_page.content_panel.inbox.status_message =
+            Some("Accepting with R-DID — creating keys...".to_string());
+        state
+            .main_page
+            .log("Accepting relationship request (creating R-DID)...");
+    } else {
+        state.main_page.content_panel.inbox.status_message =
+            Some("Accepting relationship request...".to_string());
+        state.main_page.log("Accepting relationship request...");
+    }
+
+    Ok(InboxJob::AcceptRelationship(Box::new(AcceptJob {
+        tdk: tdk.clone(),
+        service: service.clone(),
+        rdid_plan,
+        persona_did,
+        persona_listener_id,
+        task_id,
+        from_did,
+        their_did,
+    })))
+}
+
+/// Loop-thread preparation for `RejectRelationship`: build the rejection message
+/// + resolve the persona listener; the task sends it.
+fn prepare_reject_relationship(
+    config: &mut Box<Config>,
+    service: &DIDCommService,
+    state: &mut State,
+    task_id: &str,
+    reason: Option<&str>,
+) -> Result<InboxJob> {
+    let task_id = Arc::new(task_id.to_string());
+    let from_did = {
+        let task_arc = Arc::clone(
+            config
+                .private
+                .tasks
+                .get_by_id(&task_id)
+                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
+        );
+        let task = task_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        match &task.type_ {
+            TaskType::RelationshipRequestInbound { from, .. } => Arc::clone(from),
+            _ => anyhow::bail!("task {task_id} is not an inbound relationship request"),
+        }
+    };
+    let persona_did = config.persona_did_arc();
+    let listener_id = super::didcomm::listener_id_for_did(&persona_did, config);
+    let msg = build_reject_message(&persona_did, &from_did, reason, &task_id)?;
+    state.main_page.content_panel.inbox.status_message =
+        Some("Rejecting relationship request...".to_string());
+    Ok(InboxJob::Send(InboxSend {
+        service: service.clone(),
+        listener_id,
+        to_did: Arc::clone(&from_did),
+        message: Box::new(msg),
+        effect: InboxEffect::RejectRelationship {
+            task_id,
+            from_did,
+            reason: reason.map(|s| s.to_string()),
+        },
+    }))
+}
+
+/// Loop-thread preparation for `AcceptVrcRequest`: create + sign the VRC (local
+/// crypto), build the message; the task sends it and `apply` stores the issued
+/// VRC on success.
+async fn prepare_accept_vrc_request(
     config: &mut Box<Config>,
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
     task_id: &str,
-) {
-    match accept_vrc_request(config, tdk, service, task_id).await {
-        Ok(()) => save_and_sync(
-            config,
-            state,
-            profile,
-            "VRC issued and sent",
-            "VRC issued and sent",
-        ),
-        Err(e) => record_error(state, "Failed to issue VRC", &e),
-    }
+) -> Result<InboxJob> {
+    use dtg_credentials::DTGCredential;
+    use openvtc_core::vrc::DtgCredentialMessage;
+
+    let task_id = Arc::new(task_id.to_string());
+    let relationship = {
+        let task_arc = Arc::clone(
+            config
+                .private
+                .tasks
+                .get_by_id(&task_id)
+                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
+        );
+        let task = task_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        match &task.type_ {
+            TaskType::VRCRequestInbound { relationship, .. } => Arc::clone(relationship),
+            _ => anyhow::bail!("task {task_id} is not an inbound VRC request"),
+        }
+    };
+    let (our_r_did, their_p_did, their_r_did) = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        (
+            Arc::clone(&lock.our_did),
+            Arc::clone(&lock.remote_p_did),
+            Arc::clone(&lock.remote_did),
+        )
+    };
+
+    // Create + sign the VRC on the loop thread (local crypto, not network).
+    let valid_from = Utc::now();
+    let mut vrc = DTGCredential::new_vrc(
+        config.persona_did().to_string(),
+        their_r_did.to_string(),
+        valid_from,
+        None,
+    );
+    let persona_keys = config.get_persona_keys(tdk).await?;
+    vrc.sign(&persona_keys.signing.secret, None).await?;
+    let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
+    let listener_id = super::didcomm::listener_id_for_did(&our_r_did, config);
+
+    state.main_page.content_panel.inbox.status_message = Some("Issuing VRC...".to_string());
+
+    Ok(InboxJob::Send(InboxSend {
+        service: service.clone(),
+        listener_id,
+        to_did: their_r_did,
+        message: Box::new(msg),
+        effect: InboxEffect::AcceptVrcRequest {
+            task_id,
+            their_p_did,
+            vrc: Box::new(vrc),
+        },
+    }))
 }
 
-async fn handle_reject_vrc_request(
+/// Loop-thread preparation for `RejectVrcRequest`: build the rejection message;
+/// the task sends it.
+fn prepare_reject_vrc_request(
     config: &mut Box<Config>,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
     task_id: &str,
     reason: Option<&str>,
-) {
-    match reject_vrc_request(config, service, task_id, reason).await {
-        Ok(()) => save_and_sync(
-            config,
-            state,
-            profile,
-            "VRC request rejected",
-            "Rejected VRC request",
-        ),
-        Err(e) => record_error(state, "Failed to reject VRC request", &e),
-    }
+) -> Result<InboxJob> {
+    use openvtc_core::vrc::VRCRequestReject;
+
+    let task_id = Arc::new(task_id.to_string());
+    let relationship = {
+        let task_arc = Arc::clone(
+            config
+                .private
+                .tasks
+                .get_by_id(&task_id)
+                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
+        );
+        let task = task_arc
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        match &task.type_ {
+            TaskType::VRCRequestInbound { relationship, .. } => Arc::clone(relationship),
+            _ => anyhow::bail!("task {task_id} is not an inbound VRC request"),
+        }
+    };
+    let (our_r_did, their_r_did, their_p_did) = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        (
+            Arc::clone(&lock.our_did),
+            Arc::clone(&lock.remote_did),
+            Arc::clone(&lock.remote_p_did),
+        )
+    };
+    let msg = VRCRequestReject::create_message(
+        &their_r_did,
+        &our_r_did,
+        &task_id,
+        reason.map(|s| s.to_string()),
+    )?;
+    let listener_id = super::didcomm::listener_id_for_did(&our_r_did, config);
+    state.main_page.content_panel.inbox.status_message =
+        Some("Rejecting VRC request...".to_string());
+    Ok(InboxJob::Send(InboxSend {
+        service: service.clone(),
+        listener_id,
+        to_did: their_r_did,
+        message: Box::new(msg),
+        effect: InboxEffect::RejectVrcRequest {
+            task_id,
+            their_p_did,
+            reason: reason.map(|s| s.to_string()),
+        },
+    }))
 }
 
 fn handle_dismiss_task(config: &mut Box<Config>, state: &mut State, profile: &str, task_id: &str) {
@@ -693,8 +833,33 @@ fn handle_clear_all(config: &mut Box<Config>, state: &mut State, profile: &str) 
     state.main_page.log("All inbox tasks cleared");
 }
 
-/// Dispatch a single `InboxAction` to its handler. Centralizes what was
-/// previously a >30-line nested match in `state_handler::main_loop`.
+/// Outcome of synchronously dispatching an `InboxAction` on the loop thread.
+/// Local actions are `Handled`; network actions return a spawnable [`InboxJob`].
+pub(crate) enum InboxDispatch {
+    Handled,
+    Spawn(InboxJob),
+}
+
+/// Whether an `InboxAction` is a network-bound action the loop should run
+/// off-thread (claiming the `Inbox` busy-domain first). Checked *before*
+/// `dispatch` does any pre-send config mutation.
+pub(crate) fn is_network(action: &InboxAction) -> bool {
+    matches!(
+        action,
+        InboxAction::AcceptRelationship { .. }
+            | InboxAction::RejectRelationship { .. }
+            | InboxAction::AcceptVrcRequest { .. }
+            | InboxAction::RejectVrcRequest { .. }
+    )
+}
+
+/// Dispatch a single `InboxAction`.
+///
+/// Local actions (`AcceptVrc`, dismiss, clear, nav) are `Handled` synchronously;
+/// network actions do their loop-thread pre-send work and return
+/// [`InboxDispatch::Spawn`] for the loop to run off-thread (post-send mutation in
+/// [`InboxOutcome::apply`]). A pre-send failure is recorded as a status and
+/// returns `Handled` (no job spawned → the loop releases the busy-domain).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch(
     action: InboxAction,
@@ -702,10 +867,10 @@ pub(crate) async fn dispatch(
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    state_tx: &watch::Sender<State>,
     profile: &str,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
-) {
+) -> InboxDispatch {
+    let _ = profile;
     match action {
         InboxAction::SelectTask(index) => handle_inbox_select(state, index),
         InboxAction::OpenDetail(index) => handle_inbox_open_detail(state, index),
@@ -716,34 +881,208 @@ pub(crate) async fn dispatch(
             task_id,
             generate_r_did,
         } => {
-            handle_accept_relationship(
+            match prepare_accept_relationship(
                 config,
                 tdk,
-                service,
                 state,
-                state_tx,
-                profile,
+                service,
                 &task_id,
                 generate_r_did,
                 admin_vta,
             )
             .await
+            {
+                Ok(job) => return InboxDispatch::Spawn(job),
+                Err(e) => record_error(state, "Failed to accept relationship", &e),
+            }
         }
         InboxAction::RejectRelationship { task_id, reason } => {
-            handle_reject_relationship(config, service, state, profile, &task_id, reason.as_deref())
-                .await
+            match prepare_reject_relationship(config, service, state, &task_id, reason.as_deref()) {
+                Ok(job) => return InboxDispatch::Spawn(job),
+                Err(e) => record_error(state, "Failed to reject relationship", &e),
+            }
         }
         InboxAction::AcceptVrc { task_id } => handle_accept_vrc(config, state, profile, &task_id),
         InboxAction::AcceptVrcRequest { task_id } => {
-            handle_accept_vrc_request(config, tdk, service, state, profile, &task_id).await
+            match prepare_accept_vrc_request(config, tdk, service, state, &task_id).await {
+                Ok(job) => return InboxDispatch::Spawn(job),
+                Err(e) => record_error(state, "Failed to issue VRC", &e),
+            }
         }
         InboxAction::RejectVrcRequest { task_id, reason } => {
-            handle_reject_vrc_request(config, service, state, profile, &task_id, reason.as_deref())
-                .await
+            match prepare_reject_vrc_request(config, service, state, &task_id, reason.as_deref()) {
+                Ok(job) => return InboxDispatch::Spawn(job),
+                Err(e) => record_error(state, "Failed to reject VRC request", &e),
+            }
         }
         InboxAction::DismissTask { task_id } => {
             handle_dismiss_task(config, state, profile, &task_id)
         }
         InboxAction::ClearAll => handle_clear_all(config, state, profile),
+    }
+    InboxDispatch::Handled
+}
+
+#[cfg(test)]
+mod r14_tests {
+    use super::*;
+    use crate::state_handler::dispatch_util::test_config;
+
+    /// Accept-relationship success inserts the relationship (RequestAccepted),
+    /// removes the task, records minted R-DID key_info, and sets the status —
+    /// reproducing the post-send tail of `accept_relationship_request`.
+    #[test]
+    fn accept_relationship_success_inserts_relationship() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let from = Arc::new("did:peer:from".to_string());
+        let task_id = Arc::new("task-acc".to_string());
+        config
+            .private
+            .tasks
+            .new_task(&task_id, TaskType::RelationshipRequestRejected); // any placeholder
+
+        let outcome = InboxOutcome {
+            effect: InboxEffect::AcceptRelationship {
+                task_id: Arc::clone(&task_id),
+                from_did: Arc::clone(&from),
+                their_did: "did:peer:their".to_string(),
+                our_did: Arc::new("did:peer:our-rdid".to_string()),
+                key_info: vec![(
+                    "z-acc-key".to_string(),
+                    openvtc_core::config::secured_config::KeyInfoConfig {
+                        path: openvtc_core::config::secured_config::KeySourceMaterial::Derived {
+                            path: "m/3'/1'/1'/0'".to_string(),
+                        },
+                        create_time: Utc::now(),
+                        purpose: openvtc_core::config::KeyTypes::RelationshipVerification,
+                    },
+                )],
+            },
+            result: Ok(()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            config.private.relationships.get(&from).is_some(),
+            "relationship inserted on accept success"
+        );
+        assert!(
+            config.private.tasks.get_by_id(&task_id).is_none(),
+            "task removed on accept success"
+        );
+        assert!(config.key_info.contains_key("z-acc-key"));
+        assert_eq!(
+            state
+                .main_page
+                .content_panel
+                .inbox
+                .status_message
+                .as_deref(),
+            Some("Relationship request accepted")
+        );
+    }
+
+    /// Accept-relationship failure records key_info but inserts NO relationship
+    /// and keeps the task; the error status is surfaced.
+    #[test]
+    fn accept_relationship_failure_keeps_task_and_no_relationship() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let from = Arc::new("did:peer:from".to_string());
+        let task_id = Arc::new("task-acc".to_string());
+        config
+            .private
+            .tasks
+            .new_task(&task_id, TaskType::RelationshipRequestRejected);
+
+        let outcome = InboxOutcome {
+            effect: InboxEffect::AcceptRelationship {
+                task_id: Arc::clone(&task_id),
+                from_did: Arc::clone(&from),
+                their_did: "did:peer:their".to_string(),
+                our_did: Arc::new("did:peer:our-rdid".to_string()),
+                key_info: Vec::new(),
+            },
+            result: Err("send failed".to_string()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            config.private.relationships.get(&from).is_none(),
+            "no relationship on accept failure"
+        );
+        assert!(
+            config.private.tasks.get_by_id(&task_id).is_some(),
+            "task retained on accept failure"
+        );
+        let status = state
+            .main_page
+            .content_panel
+            .inbox
+            .status_message
+            .clone()
+            .unwrap_or_default();
+        assert!(status.starts_with("Error:"), "got: {status}");
+    }
+
+    /// Reject-relationship success removes the task and sets the status.
+    #[test]
+    fn reject_relationship_success_removes_task() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let task_id = Arc::new("task-rej".to_string());
+        config
+            .private
+            .tasks
+            .new_task(&task_id, TaskType::RelationshipRequestRejected);
+
+        let outcome = InboxOutcome {
+            effect: InboxEffect::RejectRelationship {
+                task_id: Arc::clone(&task_id),
+                from_did: Arc::new("did:peer:from".to_string()),
+                reason: Some("no thanks".to_string()),
+            },
+            result: Ok(()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(config.private.tasks.get_by_id(&task_id).is_none());
+        assert_eq!(
+            state
+                .main_page
+                .content_panel
+                .inbox
+                .status_message
+                .as_deref(),
+            Some("Relationship request rejected")
+        );
+    }
+
+    /// Reject-relationship failure keeps the task and surfaces the error.
+    #[test]
+    fn reject_relationship_failure_keeps_task() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let task_id = Arc::new("task-rej".to_string());
+        config
+            .private
+            .tasks
+            .new_task(&task_id, TaskType::RelationshipRequestRejected);
+
+        let outcome = InboxOutcome {
+            effect: InboxEffect::RejectRelationship {
+                task_id: Arc::clone(&task_id),
+                from_did: Arc::new("did:peer:from".to_string()),
+                reason: None,
+            },
+            result: Err("send failed".to_string()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            config.private.tasks.get_by_id(&task_id).is_some(),
+            "task retained on reject failure"
+        );
     }
 }

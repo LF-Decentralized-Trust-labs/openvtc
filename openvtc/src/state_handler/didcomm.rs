@@ -574,15 +574,17 @@ fn short_did_id(did: &str) -> String {
     hex::encode(&hash[..8])
 }
 
-/// Create a `ListenerConfig` for a relationship R-DID.
-pub async fn relationship_listener_config(
-    config: &Config,
-    tdk: &affinidi_tdk::TDK,
+/// Build a relationship R-DID `ListenerConfig` from already-owned secrets.
+///
+/// Config/TDK-free, so a backgrounded relationship-creation task (R14) can build
+/// the new R-DID listener from the secrets it just minted — no resolver lookup,
+/// no `Config` borrow — keeping the task `'static` + `Send`.
+pub fn relationship_listener_config_from_secrets(
     our_did: &str,
     remote_p_did: &str,
     mediator_did: &str,
+    secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
 ) -> ListenerConfig {
-    let secrets = get_secrets_for_did(tdk, config, our_did).await;
     ListenerConfig {
         id: format!("rel-{}", short_did_id(our_did)),
         profile: make_profile(

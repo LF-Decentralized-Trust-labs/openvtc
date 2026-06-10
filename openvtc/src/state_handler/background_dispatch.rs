@@ -31,7 +31,11 @@
 //! R13 migrates the mediator change/reconnect path as the single proving case;
 //! R14 migrates the remaining network dispatches onto the same mechanism.
 
+use openvtc_core::config::Config;
+
 use crate::state_handler::didcomm::ReconnectOutcome;
+use crate::state_handler::inbox_actions::InboxOutcome;
+use crate::state_handler::relationship_actions::{DidDeleteOutcome, RelationshipOutcome};
 use crate::state_handler::state::{self, State};
 
 /// A domain that can have at most one background dispatch in flight at a time.
@@ -39,13 +43,28 @@ use crate::state_handler::state::{self, State};
 /// The set is intentionally small and matches the "one mutating task" model the
 /// loop already had: serialising per domain means a user can't, e.g., fire two
 /// mediator reconnects at once, while still leaving distinct domains independent
-/// (a future relationship dispatch and a mediator reconnect don't block each
-/// other). R14 adds the remaining variants as it migrates each call site.
+/// (a relationship dispatch and a mediator reconnect don't block each other).
+///
+/// R14 keeps the granularity conservative: every relationship-panel network
+/// action (create / ping / remove) shares one `Relationship` domain, and every
+/// inbox network action (accept / reject) shares one `Inbox` domain. Two actions
+/// on the *same* domain — even if they target different relationships — are
+/// serialised (the second is rejected with a status), matching the loop's
+/// pre-R14 "one in-flight mutating await at a time" behaviour. Distinct domains
+/// stay independent (a ping and an inbox accept can run concurrently).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DispatchDomain {
     /// Mediator change / manual reconnect — replaces the persona listener and
     /// waits for it to connect (up to 30 s).
     Mediator,
+    /// Relationship-panel network actions: create (VTA round-trip + send), ping
+    /// (`send_message_with_retry` ~6 s on a dead peer), remove (`remove_listener`).
+    Relationship,
+    /// Inbox network actions: accept/reject a relationship request, accept/reject
+    /// a VRC request — all do a (retrying) DIDComm send.
+    Inbox,
+    /// Context-DID deletion: `delete_did_webvh` at the VTA + listener teardown.
+    Did,
 }
 
 impl DispatchDomain {
@@ -53,6 +72,9 @@ impl DispatchDomain {
     fn label(self) -> &'static str {
         match self {
             DispatchDomain::Mediator => "Mediator reconnect",
+            DispatchDomain::Relationship => "Relationship action",
+            DispatchDomain::Inbox => "Inbox action",
+            DispatchDomain::Did => "Identity deletion",
         }
     }
 }
@@ -106,6 +128,17 @@ pub(crate) enum DispatchOutcome {
     /// payload is exactly the [`ReconnectOutcome`] the inline path produced, so
     /// the applied state is identical to the pre-R13 synchronous behaviour.
     MediatorReconnect(ReconnectOutcome),
+    /// A relationship-panel network action (create / ping / remove) finished.
+    /// The payload owns the send result plus the data the post-send config
+    /// mutation needs; [`RelationshipOutcome::apply`] reproduces the old inline
+    /// success/error block exactly.
+    Relationship(RelationshipOutcome),
+    /// An inbox network action (accept/reject relationship, accept/reject VRC)
+    /// finished. [`InboxOutcome::apply`] reproduces the old inline block.
+    Inbox(InboxOutcome),
+    /// A context-DID deletion finished (VTA delete + listener teardown done in
+    /// the task; local cleanup + save applied here).
+    Did(DidDeleteOutcome),
 }
 
 impl DispatchOutcome {
@@ -113,6 +146,9 @@ impl DispatchOutcome {
     fn domain(&self) -> DispatchDomain {
         match self {
             DispatchOutcome::MediatorReconnect(_) => DispatchDomain::Mediator,
+            DispatchOutcome::Relationship(_) => DispatchDomain::Relationship,
+            DispatchOutcome::Inbox(_) => DispatchDomain::Inbox,
+            DispatchOutcome::Did(_) => DispatchDomain::Did,
         }
     }
 }
@@ -126,7 +162,21 @@ impl DispatchOutcome {
 /// the old inline `run_persona_reconnect` set on completion: the only observable
 /// difference from before R13 is *when* it runs (after a responsive wait rather
 /// than blocking the loop), not *what* it does.
-pub(crate) fn apply_outcome(state: &mut State, in_flight: &mut InFlight, outcome: DispatchOutcome) {
+///
+/// R14 widens the signature to also take `&mut Config` + `profile`: unlike the
+/// mediator reconnect (which mutates `State` only), the migrated relationship /
+/// inbox / delete-DID paths persist config changes (the relationship record, the
+/// task removal, the issued VRC) that today happen *after* the network send.
+/// Doing them here — on the loop thread, only on success — preserves the
+/// pre-R14 ordering and durability: a send failure leaves config untouched, just
+/// as the old inline `match … { Ok => persist, Err => status }` did.
+pub(crate) fn apply_outcome(
+    state: &mut State,
+    config: &mut Config,
+    profile: &str,
+    in_flight: &mut InFlight,
+    outcome: DispatchOutcome,
+) {
     let domain = outcome.domain();
     match outcome {
         DispatchOutcome::MediatorReconnect(result) => match result {
@@ -140,6 +190,9 @@ pub(crate) fn apply_outcome(state: &mut State, in_flight: &mut InFlight, outcome
                 state.main_page.log(format!("Reconnect failed: {reason}"));
             }
         },
+        DispatchOutcome::Relationship(outcome) => outcome.apply(state, config, profile),
+        DispatchOutcome::Inbox(outcome) => outcome.apply(state, config, profile),
+        DispatchOutcome::Did(outcome) => outcome.apply(state, config, profile),
     }
     in_flight.finish(domain);
 }
@@ -147,6 +200,7 @@ pub(crate) fn apply_outcome(state: &mut State, in_flight: &mut InFlight, outcome
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state_handler::dispatch_util::test_config;
 
     /// The busy-guard serialises per domain: the first claim succeeds, a second
     /// while in flight is rejected, and after `finish` the domain frees up
@@ -170,16 +224,54 @@ mod tests {
         assert!(in_flight.try_begin(DispatchDomain::Mediator));
     }
 
+    /// The R14 domains (Relationship / Inbox / Did) each serialise independently:
+    /// claiming one does not block another, but a re-claim of the same domain is
+    /// rejected until it is `finish`ed. This backs the "one in-flight per domain"
+    /// model for the migrated network dispatches.
+    #[test]
+    fn r14_domains_serialise_independently() {
+        let mut in_flight = InFlight::default();
+        for domain in [
+            DispatchDomain::Relationship,
+            DispatchDomain::Inbox,
+            DispatchDomain::Did,
+        ] {
+            // Each domain is independent: claiming it succeeds regardless of the
+            // others already being busy.
+            assert!(in_flight.try_begin(domain), "{domain:?} should be free");
+            // A second claim on the same domain is rejected while in flight.
+            assert!(
+                !in_flight.try_begin(domain),
+                "{domain:?} second claim must be rejected"
+            );
+        }
+        // All three are concurrently in flight without blocking each other.
+        assert!(in_flight.is_busy(DispatchDomain::Relationship));
+        assert!(in_flight.is_busy(DispatchDomain::Inbox));
+        assert!(in_flight.is_busy(DispatchDomain::Did));
+        // …and a Mediator dispatch is still independently available.
+        assert!(in_flight.try_begin(DispatchDomain::Mediator));
+
+        // Releasing one frees only that domain.
+        in_flight.finish(DispatchDomain::Inbox);
+        assert!(!in_flight.is_busy(DispatchDomain::Inbox));
+        assert!(in_flight.is_busy(DispatchDomain::Relationship));
+        assert!(in_flight.try_begin(DispatchDomain::Inbox));
+    }
+
     /// Applying a `Connected` outcome reproduces the old inline success state
     /// (status + messaging flag + log line) and clears the busy-flag.
     #[test]
     fn apply_connected_outcome_sets_connected_and_clears_flag() {
         let mut state = State::default();
+        let mut config = test_config();
         let mut in_flight = InFlight::default();
         assert!(in_flight.try_begin(DispatchDomain::Mediator));
 
         apply_outcome(
             &mut state,
+            &mut config,
+            "test",
             &mut in_flight,
             DispatchOutcome::MediatorReconnect(ReconnectOutcome::Connected),
         );
@@ -200,11 +292,14 @@ mod tests {
     #[test]
     fn apply_failed_outcome_sets_failed_and_clears_flag() {
         let mut state = State::default();
+        let mut config = test_config();
         let mut in_flight = InFlight::default();
         assert!(in_flight.try_begin(DispatchDomain::Mediator));
 
         apply_outcome(
             &mut state,
+            &mut config,
+            "test",
             &mut in_flight,
             DispatchOutcome::MediatorReconnect(ReconnectOutcome::Failed("dead mediator".into())),
         );
@@ -249,6 +344,7 @@ mod tests {
         let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
 
         let mut state = State::default();
+        let mut config = test_config();
         let mut in_flight = InFlight::default();
 
         // Begin a dispatch (busy-flag set) and spawn its "I/O" — it parks on the
@@ -288,7 +384,7 @@ mod tests {
                     }
                 }
                 Some(outcome) = dispatch_rx.recv() => {
-                    apply_outcome(&mut state, &mut in_flight, outcome);
+                    apply_outcome(&mut state, &mut config, "test", &mut in_flight, outcome);
                 }
             }
         };

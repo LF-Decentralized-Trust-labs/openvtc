@@ -647,14 +647,33 @@ impl StateHandler {
                         }
                     },
                     Action::DeleteDid(i) => {
-                        self.delete_context_did(
+                        // Identity deletion does a VTA `delete_did_webvh` + listener
+                        // teardown (R14): claim the Did domain, run the guards +
+                        // extraction on-thread, then spawn the I/O; local config
+                        // cleanup + save apply on the outcome. Guard failures (DID
+                        // bound to a community, not found) are surfaced inline and
+                        // spawn nothing.
+                        let domain = background_dispatch::DispatchDomain::Did;
+                        if !in_flight.try_begin(domain) {
+                            let msg = background_dispatch::InFlight::busy_message(domain);
+                            state.main_page.log(msg);
+                        } else if let Some(job) = self.prepare_delete_context_did(
                             &mut state,
                             &mut config,
                             admin_vta.as_ref(),
                             &didcomm_service,
                             i,
-                        )
-                        .await;
+                        ) {
+                            let tx = dispatch_tx.clone();
+                            tokio::spawn(async move {
+                                let _ = tx.send(background_dispatch::DispatchOutcome::Did(
+                                    job.run().await,
+                                ));
+                            });
+                        } else {
+                            // Guard rejected the delete (logged inline); release.
+                            in_flight.finish(domain);
+                        }
                     },
                     Action::StartJoin => {
                         // State-B join from the live runtime: reuse the always-on
@@ -687,31 +706,122 @@ impl StateHandler {
                         }
                     },
                     Action::Inbox(ia) => {
-                        inbox_actions::dispatch(
-                            ia,
-                            &mut config,
-                            &tdk,
-                            &didcomm_service,
-                            &mut state,
-                            &self.state_tx,
-                            &self.profile,
-                            admin_vta.as_ref(),
-                        )
-                        .await;
+                        // Network inbox actions (accept/reject relationship or VRC
+                        // request) run off the loop (R14): claim the Inbox domain,
+                        // do the loop-thread pre-send work, then spawn the send;
+                        // the outcome arm applies the post-send mutation. A second
+                        // inbox network action while one is in flight is rejected
+                        // with a status. Local actions run inline as before.
+                        if inbox_actions::is_network(&ia) {
+                            let domain = background_dispatch::DispatchDomain::Inbox;
+                            if !in_flight.try_begin(domain) {
+                                let msg = background_dispatch::InFlight::busy_message(domain);
+                                state.main_page.content_panel.inbox.status_message =
+                                    Some(msg.clone());
+                                state.main_page.log(msg);
+                            } else {
+                                match inbox_actions::dispatch(
+                                    ia,
+                                    &mut config,
+                                    &tdk,
+                                    &didcomm_service,
+                                    &mut state,
+                                    &self.profile,
+                                    admin_vta.as_ref(),
+                                )
+                                .await
+                                {
+                                    inbox_actions::InboxDispatch::Spawn(job) => {
+                                        let tx = dispatch_tx.clone();
+                                        tokio::spawn(async move {
+                                            let _ = tx.send(
+                                                background_dispatch::DispatchOutcome::Inbox(
+                                                    job.run().await,
+                                                ),
+                                            );
+                                        });
+                                    }
+                                    // Pre-send failure recorded a status; nothing
+                                    // was spawned, so release the domain now.
+                                    inbox_actions::InboxDispatch::Handled => {
+                                        in_flight.finish(domain);
+                                    }
+                                }
+                            }
+                        } else {
+                            let _ = inbox_actions::dispatch(
+                                ia,
+                                &mut config,
+                                &tdk,
+                                &didcomm_service,
+                                &mut state,
+                                &self.profile,
+                                admin_vta.as_ref(),
+                            )
+                            .await;
+                        }
                     },
                     Action::Relationship(ra) => {
-                        relationship_actions::dispatch(
-                            ra,
-                            &mut config,
-                            &tdk,
-                            &didcomm_service,
-                            &mut state,
-                            &self.state_tx,
-                            &self.profile,
-                            &mut ping_sent_at,
-                            admin_vta.as_ref(),
-                        )
-                        .await;
+                        // Network relationship actions (create/ping/remove/request
+                        // VRC) run off the loop (R14). Same pattern as Inbox: claim
+                        // the Relationship domain, prepare on-thread, spawn the I/O,
+                        // apply the outcome later. `is_ping` stamps `ping_sent_at`
+                        // for pong-latency display.
+                        if relationship_actions::is_network(&ra) {
+                            let domain = background_dispatch::DispatchDomain::Relationship;
+                            if !in_flight.try_begin(domain) {
+                                let msg = background_dispatch::InFlight::busy_message(domain);
+                                state
+                                    .main_page
+                                    .content_panel
+                                    .relationships
+                                    .status_message = Some(msg.clone());
+                                state.main_page.log(msg);
+                            } else {
+                                match relationship_actions::dispatch(
+                                    ra,
+                                    &mut config,
+                                    &tdk,
+                                    &didcomm_service,
+                                    &mut state,
+                                    &self.profile,
+                                    admin_vta.as_ref(),
+                                )
+                                .await
+                                {
+                                    relationship_actions::RelationshipDispatch::Spawn {
+                                        job,
+                                        is_ping,
+                                    } => {
+                                        if is_ping {
+                                            ping_sent_at = Some(std::time::Instant::now());
+                                        }
+                                        let tx = dispatch_tx.clone();
+                                        tokio::spawn(async move {
+                                            let _ = tx.send(
+                                                background_dispatch::DispatchOutcome::Relationship(
+                                                    job.run().await,
+                                                ),
+                                            );
+                                        });
+                                    }
+                                    relationship_actions::RelationshipDispatch::Handled => {
+                                        in_flight.finish(domain);
+                                    }
+                                }
+                            }
+                        } else {
+                            let _ = relationship_actions::dispatch(
+                                ra,
+                                &mut config,
+                                &tdk,
+                                &didcomm_service,
+                                &mut state,
+                                &self.profile,
+                                admin_vta.as_ref(),
+                            )
+                            .await;
+                        }
                     },
                     Action::Credential(ca) => {
                         credential_actions::dispatch(
@@ -957,7 +1067,13 @@ impl StateHandler {
                 // and inbound DIDComm events are all serviced *while* the spawned
                 // I/O is still pending.
                 Some(outcome) = dispatch_rx.recv() => {
-                    background_dispatch::apply_outcome(&mut state, &mut in_flight, outcome);
+                    background_dispatch::apply_outcome(
+                        &mut state,
+                        &mut config,
+                        &self.profile,
+                        &mut in_flight,
+                        outcome,
+                    );
                 },
                 // Lifecycle log messages from the DIDCommService
                 Some(log_msg) = lifecycle_log_rx.recv() => {
@@ -1052,36 +1168,38 @@ impl StateHandler {
         }
     }
 
-    /// Delete an **orphan** context identity (persona DID) at `index` in the
-    /// VTA DID manager: remove it at the VTA (`delete_did_webvh`), then locally
-    /// (persona record + runtime identity + key info), tear down its listener,
-    /// and re-save. Guarded to personas presenting **no** community — a
-    /// community-bound identity must not be deleted out from under its
-    /// membership. Feedback goes to the activity log.
-    async fn delete_context_did(
+    /// Loop-thread preparation for deleting an **orphan** context identity
+    /// (persona DID) at `index` in the VTA DID manager. Runs the guards (DID
+    /// resolution + the community-bound check — a community-bound identity must
+    /// not be deleted out from under its membership) and snapshots the persona /
+    /// key ids, then returns a [`relationship_actions::DidDeleteJob`] for the loop
+    /// to run off-thread (VTA `delete_did_webvh` + listener teardown). The local
+    /// cleanup (persona/identity/key removal + save + sync) is applied later by
+    /// [`relationship_actions::DidDeleteOutcome`].
+    ///
+    /// Returns `None` (and logs inline) when a guard rejects the delete, so the
+    /// caller can release the busy-domain without spawning anything.
+    fn prepare_delete_context_did(
         &self,
         state: &mut State,
         config: &mut Config,
         admin_vta: Option<&vta_sdk::client::VtaClient>,
         didcomm_service: &affinidi_messaging_didcomm_service::DIDCommService,
         index: usize,
-    ) {
+    ) -> Option<relationship_actions::DidDeleteJob> {
         state.main_page.content_panel.vta.confirm_delete_did = None;
-        let Some(did) = state
+        let did = state
             .main_page
             .content_panel
             .vta
             .context_dids
             .get(index)
-            .map(|d| d.did.clone())
-        else {
-            return;
-        };
+            .map(|d| d.did.clone())?;
 
         // Resolve the persona for this DID + its key ids.
         let Some(persona) = config.account.personas.values().find(|p| p.did == did) else {
             state.main_page.log("DID not found — nothing removed.");
-            return;
+            return None;
         };
         let persona_id = persona.persona_id;
         let key_ids: Vec<String> = persona.key_refs.iter().map(|k| k.key_id.clone()).collect();
@@ -1098,41 +1216,18 @@ impl StateHandler {
                 "Can't delete — {bound} communit{} still use this identity; leave them first.",
                 if bound == 1 { "y" } else { "ies" }
             ));
-            return;
+            return None;
         }
 
-        // Delete at the VTA. Best-effort: a missing/already-deleted DID at the
-        // VTA must not block removing the local orphan, so log and continue.
-        if let Some(vta) = admin_vta
-            && let Err(e) = vta.delete_did_webvh(&did).await
-        {
-            debug!("delete_did_webvh({did}) failed (continuing local cleanup): {e}");
-        }
+        state.main_page.log(format!("Removing identity {did}…"));
 
-        // Local cleanup.
-        config.account.personas.remove(&persona_id);
-        config.identities.remove(&persona_id);
-        for kid in &key_ids {
-            config.key_info.remove(kid);
-        }
-        if let Err(e) = config.save(
-            &self.profile,
-            #[cfg(feature = "openpgp-card")]
-            &|| eprintln!("Touch confirmation needed for decryption"),
-        ) {
-            state
-                .main_page
-                .log_error("Failed to save after removing DID", &e);
-        }
-
-        // Tear down the orphan's listener if one was running (best-effort).
-        let listener_id = didcomm::persona_listener_id(&did);
-        if let Err(e) = didcomm_service.remove_listener(&listener_id).await {
-            debug!("remove_listener after DID delete: {e}");
-        }
-
-        state.main_page.sync_from_config(config);
-        state.main_page.log(format!("Removed identity {did}"));
+        Some(relationship_actions::DidDeleteJob {
+            admin_vta: admin_vta.cloned(),
+            service: didcomm_service.clone(),
+            did,
+            persona_id,
+            key_ids,
+        })
     }
 
     /// Minimal event loop for when there is no active community / messaging

@@ -10,7 +10,7 @@ use affinidi_tdk::{
     dids::{DID, PeerKeyRole},
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
-use anyhow::{Result, bail};
+use anyhow::Result;
 use chrono::Utc;
 use ed25519_dalek_bip32::DerivationPath;
 use openvtc_core::{
@@ -19,437 +19,226 @@ use openvtc_core::{
         secured_config::{KeyInfoConfig, KeySourceMaterial},
     },
     logs::LogFamily,
-    relationships::{Relationship, RelationshipRequestBody, RelationshipState},
+    relationships::{RelationshipRequestBody, RelationshipState},
     tasks::TaskType,
 };
 use serde_json::json;
 use tracing::info;
 use uuid::Uuid;
 
-/// Create and send a new relationship request to a remote party.
-///
-/// When `generate_r_did` is true and the key backend is BIP32, a unique
-/// relationship DID (did:peer) is derived for privacy. Otherwise the
-/// persona DID is used directly.
-#[allow(clippy::too_many_arguments)]
-pub async fn send_relationship_request(
-    config: &mut Config,
-    tdk: &TDK,
-    service: &DIDCommService,
-    respondent_did: &str,
-    alias: &str,
-    reason: Option<&str>,
-    generate_r_did: bool,
-    admin_vta: Option<&vta_sdk::client::VtaClient>,
-) -> Result<()> {
-    // Validate DID format
-    if !respondent_did.starts_with("did:") {
-        anyhow::bail!("Invalid DID: must start with 'did:'");
-    }
+/// Build a trust-ping DIDComm message (used by the backgrounded ping path).
+fn build_ping_message(from: &str, to: &str) -> Result<Message> {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)?
+        .as_secs();
+    Ok(affinidi_tdk::didcomm::Message::build(
+        Uuid::new_v4().to_string(),
+        "https://didcomm.org/trust-ping/2.0/ping".to_string(),
+        serde_json::json!({"response_requested": true}),
+    )
+    .from(from.to_string())
+    .to(to.to_string())
+    .created_time(now)
+    .expires_time(now + 60 * 5)
+    .finalize())
+}
 
-    // Check for existing established relationship
-    let respondent_arc = Arc::new(respondent_did.to_string());
-    if let Some(rel) = config.private.relationships.get(&respondent_arc) {
-        let lock = rel
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        if lock.state == RelationshipState::Established {
-            anyhow::bail!("An established relationship already exists with this DID");
+/// Loop-thread plan for creating a relationship DID, plus everything the
+/// *I/O-only* [`RDidPlan::create_io`] needs to run off the loop without touching
+/// `Config`. Building this is the only step that reads/mutates `Config` (the
+/// BIP32 path-pointer reservation); the actual key creation (VTA round-trip or
+/// BIP32 derivation), did:peer build, and resolver insert all run in the task.
+pub(crate) enum RDidPlan {
+    /// BIP32: paths reserved on the loop thread (pointer already advanced); the
+    /// task derives the keys from a clone of the root. The root is boxed to keep
+    /// the enum compact (it is the largest field by far).
+    Bip32 {
+        root: Box<ed25519_dalek_bip32::ExtendedSigningKey>,
+        v_path: String,
+        e_path: String,
+        mediator: String,
+    },
+    /// VTA: the task creates the keys on the always-on admin session (cloned —
+    /// cheap, shares the connection pool).
+    Vta {
+        admin_vta: vta_sdk::client::VtaClient,
+        mediator: String,
+    },
+}
+
+/// The created relationship DID plus the `key_info` entries to record in
+/// `Config` on the loop thread. The secrets themselves were already inserted into
+/// the (shared, `Arc`-based) TDK resolver inside the task, so they are visible to
+/// the loop's TDK; only the `Config` bookkeeping is left for `apply`.
+pub(crate) struct CreatedRDid {
+    pub(crate) r_did: String,
+    pub(crate) key_info: Vec<(String, KeyInfoConfig)>,
+}
+
+/// Build the [`RDidPlan`] on the loop thread. For BIP32 this reserves two unique
+/// derivation paths and advances `path_pointer` (the only `Config` mutation the
+/// pre-send step makes); for VTA it just snapshots the owned client/backend.
+pub(crate) fn plan_relationship_did(
+    config: &mut Config,
+    mediator: &str,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+) -> Result<RDidPlan> {
+    match &config.key_backend {
+        KeyBackend::Bip32 { root, .. } => {
+            let root = Box::new(root.clone());
+            let v_path = format!("m/3'/1'/1'/{}'", config.private.relationships.path_pointer);
+            config.private.relationships.path_pointer += 1;
+            let e_path = format!("m/3'/1'/1'/{}'", config.private.relationships.path_pointer);
+            config.private.relationships.path_pointer += 1;
+            Ok(RDidPlan::Bip32 {
+                root,
+                v_path,
+                e_path,
+                mediator: mediator.to_string(),
+            })
+        }
+        KeyBackend::Vta { .. } => {
+            // The runtime always holds an admin VTA session for a VTA backend
+            // (built at startup). If it doesn't, R-DID creation can't proceed —
+            // surface that up front rather than parking the loop to open one.
+            let admin_vta = admin_vta.cloned().ok_or_else(|| {
+                anyhow::anyhow!("no VTA session available to create a relationship DID")
+            })?;
+            Ok(RDidPlan::Vta {
+                admin_vta,
+                mediator: mediator.to_string(),
+            })
+        }
+    }
+}
+
+impl RDidPlan {
+    fn mediator(&self) -> &str {
+        match self {
+            RDidPlan::Bip32 { mediator, .. } | RDidPlan::Vta { mediator, .. } => mediator,
         }
     }
 
-    // Add or find contact
-    let alias_opt = if alias.trim().is_empty() {
-        None
-    } else {
-        Some(alias.trim().to_string())
-    };
+    /// I/O-only relationship-DID creation, run inside the spawned task. Creates
+    /// the keys (BIP32 derivation or VTA round-trip), builds the did:peer,
+    /// registers the secrets in the shared TDK resolver, **and registers the new
+    /// R-DID listener** (built from the just-minted secrets — no resolver lookup,
+    /// no `Config`). Returns the `Config` `key_info` entries for the loop thread
+    /// to record. Never touches `Config`.
+    ///
+    /// `service` + `remote_p_did` are only used to register the post-establishment
+    /// R-DID listener, exactly as the old inline path did right after key creation.
+    pub(crate) async fn create_io(
+        self,
+        tdk: &TDK,
+        service: &DIDCommService,
+        remote_p_did: &str,
+    ) -> Result<CreatedRDid> {
+        let mediator = self.mediator().to_string();
+        let (mut v_secret, mut e_secret, key_info) = match self {
+            RDidPlan::Bip32 {
+                root,
+                v_path,
+                e_path,
+                ..
+            } => {
+                let v_key = root.derive(&v_path.parse::<DerivationPath>()?)?;
+                let e_key = root.derive(&e_path.parse::<DerivationPath>()?)?;
+                let v_secret = Secret::generate_ed25519(None, Some(v_key.signing_key.as_bytes()));
+                let e_secret = Secret::generate_x25519(
+                    None,
+                    Some(&ed25519_private_to_x25519(e_key.signing_key.as_bytes())),
+                )?;
+                // NOTE: v_key/e_key hold BIP32-derived signing-key bytes on the
+                // stack; ed25519-dalek-bip32 does not Zeroize, a known limitation.
+                drop(v_key);
+                drop(e_key);
+                let key_info = vec![
+                    (
+                        v_secret.id.clone(),
+                        KeySourceMaterial::Derived { path: v_path },
+                    ),
+                    (
+                        e_secret.id.clone(),
+                        KeySourceMaterial::Derived { path: e_path },
+                    ),
+                ];
+                (v_secret, e_secret, key_info)
+            }
+            RDidPlan::Vta { admin_vta, .. } => {
+                let (v_secret, e_secret, sign_key_id, enc_key_id) =
+                    create_relationship_keys(&admin_vta).await?;
+                let key_info = vec![
+                    (
+                        v_secret.id.clone(),
+                        KeySourceMaterial::VtaManaged {
+                            key_id: sign_key_id,
+                        },
+                    ),
+                    (
+                        e_secret.id.clone(),
+                        KeySourceMaterial::VtaManaged { key_id: enc_key_id },
+                    ),
+                ];
+                (v_secret, e_secret, key_info)
+            }
+        };
 
-    if config
-        .private
-        .contacts
-        .find_contact(respondent_did)
-        .is_none()
-    {
-        config
-            .private
-            .contacts
-            .add_contact(
-                tdk,
-                respondent_did,
-                alias_opt,
-                true,
-                &mut config.public.logs,
-            )
-            .await?;
-    }
+        // Build the did:peer from the secrets.
+        let mut keys = vec![
+            (PeerKeyRole::Verification, &mut v_secret),
+            (PeerKeyRole::Encryption, &mut e_secret),
+        ];
+        let r_did = DID::generate_did_peer_from_secrets(&mut keys, Some(mediator.clone()))
+            .map_err(|e| anyhow::anyhow!("Failed to create relationship DID: {e}"))?;
+        drop(keys);
 
-    // Optionally generate a random relationship DID for privacy
-    let our_did: Arc<String> = if generate_r_did {
-        // Snapshot the mediator before the &mut config borrow below.
-        let mediator = config.mediator_did().to_string();
-        let r_did = Arc::new(create_relationship_did(tdk, config, &mediator, admin_vta).await?);
-        // Register a listener for the new R-DID
-        let listener_config = super::didcomm::relationship_listener_config(
-            config,
-            tdk,
+        // Pair each secret id with its config-level metadata (verification first,
+        // encryption second — same order the old inline path inserted them).
+        let key_info: Vec<(String, KeyInfoConfig)> = key_info
+            .into_iter()
+            .zip([
+                KeyTypes::RelationshipVerification,
+                KeyTypes::RelationshipEncryption,
+            ])
+            .map(|((id, path), purpose)| {
+                (
+                    id,
+                    KeyInfoConfig {
+                        path,
+                        create_time: Utc::now(),
+                        purpose,
+                    },
+                )
+            })
+            .collect();
+
+        // Register the new R-DID listener from the just-minted secrets (the old
+        // inline path did this right after key creation; failure is non-fatal).
+        let listener_config = super::didcomm::relationship_listener_config_from_secrets(
             &r_did,
-            respondent_did,
-            config.mediator_did(),
-        )
-        .await;
+            remote_p_did,
+            &mediator,
+            vec![v_secret.clone(), e_secret.clone()],
+        );
         if let Err(e) = service.add_listener(listener_config).await {
             tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
         }
-        r_did
-    } else {
-        config.persona_did_arc()
-    };
 
-    // Build the relationship request message
-    let friendly_name = if config.public.friendly_name.is_empty() {
-        None
-    } else {
-        Some(config.public.friendly_name.as_str())
-    };
-    let msg = create_request_message(
-        config.persona_did(),
-        respondent_did,
-        reason,
-        &our_did,
-        friendly_name,
-    )?;
-    let msg_id = Arc::new(msg.id.clone());
+        // Register the secrets in the shared TDK resolver (visible to the loop's
+        // TDK — same `Arc`-backed resolver).
+        tdk.get_shared_state()
+            .secrets_resolver()
+            .insert(v_secret)
+            .await;
+        tdk.get_shared_state()
+            .secrets_resolver()
+            .insert(e_secret)
+            .await;
 
-    super::didcomm::send_message(service, config, &msg, config.persona_did(), respondent_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send relationship request: {e}"))?;
-
-    // Create relationship entry
-    config.private.relationships.relationships.insert(
-        Arc::clone(&respondent_arc),
-        Arc::new(Mutex::new(Relationship {
-            task_id: Arc::clone(&msg_id),
-            our_did,
-            remote_p_did: Arc::clone(&respondent_arc),
-            remote_did: Arc::clone(&respondent_arc),
-            created: Utc::now(),
-            state: RelationshipState::RequestSent,
-        })),
-    );
-
-    // Create tracking task
-    config.private.tasks.new_task(
-        &msg_id,
-        TaskType::RelationshipRequestOutbound {
-            to: Arc::clone(&respondent_arc),
-        },
-    );
-
-    config.public.logs.insert(
-        LogFamily::Relationship,
-        format!(
-            "Relationship requested: remote DID({}) Task ID({})",
-            respondent_did, msg_id
-        ),
-    );
-
-    info!(to = %respondent_did, "relationship request sent");
-    Ok(())
-}
-
-/// Send a trust-ping to a relationship.
-pub async fn ping_relationship(
-    config: &mut Config,
-    _tdk: &TDK,
-    service: &DIDCommService,
-    remote_p_did: &str,
-) -> Result<()> {
-    let remote_key = Arc::new(remote_p_did.to_string());
-
-    let relationship = config
-        .private
-        .relationships
-        .get(&remote_key)
-        .ok_or_else(|| anyhow::anyhow!("No relationship found for {}", remote_p_did))?;
-
-    let (our_did, remote_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
-    };
-
-    // Build ping message using the relationship DIDs (R-DIDs if available)
-    info!(
-        our_did = %our_did,
-        remote_did = %remote_did,
-        is_r_did = !config.is_persona_did(our_did.as_str()),
-        "ping using relationship DIDs"
-    );
-    let ping_msg = {
-        use std::time::SystemTime;
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)?
-            .as_secs();
-        affinidi_tdk::didcomm::Message::build(
-            Uuid::new_v4().to_string(),
-            "https://didcomm.org/trust-ping/2.0/ping".to_string(),
-            serde_json::json!({"response_requested": true}),
-        )
-        .from(our_did.to_string())
-        .to(remote_did.to_string())
-        .created_time(now)
-        .expires_time(now + 60 * 5)
-        .finalize()
-    };
-    let msg_id = ping_msg.id.clone();
-
-    // Send via the correct listener (R-DID listener if our_did != persona_did)
-    super::didcomm::send_message(service, config, &ping_msg, &our_did, &remote_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send trust-ping: {e}"))?;
-
-    config.public.logs.insert(
-        LogFamily::Relationship,
-        format!("Sent ping to {} via {}", remote_did, our_did),
-    );
-
-    config.private.tasks.new_task(
-        &Arc::new(msg_id),
-        TaskType::TrustPing {
-            from: our_did,
-            to: remote_did,
-            relationship,
-        },
-    );
-
-    info!(to = %remote_p_did, "trust-ping sent");
-    Ok(())
-}
-
-/// Remove a relationship, clean up associated VRCs, and remove the R-DID listener.
-pub async fn remove_relationship(
-    config: &mut Config,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
-    remote_p_did: &str,
-) -> Result<()> {
-    let key = Arc::new(remote_p_did.to_string());
-
-    // Clean up R-DID listener before removing the relationship data
-    // Extract listener ID before any async work to avoid holding MutexGuard across await
-    let listener_to_remove = if let Some(rel_arc) = config.private.relationships.get(&key)
-        && let Ok(lock) = rel_arc.lock()
-        && !config.is_persona_did(lock.our_did.as_str())
-    {
-        Some(super::didcomm::listener_id_for_did(&lock.our_did, config))
-    } else {
-        None
-    };
-    if let Some(lid) = listener_to_remove
-        && let Err(e) = service.remove_listener(&lid).await
-    {
-        tracing::warn!(listener = %lid, error = %e, "failed to remove R-DID listener");
+        Ok(CreatedRDid { r_did, key_info })
     }
-
-    config.private.relationships.remove(
-        &key,
-        &mut config.private.vrcs_issued,
-        &mut config.private.vrcs_received,
-    );
-
-    // Also remove the associated contact (and its alias mapping). Without this,
-    // the alias remains registered and re-creating the relationship with the
-    // same alias fails with a duplicate-alias error.
-    config
-        .private
-        .contacts
-        .remove_contact(&mut config.public.logs, remote_p_did);
-
-    config.public.logs.insert(
-        LogFamily::Relationship,
-        format!("Removed relationship with ({})", remote_p_did),
-    );
-
-    info!(remote = %remote_p_did, "relationship removed");
-    Ok(())
-}
-
-/// Creates a random did:peer DID representing a relationship DID.
-///
-/// Dispatches to the appropriate backend-specific implementation based on
-/// the configured key backend (BIP32 or VTA).
-pub(crate) async fn create_relationship_did(
-    tdk: &TDK,
-    config: &mut Config,
-    mediator: &str,
-    admin_vta: Option<&vta_sdk::client::VtaClient>,
-) -> Result<String> {
-    match &config.key_backend {
-        KeyBackend::Bip32 { .. } => create_relationship_did_bip32(tdk, config, mediator).await,
-        KeyBackend::Vta { .. } => {
-            create_relationship_did_vta(tdk, config, mediator, admin_vta).await
-        }
-    }
-}
-
-/// BIP32 backend: derives signing and encryption keys from the BIP32 root
-/// using the relationship path pointer, registers the secrets with the TDK
-/// resolver, and records key metadata in the configuration.
-async fn create_relationship_did_bip32(
-    tdk: &TDK,
-    config: &mut Config,
-    mediator: &str,
-) -> Result<String> {
-    // Derive a key path for the verification (signing) key
-    let v_path = [
-        "m/3'/1'/1'/",
-        config
-            .private
-            .relationships
-            .path_pointer
-            .to_string()
-            .as_str(),
-        "'",
-    ]
-    .concat();
-    config.private.relationships.path_pointer += 1;
-
-    // Derive a key path for the encryption key
-    let e_path = [
-        "m/3'/1'/1'/",
-        config
-            .private
-            .relationships
-            .path_pointer
-            .to_string()
-            .as_str(),
-        "'",
-    ]
-    .concat();
-    config.private.relationships.path_pointer += 1;
-
-    let bip32_root = match &config.key_backend {
-        KeyBackend::Bip32 { root, .. } => root,
-        _ => bail!("create_relationship_did_bip32 requires a BIP32 key backend"),
-    };
-
-    let v_key = bip32_root.derive(&v_path.parse::<DerivationPath>()?)?;
-    let e_key = bip32_root.derive(&e_path.parse::<DerivationPath>()?)?;
-
-    let mut v_secret = Secret::generate_ed25519(None, Some(v_key.signing_key.as_bytes()));
-    let mut e_secret = Secret::generate_x25519(
-        None,
-        Some(&ed25519_private_to_x25519(e_key.signing_key.as_bytes())),
-    )?;
-
-    let mut keys = vec![
-        (PeerKeyRole::Verification, &mut v_secret),
-        (PeerKeyRole::Encryption, &mut e_secret),
-    ];
-    let r_did = DID::generate_did_peer_from_secrets(&mut keys, Some(mediator.to_string()))
-        .map_err(|e| anyhow::anyhow!("Failed to create relationship DID: {e}"))?;
-
-    // Add the secrets to the config
-    config.key_info.insert(
-        v_secret.id.clone(),
-        KeyInfoConfig {
-            path: KeySourceMaterial::Derived { path: v_path },
-            create_time: Utc::now(),
-            purpose: KeyTypes::RelationshipVerification,
-        },
-    );
-    config.key_info.insert(
-        e_secret.id.clone(),
-        KeyInfoConfig {
-            path: KeySourceMaterial::Derived { path: e_path },
-            create_time: Utc::now(),
-            purpose: KeyTypes::RelationshipEncryption,
-        },
-    );
-
-    // Add the secrets to the TDK secret resolver
-    tdk.get_shared_state()
-        .secrets_resolver()
-        .insert(v_secret)
-        .await;
-    tdk.get_shared_state()
-        .secrets_resolver()
-        .insert(e_secret)
-        .await;
-
-    // NOTE: v_key and e_key contain BIP32-derived signing key bytes on the stack.
-    // ed25519-dalek-bip32 does not implement Zeroize, so these bytes may persist
-    // in memory after this function returns. This is a known limitation.
-    // The Secret structs (v_secret, e_secret) are now owned by the TDK resolver.
-    drop(v_key);
-    drop(e_key);
-
-    Ok(r_did)
-}
-
-/// VTA backend: creates signing and encryption keys via the VTA service,
-/// builds a did:peer from the resulting secrets, and registers everything
-/// in the TDK resolver and config.
-async fn create_relationship_did_vta(
-    tdk: &TDK,
-    config: &mut Config,
-    mediator: &str,
-    admin_vta: Option<&vta_sdk::client::VtaClient>,
-) -> Result<String> {
-    // Create the relationship signing (Ed25519) + encryption (X25519) keys via
-    // the VTA. Reuse the always-on admin session when the runtime provides one;
-    // otherwise open a transient session (guaranteed to shut down on every exit).
-    let (mut v_secret, mut e_secret, sign_key_id, enc_key_id) = match admin_vta {
-        Some(client) => create_relationship_keys(client).await?,
-        None => {
-            openvtc_core::config::with_runtime_vta_client::<_, _, _, anyhow::Error>(
-                &config.key_backend,
-                |client| async move { create_relationship_keys(&client).await },
-            )
-            .await?
-        }
-    };
-
-    // Build did:peer from secrets
-    let mut keys = vec![
-        (PeerKeyRole::Verification, &mut v_secret),
-        (PeerKeyRole::Encryption, &mut e_secret),
-    ];
-    let r_did = DID::generate_did_peer_from_secrets(&mut keys, Some(mediator.to_string()))
-        .map_err(|e| anyhow::anyhow!("Failed to create relationship DID: {e}"))?;
-
-    // Register key info in config
-    config.key_info.insert(
-        v_secret.id.clone(),
-        KeyInfoConfig {
-            path: KeySourceMaterial::VtaManaged {
-                key_id: sign_key_id,
-            },
-            create_time: Utc::now(),
-            purpose: KeyTypes::RelationshipVerification,
-        },
-    );
-    config.key_info.insert(
-        e_secret.id.clone(),
-        KeyInfoConfig {
-            path: KeySourceMaterial::VtaManaged { key_id: enc_key_id },
-            create_time: Utc::now(),
-            purpose: KeyTypes::RelationshipEncryption,
-        },
-    );
-
-    // Register secrets in TDK resolver
-    tdk.get_shared_state()
-        .secrets_resolver()
-        .insert(v_secret)
-        .await;
-    tdk.get_shared_state()
-        .secrets_resolver()
-        .insert(e_secret)
-        .await;
-
-    Ok(r_did)
 }
 
 /// Create a relationship's signing (Ed25519) + encryption (X25519) keys via the
@@ -504,6 +293,38 @@ async fn create_relationship_keys(
     Ok((v_secret, e_secret, sign_resp.key_id, enc_resp.key_id))
 }
 
+/// Insert a brand-new contact for `did` with `alias`, mirroring the insert tail
+/// of `ProtectedConfig::add_contact` (the DID-resolution validation and the
+/// duplicate-alias check both already happened — resolution in the task, the
+/// dup-alias check on the loop thread in `prepare_submit`). Infallible by the
+/// time it runs.
+fn insert_contact(config: &mut Config, did: &Arc<String>, alias: Option<String>) {
+    let contact = Arc::new(Contact {
+        did: Arc::clone(did),
+        alias: alias.clone(),
+    });
+    config
+        .private
+        .contacts
+        .contacts
+        .insert(Arc::clone(did), Arc::clone(&contact));
+    if let Some(a) = &alias {
+        config
+            .private
+            .contacts
+            .aliases
+            .insert(a.clone(), Arc::clone(&contact));
+    }
+    config.public.logs.insert(
+        LogFamily::Contact,
+        format!(
+            "Added contact ({}) alias({})",
+            did,
+            alias.as_deref().unwrap_or("N/A")
+        ),
+    );
+}
+
 /// Build a DIDComm relationship request message.
 fn create_request_message(
     from: &str,
@@ -530,12 +351,597 @@ fn create_request_message(
 // ============================================================
 
 use crate::state_handler::{
-    actions::RelationshipAction, credential_actions, dispatch_util, log_did,
-    main_page::content::RelationshipsMode, resolve_did_to_display, settings_actions, state::State,
+    actions::RelationshipAction, dispatch_util, log_did, main_page::content::RelationshipsMode,
+    resolve_did_to_display, settings_actions, state::State,
 };
 use openvtc_core::config::protected_config::Contact;
-use std::time::Instant;
-use tokio::sync::watch;
+use openvtc_core::relationships::Relationship as RelRecord;
+
+/// Owned inputs for the *I/O-only* half of a relationship network dispatch.
+///
+/// R14: the loop thread builds this (doing the fast, local pre-send work — DID
+/// validation, contact add, R-DID key creation + listener registration), then a
+/// `tokio::spawn`ed task does the slow network send with these owned values and
+/// reports the result back as a [`RelationshipOutcome`]. It borrows nothing tied
+/// to the loop's `Config`/`TDK`: `DIDCommService` is `Arc`-cheap to clone and the
+/// message/ids are owned, so the future is `'static` + `Send`.
+pub(crate) struct RelationshipSend {
+    service: DIDCommService,
+    /// The listener id the message is sent through, resolved on the loop thread
+    /// (`listener_id_for_did`) so the task needs no `Config`. Persona listener for
+    /// handshake messages; R-DID listener once established.
+    listener_id: String,
+    to_did: Arc<String>,
+    message: Box<Message>,
+    /// What to mutate + log once the send result is known, applied on the loop
+    /// thread by [`RelationshipOutcome::apply`].
+    effect: RelationshipEffect,
+}
+
+/// A relationship network dispatch ready to run off the loop thread.
+///
+/// The loop thread builds one of these (pre-send work done synchronously) and
+/// `tokio::spawn`s [`RelationshipJob::run`]; the resulting [`RelationshipOutcome`]
+/// is applied back on the loop thread. Both variants own everything they touch.
+pub(crate) enum RelationshipJob {
+    /// Ping / request-VRC: a single DIDComm send (no key creation). Boxed to keep
+    /// the enum small (the effect payload carries several owned ids).
+    Send(Box<RelationshipSend>),
+    /// Create a relationship request: optionally mint an R-DID + listener first
+    /// (the VTA round-trip / BIP32 derivation runs off the loop), then send the
+    /// request via the persona listener.
+    Create(Box<CreateJob>),
+    /// Remove: tear down the (optional) R-DID listener, then the loop thread
+    /// removes the relationship/contact records.
+    Remove {
+        service: DIDCommService,
+        /// `Some` only when the relationship used a dedicated R-DID listener.
+        listener_id: Option<String>,
+        remote_p_did: String,
+    },
+}
+
+/// Owned inputs for the backgrounded "create relationship request" job. All
+/// `Config`/`TDK` reads are snapshotted on the loop thread into owned values so
+/// the task is `'static` + `Send`.
+pub(crate) struct CreateJob {
+    tdk: TDK,
+    service: DIDCommService,
+    /// `Some` ⇒ mint an R-DID first; `None` ⇒ use the persona DID directly.
+    rdid_plan: Option<RDidPlan>,
+    /// Our persona DID (message `from`, and the listener the request is sent via).
+    persona_did: Arc<String>,
+    persona_listener_id: String,
+    respondent_did: Arc<String>,
+    reason: Option<String>,
+    friendly_name: Option<String>,
+    /// Contact to add for the respondent (the alias the user entered), when no
+    /// contact exists yet. `None` ⇒ a contact already exists; don't touch it.
+    /// The DID **resolution** validation runs in the task (it is the create
+    /// path's only network call besides the send) so it stays off the loop; the
+    /// contact insert itself happens in `apply` on the loop thread.
+    add_contact_alias: Option<Option<String>>,
+}
+
+impl CreateJob {
+    async fn run(self) -> RelationshipOutcome {
+        let CreateJob {
+            tdk,
+            service,
+            rdid_plan,
+            persona_did,
+            persona_listener_id,
+            respondent_did,
+            reason,
+            friendly_name,
+            add_contact_alias,
+        } = self;
+
+        // 0. Validate the respondent DID resolves (the create path's only
+        //    non-send network call). Today this happened inside `add_contact`
+        //    *before* the send; on resolve failure no contact was added and the
+        //    create bailed — reproduce that by failing here before any mutation
+        //    is applied (the contact is only inserted in `apply` on a non-failed
+        //    resolve). Only when we'd add a brand-new contact (the user supplied
+        //    an alias / it didn't exist) does the old path resolve.
+        let contact_to_add = if let Some(alias) = add_contact_alias {
+            if let Err(e) = tdk.did_resolver().resolve(&respondent_did).await {
+                return RelationshipOutcome {
+                    effect: RelationshipEffect::Create {
+                        respondent_did,
+                        our_did: persona_did,
+                        msg_id: Arc::new(String::new()),
+                        used_r_did: rdid_plan.is_some(),
+                        key_info: Vec::new(),
+                        contact_to_add: None,
+                    },
+                    result: Err(format!("Couldn't resolve DID: {e}")),
+                };
+            }
+            Some(alias)
+        } else {
+            None
+        };
+
+        // 1. Mint the R-DID + listener off the loop (if requested). A failure here
+        //    aborts before any send and is reported as the create error.
+        let (our_did, key_info, used_r_did) = match rdid_plan {
+            Some(plan) => match plan.create_io(&tdk, &service, &respondent_did).await {
+                Ok(created) => (Arc::new(created.r_did), created.key_info, true),
+                Err(e) => {
+                    return RelationshipOutcome {
+                        effect: RelationshipEffect::Create {
+                            respondent_did,
+                            our_did: persona_did,
+                            msg_id: Arc::new(String::new()),
+                            used_r_did: true,
+                            key_info: Vec::new(),
+                            contact_to_add,
+                        },
+                        result: Err(format!("{e}")),
+                    };
+                }
+            },
+            None => (Arc::clone(&persona_did), Vec::new(), false),
+        };
+
+        // 2. Build + send the request via the persona listener (handshake uses
+        //    persona DIDs for routing; the R-DID is carried in the body).
+        let msg = match create_request_message(
+            &persona_did,
+            &respondent_did,
+            reason.as_deref(),
+            &our_did,
+            friendly_name.as_deref(),
+        ) {
+            Ok(m) => m,
+            Err(e) => {
+                return RelationshipOutcome {
+                    effect: RelationshipEffect::Create {
+                        respondent_did,
+                        our_did,
+                        msg_id: Arc::new(String::new()),
+                        used_r_did,
+                        key_info,
+                        contact_to_add,
+                    },
+                    result: Err(format!("{e}")),
+                };
+            }
+        };
+        let msg_id = Arc::new(msg.id.clone());
+        let result =
+            super::didcomm::send_message_via(&service, &msg, &persona_listener_id, &respondent_did)
+                .await
+                .map_err(|e| format!("{e}"));
+
+        RelationshipOutcome {
+            effect: RelationshipEffect::Create {
+                respondent_did,
+                our_did,
+                msg_id,
+                used_r_did,
+                key_info,
+                contact_to_add,
+            },
+            result,
+        }
+    }
+}
+
+impl RelationshipJob {
+    /// Run the network I/O (send, or listener teardown) and package the result
+    /// for the loop. Called inside the spawned task; never touches `Config`/`TDK`.
+    pub(crate) async fn run(self) -> RelationshipOutcome {
+        match self {
+            RelationshipJob::Send(send) => send.run().await,
+            RelationshipJob::Create(job) => job.run().await,
+            RelationshipJob::Remove {
+                service,
+                listener_id,
+                remote_p_did,
+            } => {
+                if let Some(lid) = listener_id
+                    && let Err(e) = service.remove_listener(&lid).await
+                {
+                    tracing::warn!(listener = %lid, error = %e, "failed to remove R-DID listener");
+                }
+                RelationshipOutcome {
+                    effect: RelationshipEffect::Remove { remote_p_did },
+                    result: Ok(()),
+                }
+            }
+        }
+    }
+}
+
+impl RelationshipSend {
+    /// Run the slow send (I/O only) and package the result for the loop. Called
+    /// inside the spawned task; never touches `Config`/`TDK`.
+    pub(crate) async fn run(self) -> RelationshipOutcome {
+        let RelationshipSend {
+            service,
+            listener_id,
+            to_did,
+            message,
+            effect,
+        } = self;
+        let result = super::didcomm::send_message_via(&service, &message, &listener_id, &to_did)
+            .await
+            .map_err(|e| format!("{e}"));
+        RelationshipOutcome { effect, result }
+    }
+}
+
+/// The post-send mutation a relationship network action applies on the loop
+/// thread once its send completes. Each variant owns exactly the data the old
+/// inline success/error block referenced, so [`RelationshipOutcome::apply`]
+/// reproduces the pre-R14 final state byte-for-byte.
+pub(crate) enum RelationshipEffect {
+    /// `SubmitRequest`: on success, insert the relationship + outbound task and
+    /// save; on failure, record the error. Mirrors `send_relationship_request`'s
+    /// post-send tail + `handle_submit`'s UI block.
+    Create {
+        respondent_did: Arc<String>,
+        our_did: Arc<String>,
+        msg_id: Arc<String>,
+        used_r_did: bool,
+        /// `key_info` entries minted for a new R-DID (empty when the persona DID
+        /// was used). Recorded into `config.key_info` on the loop thread — on
+        /// success *and* failure, matching the pre-R14 in-memory state where key
+        /// creation happened before the send (only success persists, via save).
+        key_info: Vec<(String, KeyInfoConfig)>,
+        /// A brand-new contact to insert for the respondent (the alias the user
+        /// entered). `Some` only when the DID resolved and no contact existed;
+        /// inserted on success *and* send-failure (the old path added it before
+        /// the send). `None` when a contact already existed.
+        contact_to_add: Option<Option<String>>,
+    },
+    /// `Ping`: on success, log + create the TrustPing task and save.
+    Ping {
+        our_did: Arc<String>,
+        remote_did: Arc<String>,
+        remote_p_did: String,
+        msg_id: Arc<String>,
+        relationship: Arc<Mutex<RelRecord>>,
+        display_name: String,
+        using_rdid: bool,
+    },
+    /// `RequestVrc`: on success, create the outbound VRC-request task and save.
+    RequestVrc {
+        remote_p_did: String,
+        msg_id: Arc<String>,
+        relationship: Arc<Mutex<RelRecord>>,
+        display_name: String,
+    },
+    /// `Remove`: the R-DID listener (if any) was torn down in the task; remove
+    /// the relationship + contact records here and save.
+    Remove { remote_p_did: String },
+}
+
+/// The completed result of a relationship network dispatch: the post-send effect
+/// plus the send's `Result` (stringified so it is `Send`/`'static`).
+pub(crate) struct RelationshipOutcome {
+    effect: RelationshipEffect,
+    result: Result<(), String>,
+}
+
+impl RelationshipOutcome {
+    /// Apply the post-send mutation on the loop thread. On send success this
+    /// performs exactly the config mutation + save + status/log the old inline
+    /// handler did *after* the await; on failure it records the same error
+    /// status, leaving config untouched (so a failed send records no
+    /// relationship/task — matching the pre-R14 ordering and durability).
+    pub(crate) fn apply(self, state: &mut State, config: &mut Config, profile: &str) {
+        // Accessor for the relationships-panel status slot, used by the
+        // `dispatch_util` save/error helpers below (a free fn so its HRTB is
+        // inferred correctly).
+        fn status(mp: &mut crate::state_handler::main_page::MainPageState) -> &mut Option<String> {
+            &mut mp.content_panel.relationships.status_message
+        }
+        match self.effect {
+            RelationshipEffect::Create {
+                respondent_did,
+                our_did,
+                msg_id,
+                used_r_did,
+                key_info,
+                contact_to_add,
+            } => {
+                // Insert the brand-new contact (the DID resolved in the task; the
+                // old path added it *before* the send, so do it on both success
+                // and send-failure). `None` ⇒ a contact already existed.
+                if let Some(alias) = contact_to_add {
+                    insert_contact(config, &respondent_did, alias);
+                }
+                // Record any minted R-DID key metadata next — done on both
+                // success and failure to match the pre-R14 in-memory state (the
+                // secrets are already in the shared resolver; only `Config`
+                // bookkeeping is left, and it only persists on the success save).
+                for (id, info) in key_info {
+                    config.key_info.insert(id, info);
+                }
+                match self.result {
+                    Ok(()) => {
+                        // Insert the relationship + outbound task (post-send tail of
+                        // `send_relationship_request`).
+                        config.private.relationships.relationships.insert(
+                            Arc::clone(&respondent_did),
+                            Arc::new(Mutex::new(RelRecord {
+                                task_id: Arc::clone(&msg_id),
+                                our_did: Arc::clone(&our_did),
+                                remote_p_did: Arc::clone(&respondent_did),
+                                remote_did: Arc::clone(&respondent_did),
+                                created: Utc::now(),
+                                state: RelationshipState::RequestSent,
+                            })),
+                        );
+                        config.private.tasks.new_task(
+                            &msg_id,
+                            TaskType::RelationshipRequestOutbound {
+                                to: Arc::clone(&respondent_did),
+                            },
+                        );
+                        config.public.logs.insert(
+                        LogFamily::Relationship,
+                        format!(
+                            "Relationship requested: remote DID({respondent_did}) Task ID({msg_id})"
+                        ),
+                    );
+                        info!(to = %respondent_did, "relationship request sent");
+
+                        state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+                        let detail = format!(
+                            "Relationship Request Sent\n\
+                         ─────────────────────────\n\
+                         To (persona):  {respondent_did}\n\
+                         Our DID:       {our_did}\n\
+                         R-DID used:    {}\n\
+                         Task ID:       {msg_id}",
+                            if used_r_did { "yes" } else { "no" },
+                        );
+                        dispatch_util::save_and_sync(
+                            &mut state.main_page,
+                            config,
+                            profile,
+                            dispatch_util::Persist::SaveAndSync,
+                            status,
+                            format!("Request sent to {}", log_did(&respondent_did)),
+                            dispatch_util::SyncLog::Detailed {
+                                summary: format!(
+                                    "Relationship request sent to {}",
+                                    log_did(&respondent_did)
+                                ),
+                                detail,
+                            },
+                        );
+                    }
+                    Err(e) => {
+                        let err = anyhow::anyhow!("failed to send relationship request: {e}");
+                        dispatch_util::record_error(
+                            &mut state.main_page,
+                            status,
+                            "Failed to send relationship request",
+                            &err,
+                        );
+                    }
+                }
+            }
+            RelationshipEffect::Ping {
+                our_did,
+                remote_did,
+                remote_p_did,
+                msg_id,
+                relationship,
+                display_name,
+                using_rdid,
+            } => match self.result {
+                Ok(()) => {
+                    config.public.logs.insert(
+                        LogFamily::Relationship,
+                        format!("Sent ping to {remote_did} via {our_did}"),
+                    );
+                    config.private.tasks.new_task(
+                        &msg_id,
+                        TaskType::TrustPing {
+                            from: Arc::clone(&our_did),
+                            to: Arc::clone(&remote_did),
+                            relationship,
+                        },
+                    );
+                    info!(to = %remote_p_did, "trust-ping sent");
+
+                    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+                    dispatch_util::save_and_sync(
+                        &mut state.main_page,
+                        config,
+                        profile,
+                        dispatch_util::Persist::SaveAndSync,
+                        status,
+                        "Ping sent",
+                        dispatch_util::SyncLog::Detailed {
+                            summary: format!(
+                                "Trust-ping sent to {display_name}{}",
+                                if using_rdid { " (via R-DID)" } else { "" }
+                            ),
+                            detail: format!(
+                                "Trust-Ping Sent\n\
+                                 ───────────────\n\
+                                 To:              {display_name}\n\
+                                 Sent to DID:     {remote_did}\n\
+                                 Sent from DID:   {our_did}\n\
+                                 Remote persona:  {remote_p_did}\n\
+                                 Using R-DIDs:    {}\n\
+                                 Routed via:      mediator",
+                                if using_rdid { "yes" } else { "no" },
+                            ),
+                        },
+                    );
+                }
+                Err(e) => {
+                    state.main_page.content_panel.relationships.status_message =
+                        Some(format!("Ping failed: {e:#}"));
+                    state.main_page.log_detailed(
+                        format!("Ping to {display_name} failed: {e}"),
+                        format!(
+                            "Trust-Ping Failed\n\
+                             ─────────────────\n\
+                             To (persona):    {remote_p_did}\n\
+                             To (R-DID):      {remote_did}\n\
+                             From (our DID):  {our_did}\n\
+                             Error:           {e:#}",
+                        ),
+                    );
+                }
+            },
+            RelationshipEffect::RequestVrc {
+                remote_p_did,
+                msg_id,
+                relationship,
+                display_name,
+            } => match self.result {
+                Ok(()) => {
+                    config
+                        .private
+                        .tasks
+                        .new_task(&msg_id, TaskType::VRCRequestOutbound { relationship });
+                    config.public.logs.insert(
+                        LogFamily::Relationship,
+                        format!("Requested VRC from ({remote_p_did}) Task ID ({msg_id})"),
+                    );
+                    info!(to = %remote_p_did, "VRC request sent");
+                    dispatch_util::save_and_sync(
+                        &mut state.main_page,
+                        config,
+                        profile,
+                        dispatch_util::Persist::SaveAndSync,
+                        status,
+                        format!("VRC requested from {display_name}"),
+                        dispatch_util::SyncLog::Detailed {
+                            summary: format!("VRC requested from {display_name}"),
+                            detail: format!(
+                                "VRC Request Sent\n\
+                                 ────────────────\n\
+                                 To:      {display_name}\n\
+                                 DID:     {remote_p_did}",
+                            ),
+                        },
+                    );
+                }
+                Err(e) => {
+                    let err = anyhow::anyhow!("{e}");
+                    state.main_page.content_panel.relationships.status_message =
+                        Some(format!("VRC request failed: {err:#}"));
+                    state
+                        .main_page
+                        .log_error(format!("VRC request to {display_name} failed"), &err);
+                }
+            },
+            RelationshipEffect::Remove { remote_p_did } => {
+                // Listener teardown already ran in the task. Remove the records
+                // here (post-`remove_listener` tail of `remove_relationship`).
+                let key = Arc::new(remote_p_did.clone());
+                config.private.relationships.remove(
+                    &key,
+                    &mut config.private.vrcs_issued,
+                    &mut config.private.vrcs_received,
+                );
+                config
+                    .private
+                    .contacts
+                    .remove_contact(&mut config.public.logs, &remote_p_did);
+                config.public.logs.insert(
+                    LogFamily::Relationship,
+                    format!("Removed relationship with ({remote_p_did})"),
+                );
+                info!(remote = %remote_p_did, "relationship removed");
+
+                state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
+                dispatch_util::save_and_sync(
+                    &mut state.main_page,
+                    config,
+                    profile,
+                    dispatch_util::Persist::SaveAndSync,
+                    status,
+                    "Relationship removed",
+                    dispatch_util::SyncLog::Plain("Relationship removed".to_string()),
+                );
+            }
+        }
+    }
+}
+
+/// Backgrounded context-DID deletion: the VTA `delete_did_webvh` + listener
+/// teardown run off the loop, then the local config cleanup + save apply on the
+/// loop thread via [`DidDeleteOutcome`]. The guards (community-bound check, DID
+/// resolution) ran on the loop thread before this was built.
+pub(crate) struct DidDeleteJob {
+    pub(crate) admin_vta: Option<vta_sdk::client::VtaClient>,
+    pub(crate) service: DIDCommService,
+    pub(crate) did: String,
+    pub(crate) persona_id: openvtc_core::config::account::PersonaId,
+    pub(crate) key_ids: Vec<String>,
+}
+
+impl DidDeleteJob {
+    /// I/O-only: best-effort VTA delete + listener teardown (failures logged, not
+    /// fatal — matching the old inline path), then hand the local cleanup back.
+    pub(crate) async fn run(self) -> DidDeleteOutcome {
+        let DidDeleteJob {
+            admin_vta,
+            service,
+            did,
+            persona_id,
+            key_ids,
+        } = self;
+        if let Some(vta) = admin_vta
+            && let Err(e) = vta.delete_did_webvh(&did).await
+        {
+            tracing::debug!("delete_did_webvh({did}) failed (continuing local cleanup): {e}");
+        }
+        let listener_id = super::didcomm::persona_listener_id(&did);
+        if let Err(e) = service.remove_listener(&listener_id).await {
+            tracing::debug!("remove_listener after DID delete: {e}");
+        }
+        DidDeleteOutcome {
+            did,
+            persona_id,
+            key_ids,
+        }
+    }
+}
+
+/// Deletion of an orphan context-DID (persona) completed off the loop: the VTA
+/// `delete_did_webvh` + listener teardown ran in the spawned task; the local
+/// config cleanup + save are applied here on the loop thread.
+pub(crate) struct DidDeleteOutcome {
+    pub(crate) did: String,
+    pub(crate) persona_id: openvtc_core::config::account::PersonaId,
+    pub(crate) key_ids: Vec<String>,
+}
+
+impl DidDeleteOutcome {
+    /// Apply the local cleanup (persona/identity/key removal + save + log),
+    /// mirroring the tail of the old inline `delete_context_did`. The VTA delete
+    /// and listener teardown already happened in the task (best-effort, as before
+    /// — failures there were logged and did not block local cleanup).
+    pub(crate) fn apply(self, state: &mut State, config: &mut Config, profile: &str) {
+        config.account.personas.remove(&self.persona_id);
+        config.identities.remove(&self.persona_id);
+        for kid in &self.key_ids {
+            config.key_info.remove(kid);
+        }
+        if let Err(e) = settings_actions::save_config(config, profile) {
+            state
+                .main_page
+                .log_error("Failed to save after removing DID", &e);
+        }
+        state.main_page.sync_from_config(config);
+        state
+            .main_page
+            .log(format!("Removed identity {}", self.did));
+    }
+}
 
 fn handle_open_detail(state: &mut State, index: usize) {
     state.main_page.content_panel.relationships.selected_index = index;
@@ -586,20 +992,76 @@ fn handle_toggle_r_did(state: &mut State) {
     }
 }
 
+/// Loop-thread preparation for `SubmitRequest`. Does the fast, local checks +
+/// contact add (all done *before* the send today), reserves the R-DID plan, and
+/// snapshots the message inputs into owned values. Returns the spawnable
+/// [`RelationshipJob::Create`], or `Err` (recorded as a status) if a pre-send
+/// validation fails — in which case no domain should have been claimed.
 #[allow(clippy::too_many_arguments)]
-async fn handle_submit(
+async fn prepare_submit(
     config: &mut Box<Config>,
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    state_tx: &watch::Sender<State>,
-    profile: &str,
     did: &str,
     alias: &str,
     reason: Option<&str>,
     generate_r_did: bool,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
-) {
+) -> Result<RelationshipJob> {
+    // Validate DID format.
+    if !did.starts_with("did:") {
+        anyhow::bail!("Invalid DID: must start with 'did:'");
+    }
+    // Reject a duplicate established relationship.
+    let respondent_arc = Arc::new(did.to_string());
+    if let Some(rel) = config.private.relationships.get(&respondent_arc) {
+        let lock = rel
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        if lock.state == RelationshipState::Established {
+            anyhow::bail!("An established relationship already exists with this DID");
+        }
+    }
+
+    // Decide whether a brand-new contact must be added. The DID *resolution*
+    // (the create path's only non-send network call) is deferred to the task so
+    // it doesn't park the loop; the duplicate-alias check is local, so do it here
+    // up front (it must reject *before* the send, as the old inline path did).
+    let alias_opt = if alias.trim().is_empty() {
+        None
+    } else {
+        Some(alias.trim().to_string())
+    };
+    let add_contact_alias = if config.private.contacts.find_contact(did).is_none() {
+        if let Some(a) = &alias_opt
+            && config.private.contacts.aliases.contains_key(a)
+        {
+            anyhow::bail!("Duplicate alias ({a}) detected! Existing alias must be removed first!");
+        }
+        Some(alias_opt)
+    } else {
+        None
+    };
+
+    // Reserve the R-DID plan (BIP32 path-pointer reservation is the only config
+    // mutation; the VTA round-trip / derivation runs in the task).
+    let rdid_plan = if generate_r_did {
+        let mediator = config.mediator_did().to_string();
+        Some(plan_relationship_did(config, &mediator, admin_vta)?)
+    } else {
+        None
+    };
+
+    let friendly_name = if config.public.friendly_name.is_empty() {
+        None
+    } else {
+        Some(config.public.friendly_name.clone())
+    };
+    let persona_did = config.persona_did_arc();
+    let persona_listener_id = super::didcomm::listener_id_for_did(&persona_did, config);
+
+    // In-progress status (shown by the loop's post-arm state send).
     if generate_r_did {
         state.main_page.content_panel.relationships.status_message =
             Some("Creating relationship DID...".to_string());
@@ -610,162 +1072,139 @@ async fn handle_submit(
         state.main_page.content_panel.relationships.status_message =
             Some("Sending request...".to_string());
     }
-    let _ = state_tx.send(state.clone());
 
-    match send_relationship_request(
-        config,
-        tdk,
-        service,
-        did,
-        alias,
-        reason,
-        generate_r_did,
-        admin_vta,
-    )
-    .await
-    {
-        Ok(()) => {
-            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-            let detail = {
-                let rel_key = std::sync::Arc::new(did.to_string());
-                if let Some(rel_arc) = config.private.relationships.get(&rel_key)
-                    && let Ok(r) = rel_arc.lock()
-                {
-                    format!(
-                        "Relationship Request Sent\n\
-                         ─────────────────────────\n\
-                         To (persona):  {}\n\
-                         Our DID:       {}\n\
-                         R-DID used:    {}\n\
-                         Task ID:       {}",
-                        r.remote_p_did,
-                        r.our_did,
-                        if !config.is_persona_did(r.our_did.as_str()) {
-                            "yes"
-                        } else {
-                            "no"
-                        },
-                        r.task_id,
-                    )
-                } else {
-                    String::new()
-                }
-            };
-            dispatch_util::save_and_sync(
-                &mut state.main_page,
-                config,
-                profile,
-                dispatch_util::Persist::SaveAndSync,
-                |mp| &mut mp.content_panel.relationships.status_message,
-                format!("Request sent to {}", log_did(did)),
-                dispatch_util::SyncLog::Detailed {
-                    summary: format!("Relationship request sent to {}", log_did(did)),
-                    detail,
-                },
-            );
-        }
-        Err(e) => {
-            dispatch_util::record_error(
-                &mut state.main_page,
-                |mp| &mut mp.content_panel.relationships.status_message,
-                "Failed to send relationship request",
-                &e,
-            );
-        }
-    }
+    Ok(RelationshipJob::Create(Box::new(CreateJob {
+        tdk: tdk.clone(),
+        service: service.clone(),
+        rdid_plan,
+        persona_did,
+        persona_listener_id,
+        respondent_did: respondent_arc,
+        reason: reason.map(|s| s.to_string()),
+        friendly_name,
+        add_contact_alias,
+    })))
 }
 
-async fn handle_ping(
+/// Loop-thread preparation for `Ping`. Builds the ping message + resolves the
+/// listener (all `Config` reads), then hands the slow `send_message_with_retry`
+/// (~6 s on a dead peer) to the task. The TrustPing task + log are created in
+/// `apply` on success.
+fn prepare_ping(
     config: &mut Box<Config>,
-    tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
     remote_p_did: &str,
-) {
-    let rel_key = std::sync::Arc::new(remote_p_did.to_string());
-    let (our_did_str, remote_did_str) = if let Some(rel_arc) =
-        config.private.relationships.get(&rel_key)
-        && let Ok(r) = rel_arc.lock()
-    {
-        (r.our_did.to_string(), r.remote_did.to_string())
-    } else {
-        (String::new(), String::new())
+) -> Result<RelationshipJob> {
+    let remote_key = Arc::new(remote_p_did.to_string());
+    let relationship = config
+        .private
+        .relationships
+        .get(&remote_key)
+        .ok_or_else(|| anyhow::anyhow!("No relationship found for {remote_p_did}"))?;
+    let (our_did, remote_did) = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
     };
+    let using_rdid = !config.is_persona_did(our_did.as_str());
+    info!(our_did = %our_did, remote_did = %remote_did, is_r_did = using_rdid, "ping using relationship DIDs");
+
+    let ping_msg = build_ping_message(&our_did, &remote_did)?;
+    let msg_id = Arc::new(ping_msg.id.clone());
+    let listener_id = super::didcomm::listener_id_for_did(&our_did, config);
     let display_name = resolve_did_to_display(config, remote_p_did);
 
-    match ping_relationship(config, tdk, service, remote_p_did).await {
-        Ok(()) => {
-            state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-            let using_rdid = !config.is_persona_did(&our_did_str);
-            dispatch_util::save_and_sync(
-                &mut state.main_page,
-                config,
-                profile,
-                dispatch_util::Persist::SaveAndSync,
-                |mp| &mut mp.content_panel.relationships.status_message,
-                "Ping sent",
-                dispatch_util::SyncLog::Detailed {
-                    summary: format!(
-                        "Trust-ping sent to {display_name}{}",
-                        if using_rdid { " (via R-DID)" } else { "" }
-                    ),
-                    detail: format!(
-                        "Trust-Ping Sent\n\
-                         ───────────────\n\
-                         To:              {display_name}\n\
-                         Sent to DID:     {remote_did_str}\n\
-                         Sent from DID:   {our_did_str}\n\
-                         Remote persona:  {remote_p_did}\n\
-                         Using R-DIDs:    {}\n\
-                         Routed via:      mediator",
-                        if using_rdid { "yes" } else { "no" },
-                    ),
-                },
-            );
-        }
-        Err(e) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("Ping failed: {e:#}"));
-            state.main_page.log_detailed(
-                format!("Ping to {display_name} failed: {e}"),
-                format!(
-                    "Trust-Ping Failed\n\
-                     ─────────────────\n\
-                     To (persona):    {remote_p_did}\n\
-                     To (R-DID):      {remote_did_str}\n\
-                     From (our DID):  {our_did_str}\n\
-                     Error:           {e:#}\n\n\
-                     Debug:\n{e:?}",
-                ),
-            );
-        }
-    }
+    state.main_page.content_panel.relationships.status_message =
+        Some("Sending ping...".to_string());
+
+    Ok(RelationshipJob::Send(Box::new(RelationshipSend {
+        service: service.clone(),
+        listener_id,
+        to_did: Arc::clone(&remote_did),
+        message: Box::new(ping_msg),
+        effect: RelationshipEffect::Ping {
+            our_did,
+            remote_did,
+            remote_p_did: remote_p_did.to_string(),
+            msg_id,
+            relationship,
+            display_name,
+            using_rdid,
+        },
+    })))
 }
 
-async fn handle_remove(
+/// Loop-thread preparation for `Remove`. Extracts the R-DID listener id (if any),
+/// then the task tears the listener down; the record removal happens in `apply`.
+fn prepare_remove(
     config: &mut Box<Config>,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
     remote_p_did: &str,
-) {
-    if let Err(e) = remove_relationship(config, service, remote_p_did).await {
-        state
-            .main_page
-            .log_error("Failed to remove relationship", &e);
-        return;
+) -> RelationshipJob {
+    let key = Arc::new(remote_p_did.to_string());
+    let listener_id = if let Some(rel_arc) = config.private.relationships.get(&key)
+        && let Ok(lock) = rel_arc.lock()
+        && !config.is_persona_did(lock.our_did.as_str())
+    {
+        Some(super::didcomm::listener_id_for_did(&lock.our_did, config))
+    } else {
+        None
+    };
+    state.main_page.content_panel.relationships.status_message =
+        Some("Removing relationship...".to_string());
+    RelationshipJob::Remove {
+        service: service.clone(),
+        listener_id,
+        remote_p_did: remote_p_did.to_string(),
     }
-    state.main_page.content_panel.relationships.mode = RelationshipsMode::List;
-    dispatch_util::save_and_sync(
-        &mut state.main_page,
-        config,
-        profile,
-        dispatch_util::Persist::SaveAndSync,
-        |mp| &mut mp.content_panel.relationships.status_message,
-        "Relationship removed",
-        dispatch_util::SyncLog::Plain("Relationship removed".to_string()),
-    );
+}
+
+/// Loop-thread preparation for `RequestVrc`. Builds the VRC-request message +
+/// resolves the listener; the task sends it and `apply` records the task on
+/// success. Mirrors the pre-R14 `credential_actions::send_vrc_request` split.
+fn prepare_request_vrc(
+    config: &mut Box<Config>,
+    service: &DIDCommService,
+    state: &mut State,
+    remote_p_did: &str,
+) -> Result<RelationshipJob> {
+    use openvtc_core::vrc::VrcRequest;
+
+    let remote_key = Arc::new(remote_p_did.to_string());
+    let relationship = config
+        .private
+        .relationships
+        .get(&remote_key)
+        .ok_or_else(|| anyhow::anyhow!("No relationship found for {remote_p_did}"))?;
+    let (our_did, remote_did) = {
+        let lock = relationship
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
+    };
+    let message = VrcRequest { reason: None }.create_message(&remote_did, &our_did)?;
+    let msg_id = Arc::new(message.id.clone());
+    let listener_id = super::didcomm::listener_id_for_did(&our_did, config);
+    let display_name = resolve_did_to_display(config, remote_p_did);
+
+    state.main_page.content_panel.relationships.status_message =
+        Some("Requesting VRC...".to_string());
+
+    Ok(RelationshipJob::Send(Box::new(RelationshipSend {
+        service: service.clone(),
+        listener_id,
+        to_did: remote_did,
+        message: Box::new(message),
+        effect: RelationshipEffect::RequestVrc {
+            remote_p_did: remote_p_did.to_string(),
+            msg_id,
+            relationship,
+            display_name,
+        },
+    })))
 }
 
 fn handle_edit_alias(
@@ -835,47 +1274,39 @@ fn handle_edit_alias(
     );
 }
 
-async fn handle_request_vrc(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &DIDCommService,
-    state: &mut State,
-    profile: &str,
-    remote_p_did: &str,
-) {
-    let display_name = resolve_did_to_display(config, remote_p_did);
-    match credential_actions::send_vrc_request(config, tdk, service, remote_p_did, None).await {
-        Ok(()) => {
-            dispatch_util::save_and_sync(
-                &mut state.main_page,
-                config,
-                profile,
-                dispatch_util::Persist::SaveAndSync,
-                |mp| &mut mp.content_panel.relationships.status_message,
-                format!("VRC requested from {display_name}"),
-                dispatch_util::SyncLog::Detailed {
-                    summary: format!("VRC requested from {display_name}"),
-                    detail: format!(
-                        "VRC Request Sent\n\
-                         ────────────────\n\
-                         To:      {display_name}\n\
-                         DID:     {remote_p_did}",
-                    ),
-                },
-            );
-        }
-        Err(e) => {
-            state.main_page.content_panel.relationships.status_message =
-                Some(format!("VRC request failed: {e:#}"));
-            state
-                .main_page
-                .log_error(format!("VRC request to {display_name} failed"), &e);
-        }
-    }
+/// Outcome of synchronously dispatching a `RelationshipAction` on the loop
+/// thread (R14). Local actions are fully `Handled` here; network actions return
+/// a `Spawn`able [`RelationshipJob`] for the loop to run off-thread, plus whether
+/// it is a ping (so the loop can stamp `ping_sent_at` for pong-latency display).
+pub(crate) enum RelationshipDispatch {
+    /// Done synchronously (nav, input, edit-alias) — nothing to background.
+    Handled,
+    /// A network job to spawn; `is_ping` drives the `ping_sent_at` latency stamp.
+    Spawn { job: RelationshipJob, is_ping: bool },
 }
 
-/// Dispatch a single `RelationshipAction`. `ping_sent_at` is updated when
-/// a Ping action runs so the main loop can correlate the inbound pong.
+/// Whether a `RelationshipAction` is a network-bound action that the loop should
+/// run off-thread (claiming the `Relationship` busy-domain first). Lets the loop
+/// reject a busy domain *before* `dispatch` does any pre-send config mutation.
+pub(crate) fn is_network(action: &RelationshipAction) -> bool {
+    matches!(
+        action,
+        RelationshipAction::SubmitRequest { .. }
+            | RelationshipAction::Ping { .. }
+            | RelationshipAction::Remove { .. }
+            | RelationshipAction::RequestVrc { .. }
+    )
+}
+
+/// Dispatch a single `RelationshipAction`.
+///
+/// Local actions mutate `state` and return [`RelationshipDispatch::Handled`].
+/// Network actions do the fast, loop-thread pre-send work (validation, contact
+/// add, R-DID path reservation, message build) and return
+/// [`RelationshipDispatch::Spawn`] for the loop to run off-thread; the post-send
+/// config mutation is applied later by [`RelationshipOutcome::apply`]. A pre-send
+/// failure is recorded as a status here and returns `Handled` (no job spawned, so
+/// the loop releases the busy-domain immediately).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn dispatch(
     action: RelationshipAction,
@@ -883,11 +1314,9 @@ pub(crate) async fn dispatch(
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    state_tx: &watch::Sender<State>,
     profile: &str,
-    ping_sent_at: &mut Option<Instant>,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
-) {
+) -> RelationshipDispatch {
     match action {
         RelationshipAction::Select(index) => {
             state.main_page.content_panel.relationships.selected_index = index;
@@ -916,13 +1345,11 @@ pub(crate) async fn dispatch(
             reason,
             generate_r_did,
         } => {
-            handle_submit(
+            match prepare_submit(
                 config,
                 tdk,
                 service,
                 state,
-                state_tx,
-                profile,
                 &did,
                 &alias,
                 reason.as_deref(),
@@ -930,13 +1357,38 @@ pub(crate) async fn dispatch(
                 admin_vta,
             )
             .await
+            {
+                Ok(job) => {
+                    return RelationshipDispatch::Spawn {
+                        job,
+                        is_ping: false,
+                    };
+                }
+                Err(e) => {
+                    dispatch_util::record_error(
+                        &mut state.main_page,
+                        |mp| &mut mp.content_panel.relationships.status_message,
+                        "Failed to send relationship request",
+                        &e,
+                    );
+                }
+            }
         }
         RelationshipAction::Ping { remote_p_did } => {
-            handle_ping(config, tdk, service, state, profile, &remote_p_did).await;
-            *ping_sent_at = Some(Instant::now());
+            match prepare_ping(config, service, state, &remote_p_did) {
+                Ok(job) => return RelationshipDispatch::Spawn { job, is_ping: true },
+                Err(e) => {
+                    state.main_page.content_panel.relationships.status_message =
+                        Some(format!("Ping failed: {e:#}"));
+                    state.main_page.log_error("Failed to send trust-ping", &e);
+                }
+            }
         }
         RelationshipAction::Remove { remote_p_did } => {
-            handle_remove(config, service, state, profile, &remote_p_did).await
+            return RelationshipDispatch::Spawn {
+                job: prepare_remove(config, service, state, &remote_p_did),
+                is_ping: false,
+            };
         }
         RelationshipAction::StartEditAlias {
             index,
@@ -967,7 +1419,301 @@ pub(crate) async fn dispatch(
             };
         }
         RelationshipAction::RequestVrc { remote_p_did } => {
-            handle_request_vrc(config, tdk, service, state, profile, &remote_p_did).await
+            match prepare_request_vrc(config, service, state, &remote_p_did) {
+                Ok(job) => {
+                    return RelationshipDispatch::Spawn {
+                        job,
+                        is_ping: false,
+                    };
+                }
+                Err(e) => {
+                    state.main_page.content_panel.relationships.status_message =
+                        Some(format!("VRC request failed: {e:#}"));
+                    let display_name = resolve_did_to_display(config, &remote_p_did);
+                    state
+                        .main_page
+                        .log_error(format!("VRC request to {display_name} failed"), &e);
+                }
+            }
         }
+    }
+    RelationshipDispatch::Handled
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_handler::dispatch_util::test_config;
+
+    /// Build a relationship record (persona DID used as our_did, so it is *not*
+    /// an R-DID) and register it in `config`. Returns the shared Arc.
+    fn register_relationship(config: &mut Config, remote_p_did: &str) -> Arc<Mutex<RelRecord>> {
+        let key = Arc::new(remote_p_did.to_string());
+        let rel = Arc::new(Mutex::new(RelRecord {
+            task_id: Arc::new("task-1".to_string()),
+            our_did: config.persona_did_arc(),
+            remote_p_did: Arc::clone(&key),
+            remote_did: Arc::clone(&key),
+            created: Utc::now(),
+            state: RelationshipState::Established,
+        }));
+        config
+            .private
+            .relationships
+            .relationships
+            .insert(key, Arc::clone(&rel));
+        rel
+    }
+
+    /// A successful Ping outcome creates the TrustPing task + activity log and
+    /// sets the panel status to "Ping sent" — the same final state the old inline
+    /// `handle_ping` success arm produced.
+    #[test]
+    fn ping_success_applies_task_and_status() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let remote = "did:peer:remote";
+        let rel = register_relationship(&mut config, remote);
+
+        let outcome = RelationshipOutcome {
+            effect: RelationshipEffect::Ping {
+                our_did: config.persona_did_arc(),
+                remote_did: Arc::new(remote.to_string()),
+                remote_p_did: remote.to_string(),
+                msg_id: Arc::new("ping-msg".to_string()),
+                relationship: rel,
+                display_name: "Remote".to_string(),
+                using_rdid: false,
+            },
+            result: Ok(()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert_eq!(
+            state
+                .main_page
+                .content_panel
+                .relationships
+                .status_message
+                .as_deref(),
+            Some("Ping sent")
+        );
+        assert!(
+            config
+                .private
+                .tasks
+                .get_by_id(&Arc::new("ping-msg".to_string()))
+                .is_some(),
+            "a TrustPing task must be created on success"
+        );
+    }
+
+    /// A failed Ping outcome sets the "Ping failed" status and creates NO task —
+    /// matching the old inline error arm (no config mutation on a failed send).
+    #[test]
+    fn ping_failure_sets_status_and_creates_no_task() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let remote = "did:peer:remote";
+        let rel = register_relationship(&mut config, remote);
+
+        let outcome = RelationshipOutcome {
+            effect: RelationshipEffect::Ping {
+                our_did: config.persona_did_arc(),
+                remote_did: Arc::new(remote.to_string()),
+                remote_p_did: remote.to_string(),
+                msg_id: Arc::new("ping-msg".to_string()),
+                relationship: rel,
+                display_name: "Remote".to_string(),
+                using_rdid: false,
+            },
+            result: Err("dead peer".to_string()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        let status = state
+            .main_page
+            .content_panel
+            .relationships
+            .status_message
+            .clone()
+            .unwrap_or_default();
+        assert!(status.starts_with("Ping failed"), "got: {status}");
+        assert!(
+            config
+                .private
+                .tasks
+                .get_by_id(&Arc::new("ping-msg".to_string()))
+                .is_none(),
+            "no task must be created on a failed send"
+        );
+    }
+
+    /// A successful Create outcome inserts the relationship + outbound task and
+    /// records the minted R-DID key_info, reproducing the post-send tail of
+    /// `send_relationship_request`.
+    #[test]
+    fn create_success_inserts_relationship_and_keyinfo() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let respondent = Arc::new("did:peer:respondent".to_string());
+        let our_did = Arc::new("did:peer:our-rdid".to_string());
+        let key_info = vec![(
+            "z-some-key".to_string(),
+            KeyInfoConfig {
+                path: KeySourceMaterial::Derived {
+                    path: "m/3'/1'/1'/0'".to_string(),
+                },
+                create_time: Utc::now(),
+                purpose: KeyTypes::RelationshipVerification,
+            },
+        )];
+
+        let outcome = RelationshipOutcome {
+            effect: RelationshipEffect::Create {
+                respondent_did: Arc::clone(&respondent),
+                our_did,
+                msg_id: Arc::new("req-msg".to_string()),
+                used_r_did: true,
+                key_info,
+                contact_to_add: Some(Some("Respondent".to_string())),
+            },
+            result: Ok(()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            config.private.relationships.get(&respondent).is_some(),
+            "relationship record inserted on success"
+        );
+        assert!(
+            config.key_info.contains_key("z-some-key"),
+            "minted R-DID key_info recorded"
+        );
+        assert_eq!(
+            state
+                .main_page
+                .content_panel
+                .relationships
+                .status_message
+                .as_deref(),
+            Some("Request sent to did:peer:respondent")
+        );
+    }
+
+    /// A failed Create still records the minted key_info in-memory (matching the
+    /// pre-R14 ordering where key creation happened before the send) but inserts
+    /// NO relationship record, and surfaces the error status.
+    #[test]
+    fn create_failure_records_keyinfo_but_no_relationship() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let respondent = Arc::new("did:peer:respondent".to_string());
+
+        let outcome = RelationshipOutcome {
+            effect: RelationshipEffect::Create {
+                respondent_did: Arc::clone(&respondent),
+                our_did: Arc::new("did:peer:our-rdid".to_string()),
+                msg_id: Arc::new("req-msg".to_string()),
+                used_r_did: true,
+                key_info: vec![(
+                    "z-orphan".to_string(),
+                    KeyInfoConfig {
+                        path: KeySourceMaterial::Derived {
+                            path: "m/3'/1'/1'/0'".to_string(),
+                        },
+                        create_time: Utc::now(),
+                        purpose: KeyTypes::RelationshipVerification,
+                    },
+                )],
+                contact_to_add: None,
+            },
+            result: Err("send failed".to_string()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            config.private.relationships.get(&respondent).is_none(),
+            "no relationship on a failed send"
+        );
+        assert!(
+            config.key_info.contains_key("z-orphan"),
+            "key_info recorded in-memory even on failure (matches pre-R14)"
+        );
+        let status = state
+            .main_page
+            .content_panel
+            .relationships
+            .status_message
+            .clone()
+            .unwrap_or_default();
+        assert!(status.starts_with("Error:"), "got: {status}");
+    }
+
+    /// A Remove outcome removes the relationship record and sets the status —
+    /// the post-`remove_listener` tail of `remove_relationship` + `handle_remove`.
+    #[test]
+    fn remove_applies_record_removal() {
+        let mut config = test_config();
+        let mut state = State::default();
+        let remote = "did:peer:remote";
+        register_relationship(&mut config, remote);
+
+        let outcome = RelationshipOutcome {
+            effect: RelationshipEffect::Remove {
+                remote_p_did: remote.to_string(),
+            },
+            result: Ok(()),
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            config
+                .private
+                .relationships
+                .get(&Arc::new(remote.to_string()))
+                .is_none(),
+            "relationship removed"
+        );
+        assert_eq!(
+            state
+                .main_page
+                .content_panel
+                .relationships
+                .status_message
+                .as_deref(),
+            Some("Relationship removed")
+        );
+    }
+
+    /// `DidDeleteOutcome::apply` removes the persona / identity / key_info and
+    /// logs — the local-cleanup tail of the old inline `delete_context_did`.
+    #[test]
+    fn did_delete_applies_local_cleanup() {
+        use openvtc_core::config::account::PersonaId;
+        let mut config = test_config();
+        let mut state = State::default();
+        config.key_info.insert(
+            "z-persona-key".to_string(),
+            KeyInfoConfig {
+                path: KeySourceMaterial::Derived {
+                    path: "m/0'".to_string(),
+                },
+                create_time: Utc::now(),
+                purpose: KeyTypes::PersonaSigning,
+            },
+        );
+
+        let outcome = DidDeleteOutcome {
+            did: "did:webvh:example".to_string(),
+            persona_id: PersonaId::new(),
+            key_ids: vec!["z-persona-key".to_string()],
+        };
+        outcome.apply(&mut state, &mut config, "test");
+
+        assert!(
+            !config.key_info.contains_key("z-persona-key"),
+            "key_info entry removed"
+        );
     }
 }
