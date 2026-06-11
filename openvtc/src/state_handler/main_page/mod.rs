@@ -41,7 +41,12 @@ pub struct MainPageState {
     pub config: MainMenuConfigState,
 
     /// Activity log entries shown in the bottom panel (newest last).
-    pub activity_log: VecDeque<ActivityLogEntry>,
+    ///
+    /// Entries are wrapped in `Arc` so cloning `MainPageState` (which happens
+    /// per frame and per event via the `State` watch channel) shares the
+    /// entries by pointer rather than deep-copying each entry's summary and
+    /// detail strings. Entries are immutable once written.
+    pub activity_log: VecDeque<Arc<ActivityLogEntry>>,
 }
 
 impl MainPageState {
@@ -60,10 +65,10 @@ impl MainPageState {
             self.activity_log.pop_front();
         }
         let timestamp = chrono::Local::now().format("%H:%M:%S");
-        self.activity_log.push_back(ActivityLogEntry {
+        self.activity_log.push_back(Arc::new(ActivityLogEntry {
             summary: format!("[{}] {}", timestamp, message),
             detail,
-        });
+        }));
     }
 
     /// Log an error with a short context line and a detailed pane containing
@@ -103,7 +108,7 @@ impl MainPageState {
         self.config = MainMenuConfigState::from(config);
 
         // Sync inbox tasks
-        self.content_panel.inbox.tasks = config
+        let mut inbox_tasks: Vec<TaskSummary> = config
             .private
             .tasks
             .tasks
@@ -188,10 +193,8 @@ impl MainPageState {
             })
             .collect();
         // Sort tasks by most recent first
-        self.content_panel
-            .inbox
-            .tasks
-            .sort_by(|a, b| b.created.cmp(&a.created));
+        inbox_tasks.sort_by(|a, b| b.created.cmp(&a.created));
+        self.content_panel.inbox.tasks = inbox_tasks.into();
 
         // Sync relationships
         self.content_panel.relationships.relationships = config
@@ -221,8 +224,9 @@ impl MainPageState {
                                 valid_until: vrc
                                     .valid_until()
                                     .map(|d| d.format("%Y-%m-%d").to_string()),
-                                raw_json: serde_json::to_string_pretty(&vrc.credential())
-                                    .unwrap_or_default(),
+                                // Defer pretty-printing to detail-view render
+                                // time; share the credential by Arc pointer.
+                                raw_json: content::RawCredential::Vrc(Arc::clone(vrc)),
                             })
                             .collect()
                     })
@@ -242,8 +246,9 @@ impl MainPageState {
                                 valid_until: vrc
                                     .valid_until()
                                     .map(|d| d.format("%Y-%m-%d").to_string()),
-                                raw_json: serde_json::to_string_pretty(&vrc.credential())
-                                    .unwrap_or_default(),
+                                // Defer pretty-printing to detail-view render
+                                // time; share the credential by Arc pointer.
+                                raw_json: content::RawCredential::Vrc(Arc::clone(vrc)),
                             })
                             .collect()
                     })
@@ -263,9 +268,10 @@ impl MainPageState {
 
         // Sync credentials
         self.content_panel.credentials.received =
-            collect_vrcs(&config.private.vrcs_received, config);
-        self.content_panel.credentials.issued = collect_vrcs(&config.private.vrcs_issued, config);
-        self.content_panel.credentials.membership = collect_membership_creds(config);
+            collect_vrcs(&config.private.vrcs_received, config).into();
+        self.content_panel.credentials.issued =
+            collect_vrcs(&config.private.vrcs_issued, config).into();
+        self.content_panel.credentials.membership = collect_membership_creds(config).into();
 
         // Sync settings
         self.content_panel.settings.friendly_name = config.public.friendly_name.clone();
@@ -332,7 +338,7 @@ impl MainPageState {
                 });
             }
         }
-        self.content_panel.vta.active_dids = active_dids;
+        self.content_panel.vta.active_dids = active_dids.into();
 
         // Context identities: every persona in the account, with how many
         // communities present it. A persona bound to zero communities is an
@@ -355,7 +361,7 @@ impl MainPageState {
             })
             .collect();
         context_dids.sort_by(|a, b| a.did.cmp(&b.did));
-        self.content_panel.vta.context_dids = context_dids;
+        self.content_panel.vta.context_dids = context_dids.into();
 
         self.content_panel.settings.protection_type = match &config.public.protection {
             openvtc_core::config::ConfigProtectionType::Token(id) => {
@@ -410,7 +416,7 @@ impl MainPageState {
         }
         let community_count = community_items.len();
         self.content_panel.communities.actions_required = config.account.actions_required_count();
-        self.content_panel.communities.items = community_items;
+        self.content_panel.communities.items = community_items.into();
         if self.content_panel.communities.selected_index >= community_count {
             self.content_panel.communities.selected_index = community_count.saturating_sub(1);
         }
@@ -443,8 +449,9 @@ fn collect_vrcs(vrcs: &openvtc_core::vrc::Vrcs, config: &Config) -> Vec<VrcSumma
             .and_then(|c| c.alias.clone());
         if let Some(vrc_map) = vrcs.get(remote_p_did) {
             for (vrc_id, vrc) in vrc_map {
-                let raw_json = serde_json::to_string_pretty(vrc.credential())
-                    .unwrap_or_else(|_| "Failed to serialize credential".to_string());
+                // Defer pretty-printing to detail-view render time; share the
+                // credential by Arc pointer (it is already `Arc`-held in config).
+                let raw_json = content::RawCredential::Vrc(Arc::clone(vrc));
                 result.push(VrcSummary {
                     vrc_id: vrc_id.to_string(),
                     remote_p_did: sanitize_display(remote_p_did, 256),
@@ -504,8 +511,10 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            let raw_json = serde_json::to_string_pretty(vc)
-                .unwrap_or_else(|_| "Failed to serialize credential".to_string());
+            // Defer pretty-printing to detail-view render time. Share the
+            // already-parsed JSON value by Arc pointer (a `serde_json::Value`
+            // pretty-prints identically whether done now or later).
+            let raw_json = content::RawCredential::Value(Arc::new(vc.clone()));
             result.push(VrcSummary {
                 vrc_id: vc_id,
                 remote_p_did: sanitize_display(&c.vtc_did, 256),
@@ -765,5 +774,89 @@ mod tests {
         assert!(matches!(panel.switch(), MainPanel::ContentPanel));
         let panel = MainPanel::ContentPanel;
         assert!(matches!(panel.switch(), MainPanel::MainMenu));
+    }
+
+    // --- RawCredential lazy rendering (Part 2) ---
+
+    /// The lazy `RawCredential::Vrc` path must pretty-print byte-identically to
+    /// the previous eager `serde_json::to_string_pretty(vrc.credential())`.
+    #[test]
+    fn test_raw_credential_vrc_matches_eager_output() {
+        use chrono::{TimeZone, Utc};
+        use dtg_credentials::DTGCredential;
+
+        let valid_from = Utc.with_ymd_and_hms(2024, 1, 2, 3, 4, 5).unwrap();
+        let vrc = DTGCredential::new_vrc(
+            "did:test:issuer".to_string(),
+            "did:test:subject".to_string(),
+            valid_from,
+            Some(Utc.with_ymd_and_hms(2025, 6, 7, 8, 9, 10).unwrap()),
+        );
+        // Old eager output, computed exactly as `sync_from_config` used to.
+        let eager = serde_json::to_string_pretty(vrc.credential()).unwrap();
+
+        let lazy = content::RawCredential::Vrc(Arc::new(vrc)).to_pretty_json();
+        assert_eq!(lazy, eager, "lazy VRC JSON must match the old eager output");
+    }
+
+    /// The lazy `RawCredential::Value` path (membership/role credentials) must
+    /// pretty-print byte-identically to the previous eager
+    /// `serde_json::to_string_pretty(vc)`.
+    #[test]
+    fn test_raw_credential_value_matches_eager_output() {
+        let vc = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "MembershipCredential"],
+            "issuer": "did:test:vtc",
+            "validFrom": "2024-01-01T00:00:00Z",
+            "credentialSubject": { "id": "did:test:member", "role": "member" }
+        });
+        let eager = serde_json::to_string_pretty(&vc).unwrap();
+
+        let lazy = content::RawCredential::Value(Arc::new(vc)).to_pretty_json();
+        assert_eq!(
+            lazy, eager,
+            "lazy membership JSON must match the old eager output"
+        );
+    }
+
+    // --- Arc pointer-bump cloning (Part 1) ---
+
+    /// Cloning `MainPageState` must share the Arc-wrapped heavy collections by
+    /// pointer (a pointer bump), not deep-copy them — that is the whole point of
+    /// the per-event clone optimisation.
+    #[test]
+    fn test_clone_shares_arc_data() {
+        let mut state = MainPageState::default();
+        // Populate the Arc-wrapped collections with non-empty data so the
+        // pointer identity is meaningful.
+        state.content_panel.inbox.tasks = vec![TaskSummary {
+            id: "t1".to_string(),
+            type_display: "Test".to_string(),
+            kind: TaskKind::Informational("x".to_string()),
+            remote_did: "did:test:remote".to_string(),
+            created: "2024-01-01 00:00".to_string(),
+        }]
+        .into();
+        state.log_detailed("summary", "detail");
+
+        let clone = state.clone();
+
+        // Heavy vectors share the same allocation.
+        assert!(
+            Arc::ptr_eq(
+                &state.content_panel.inbox.tasks,
+                &clone.content_panel.inbox.tasks
+            ),
+            "inbox tasks must be shared by pointer after clone"
+        );
+        // Activity-log entries share the same allocation (per-entry Arc).
+        assert!(
+            Arc::ptr_eq(
+                state.activity_log.front().unwrap(),
+                clone.activity_log.front().unwrap()
+            ),
+            "activity log entries must be shared by pointer after clone"
+        );
     }
 }

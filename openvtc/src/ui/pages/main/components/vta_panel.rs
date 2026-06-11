@@ -131,7 +131,7 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         );
         lines.push(Line::from(""));
 
-        for did_entry in &state.active_dids {
+        for did_entry in state.active_dids.iter() {
             lines.push(Line::from(vec![
                 Span::styled("  ● ", Style::new().fg(COLOR_SUCCESS)),
                 Span::styled(

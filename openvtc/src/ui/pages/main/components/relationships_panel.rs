@@ -231,7 +231,10 @@ fn render_detail(
                         Span::styled(validity_detail, Style::new().fg(COLOR_TEXT_DEFAULT)),
                     ]));
                     lines.push(Line::from(""));
-                    for json_line in vrc.raw_json.lines() {
+                    // Pretty-print the credential lazily, only for the expanded
+                    // (selected) VRC — not eagerly per credential on every sync.
+                    let raw_json = vrc.raw_json.to_pretty_json();
+                    for json_line in raw_json.lines() {
                         lines.push(Line::from(format!("      {}", json_line)).fg(COLOR_DARK_GRAY));
                     }
                     lines.push(Line::from(""));
@@ -297,7 +300,10 @@ fn render_detail(
                         Span::styled(validity_detail, Style::new().fg(COLOR_TEXT_DEFAULT)),
                     ]));
                     lines.push(Line::from(""));
-                    for json_line in vrc.raw_json.lines() {
+                    // Pretty-print the credential lazily, only for the expanded
+                    // (selected) VRC — not eagerly per credential on every sync.
+                    let raw_json = vrc.raw_json.to_pretty_json();
+                    for json_line in raw_json.lines() {
                         lines.push(Line::from(format!("      {}", json_line)).fg(COLOR_DARK_GRAY));
                     }
                     lines.push(Line::from(""));

@@ -945,7 +945,11 @@ impl MainPage {
                             CredentialTab::Membership => &creds.membership,
                         };
                         if let Some(vrc) = active_list.get(detail_index) {
-                            copy_to_clipboard(&vrc.raw_json, "credential", &self.action_tx);
+                            copy_to_clipboard(
+                                &vrc.raw_json.to_pretty_json(),
+                                "credential",
+                                &self.action_tx,
+                            );
                         }
                         true
                     }

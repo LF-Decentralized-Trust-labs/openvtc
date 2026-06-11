@@ -1,3 +1,48 @@
+use std::sync::Arc;
+
+use dtg_credentials::DTGCredential;
+
+/// Lazily-rendered raw credential JSON for credential detail views.
+///
+/// Holds the credential *source* (an `Arc`, so cloning a panel state is a
+/// pointer bump) and pretty-prints it only when a detail view is actually
+/// rendered — avoiding a `serde_json::to_string_pretty` per credential on
+/// every `sync_from_config` (i.e. every config mutation / inbound message).
+///
+/// Two source shapes exist because the displayed JSON must be **byte-identical**
+/// to the previous eager output:
+///   - [`RawCredential::Vrc`] serializes the `DTGCommon` returned by
+///     `vrc.credential()` directly, preserving struct field order.
+///   - [`RawCredential::Value`] serializes a `serde_json::Value` (membership /
+///     role credentials are stored as `Value` on the community record).
+///
+/// Routing everything through `serde_json::Value` is *not* equivalent: without
+/// the `preserve_order` feature, `Value::Object` sorts keys alphabetically,
+/// which would reorder the `DTGCommon` fields versus the original
+/// struct-field-order output. Keeping the typed source preserves the bytes.
+#[derive(Clone, Debug)]
+pub enum RawCredential {
+    /// A VRC — serialize its `DTGCommon` credential body directly.
+    Vrc(Arc<DTGCredential>),
+    /// A membership/role credential already held as a JSON value.
+    Value(Arc<serde_json::Value>),
+}
+
+impl RawCredential {
+    /// Pretty-print the credential to JSON, matching the previous eager
+    /// `serde_json::to_string_pretty` output byte-for-byte. Called only at
+    /// detail-render / clipboard-copy time.
+    #[must_use]
+    pub fn to_pretty_json(&self) -> String {
+        match self {
+            RawCredential::Vrc(vrc) => serde_json::to_string_pretty(vrc.credential())
+                .unwrap_or_else(|_| "Failed to serialize credential".to_string()),
+            RawCredential::Value(value) => serde_json::to_string_pretty(value.as_ref())
+                .unwrap_or_else(|_| "Failed to serialize credential".to_string()),
+        }
+    }
+}
+
 // ****************************************************************************
 // Content Panel State
 // ****************************************************************************
@@ -32,7 +77,10 @@ pub struct ContentPanelState {
 #[derive(Clone, Debug, Default)]
 pub struct CommunitiesState {
     /// Display summaries of the (non-archived) communities, in display order.
-    pub items: Vec<CommunitySummary>,
+    /// `Arc<[…]>` so cloning the panel state (per frame / per event) is a
+    /// pointer bump rather than a deep copy; rebuilt wholesale in
+    /// `sync_from_config`.
+    pub items: Arc<[CommunitySummary]>,
     /// Currently selected index in the list.
     pub selected_index: usize,
     /// Number of communities raising the actions-required indicator (R-C-3).
@@ -103,12 +151,14 @@ pub struct VtaState {
     pub relationship_key_count: usize,
     /// Whether the VTA key backend is in use
     pub is_vta_managed: bool,
-    /// DIDs in use (persona + relationship R-DIDs)
-    pub active_dids: Vec<ActiveDid>,
+    /// DIDs in use (persona + relationship R-DIDs). `Arc<[…]>` for cheap
+    /// per-frame clones; rebuilt wholesale in `sync_from_config`.
+    pub active_dids: Arc<[ActiveDid]>,
     /// Every persona DID minted in this context, with how many communities
     /// present it — the manageable set for the DID manager. A persona bound to
     /// zero communities is an orphan (e.g. left by a failed join).
-    pub context_dids: Vec<ManagedDid>,
+    /// `Arc<[…]>` for cheap per-frame clones; rebuilt in `sync_from_config`.
+    pub context_dids: Arc<[ManagedDid]>,
     /// Selected index into [`Self::context_dids`] (DID manager navigation).
     pub did_selected_index: usize,
     /// When `Some(index)`, a deletion of that context DID is awaiting `y`/`n`
@@ -145,8 +195,9 @@ pub struct ActiveDid {
 /// State for the inbox/tasks panel.
 #[derive(Clone, Debug, Default)]
 pub struct InboxState {
-    /// Display summaries of all pending tasks
-    pub tasks: Vec<TaskSummary>,
+    /// Display summaries of all pending tasks. `Arc<[…]>` for cheap per-frame
+    /// clones; rebuilt wholesale in `sync_from_config`.
+    pub tasks: Arc<[TaskSummary]>,
     /// Currently selected task index in the list
     pub selected_index: usize,
     /// When viewing a specific task's details
@@ -244,8 +295,9 @@ pub enum ActiveTaskView {
 /// State for the relationships panel.
 #[derive(Clone, Debug, Default)]
 pub struct RelationshipsState {
-    /// Display summaries of all relationships
-    pub relationships: Vec<RelationshipSummary>,
+    /// Display summaries of all relationships. `Arc<[…]>` for cheap per-frame
+    /// clones; rebuilt wholesale in `sync_from_config`.
+    pub relationships: Arc<[RelationshipSummary]>,
     /// Currently selected index in the list
     pub selected_index: usize,
     /// Current panel mode (list, detail, new request form)
@@ -316,8 +368,8 @@ pub struct RelationshipVrc {
     pub valid_from: String,
     /// Formatted valid_until date (if set)
     pub valid_until: Option<String>,
-    /// Pretty-printed JSON of the raw credential
-    pub raw_json: String,
+    /// Raw credential source, pretty-printed lazily at detail-view time.
+    pub raw_json: RawCredential,
 }
 
 // ****************************************************************************
@@ -327,13 +379,14 @@ pub struct RelationshipVrc {
 /// State for the credentials (VRCs) panel.
 #[derive(Clone, Debug, Default)]
 pub struct CredentialsState {
-    /// VRCs we received
-    pub received: Vec<VrcSummary>,
-    /// VRCs we issued
-    pub issued: Vec<VrcSummary>,
+    /// VRCs we received. `Arc<[…]>` for cheap per-frame clones.
+    pub received: Arc<[VrcSummary]>,
+    /// VRCs we issued. `Arc<[…]>` for cheap per-frame clones.
+    pub issued: Arc<[VrcSummary]>,
     /// Membership (VMC) + role (VEC) credentials issued to us by the VTCs we've
     /// joined, one or two entries per community (reuses [`VrcSummary`]).
-    pub membership: Vec<VrcSummary>,
+    /// `Arc<[…]>` for cheap per-frame clones.
+    pub membership: Arc<[VrcSummary]>,
     /// Which tab is active
     pub selected_tab: CredentialTab,
     /// Currently selected index in the active tab's list
@@ -377,8 +430,8 @@ pub struct VrcSummary {
     pub vrc_id: String,
     /// Remote party's persona DID
     pub remote_p_did: String,
-    /// Pretty-printed JSON of the raw credential
-    pub raw_json: String,
+    /// Raw credential source, pretty-printed lazily at detail-view time.
+    pub raw_json: RawCredential,
     /// Contact alias (if set)
     pub alias: Option<String>,
     /// Issuer DID

@@ -175,11 +175,13 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
         Span::styled(vrc.vrc_id.clone(), Style::new().fg(COLOR_DARK_GRAY)),
     ]));
 
-    // Raw credential JSON
+    // Raw credential JSON — pretty-printed lazily, only when this detail view
+    // is rendered (not eagerly per credential on every config mutation).
     lines.push(Line::from(""));
     lines.push(Line::from(" Raw Credential").fg(COLOR_SUCCESS).bold());
     lines.push(Line::from(""));
-    for json_line in vrc.raw_json.lines() {
+    let raw_json = vrc.raw_json.to_pretty_json();
+    for json_line in raw_json.lines() {
         lines.push(Line::from(format!("  {}", json_line)).fg(COLOR_DARK_GRAY));
     }
 

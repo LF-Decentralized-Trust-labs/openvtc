@@ -46,7 +46,7 @@ impl ContentPanelState {
         rect: Rect,
         menu: &MenuPanelState,
         connection: &ConnectionState,
-        activity_log: &std::collections::VecDeque<ActivityLogEntry>,
+        activity_log: &std::collections::VecDeque<std::sync::Arc<ActivityLogEntry>>,
         logs_selected: usize,
         logs_detail_view: bool,
         scroll_offset: u16,

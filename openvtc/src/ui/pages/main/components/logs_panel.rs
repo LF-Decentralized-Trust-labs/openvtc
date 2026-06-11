@@ -8,6 +8,7 @@ use ratatui::{
     text::{Line, Span},
 };
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 /// Render the logs panel as a scrollable list of activity log entries.
 ///
@@ -15,7 +16,7 @@ use std::collections::VecDeque;
 /// Hotkeys: Enter = view detail, c = copy selected, a = copy all, Esc = back.
 pub fn render(
     logs_state: &LogsState,
-    activity_log: &VecDeque<ActivityLogEntry>,
+    activity_log: &VecDeque<Arc<ActivityLogEntry>>,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
@@ -36,7 +37,7 @@ pub fn render(
         return lines;
     }
 
-    let entries: Vec<&ActivityLogEntry> = activity_log.iter().rev().collect();
+    let entries: Vec<&Arc<ActivityLogEntry>> = activity_log.iter().rev().collect();
 
     // Detail view — show full text of the selected entry
     if logs_state.detail_view {
