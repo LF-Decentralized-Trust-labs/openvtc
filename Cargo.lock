@@ -5207,6 +5207,7 @@ dependencies = [
  "affinidi-messaging-didcomm-service",
  "affinidi-messaging-test-mediator",
  "affinidi-tdk",
+ "anyhow",
  "argon2",
  "base64 0.22.1",
  "bip39",

@@ -20,6 +20,7 @@ openpgp-card = [
 
 [dependencies]
 aes-gcm.workspace = true
+anyhow.workspace = true
 argon2.workspace = true
 affinidi-tdk.workspace = true
 affinidi-data-integrity.workspace = true
