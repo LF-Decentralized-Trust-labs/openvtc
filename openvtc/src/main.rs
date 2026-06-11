@@ -205,6 +205,23 @@ async fn main() -> Result<()> {
                 }
                 starting_mode = StartingMode::SetupWizard;
             }
+            Err(e @ (OpenVTCError::Vta(_) | OpenVTCError::Auth(_))) => {
+                // R18: a VTA connection/auth failure is a retryable runtime fault,
+                // NOT config corruption. Surface "check VTA / re-auth" guidance and
+                // reserve reset-style messaging for genuine `Config` errors below.
+                let hint = if matches!(e, OpenVTCError::Auth(_)) {
+                    "Check that your credentials are still valid and re-authenticate, then try again."
+                } else {
+                    "Check that your VTA is reachable and try again."
+                };
+                eprintln!(
+                    "{} {}",
+                    style("ERROR: Couldn't reach the VTA! Reason:").color256(CLI_RED),
+                    style(redact_paths(&e.to_string())).color256(CLI_ORANGE)
+                );
+                eprintln!("{}", style(hint).color256(CLI_ORANGE));
+                bail!("VTA Connection Error");
+            }
             Err(e) => {
                 eprintln!(
                     "{} {}",

@@ -20,6 +20,7 @@ pub mod errors;
 pub mod identity;
 pub mod join;
 pub mod logs;
+pub mod messaging;
 #[cfg(feature = "openpgp-card")]
 pub mod openpgp_card;
 pub mod process_lock;

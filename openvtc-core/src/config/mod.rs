@@ -480,7 +480,7 @@ pub async fn build_runtime_vta_client(
             rest_fallback,
         )
         .await
-        .map_err(|e| OpenVTCError::Config(format!("DIDComm session open failed: {e}")))
+        .map_err(|e| OpenVTCError::Vta(format!("DIDComm session open failed: {e}")))
     } else {
         // REST transport: legacy challenge-response + bearer token.
         if vta_url.is_empty() {
@@ -495,7 +495,7 @@ pub async fn build_runtime_vta_client(
             vta_did,
         )
         .await
-        .map_err(|e| OpenVTCError::Config(format!("VTA authentication failed: {e}")))?;
+        .map_err(|e| OpenVTCError::Auth(format!("VTA authentication failed: {e}")))?;
         let client = vta_sdk::client::VtaClient::new(vta_url);
         client.set_token(token.access_token);
         Ok(client)
