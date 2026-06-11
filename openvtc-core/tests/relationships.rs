@@ -1,7 +1,7 @@
 //! Integration tests for the Relationships struct and related types.
 
 use openvtc_core::relationships::{Relationship, RelationshipState, Relationships};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 fn make_relationship(
     task_id: &str,
@@ -38,8 +38,7 @@ fn add_relationship_and_find_by_did() {
         RelationshipState::Established,
     );
     let key = r.remote_p_did.clone();
-    rels.relationships
-        .insert(key.clone(), Arc::new(Mutex::new(r)));
+    rels.relationships.insert(key.clone(), r);
 
     let found = rels.get(&key);
     assert!(found.is_some(), "Should find relationship by remote P-DID");
@@ -58,8 +57,7 @@ fn find_by_task_id() {
         "did:remote-p:1",
         RelationshipState::RequestSent,
     );
-    rels.relationships
-        .insert(r.remote_p_did.clone(), Arc::new(Mutex::new(r)));
+    rels.relationships.insert(r.remote_p_did.clone(), r);
 
     let found = rels.find_by_task_id(&Arc::new("task-42".to_string()));
     assert!(found.is_some());
@@ -78,8 +76,7 @@ fn find_by_remote_did_matches_both_r_did_and_p_did() {
         "did:remote-p:1",
         RelationshipState::Established,
     );
-    rels.relationships
-        .insert(r.remote_p_did.clone(), Arc::new(Mutex::new(r)));
+    rels.relationships.insert(r.remote_p_did.clone(), r);
 
     // Find by R-DID
     let by_r = rels.find_by_remote_did(&Arc::new("did:remote-r:1".to_string()));
@@ -120,16 +117,12 @@ fn get_established_filters_correctly() {
         RelationshipState::RequestRejected,
     );
 
-    rels.relationships.insert(
-        established.remote_p_did.clone(),
-        Arc::new(Mutex::new(established)),
-    );
     rels.relationships
-        .insert(pending.remote_p_did.clone(), Arc::new(Mutex::new(pending)));
-    rels.relationships.insert(
-        rejected.remote_p_did.clone(),
-        Arc::new(Mutex::new(rejected)),
-    );
+        .insert(established.remote_p_did.clone(), established);
+    rels.relationships
+        .insert(pending.remote_p_did.clone(), pending);
+    rels.relationships
+        .insert(rejected.remote_p_did.clone(), rejected);
 
     let established_list = rels.get_established_relationships();
     assert_eq!(established_list.len(), 1);
@@ -149,8 +142,7 @@ fn remove_relationship_clears_entry() {
         RelationshipState::Established,
     );
     let key = r.remote_p_did.clone();
-    rels.relationships
-        .insert(key.clone(), Arc::new(Mutex::new(r)));
+    rels.relationships.insert(key.clone(), r);
 
     let removed = rels.remove(&key, &mut vrcs_issued, &mut vrcs_received);
     assert!(removed.is_some());
@@ -189,8 +181,7 @@ fn relationships_shadow_roundtrip() {
         "did:rp:1",
         RelationshipState::Established,
     );
-    rels.relationships
-        .insert(r.remote_p_did.clone(), Arc::new(Mutex::new(r)));
+    rels.relationships.insert(r.remote_p_did.clone(), r);
 
     // Roundtrip via JSON serialization (uses RelationshipsShadow internally via serde)
     let json = serde_json::to_string(&rels).expect("serialize");

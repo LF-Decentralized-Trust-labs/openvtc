@@ -27,7 +27,7 @@ use serde_json::json;
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::SystemTime,
 };
 use tracing::{debug, warn};
@@ -75,7 +75,11 @@ impl Display for RelationshipState {
 #[serde(from = "RelationshipsShadow", into = "RelationshipsShadow")]
 pub struct Relationships {
     /// Map from remote P-DID to the relationship state.
-    pub relationships: HashMap<Arc<String>, Arc<Mutex<Relationship>>>,
+    ///
+    /// Plain values (no `Arc<Mutex>`): there is exactly one mutating task (the
+    /// `StateHandler` loop), so mutation goes through `&mut` and is infallible —
+    /// there are no lock-poisoning paths that can silently drop an entry.
+    pub relationships: HashMap<Arc<String>, Relationship>,
 
     /// Next BIP32 derivation path index to use when creating keys for a new relationship.
     pub path_pointer: u32,
@@ -106,14 +110,11 @@ pub struct Relationship {
 
 impl From<RelationshipsShadow> for Relationships {
     fn from(value: RelationshipsShadow) -> Self {
-        let mut relationships: HashMap<Arc<String>, Arc<Mutex<Relationship>>> = HashMap::new();
+        let mut relationships: HashMap<Arc<String>, Relationship> = HashMap::new();
 
         for relationship in value.relationships {
-            let remote_did = match relationship.lock() {
-                Ok(r) => r.remote_p_did.clone(),
-                Err(e) => e.into_inner().remote_p_did.clone(),
-            };
-            relationships.insert(remote_did.clone(), relationship.clone());
+            let key = relationship.remote_p_did.clone();
+            relationships.insert(key, relationship);
         }
 
         Relationships {
@@ -124,10 +125,16 @@ impl From<RelationshipsShadow> for Relationships {
 }
 
 /// Flat serialization form of [`Relationships`] used for persistence in `SecuredConfig`.
+///
+/// On-disk compatibility note (R20): the previous in-memory model wrapped each
+/// relationship in `Arc<Mutex<…>>`. With serde's `rc` feature both `Arc` and
+/// `Mutex` serialize transparently as their inner value, so a `Vec<Relationship>`
+/// and a `Vec<Arc<Mutex<Relationship>>>` produce **byte-identical** JSON. This
+/// shadow keeps the on-disk format unchanged across the de-mutex refactor.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct RelationshipsShadow {
-    pub(crate) relationships: Vec<Arc<Mutex<Relationship>>>,
+    pub(crate) relationships: Vec<Relationship>,
     pub(crate) path_pointer: u32,
 }
 
@@ -135,9 +142,8 @@ impl From<Relationships> for RelationshipsShadow {
     fn from(value: Relationships) -> Self {
         let relationships = value
             .relationships
-            .values()
-            .cloned()
-            .collect::<Vec<Arc<Mutex<Relationship>>>>();
+            .into_values()
+            .collect::<Vec<Relationship>>();
         RelationshipsShadow {
             relationships,
             path_pointer: value.path_pointer,
@@ -152,7 +158,7 @@ impl Relationships {
     /// # Errors
     ///
     /// Returns an error if the TDK ATM service is not initialized, VTA authentication
-    /// fails, a mutex is poisoned, or secret derivation/import fails.
+    /// fails, or secret derivation/import fails.
     /// `our_p_dids` is the set of *our* persona DIDs. Relationships served
     /// directly by a persona DID (rather than a dedicated R-DID) are skipped
     /// here — that persona's own listener carries them. With multiple personas
@@ -202,20 +208,18 @@ impl Relationships {
         // including the `?` error paths below.
         let profiles_result: Result<(), OpenVTCError> = async {
             // Collect R-DID relationships that need profiles + secrets.
-            // Extract data from Mutex before any async work.
             let r_did_entries: Vec<Arc<String>> = self
                 .relationships
                 .values()
                 .filter_map(|rel| {
-                    let lock = rel.lock().ok()?;
                     if matches!(
-                        lock.state,
+                        rel.state,
                         RelationshipState::Established
                             | RelationshipState::RequestSent
                             | RelationshipState::RequestAccepted
-                    ) && !our_p_dids.contains(lock.our_did.as_str())
+                    ) && !our_p_dids.contains(rel.our_did.as_str())
                     {
-                        Some(lock.our_did.clone())
+                        Some(rel.our_did.clone())
                     } else {
                         None
                     }
@@ -335,34 +339,24 @@ impl Relationships {
 
     /// Removes a relationship by its task ID, along with any associated VRCs.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the relationship mutex is poisoned.
+    /// Returns the removed relationship if found, or `None` if no match exists.
     pub fn remove_by_task_id(
         &mut self,
         id: &Arc<String>,
         vrcs_issued: &mut Vrcs,
         vrcs_received: &mut Vrcs,
-    ) -> Result<Option<Arc<Mutex<Relationship>>>, OpenVTCError> {
-        let found = self
+    ) -> Option<Relationship> {
+        let key = self
             .relationships
-            .values()
-            .find(|f| f.lock().map(|r| r.task_id == *id).unwrap_or(false))
-            .cloned();
+            .iter()
+            .find(|(_, r)| r.task_id == *id)
+            .map(|(k, _)| k.clone());
 
-        if let Some(relationship) = found {
-            let remote_did = relationship
-                .lock()
-                .map_err(|e| {
-                    warn!("relationship mutex poisoned: {e}");
-                    OpenVTCError::MutexPoisoned(format!("Relationship mutex poisoned: {e}"))
-                })?
-                .remote_did
-                .clone();
+        if let Some(key) = key {
             debug!("relationship removed: task_id={}", id);
-            Ok(self.remove(&remote_did, vrcs_issued, vrcs_received))
+            self.remove(&key, vrcs_issued, vrcs_received)
         } else {
-            Ok(None)
+            None
         }
     }
 
@@ -374,7 +368,7 @@ impl Relationships {
         key: &Arc<String>,
         vrcs_issued: &mut Vrcs,
         vrcs_received: &mut Vrcs,
-    ) -> Option<Arc<Mutex<Relationship>>> {
+    ) -> Option<Relationship> {
         // Find and remove any VRCs associated with this relationship
         vrcs_issued.remove_relationship(key);
         vrcs_received.remove_relationship(key);
@@ -386,43 +380,53 @@ impl Relationships {
         removed
     }
 
-    /// Gets a relationship using the remote P-DID key
-    pub fn get(&self, p_did: &Arc<String>) -> Option<Arc<Mutex<Relationship>>> {
-        self.relationships.get(p_did).cloned()
+    /// Gets a relationship using the remote P-DID key.
+    pub fn get(&self, p_did: &Arc<String>) -> Option<&Relationship> {
+        self.relationships.get(p_did)
+    }
+
+    /// Gets a mutable reference to a relationship using the remote P-DID key.
+    pub fn get_mut(&mut self, p_did: &Arc<String>) -> Option<&mut Relationship> {
+        self.relationships.get_mut(p_did)
     }
 
     /// Finds a relationship by its task ID.
-    pub fn find_by_task_id(&self, task_id: &Arc<String>) -> Option<Arc<Mutex<Relationship>>> {
+    pub fn find_by_task_id(&self, task_id: &Arc<String>) -> Option<&Relationship> {
+        self.relationships.values().find(|r| &r.task_id == task_id)
+    }
+
+    /// Finds the map key (remote P-DID) of a relationship by its task ID.
+    ///
+    /// Useful for "look up → await → re-look-up mutably" flows where a `&mut`
+    /// borrow cannot be held across an `.await`.
+    pub fn find_key_by_task_id(&self, task_id: &Arc<String>) -> Option<Arc<String>> {
         self.relationships
-            .values()
-            .find(|f| f.lock().map(|r| &r.task_id == task_id).unwrap_or(false))
-            .cloned()
+            .iter()
+            .find(|(_, r)| &r.task_id == task_id)
+            .map(|(k, _)| k.clone())
     }
 
     /// Finds a relationship by its remote DID (either P-DID or R-DID).
-    pub fn find_by_remote_did(&self, did: &Arc<String>) -> Option<Arc<Mutex<Relationship>>> {
+    pub fn find_by_remote_did(&self, did: &Arc<String>) -> Option<&Relationship> {
         self.relationships
             .values()
-            .find(|r| {
-                r.lock()
-                    .map(|lock| lock.remote_did == *did || lock.remote_p_did == *did)
-                    .unwrap_or(false)
-            })
-            .cloned()
+            .find(|r| r.remote_did == *did || r.remote_p_did == *did)
+    }
+
+    /// Finds the map key (remote P-DID) of a relationship matching the given
+    /// remote DID (either P-DID or R-DID).
+    pub fn find_key_by_remote_did(&self, did: &Arc<String>) -> Option<Arc<String>> {
+        self.relationships
+            .iter()
+            .find(|(_, r)| r.remote_did == *did || r.remote_p_did == *did)
+            .map(|(k, _)| k.clone())
     }
 
     /// Returns only the relationships in the [`RelationshipState::Established`] state.
-    pub fn get_established_relationships(&self) -> Vec<Arc<Mutex<Relationship>>> {
+    pub fn get_established_relationships(&self) -> Vec<&Relationship> {
         self.relationships
             .values()
-            .filter_map(|r| {
-                let lock = r.lock().ok()?;
-                if lock.state == RelationshipState::Established {
-                    Some(r.clone())
-                } else {
-                    None
-                }
-            })
+            .filter(|r| r.state == RelationshipState::Established)
             .collect()
     }
 }
@@ -612,8 +616,7 @@ mod tests {
             RelationshipState::Established,
         );
         let key = r.remote_p_did.clone();
-        rels.relationships
-            .insert(key.clone(), Arc::new(Mutex::new(r)));
+        rels.relationships.insert(key.clone(), r);
 
         // get by p-did
         let found = rels.get(&key);
@@ -649,10 +652,8 @@ mod tests {
             "did:rp:2",
             RelationshipState::RequestSent,
         );
-        rels.relationships
-            .insert(r1.remote_p_did.clone(), Arc::new(Mutex::new(r1)));
-        rels.relationships
-            .insert(r2.remote_p_did.clone(), Arc::new(Mutex::new(r2)));
+        rels.relationships.insert(r1.remote_p_did.clone(), r1);
+        rels.relationships.insert(r2.remote_p_did.clone(), r2);
 
         let established = rels.get_established_relationships();
         assert_eq!(
@@ -676,8 +677,7 @@ mod tests {
             RelationshipState::Established,
         );
         let key = r.remote_p_did.clone();
-        rels.relationships
-            .insert(key.clone(), Arc::new(Mutex::new(r)));
+        rels.relationships.insert(key.clone(), r);
 
         let removed = rels.remove(&key, &mut vrcs_issued, &mut vrcs_received);
         assert!(removed.is_some(), "Should return the removed relationship");
@@ -715,8 +715,7 @@ mod tests {
             "did:rp:1",
             RelationshipState::Established,
         );
-        rels.relationships
-            .insert(r.remote_p_did.clone(), Arc::new(Mutex::new(r)));
+        rels.relationships.insert(r.remote_p_did.clone(), r);
 
         let shadow: RelationshipsShadow = rels.into();
         assert_eq!(shadow.path_pointer, 42);
@@ -725,5 +724,48 @@ mod tests {
         let restored: Relationships = shadow.into();
         assert_eq!(restored.path_pointer, 42);
         assert_eq!(restored.relationships.len(), 1);
+    }
+
+    /// On-disk compatibility guard (R20): a relationships JSON written by the
+    /// pre-R20 `Arc<Mutex<Relationship>>` model must deserialize into the new
+    /// plain-value model and re-serialize to **byte-identical** JSON.
+    ///
+    /// The fixture below is exactly what the old shadow emitted: `Arc` and
+    /// `Mutex` both serialize transparently (serde `rc`), so each relationship
+    /// is a bare object — no wrapper keys. `Relationships` serializes via
+    /// `RelationshipsShadow`, so we drive the test through the public type.
+    #[test]
+    fn relationships_ondisk_byte_identical_roundtrip() {
+        // A fixed timestamp so the round-trip is deterministic.
+        let fixture = r#"{
+  "relationships": [
+    {
+      "task_id": "task-abc",
+      "our_did": "did:webvh:example:us",
+      "remote_did": "did:webvh:example:them-rdid",
+      "remote_p_did": "did:webvh:example:them",
+      "created": "2024-01-02T03:04:05Z",
+      "state": "Established"
+    }
+  ],
+  "path_pointer": 7
+}"#;
+
+        // Deserialize into the new plain-value model (via the shadow).
+        let rels: Relationships = serde_json::from_str(fixture).expect("fixture deserializes");
+        assert_eq!(rels.path_pointer, 7);
+        assert_eq!(rels.relationships.len(), 1);
+
+        // Re-serialize and compare to the canonical pretty form to prove the
+        // on-disk shape is unchanged across the de-mutex refactor.
+        let reserialized = serde_json::to_string_pretty(&rels).expect("re-serializes");
+        let fixture_value: serde_json::Value =
+            serde_json::from_str(fixture).expect("fixture is valid json");
+        let reserialized_value: serde_json::Value =
+            serde_json::from_str(&reserialized).expect("output is valid json");
+        assert_eq!(
+            reserialized_value, fixture_value,
+            "re-serialized relationships must match the pre-R20 on-disk shape"
+        );
     }
 }

@@ -35,10 +35,8 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
     }
     // R-DID → persona DID → contact alias
     let did_arc = std::sync::Arc::new(did.to_string());
-    if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc)
-        && let Ok(lock) = rel.lock()
-    {
-        let p_did = lock.remote_p_did.to_string();
+    if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc) {
+        let p_did = rel.remote_p_did.to_string();
         if let Some(contact) = config.private.contacts.find_contact(&p_did)
             && let Some(alias) = &contact.alias
         {
@@ -990,9 +988,7 @@ impl StateHandler {
                                 .relationships
                                 .find_by_remote_did(&sender_arc)
                                 .map(|r| {
-                                    r.lock()
-                                        .map(|l| l.state == openvtc_core::relationships::RelationshipState::Established)
-                                        .unwrap_or(false)
+                                    r.state == openvtc_core::relationships::RelationshipState::Established
                                 })
                                 .unwrap_or(false);
 
@@ -1049,8 +1045,7 @@ impl StateHandler {
                                     .tasks
                                     .tasks
                                     .values()
-                                    .filter_map(|t| {
-                                        let task = t.lock().ok()?;
+                                    .filter_map(|task| {
                                         if let openvtc_core::tasks::TaskType::TrustPing { to, .. } = &task.type_ {
                                             Some(resolve_did_to_display(&config, to))
                                         } else {

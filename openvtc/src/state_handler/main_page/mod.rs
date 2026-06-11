@@ -113,8 +113,7 @@ impl MainPageState {
             .tasks
             .tasks
             .values()
-            .filter_map(|task_arc| {
-                let task = task_arc.lock().ok()?;
+            .map(|task| {
                 let kind = match &task.type_ {
                     TaskType::RelationshipRequestInbound { from, request, .. } => {
                         TaskKind::RelationshipRequestInbound {
@@ -130,7 +129,6 @@ impl MainPageState {
                             .relationships
                             .relationships
                             .get(to)
-                            .and_then(|rel_arc| rel_arc.lock().ok())
                             .map(|rel| rel.our_did.to_string())
                             .unwrap_or_default();
                         TaskKind::RelationshipRequestOutbound { our_did }
@@ -166,30 +164,20 @@ impl MainPageState {
                     }
                     TaskType::RelationshipRequestOutbound { to } => shorten_did(to, 60),
                     TaskType::TrustPing { to, .. } => shorten_did(to, 60),
-                    TaskType::VRCRequestInbound { relationship, .. } => {
-                        if let Ok(lock) = relationship.lock() {
-                            shorten_did(&lock.remote_p_did, 60)
-                        } else {
-                            String::new()
-                        }
+                    TaskType::VRCRequestInbound { remote_p_did, .. } => {
+                        shorten_did(remote_p_did, 60)
                     }
-                    TaskType::VRCRequestOutbound { relationship } => {
-                        if let Ok(lock) = relationship.lock() {
-                            shorten_did(&lock.remote_p_did, 60)
-                        } else {
-                            String::new()
-                        }
-                    }
+                    TaskType::VRCRequestOutbound { remote_p_did } => shorten_did(remote_p_did, 60),
                     TaskType::VRCIssued { vrc } => sanitize_display(vrc.issuer(), 40),
                     _ => String::new(),
                 };
-                Some(TaskSummary {
+                TaskSummary {
                     id: task.id.to_string(),
                     type_display: task.type_.to_string(),
                     kind,
                     remote_did: sanitize_display(&remote_did, 256),
                     created: task.created.format("%Y-%m-%d %H:%M").to_string(),
-                })
+                }
             })
             .collect();
         // Sort tasks by most recent first
@@ -202,8 +190,7 @@ impl MainPageState {
             .relationships
             .relationships
             .iter()
-            .filter_map(|(remote_p_did, rel_arc)| {
-                let rel = rel_arc.lock().ok()?;
+            .map(|(remote_p_did, rel)| {
                 let alias = config
                     .private
                     .contacts
@@ -253,7 +240,7 @@ impl MainPageState {
                             .collect()
                     })
                     .unwrap_or_default();
-                Some(RelationshipSummary {
+                RelationshipSummary {
                     remote_p_did: sanitize_display(remote_p_did, 256),
                     alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
                     state: rel.state.to_string(),
@@ -262,7 +249,7 @@ impl MainPageState {
                     created: rel.created.format("%Y-%m-%d %H:%M").to_string(),
                     vrcs_issued,
                     vrcs_received,
-                })
+                }
             })
             .collect();
 
@@ -322,10 +309,8 @@ impl MainPageState {
                 label: "Persona".to_string(),
             });
         }
-        for (remote_p_did, rel_arc) in &config.private.relationships.relationships {
-            if let Ok(rel) = rel_arc.lock()
-                && !config.is_persona_did(rel.our_did.as_str())
-            {
+        for (remote_p_did, rel) in &config.private.relationships.relationships {
+            if !config.is_persona_did(rel.our_did.as_str()) {
                 let alias = config
                     .private
                     .contacts

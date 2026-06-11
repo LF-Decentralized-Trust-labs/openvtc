@@ -308,18 +308,13 @@ fn vet_vrc_issued(
     let relationship = relationships
         .find_by_remote_did(from_did)
         .ok_or_else(|| "no relationship with sender".to_string())?;
-    let remote_p_did = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| format!("mutex poisoned: {e}"))?;
-        if lock.state != RelationshipState::Established {
-            return Err(format!(
-                "relationship with sender is not established (state: {})",
-                lock.state
-            ));
-        }
-        Arc::clone(&lock.remote_p_did)
-    };
+    if relationship.state != RelationshipState::Established {
+        return Err(format!(
+            "relationship with sender is not established (state: {})",
+            relationship.state
+        ));
+    }
+    let remote_p_did = Arc::clone(&relationship.remote_p_did);
 
     // Gate 2: issuer must be the authenticated sender's persona DID.
     if vrc.issuer() != remote_p_did.as_str() {
@@ -335,12 +330,13 @@ fn vet_vrc_issued(
     let pending_request = thid.and_then(|thid| {
         let id = Arc::new(thid.to_string());
         let task = tasks.get_by_id(&id)?;
-        let task = task.lock().ok()?;
-        let TaskType::VRCRequestOutbound { relationship } = &task.type_ else {
+        let TaskType::VRCRequestOutbound {
+            remote_p_did: task_remote_p_did,
+        } = &task.type_
+        else {
             return None;
         };
-        let lock = relationship.lock().ok()?;
-        (lock.remote_p_did == remote_p_did).then(|| Arc::clone(&id))
+        (*task_remote_p_did == remote_p_did).then(|| Arc::clone(&id))
     });
 
     Ok(pending_request)
@@ -520,16 +516,16 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            // Extract listener ID before async work to avoid holding MutexGuard across await
-            let listener_to_remove = if let Some(rel_arc) =
-                config.private.relationships.find_by_task_id(&task_id)
-                && let Ok(lock) = rel_arc.lock()
-                && !config.is_persona_did(lock.our_did.as_str())
-            {
-                Some(super::didcomm::listener_id_for_did(&lock.our_did, config))
-            } else {
-                None
-            };
+            // Extract the listener's local DID before async work + before any
+            // mutation, so the `&Relationship` borrow ends here.
+            let our_did = config
+                .private
+                .relationships
+                .find_by_task_id(&task_id)
+                .map(|rel| Arc::clone(&rel.our_did))
+                .filter(|our_did| !config.is_persona_did(our_did.as_str()));
+            let listener_to_remove =
+                our_did.map(|our_did| super::didcomm::listener_id_for_did(&our_did, config));
             if let Some(lid) = listener_to_remove
                 && let Err(e) = service.remove_listener(&lid).await
             {
@@ -566,29 +562,42 @@ pub async fn process_inbound_message(
             // All handshake messages use persona DIDs for from/to, so from_did
             // is the remote party's persona DID. Look up by task_id first, then
             // by persona DID. Validate sender matches the expected remote party.
-            let relationship = config
+            //
+            // R20: with plain values we cannot hold a `&mut` across the finalize
+            // `.await` below, so resolve the map key, mutate via `get_mut` (the
+            // borrow ends immediately), then await. The mutation happens before
+            // the await — no re-look-up is needed.
+            let key = config
                 .private
                 .relationships
-                .find_by_task_id(&task_id)
-                .or_else(|| config.private.relationships.get(&from_did));
+                .find_key_by_task_id(&task_id)
+                .or_else(|| {
+                    config
+                        .private
+                        .relationships
+                        .get(&from_did)
+                        .map(|_| Arc::clone(&from_did))
+                });
 
-            if let Some(rel) = relationship {
-                let mut lock = rel
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+            if let Some(key) = key {
+                let rel = config
+                    .private
+                    .relationships
+                    .get_mut(&key)
+                    .expect("key just resolved");
 
                 // Verify sender is the party we sent the request to
-                if *lock.remote_p_did != *from_did {
+                if *rel.remote_p_did != *from_did {
                     warn!(
                         from = %from_did,
-                        expected = %lock.remote_p_did,
+                        expected = %rel.remote_p_did,
                         "accept from unexpected party"
                     );
                     return Ok(false);
                 }
 
-                lock.state = RelationshipState::Established;
-                lock.remote_did = Arc::new(body.did.clone());
+                rel.state = RelationshipState::Established;
+                rel.remote_did = Arc::new(body.did.clone());
             } else {
                 warn!(from = %from_did, task_id = %task_id, "no relationship found for accept message");
                 return Ok(false);
@@ -624,28 +633,36 @@ pub async fn process_inbound_message(
 
             // All handshake messages use persona DIDs, so from_did is the
             // remote persona DID which is the relationship HashMap key.
-            let found = config
+            let key = config
                 .private
                 .relationships
-                .find_by_task_id(&task_id)
-                .or_else(|| config.private.relationships.get(&from_did));
+                .find_key_by_task_id(&task_id)
+                .or_else(|| {
+                    config
+                        .private
+                        .relationships
+                        .get(&from_did)
+                        .map(|_| Arc::clone(&from_did))
+                });
 
-            if let Some(relationship) = found {
-                let mut lock = relationship
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+            if let Some(key) = key {
+                let rel = config
+                    .private
+                    .relationships
+                    .get_mut(&key)
+                    .expect("key just resolved");
 
                 // Verify sender matches expected remote party
-                if *lock.remote_p_did != *from_did {
+                if *rel.remote_p_did != *from_did {
                     warn!(
                         from = %from_did,
-                        expected = %lock.remote_p_did,
+                        expected = %rel.remote_p_did,
                         "finalize from unexpected party"
                     );
                     return Ok(false);
                 }
 
-                lock.state = RelationshipState::Established;
+                rel.state = RelationshipState::Established;
             } else {
                 warn!(from = %from_did, task_id = %task_id, "no relationship found for finalize message");
                 return Ok(false);
@@ -741,12 +758,8 @@ pub async fn process_inbound_message(
             }
 
             // Reject if a pending inbound request from this sender already exists
-            let has_pending = config.private.tasks.tasks.values().any(|t| {
-                t.lock()
-                    .map(|task| {
-                        matches!(&task.type_, TaskType::RelationshipRequestInbound { from, .. } if *from == from_did)
-                    })
-                    .unwrap_or(false)
+            let has_pending = config.private.tasks.tasks.values().any(|task| {
+                matches!(&task.type_, TaskType::RelationshipRequestInbound { from, .. } if *from == from_did)
             });
             if has_pending {
                 warn!(from = %from_did, "duplicate pending relationship request — ignoring");
@@ -783,15 +796,11 @@ pub async fn process_inbound_message(
                 })?;
 
             // Only accept VRC requests from established relationships
-            {
-                let lock = relationship
-                    .lock()
-                    .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-                if lock.state != RelationshipState::Established {
-                    warn!(from = %from_did, state = ?lock.state, "VRC request from non-established relationship");
-                    return Ok(false);
-                }
+            if relationship.state != RelationshipState::Established {
+                warn!(from = %from_did, state = ?relationship.state, "VRC request from non-established relationship");
+                return Ok(false);
             }
+            let remote_p_did = Arc::clone(&relationship.remote_p_did);
 
             if check_task_capacity(config, &task_id, &from_did).is_err() {
                 return Ok(false);
@@ -801,7 +810,7 @@ pub async fn process_inbound_message(
                 &task_id,
                 TaskType::VRCRequestInbound {
                     request: body,
-                    relationship,
+                    remote_p_did,
                 },
             );
 
@@ -886,13 +895,18 @@ pub async fn process_inbound_message(
             }
 
             // Find the relationship for this ping
-            if let Some(relationship) = config.private.relationships.find_by_remote_did(&from_did) {
+            if let Some(remote_p_did) = config
+                .private
+                .relationships
+                .find_by_remote_did(&from_did)
+                .map(|rel| Arc::clone(&rel.remote_p_did))
+            {
                 config.private.tasks.new_task(
                     &task_id,
                     TaskType::TrustPing {
                         from: from_did.clone(),
                         to: to_did,
-                        relationship,
+                        remote_p_did,
                     },
                 );
             }
@@ -1304,27 +1318,22 @@ mod tests {
     use affinidi_tdk::common::config::TDKConfig;
     use affinidi_tdk::dids::{DID, KeyType};
     use openvtc_core::relationships::Relationship;
-    use std::sync::Mutex;
 
-    fn relationship(
-        remote_p: &str,
-        remote_r: &str,
-        state: RelationshipState,
-    ) -> Arc<Mutex<Relationship>> {
-        Arc::new(Mutex::new(Relationship {
+    fn relationship(remote_p: &str, remote_r: &str, state: RelationshipState) -> Relationship {
+        Relationship {
             task_id: Arc::new(Uuid::new_v4().to_string()),
             our_did: Arc::new("did:webvh:example:us".to_string()),
             remote_did: Arc::new(remote_r.to_string()),
             remote_p_did: Arc::new(remote_p.to_string()),
             created: Utc::now(),
             state,
-        }))
+        }
     }
 
-    fn relationships_with(rel: &Arc<Mutex<Relationship>>) -> Relationships {
+    fn relationships_with(rel: &Relationship) -> Relationships {
         let mut rels = Relationships::default();
-        let key = Arc::clone(&rel.lock().unwrap().remote_p_did);
-        rels.relationships.insert(key, Arc::clone(rel));
+        let key = Arc::clone(&rel.remote_p_did);
+        rels.relationships.insert(key, rel.clone());
         rels
     }
 
@@ -1346,7 +1355,12 @@ mod tests {
         // A pending task whose id the attacker guesses as the thid.
         let mut tasks = Tasks::default();
         let pending = Arc::new(Uuid::new_v4().to_string());
-        tasks.new_task(&pending, TaskType::VRCRequestOutbound { relationship: rel });
+        tasks.new_task(
+            &pending,
+            TaskType::VRCRequestOutbound {
+                remote_p_did: Arc::clone(&rel.remote_p_did),
+            },
+        );
 
         let vrc = unsigned_vrc("did:web:ATTACKER_FORGED");
         let result = vet_vrc_issued(&rels, &tasks, &vrc, &sender, Some(pending.as_str()));
@@ -1403,7 +1417,7 @@ mod tests {
         tasks.new_task(
             &other_request,
             TaskType::VRCRequestOutbound {
-                relationship: other_rel,
+                remote_p_did: Arc::clone(&other_rel.remote_p_did),
             },
         );
 
@@ -1431,7 +1445,12 @@ mod tests {
 
         let mut tasks = Tasks::default();
         let request = Arc::new(Uuid::new_v4().to_string());
-        tasks.new_task(&request, TaskType::VRCRequestOutbound { relationship: rel });
+        tasks.new_task(
+            &request,
+            TaskType::VRCRequestOutbound {
+                remote_p_did: Arc::clone(&rel.remote_p_did),
+            },
+        );
 
         let vrc = unsigned_vrc(sender_p);
         let resolved = vet_vrc_issued(&rels, &tasks, &vrc, &from, Some(request.as_str()))

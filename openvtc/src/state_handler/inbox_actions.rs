@@ -4,7 +4,7 @@
 //! relationship requests, accept VRCs, dismiss tasks). They operate on
 //! `&mut Config` and `&TDK` owned by the StateHandler.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::TDK;
@@ -31,16 +31,11 @@ pub fn accept_vrc(config: &mut Config, task_id: &str) -> Result<()> {
 
     // Find the task and extract VRC + sender
     let (vrc, remote_p_did) = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let task = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {}", task_id))?;
         match &task.type_ {
             TaskType::VRCIssued { vrc } => {
                 // Determine issuer as remote p-did
@@ -413,14 +408,14 @@ impl InboxOutcome {
                     Ok(()) => {
                         config.private.relationships.relationships.insert(
                             Arc::clone(&from_did),
-                            Arc::new(Mutex::new(RelRecord {
+                            RelRecord {
                                 task_id: Arc::clone(&task_id),
                                 remote_did: Arc::new(their_did),
                                 remote_p_did: Arc::clone(&from_did),
                                 our_did,
                                 created: Utc::now(),
                                 state: RelationshipState::RequestAccepted,
-                            })),
+                            },
                         );
                         config.private.tasks.remove(&task_id);
                         config.public.logs.insert(
@@ -556,16 +551,11 @@ async fn prepare_accept_relationship(
     let task_id = Arc::new(task_id.to_string());
 
     let (from_did, their_did, sender_name) = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let task = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?;
         match &task.type_ {
             TaskType::RelationshipRequestInbound { from, request, .. } => {
                 let sanitized_name = request
@@ -650,16 +640,11 @@ fn prepare_reject_relationship(
 ) -> Result<InboxJob> {
     let task_id = Arc::new(task_id.to_string());
     let from_did = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let task = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?;
         match &task.type_ {
             TaskType::RelationshipRequestInbound { from, .. } => Arc::clone(from),
             _ => anyhow::bail!("task {task_id} is not an inbound relationship request"),
@@ -697,30 +682,27 @@ async fn prepare_accept_vrc_request(
     use openvtc_core::vrc::DtgCredentialMessage;
 
     let task_id = Arc::new(task_id.to_string());
-    let relationship = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+    let remote_p_did = {
+        let task = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?;
         match &task.type_ {
-            TaskType::VRCRequestInbound { relationship, .. } => Arc::clone(relationship),
+            TaskType::VRCRequestInbound { remote_p_did, .. } => Arc::clone(remote_p_did),
             _ => anyhow::bail!("task {task_id} is not an inbound VRC request"),
         }
     };
     let (our_r_did, their_p_did, their_r_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let relationship = config
+            .private
+            .relationships
+            .get(&remote_p_did)
+            .ok_or_else(|| anyhow::anyhow!("no relationship for {remote_p_did}"))?;
         (
-            Arc::clone(&lock.our_did),
-            Arc::clone(&lock.remote_p_did),
-            Arc::clone(&lock.remote_did),
+            Arc::clone(&relationship.our_did),
+            Arc::clone(&relationship.remote_p_did),
+            Arc::clone(&relationship.remote_did),
         )
     };
 
@@ -764,30 +746,27 @@ fn prepare_reject_vrc_request(
     use openvtc_core::vrc::VRCRequestReject;
 
     let task_id = Arc::new(task_id.to_string());
-    let relationship = {
-        let task_arc = Arc::clone(
-            config
-                .private
-                .tasks
-                .get_by_id(&task_id)
-                .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?,
-        );
-        let task = task_arc
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+    let remote_p_did = {
+        let task = config
+            .private
+            .tasks
+            .get_by_id(&task_id)
+            .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?;
         match &task.type_ {
-            TaskType::VRCRequestInbound { relationship, .. } => Arc::clone(relationship),
+            TaskType::VRCRequestInbound { remote_p_did, .. } => Arc::clone(remote_p_did),
             _ => anyhow::bail!("task {task_id} is not an inbound VRC request"),
         }
     };
     let (our_r_did, their_r_did, their_p_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
+        let relationship = config
+            .private
+            .relationships
+            .get(&remote_p_did)
+            .ok_or_else(|| anyhow::anyhow!("no relationship for {remote_p_did}"))?;
         (
-            Arc::clone(&lock.our_did),
-            Arc::clone(&lock.remote_did),
-            Arc::clone(&lock.remote_p_did),
+            Arc::clone(&relationship.our_did),
+            Arc::clone(&relationship.remote_did),
+            Arc::clone(&relationship.remote_p_did),
         )
     };
     let msg = VRCRequestReject::create_message(

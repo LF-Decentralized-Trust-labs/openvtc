@@ -366,8 +366,7 @@ pub async fn build_listener_configs(
         .relationships
         .relationships
         .iter()
-        .filter_map(|(remote_p_did, rel_arc)| {
-            let rel = rel_arc.lock().ok()?;
+        .filter_map(|(remote_p_did, rel)| {
             if matches!(
                 rel.state,
                 RelationshipState::Established

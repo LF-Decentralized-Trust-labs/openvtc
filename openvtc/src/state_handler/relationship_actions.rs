@@ -1,6 +1,6 @@
 //! Relationship action handlers for the TUI.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{
@@ -615,7 +615,6 @@ pub(crate) enum RelationshipEffect {
         remote_did: Arc<String>,
         remote_p_did: String,
         msg_id: Arc<String>,
-        relationship: Arc<Mutex<RelRecord>>,
         display_name: String,
         using_rdid: bool,
     },
@@ -623,7 +622,6 @@ pub(crate) enum RelationshipEffect {
     RequestVrc {
         remote_p_did: String,
         msg_id: Arc<String>,
-        relationship: Arc<Mutex<RelRecord>>,
         display_name: String,
     },
     /// `Remove`: the R-DID listener (if any) was torn down in the task; remove
@@ -693,23 +691,21 @@ impl RelationshipOutcome {
                             config
                                 .private
                                 .relationships
-                                .get(&respondent_did)
-                                .and_then(|rel| {
-                                    rel.lock().ok().map(|mut lock| {
-                                        // Always record the real local DID so future
-                                        // messages use the correct `our_did`.
-                                        lock.our_did = Arc::clone(&our_did);
-                                        if lock.state == RelationshipState::RequestSent {
-                                            // No accept raced us: fill in the real
-                                            // `task_id` (the send's msg_id) too.
-                                            lock.task_id = Arc::clone(&msg_id);
-                                            true
-                                        } else {
-                                            // A racing accept already finalised this
-                                            // relationship; leave its state + task_id.
-                                            false
-                                        }
-                                    })
+                                .get_mut(&respondent_did)
+                                .map(|rel| {
+                                    // Always record the real local DID so future
+                                    // messages use the correct `our_did`.
+                                    rel.our_did = Arc::clone(&our_did);
+                                    if rel.state == RelationshipState::RequestSent {
+                                        // No accept raced us: fill in the real
+                                        // `task_id` (the send's msg_id) too.
+                                        rel.task_id = Arc::clone(&msg_id);
+                                        true
+                                    } else {
+                                        // A racing accept already finalised this
+                                        // relationship; leave its state + task_id.
+                                        false
+                                    }
                                 });
 
                         if outcome != Some(true) {
@@ -781,11 +777,7 @@ impl RelationshipOutcome {
                             .private
                             .relationships
                             .get(&respondent_did)
-                            .and_then(|rel| {
-                                rel.lock()
-                                    .ok()
-                                    .map(|lock| lock.state == RelationshipState::RequestSent)
-                            })
+                            .map(|rel| rel.state == RelationshipState::RequestSent)
                             .unwrap_or(false);
                         if still_request_sent {
                             config
@@ -809,7 +801,6 @@ impl RelationshipOutcome {
                 remote_did,
                 remote_p_did,
                 msg_id,
-                relationship,
                 display_name,
                 using_rdid,
             } => match self.result {
@@ -823,7 +814,7 @@ impl RelationshipOutcome {
                         TaskType::TrustPing {
                             from: Arc::clone(&our_did),
                             to: Arc::clone(&remote_did),
-                            relationship,
+                            remote_p_did: Arc::new(remote_p_did.clone()),
                         },
                     );
                     info!(to = %remote_p_did, "trust-ping sent");
@@ -874,14 +865,15 @@ impl RelationshipOutcome {
             RelationshipEffect::RequestVrc {
                 remote_p_did,
                 msg_id,
-                relationship,
                 display_name,
             } => match self.result {
                 Ok(()) => {
-                    config
-                        .private
-                        .tasks
-                        .new_task(&msg_id, TaskType::VRCRequestOutbound { relationship });
+                    config.private.tasks.new_task(
+                        &msg_id,
+                        TaskType::VRCRequestOutbound {
+                            remote_p_did: Arc::new(remote_p_did.clone()),
+                        },
+                    );
                     config.public.logs.insert(
                         LogFamily::Relationship,
                         format!("Requested VRC from ({remote_p_did}) Task ID ({msg_id})"),
@@ -1095,13 +1087,10 @@ async fn prepare_submit(
     }
     // Reject a duplicate established relationship.
     let respondent_arc = Arc::new(did.to_string());
-    if let Some(rel) = config.private.relationships.get(&respondent_arc) {
-        let lock = rel
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        if lock.state == RelationshipState::Established {
-            anyhow::bail!("An established relationship already exists with this DID");
-        }
+    if let Some(rel) = config.private.relationships.get(&respondent_arc)
+        && rel.state == RelationshipState::Established
+    {
+        anyhow::bail!("An established relationship already exists with this DID");
     }
 
     // Decide whether a brand-new contact must be added. The DID *resolution*
@@ -1156,14 +1145,14 @@ async fn prepare_submit(
     // passes. The Create outcome later fills in the real `task_id`/`our_did`.
     config.private.relationships.relationships.insert(
         Arc::clone(&respondent_arc),
-        Arc::new(Mutex::new(RelRecord {
+        RelRecord {
             task_id: Arc::new(String::new()),
             our_did: Arc::clone(&persona_did),
             remote_p_did: Arc::clone(&respondent_arc),
             remote_did: Arc::clone(&respondent_arc),
             created: Utc::now(),
             state: RelationshipState::RequestSent,
-        })),
+        },
     );
 
     // In-progress status (shown by the loop's post-arm state send).
@@ -1202,16 +1191,16 @@ fn prepare_ping(
     remote_p_did: &str,
 ) -> Result<RelationshipJob> {
     let remote_key = Arc::new(remote_p_did.to_string());
-    let relationship = config
-        .private
-        .relationships
-        .get(&remote_key)
-        .ok_or_else(|| anyhow::anyhow!("No relationship found for {remote_p_did}"))?;
     let (our_did, remote_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
+        let relationship = config
+            .private
+            .relationships
+            .get(&remote_key)
+            .ok_or_else(|| anyhow::anyhow!("No relationship found for {remote_p_did}"))?;
+        (
+            Arc::clone(&relationship.our_did),
+            Arc::clone(&relationship.remote_did),
+        )
     };
     let using_rdid = !config.is_persona_did(our_did.as_str());
     info!(our_did = %our_did, remote_did = %remote_did, is_r_did = using_rdid, "ping using relationship DIDs");
@@ -1234,7 +1223,6 @@ fn prepare_ping(
             remote_did,
             remote_p_did: remote_p_did.to_string(),
             msg_id,
-            relationship,
             display_name,
             using_rdid,
         },
@@ -1250,14 +1238,13 @@ fn prepare_remove(
     remote_p_did: &str,
 ) -> RelationshipJob {
     let key = Arc::new(remote_p_did.to_string());
-    let listener_id = if let Some(rel_arc) = config.private.relationships.get(&key)
-        && let Ok(lock) = rel_arc.lock()
-        && !config.is_persona_did(lock.our_did.as_str())
-    {
-        Some(super::didcomm::listener_id_for_did(&lock.our_did, config))
-    } else {
-        None
-    };
+    let our_did = config
+        .private
+        .relationships
+        .get(&key)
+        .map(|rel| Arc::clone(&rel.our_did))
+        .filter(|our_did| !config.is_persona_did(our_did.as_str()));
+    let listener_id = our_did.map(|our_did| super::didcomm::listener_id_for_did(&our_did, config));
     state.main_page.content_panel.relationships.status_message =
         Some("Removing relationship...".to_string());
     RelationshipJob::Remove {
@@ -1279,16 +1266,16 @@ fn prepare_request_vrc(
     use openvtc_core::vrc::VrcRequest;
 
     let remote_key = Arc::new(remote_p_did.to_string());
-    let relationship = config
-        .private
-        .relationships
-        .get(&remote_key)
-        .ok_or_else(|| anyhow::anyhow!("No relationship found for {remote_p_did}"))?;
     let (our_did, remote_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
+        let relationship = config
+            .private
+            .relationships
+            .get(&remote_key)
+            .ok_or_else(|| anyhow::anyhow!("No relationship found for {remote_p_did}"))?;
+        (
+            Arc::clone(&relationship.our_did),
+            Arc::clone(&relationship.remote_did),
+        )
     };
     let message = VrcRequest { reason: None }.create_message(&remote_did, &our_did)?;
     let msg_id = Arc::new(message.id.clone());
@@ -1306,7 +1293,6 @@ fn prepare_request_vrc(
         effect: RelationshipEffect::RequestVrc {
             remote_p_did: remote_p_did.to_string(),
             msg_id,
-            relationship,
             display_name,
         },
     })))
@@ -1551,22 +1537,17 @@ mod tests {
 
     /// Build a relationship record (persona DID used as our_did, so it is *not*
     /// an R-DID) and register it in `config`. Returns the shared Arc.
-    fn register_relationship(config: &mut Config, remote_p_did: &str) -> Arc<Mutex<RelRecord>> {
+    fn register_relationship(config: &mut Config, remote_p_did: &str) {
         let key = Arc::new(remote_p_did.to_string());
-        let rel = Arc::new(Mutex::new(RelRecord {
+        let rel = RelRecord {
             task_id: Arc::new("task-1".to_string()),
             our_did: config.persona_did_arc(),
             remote_p_did: Arc::clone(&key),
             remote_did: Arc::clone(&key),
             created: Utc::now(),
             state: RelationshipState::Established,
-        }));
-        config
-            .private
-            .relationships
-            .relationships
-            .insert(key, Arc::clone(&rel));
-        rel
+        };
+        config.private.relationships.relationships.insert(key, rel);
     }
 
     /// A successful Ping outcome creates the TrustPing task + activity log and
@@ -1578,7 +1559,7 @@ mod tests {
         let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let remote = "did:peer:remote";
-        let rel = register_relationship(&mut config, remote);
+        register_relationship(&mut config, remote);
 
         let outcome = RelationshipOutcome {
             effect: RelationshipEffect::Ping {
@@ -1586,7 +1567,6 @@ mod tests {
                 remote_did: Arc::new(remote.to_string()),
                 remote_p_did: remote.to_string(),
                 msg_id: Arc::new("ping-msg".to_string()),
-                relationship: rel,
                 display_name: "Remote".to_string(),
                 using_rdid: false,
             },
@@ -1621,7 +1601,7 @@ mod tests {
         let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let remote = "did:peer:remote";
-        let rel = register_relationship(&mut config, remote);
+        register_relationship(&mut config, remote);
 
         let outcome = RelationshipOutcome {
             effect: RelationshipEffect::Ping {
@@ -1629,7 +1609,6 @@ mod tests {
                 remote_did: Arc::new(remote.to_string()),
                 remote_p_did: remote.to_string(),
                 msg_id: Arc::new("ping-msg".to_string()),
-                relationship: rel,
                 display_name: "Remote".to_string(),
                 using_rdid: false,
             },
@@ -1662,14 +1641,14 @@ mod tests {
     fn insert_provisional(config: &mut Config, respondent: &Arc<String>) {
         config.private.relationships.relationships.insert(
             Arc::clone(respondent),
-            Arc::new(Mutex::new(RelRecord {
+            RelRecord {
                 task_id: Arc::new(String::new()),
                 our_did: Arc::clone(respondent),
                 remote_p_did: Arc::clone(respondent),
                 remote_did: Arc::clone(respondent),
                 created: Utc::now(),
                 state: RelationshipState::RequestSent,
-            })),
+            },
         );
     }
 
@@ -1714,24 +1693,21 @@ mod tests {
             .relationships
             .get(&respondent)
             .expect("relationship record present on success");
-        {
-            let lock = rel.lock().unwrap();
-            assert_eq!(
-                lock.state,
-                RelationshipState::RequestSent,
-                "stays RequestSent (no accept raced)"
-            );
-            assert_eq!(
-                lock.task_id.as_str(),
-                "req-msg",
-                "provisional placeholder task_id replaced by the real msg_id"
-            );
-            assert_eq!(
-                lock.our_did.as_str(),
-                "did:peer:our-rdid",
-                "provisional persona our_did replaced by the minted R-DID"
-            );
-        }
+        assert_eq!(
+            rel.state,
+            RelationshipState::RequestSent,
+            "stays RequestSent (no accept raced)"
+        );
+        assert_eq!(
+            rel.task_id.as_str(),
+            "req-msg",
+            "provisional placeholder task_id replaced by the real msg_id"
+        );
+        assert_eq!(
+            rel.our_did.as_str(),
+            "did:peer:our-rdid",
+            "provisional persona our_did replaced by the minted R-DID"
+        );
         assert!(
             config
                 .private
@@ -1770,10 +1746,9 @@ mod tests {
         // Simulate the racing accept: advance the provisional record to
         // Established (as the accept handler's `get(from_did)` fallback does).
         {
-            let rel = config.private.relationships.get(&respondent).unwrap();
-            let mut lock = rel.lock().unwrap();
-            lock.state = RelationshipState::Established;
-            lock.remote_did = Arc::new("did:peer:respondent-rdid".to_string());
+            let rel = config.private.relationships.get_mut(&respondent).unwrap();
+            rel.state = RelationshipState::Established;
+            rel.remote_did = Arc::new("did:peer:respondent-rdid".to_string());
         }
 
         let our_did = Arc::new("did:peer:our-rdid".to_string());
@@ -1791,14 +1766,13 @@ mod tests {
         outcome.apply(&mut state, &mut config, &mut save);
 
         let rel = config.private.relationships.get(&respondent).unwrap();
-        let lock = rel.lock().unwrap();
         assert_eq!(
-            lock.state,
+            rel.state,
             RelationshipState::Established,
             "raced Established state must be preserved, not reset to RequestSent"
         );
         assert_eq!(
-            lock.our_did.as_str(),
+            rel.our_did.as_str(),
             "did:peer:our-rdid",
             "our_did is still updated to the real minted local DID"
         );

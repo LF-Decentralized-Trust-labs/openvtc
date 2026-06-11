@@ -18,17 +18,16 @@ pub async fn send_vrc_request(
 ) -> Result<()> {
     let remote_key = Arc::new(remote_p_did.to_string());
 
-    let relationship = config
-        .private
-        .relationships
-        .get(&remote_key)
-        .ok_or_else(|| anyhow::anyhow!("No relationship found for {}", remote_p_did))?;
-
     let (our_did, remote_did) = {
-        let lock = relationship
-            .lock()
-            .map_err(|e| anyhow::anyhow!("mutex poisoned: {e}"))?;
-        (Arc::clone(&lock.our_did), Arc::clone(&lock.remote_did))
+        let relationship = config
+            .private
+            .relationships
+            .get(&remote_key)
+            .ok_or_else(|| anyhow::anyhow!("No relationship found for {}", remote_p_did))?;
+        (
+            Arc::clone(&relationship.our_did),
+            Arc::clone(&relationship.remote_did),
+        )
     };
 
     let request_body = VrcRequest {
@@ -43,10 +42,12 @@ pub async fn send_vrc_request(
         .map_err(|e| anyhow::anyhow!("failed to send VRC request: {e}"))?;
 
     // Create tracking task
-    config
-        .private
-        .tasks
-        .new_task(&msg_id, TaskType::VRCRequestOutbound { relationship });
+    config.private.tasks.new_task(
+        &msg_id,
+        TaskType::VRCRequestOutbound {
+            remote_p_did: remote_key,
+        },
+    );
 
     config.public.logs.insert(
         LogFamily::Relationship,

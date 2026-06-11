@@ -523,14 +523,14 @@ mod tests {
         // Relationship whose DIDs all carry the marker.
         private_cfg.relationships.relationships.insert(
             did.clone(),
-            Arc::new(Mutex::new(Relationship {
+            Relationship {
                 task_id: Arc::new(MARKER.to_string()),
                 our_did: did.clone(),
                 remote_did: did.clone(),
                 remote_p_did: did.clone(),
                 created: chrono::Utc::now(),
                 state: RelationshipState::Established,
-            })),
+            },
         );
 
         let writer = SharedWriter::default();

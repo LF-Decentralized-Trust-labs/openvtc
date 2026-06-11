@@ -78,10 +78,9 @@ fn clear_non_empty_returns_true_and_empties() {
 fn new_task_returns_arc_to_created_task() {
     let mut tasks = Tasks::default();
     let id = Arc::new("task-ret".to_string());
-    let task_arc = tasks.new_task(&id, TaskType::TrustPong);
+    let task = tasks.new_task(&id, TaskType::TrustPong);
 
-    let lock = task_arc.lock().unwrap();
-    assert_eq!(*lock.id, "task-ret");
+    assert_eq!(*task.id, "task-ret");
 }
 
 #[test]
@@ -124,7 +123,7 @@ fn inserting_duplicate_id_overwrites() {
     // Should still have one entry (same key)
     assert_eq!(tasks.tasks.len(), 1);
 
-    let lock = tasks.get_by_id(&id).unwrap().lock().unwrap();
+    let task = tasks.get_by_id(&id).unwrap();
     // The second insert should have overwritten the first
-    assert_eq!(format!("{}", lock.type_), "VRC Request Rejected");
+    assert_eq!(format!("{}", task.type_), "VRC Request Rejected");
 }

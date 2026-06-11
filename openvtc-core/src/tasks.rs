@@ -4,11 +4,7 @@
 //! and VRC exchanges. Each task has a unique ID, a [`TaskType`], and a creation
 //! timestamp.
 
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    sync::{Arc, Mutex},
-};
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use chrono::{DateTime, Utc};
 use dtg_credentials::DTGCredential;
@@ -16,10 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use tracing::debug;
 
-use crate::{
-    relationships::{Relationship, RelationshipRequestBody},
-    vrc::VrcRequest,
-};
+use crate::{relationships::RelationshipRequestBody, vrc::VrcRequest};
 
 /// Defined Task Types for OpenVTC.
 ///
@@ -43,21 +36,42 @@ pub enum TaskType {
     /// The relationship handshake has been finalized (fully established).
     RelationshipRequestFinalized,
     /// A trust-ping was sent to verify connectivity with the remote party.
+    ///
+    /// `remote_p_did` is the relationship's remote persona DID — the key into
+    /// `Relationships`. Look the relationship up there at the use site rather
+    /// than holding an embedded snapshot.
+    ///
+    /// On-disk compatibility (R20): pre-R20 configs serialized an embedded
+    /// `relationship` object here instead of `remote_p_did`. Such configs still
+    /// load — `remote_p_did` is `#[serde(default)]` (empty) and the now-extra
+    /// `relationship` field is ignored. The acceptable degradation: a pre-R20
+    /// *in-flight* TrustPing task (these live for seconds) loads with an empty
+    /// `remote_p_did`, so its remote display falls back to blank until the task
+    /// is replaced; the relationship itself still exists in `Relationships`.
     TrustPing {
         from: Arc<String>,
         to: Arc<String>,
-        relationship: Arc<Mutex<Relationship>>,
+        #[serde(default)]
+        remote_p_did: Arc<String>,
     },
     /// A trust-pong response was received from the remote party.
     TrustPong,
     /// We sent a VRC request to a remote party.
+    ///
+    /// `remote_p_did` is the relationship key into `Relationships`. See
+    /// [`TaskType::TrustPing`] for the pre-R20 on-disk compatibility note.
     VRCRequestOutbound {
-        relationship: Arc<Mutex<Relationship>>,
+        #[serde(default)]
+        remote_p_did: Arc<String>,
     },
     /// A remote party sent us a VRC request awaiting our response.
+    ///
+    /// `remote_p_did` is the relationship key into `Relationships`. See
+    /// [`TaskType::TrustPing`] for the pre-R20 on-disk compatibility note.
     VRCRequestInbound {
         request: VrcRequest,
-        relationship: Arc<Mutex<Relationship>>,
+        #[serde(default)]
+        remote_p_did: Arc<String>,
     },
     /// Our VRC request was rejected by the remote party.
     VRCRequestRejected,
@@ -88,7 +102,10 @@ impl Display for TaskType {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct Tasks {
     /// key: Task ID
-    pub tasks: HashMap<Arc<String>, Arc<Mutex<Task>>>,
+    ///
+    /// Plain values (no `Arc<Mutex>`): there is exactly one mutating task (the
+    /// `StateHandler` loop), so mutation goes through `&mut` and is infallible.
+    pub tasks: HashMap<Arc<String>, Task>,
 }
 
 impl Tasks {
@@ -101,27 +118,27 @@ impl Tasks {
         removed
     }
 
-    /// Creates a new task with the given ID and type, inserts it, and returns a shared reference.
-    pub fn new_task(&mut self, id: &Arc<String>, type_: TaskType) -> Arc<Mutex<Task>> {
+    /// Creates a new task with the given ID and type, inserts it, and returns a
+    /// reference to it.
+    pub fn new_task(&mut self, id: &Arc<String>, type_: TaskType) -> &Task {
         debug!("task created: type={:?}, id={}", type_, id);
-        let task = Arc::new(Mutex::new(Task {
+        let task = Task {
             id: id.clone(),
             type_,
             created: Utc::now(),
-        }));
-        self.tasks.insert(id.clone(), task.clone());
-        task
+        };
+        self.tasks.entry(id.clone()).insert_entry(task).into_mut()
     }
 
     /// Returns the task at the given iteration position, or `None` if out of bounds.
     ///
     /// Note: HashMap iteration order is not stable across insertions and removals.
-    pub fn get_by_pos(&self, pos: usize) -> Option<Arc<Mutex<Task>>> {
-        self.tasks.iter().nth(pos).map(|(_, task)| task.clone())
+    pub fn get_by_pos(&self, pos: usize) -> Option<&Task> {
+        self.tasks.iter().nth(pos).map(|(_, task)| task)
     }
 
     /// Retrieves a task by ID or returns None
-    pub fn get_by_id(&self, id: &Arc<String>) -> Option<&Arc<Mutex<Task>>> {
+    pub fn get_by_id(&self, id: &Arc<String>) -> Option<&Task> {
         self.tasks.get(id)
     }
 
@@ -154,6 +171,55 @@ mod tests {
     fn test_tasks_default_empty() {
         let tasks = Tasks::default();
         assert!(tasks.tasks.is_empty(), "Default Tasks should have no tasks");
+    }
+
+    /// Forward-load compatibility (R20): a pre-R20 `Tasks` config serialized the
+    /// 3 relationship-embedding variants with an embedded `relationship` object
+    /// instead of the new `remote_p_did` key. Such a config must still LOAD: the
+    /// now-extra `relationship` field is ignored by serde (no
+    /// `deny_unknown_fields`) and the missing `remote_p_did` defaults to empty.
+    /// The acceptable degradation: the in-flight task loses its embedded
+    /// snapshot (the relationship still exists in `Relationships`).
+    #[test]
+    fn pre_r20_task_with_embedded_relationship_still_loads() {
+        // A pre-R20 VRCRequestOutbound task carried an embedded `relationship`
+        // object (an `Arc<Mutex<Relationship>>` serializes as a bare object).
+        let old_json = r#"{
+            "tasks": {
+                "msg-1": {
+                    "id": "msg-1",
+                    "type_": {
+                        "VRCRequestOutbound": {
+                            "relationship": {
+                                "task_id": "t1",
+                                "our_did": "did:webvh:example:us",
+                                "remote_did": "did:webvh:example:them",
+                                "remote_p_did": "did:webvh:example:them",
+                                "created": "2024-01-02T03:04:05Z",
+                                "state": "Established"
+                            }
+                        }
+                    },
+                    "created": "2024-01-02T03:04:05Z"
+                }
+            }
+        }"#;
+
+        let tasks: Tasks = serde_json::from_str(old_json).expect("pre-R20 config still loads");
+        let task = tasks
+            .get_by_id(&Arc::new("msg-1".to_string()))
+            .expect("task present");
+        match &task.type_ {
+            TaskType::VRCRequestOutbound { remote_p_did } => {
+                // The embedded `relationship` was ignored; the new key defaults
+                // to empty (the documented transient degradation).
+                assert!(
+                    remote_p_did.is_empty(),
+                    "remote_p_did defaults to empty when absent from an old config"
+                );
+            }
+            other => panic!("unexpected variant: {other}"),
+        }
     }
 
     #[test]
