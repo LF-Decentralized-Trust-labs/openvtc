@@ -266,6 +266,103 @@ impl TryFrom<&Message> for MessageType {
     }
 }
 
+/// The kinds of verifiable credential a VTC issues to a member over the
+/// `credential-exchange/issue` protocol.
+///
+/// This is the single registry that drives credential storage
+/// ([`CommunityRecord::credentials`](crate::config::account::CommunityRecord::credentials)),
+/// dispatch ([`messaging::handle_credential_issue`](crate::messaging::handle_credential_issue))
+/// and the "My Credentials" UI. Adding a credential kind means adding a variant
+/// here plus its match arms below — the dispatch and UI code iterate
+/// [`ALL`](Self::ALL) and match on [`vc_type`](Self::vc_type), so they pick the
+/// new kind up without edits.
+///
+/// It is kept next to [`MessageType`] deliberately: a `MessageType` identifies
+/// a DIDComm message, while a `CredentialKind` identifies a credential carried
+/// *inside* a `credential-exchange/issue` message. Every kind shares that one
+/// message type and one DIDComm route, so the router needs no per-kind
+/// registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum CredentialKind {
+    /// The membership credential (VMC) proving admission to the community.
+    /// Receiving it activates the membership.
+    Membership,
+    /// The role endorsement credential (VEC) issued alongside the VMC.
+    Role,
+}
+
+impl CredentialKind {
+    /// Every known credential kind, in display order. The single list that
+    /// dispatch, storage and UI iterate; adding a variant extends all three.
+    pub const ALL: &'static [CredentialKind] = &[CredentialKind::Membership, CredentialKind::Role];
+
+    /// The W3C VC `type` value that identifies this kind in an issued credential.
+    pub fn vc_type(self) -> &'static str {
+        match self {
+            CredentialKind::Membership => "MembershipCredential",
+            CredentialKind::Role => "EndorsementCredential",
+        }
+    }
+
+    /// Stable key used to persist this kind (the JSON map key in
+    /// [`CommunityRecord::credentials`](crate::config::account::CommunityRecord::credentials))
+    /// and as the short "My Credentials" display label.
+    pub fn config_key(self) -> &'static str {
+        match self {
+            CredentialKind::Membership => "Membership",
+            CredentialKind::Role => "Role",
+        }
+    }
+
+    /// Whether receiving this credential activates the community membership.
+    /// The VMC is admission proof; the VEC (role) is supplementary.
+    pub fn activates_membership(self) -> bool {
+        matches!(self, CredentialKind::Membership)
+    }
+
+    /// Parse a persisted [`config_key`](Self::config_key) back into a kind.
+    /// `None` for an unrecognised key (e.g. one written by a newer version).
+    pub fn from_config_key(key: &str) -> Option<CredentialKind> {
+        CredentialKind::ALL
+            .iter()
+            .copied()
+            .find(|k| k.config_key() == key)
+    }
+
+    /// Classify an issued W3C VC by matching its `type` array against the
+    /// registry. Returns the first kind whose [`vc_type`](Self::vc_type)
+    /// appears, or `None` if the credential is of no known kind.
+    pub fn from_credential(credential: &serde_json::Value) -> Option<CredentialKind> {
+        let types = credential
+            .get("type")
+            .and_then(serde_json::Value::as_array)?;
+        CredentialKind::ALL.iter().copied().find(|k| {
+            types
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|t| t == k.vc_type())
+        })
+    }
+}
+
+/// Persisted as its stable [`config_key`](CredentialKind::config_key) string so
+/// it can serve as a JSON object key in
+/// [`CommunityRecord::credentials`](crate::config::account::CommunityRecord::credentials).
+impl Serialize for CredentialKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.config_key())
+    }
+}
+
+impl<'de> Deserialize<'de> for CredentialKind {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let key = String::deserialize(deserializer)?;
+        CredentialKind::from_config_key(&key)
+            .ok_or_else(|| serde::de::Error::custom(format!("unknown credential kind {key:?}")))
+    }
+}
+
 // ****************************************************************************
 // Secret Key types and conversions
 // ****************************************************************************
@@ -350,6 +447,32 @@ mod tests {
             let debug_str = format!("{:?}", mt.unwrap());
             assert_eq!(debug_str, expected_debug_contains);
         }
+    }
+
+    #[test]
+    fn credential_kind_registry_is_self_consistent() {
+        // Every registered kind is recognised from a credential carrying its
+        // `vc_type`, and its `config_key` round-trips. This is the property the
+        // dispatch / storage / UI rely on, so a newly added variant is picked
+        // up everywhere by extending `ALL` + the match arms — and nowhere else.
+        for kind in CredentialKind::ALL {
+            let cred = serde_json::json!({ "type": ["VerifiableCredential", kind.vc_type()] });
+            assert_eq!(
+                CredentialKind::from_credential(&cred),
+                Some(*kind),
+                "{kind:?} must be classified from its vc_type",
+            );
+            assert_eq!(
+                CredentialKind::from_config_key(kind.config_key()),
+                Some(*kind),
+                "{kind:?} config_key must round-trip",
+            );
+        }
+        assert_eq!(
+            CredentialKind::from_credential(&serde_json::json!({ "type": ["Other"] })),
+            None,
+        );
+        assert_eq!(CredentialKind::from_config_key("Nope"), None);
     }
 
     #[test]

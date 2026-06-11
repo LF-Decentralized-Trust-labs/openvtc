@@ -395,8 +395,12 @@ impl MainPageState {
                 vtc_did: c.vtc_did.clone(),
                 sub_context_id: c.sub_context_id.clone(),
                 request_id,
-                has_membership_credential: c.membership_credential.is_some(),
-                has_role_credential: c.role_credential.is_some(),
+                has_membership_credential: c
+                    .credentials
+                    .contains_key(&openvtc_core::CredentialKind::Membership),
+                has_role_credential: c
+                    .credentials
+                    .contains_key(&openvtc_core::CredentialKind::Role),
             });
         }
         let community_count = community_items.len();
@@ -463,11 +467,10 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
             .display_name
             .clone()
             .unwrap_or_else(|| sanitize_display(&c.vtc_did, 64));
-        for (kind, vc) in [
-            ("Membership", c.membership_credential.as_ref()),
-            ("Role", c.role_credential.as_ref()),
-        ] {
-            let Some(vc) = vc else { continue };
+        for kind in openvtc_core::CredentialKind::ALL {
+            let Some(vc) = c.credentials.get(kind) else {
+                continue;
+            };
             // `issuer` may be a bare string or an object `{ id, ... }`.
             let issuer = vc
                 .get("issuer")
@@ -504,7 +507,7 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
                 vrc_id: vc_id,
                 remote_p_did: sanitize_display(&c.vtc_did, 256),
                 raw_json,
-                alias: Some(format!("{community} — {kind}")),
+                alias: Some(format!("{community} — {}", kind.config_key())),
                 issuer: sanitize_display(&issuer, 256),
                 subject: sanitize_display(&subject, 256),
                 valid_from,

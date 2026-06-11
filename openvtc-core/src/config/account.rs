@@ -14,13 +14,14 @@
  * [`crate::identity`] (`IdentityContext` / `IdentityRegistry`).
  */
 
+use crate::CredentialKind;
 use crate::config::KeyTypes;
 use crate::errors::OpenVTCError;
 use crate::relationships::Relationships;
 use crate::vrc::Vrcs;
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use uuid::Uuid;
 
 /// A VTC community is keyed by its DID (`did:webvh:...`).
@@ -170,6 +171,7 @@ impl CommunityStatus {
 
 /// A community membership — one per State-B join, referencing an account persona.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(from = "CommunityRecordShadow")]
 pub struct CommunityRecord {
     /// The community's VTC DID.
     pub vtc_did: VtcDid,
@@ -205,15 +207,101 @@ pub struct CommunityRecord {
     /// VRCs we have received within this community.
     #[serde(default)]
     pub vrcs_received: Vrcs,
-    /// The membership credential (VMC) the VTC issued on admission, delivered
-    /// over DIDComm. `None` until the join is accepted and the credential
-    /// arrives (R-B-8). Stored as the signed W3C VC JSON.
+    /// Verifiable credentials this VTC has issued to us, keyed by
+    /// [`CredentialKind`]. The membership credential (VMC) lands here on
+    /// admission and activates the membership; the role endorsement (VEC)
+    /// arrives alongside. Stored as the signed W3C VC JSON. Empty until the
+    /// join is accepted and credentials arrive (R-B-8).
+    ///
+    /// Persisted as a JSON object keyed by [`CredentialKind::config_key`].
+    /// Configs written before R19 used flat `membership_credential` /
+    /// `role_credential` fields; [`CommunityRecordShadow`] folds those in on
+    /// load so older configs keep working.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub credentials: BTreeMap<CredentialKind, serde_json::Value>,
+}
+
+/// Deserialize-only shadow of [`CommunityRecord`] that folds pre-R19
+/// `membership_credential` / `role_credential` fields into the typed
+/// [`credentials`](CommunityRecord::credentials) registry, so older configs
+/// keep loading (the project tolerates format evolution via shims, not
+/// migrations). New configs deserialize straight through the `credentials`
+/// object. Unknown credential keys (e.g. written by a newer version) are
+/// dropped rather than failing the whole config load.
+#[derive(Deserialize)]
+struct CommunityRecordShadow {
+    vtc_did: VtcDid,
+    display_name: Option<String>,
+    sub_context_id: String,
+    persona_ref: PersonaId,
+    status: CommunityStatus,
     #[serde(default)]
-    pub membership_credential: Option<serde_json::Value>,
-    /// The role endorsement credential (VEC) the VTC issued alongside the VMC.
-    /// `None` until it arrives.
+    favourite: bool,
     #[serde(default)]
-    pub role_credential: Option<serde_json::Value>,
+    archived: bool,
+    #[serde(default)]
+    acknowledged: bool,
+    member_since: Option<DateTime<Utc>>,
+    requested_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    relationships: Relationships,
+    #[serde(default)]
+    vrcs_issued: Vrcs,
+    #[serde(default)]
+    vrcs_received: Vrcs,
+    // Keyed by `String`, not `CredentialKind`, on purpose: this is the
+    // durability boundary. A strict `CredentialKind` key would make an
+    // unrecognised kind (e.g. from a newer build) a fatal whole-config load
+    // error; the `From` impl below instead drops unknown keys with a warning.
+    #[serde(default)]
+    credentials: BTreeMap<String, serde_json::Value>,
+    // Legacy pre-R19 flat fields, folded into `credentials` below.
+    #[serde(default)]
+    membership_credential: Option<serde_json::Value>,
+    #[serde(default)]
+    role_credential: Option<serde_json::Value>,
+}
+
+impl From<CommunityRecordShadow> for CommunityRecord {
+    fn from(shadow: CommunityRecordShadow) -> Self {
+        // New-format `credentials` keys win; unknown keys are dropped (a newer
+        // version may persist kinds this build doesn't know).
+        let mut credentials: BTreeMap<CredentialKind, serde_json::Value> = BTreeMap::new();
+        for (key, vc) in shadow.credentials {
+            match CredentialKind::from_config_key(&key) {
+                Some(kind) => {
+                    credentials.insert(kind, vc);
+                }
+                None => tracing::warn!(
+                    credential_kind = %key,
+                    "dropping unknown stored credential kind",
+                ),
+            }
+        }
+        // Fold legacy flat fields in without clobbering a new-format value.
+        if let Some(vmc) = shadow.membership_credential {
+            credentials.entry(CredentialKind::Membership).or_insert(vmc);
+        }
+        if let Some(vec) = shadow.role_credential {
+            credentials.entry(CredentialKind::Role).or_insert(vec);
+        }
+        CommunityRecord {
+            vtc_did: shadow.vtc_did,
+            display_name: shadow.display_name,
+            sub_context_id: shadow.sub_context_id,
+            persona_ref: shadow.persona_ref,
+            status: shadow.status,
+            favourite: shadow.favourite,
+            archived: shadow.archived,
+            acknowledged: shadow.acknowledged,
+            member_since: shadow.member_since,
+            requested_at: shadow.requested_at,
+            relationships: shadow.relationships,
+            vrcs_issued: shadow.vrcs_issued,
+            vrcs_received: shadow.vrcs_received,
+            credentials,
+        }
+    }
 }
 
 /// Client-side timeout for an unanswered `Pending` join (D16 / R-B-7): a join
@@ -249,8 +337,7 @@ impl CommunityRecord {
             relationships: Relationships::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
-            membership_credential: None,
-            role_credential: None,
+            credentials: BTreeMap::new(),
         }
     }
 
@@ -548,9 +635,79 @@ mod tests {
             relationships: Relationships::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
-            membership_credential: None,
-            role_credential: None,
+            credentials: BTreeMap::new(),
         }
+    }
+
+    /// Pre-R19 configs stored credentials as flat `membership_credential` /
+    /// `role_credential` fields. They must still load, folded into the typed
+    /// `credentials` registry (config round-trip — no migration).
+    #[test]
+    fn legacy_flat_credential_fields_load_into_registry() {
+        let legacy = serde_json::json!({
+            "vtc_did": "did:webvh:vtc.example",
+            "display_name": "Example VTC",
+            "sub_context_id": "openvtc/example",
+            "persona_ref": PersonaId::new().0,
+            "status": { "state": "active" },
+            "member_since": null,
+            "requested_at": null,
+            "membership_credential": { "type": ["MembershipCredential"], "id": "vmc-1" },
+            "role_credential": { "type": ["EndorsementCredential"], "id": "vec-1" },
+        });
+        let rec: CommunityRecord = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            rec.credentials
+                .get(&CredentialKind::Membership)
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str()),
+            Some("vmc-1"),
+        );
+        assert_eq!(
+            rec.credentials
+                .get(&CredentialKind::Role)
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str()),
+            Some("vec-1"),
+        );
+    }
+
+    /// The new `credentials` object round-trips, serializes under stable
+    /// `config_key` names, and tolerates an unknown key (dropped, not fatal).
+    #[test]
+    fn typed_credentials_round_trip_and_tolerate_unknown() {
+        let mut rec = community(
+            "did:webvh:vtc.example",
+            PersonaId::new(),
+            CommunityStatus::Active,
+        );
+        rec.credentials.insert(
+            CredentialKind::Membership,
+            serde_json::json!({ "id": "vmc-1" }),
+        );
+
+        let json = serde_json::to_value(&rec).unwrap();
+        assert!(
+            json["credentials"]["Membership"]["id"] == "vmc-1",
+            "credentials must persist under the config_key name: {json}",
+        );
+
+        let back: CommunityRecord = serde_json::from_value(json).unwrap();
+        assert_eq!(back.credentials, rec.credentials);
+
+        // An unrecognised kind (e.g. from a newer build) is dropped, not fatal.
+        let with_unknown = serde_json::json!({
+            "vtc_did": "did:webvh:vtc.example",
+            "display_name": null,
+            "sub_context_id": "openvtc/x",
+            "persona_ref": PersonaId::new().0,
+            "status": { "state": "active" },
+            "member_since": null,
+            "requested_at": null,
+            "credentials": { "FutureKind": { "id": "x" } },
+        });
+        let rec: CommunityRecord = serde_json::from_value(with_unknown).unwrap();
+        assert!(rec.credentials.is_empty());
     }
 
     #[test]

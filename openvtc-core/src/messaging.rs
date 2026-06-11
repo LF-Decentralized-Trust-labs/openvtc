@@ -268,33 +268,30 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         return false;
     }
 
-    // VMC vs role VEC, by the `type` array.
-    let types = credential.get("type").and_then(Value::as_array);
-    let has_type = |needle: &str| {
-        types.is_some_and(|a| a.iter().filter_map(Value::as_str).any(|t| t == needle))
+    // Classify the credential against the typed registry — the one place that
+    // knows credential kinds, so a new kind is handled here without edits.
+    let Some(kind) = crate::CredentialKind::from_credential(&credential) else {
+        warn!(vtc = %from_did, "issued credential is of no known kind — ignoring");
+        return false;
     };
-    let is_vmc = has_type("MembershipCredential");
-    let is_vec = has_type("EndorsementCredential");
 
     let record = account
         .communities
         .get_mut(from_did)
         .expect("community present (checked above)");
-    if is_vmc {
-        record.membership_credential = Some(credential);
-        if !record.status.is_active() {
-            record.activate(chrono::Utc::now());
-        }
-        info!(vtc = %from_did, "received membership credential — community is now Active");
-        true
-    } else if is_vec {
-        record.role_credential = Some(credential);
-        info!(vtc = %from_did, "received role endorsement credential");
-        true
-    } else {
-        warn!(vtc = %from_did, "issued credential is neither a VMC nor a role VEC — ignoring");
-        false
+    record.credentials.insert(kind, credential);
+    if kind.activates_membership() && !record.status.is_active() {
+        record.activate(chrono::Utc::now());
     }
+    info!(
+        vtc = %from_did,
+        credential_kind = %kind.config_key(),
+        // Whether this kind activates membership — distinct from the record's
+        // resulting `status`, which may already have been active.
+        activates_membership = kind.activates_membership(),
+        "stored issued credential",
+    );
+    true
 }
 
 /// Vet an inbound `VRCIssued` message against local state (task R2).
@@ -693,7 +690,10 @@ mod tests {
 
         let rec = acct.communities.get(vtc).unwrap();
         assert!(rec.status.is_active());
-        assert!(rec.membership_credential.is_some());
+        assert!(
+            rec.credentials
+                .contains_key(&crate::CredentialKind::Membership)
+        );
     }
 
     #[test]
@@ -717,7 +717,39 @@ mod tests {
             !rec.status.is_active(),
             "role VEC must not activate on its own"
         );
-        assert!(rec.role_credential.is_some());
+        assert!(rec.credentials.contains_key(&crate::CredentialKind::Role));
+    }
+
+    /// The dispatch path is purely registry-driven: every kind in
+    /// `CredentialKind::ALL` is classified and stored by `handle_credential_issue`
+    /// with no per-kind branching, so adding a kind to the registry is the only
+    /// change needed for it to be handled here (R19 acceptance criterion).
+    #[test]
+    fn credential_issue_handles_every_registered_kind() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+
+        for kind in crate::CredentialKind::ALL {
+            let mut acct = account_with_persona(vtc, persona);
+            let m = issue(
+                vtc,
+                vc(&["VerifiableCredential", kind.vc_type()], vtc, persona),
+            );
+            assert!(
+                handle_credential_issue(&mut acct, &m, vtc),
+                "kind {kind:?} should be accepted",
+            );
+            let rec = acct.communities.get(vtc).unwrap();
+            assert!(
+                rec.credentials.contains_key(kind),
+                "kind {kind:?} should be stored under its registry key",
+            );
+            assert_eq!(
+                rec.status.is_active(),
+                kind.activates_membership(),
+                "activation for {kind:?} must match the registry",
+            );
+        }
     }
 
     #[test]
