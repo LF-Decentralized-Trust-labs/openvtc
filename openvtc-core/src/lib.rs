@@ -37,34 +37,40 @@ pub const LF_PUBLIC_MEDIATOR_DID: &str =
 pub const LF_ORG_DID: &str =
     "did:webvh:QmXkYcFCbvFFcYZf2q5gNk8Vp4b4vMbVKWbbc7oivcdZHK:fpp.storm.ws";
 
-/// Returns the mediator DID, checking the environment variable first.
+/// Resolves the mediator DID from an optional caller-supplied override.
 ///
-/// If `OPENVTC_MEDIATOR_DID` is set but does not start with `"did:"`, a warning
-/// is logged and the default [`LF_PUBLIC_MEDIATOR_DID`] is returned instead.
-pub fn mediator_did() -> String {
-    if let Ok(did) = std::env::var("OPENVTC_MEDIATOR_DID") {
+/// The binary is the single boundary that reads the `OPENVTC_MEDIATOR_DID`
+/// environment variable and passes its value (if any) in here; core never
+/// reads process env itself. If `override_did` is `Some` and starts with
+/// `"did:"`, it is returned; otherwise a warning is logged and the default
+/// [`LF_PUBLIC_MEDIATOR_DID`] is returned instead.
+pub fn mediator_did(override_did: Option<&str>) -> String {
+    if let Some(did) = override_did {
         if did.starts_with("did:") {
-            return did;
+            return did.to_string();
         }
         tracing::warn!(
-            "OPENVTC_MEDIATOR_DID value '{}' is not a valid DID (must start with 'did:'), using default",
+            "mediator DID override '{}' is not a valid DID (must start with 'did:'), using default",
             did
         );
     }
     LF_PUBLIC_MEDIATOR_DID.to_string()
 }
 
-/// Returns the organisation DID, checking the environment variable first.
+/// Resolves the organisation DID from an optional caller-supplied override.
 ///
-/// If `OPENVTC_ORG_DID` is set but does not start with `"did:"`, a warning
-/// is logged and the default [`LF_ORG_DID`] is returned instead.
-pub fn org_did() -> String {
-    if let Ok(did) = std::env::var("OPENVTC_ORG_DID") {
+/// The binary is the single boundary that reads the `OPENVTC_ORG_DID`
+/// environment variable and passes its value (if any) in here; core never
+/// reads process env itself. If `override_did` is `Some` and starts with
+/// `"did:"`, it is returned; otherwise a warning is logged and the default
+/// [`LF_ORG_DID`] is returned instead.
+pub fn org_did(override_did: Option<&str>) -> String {
+    if let Some(did) = override_did {
         if did.starts_with("did:") {
-            return did;
+            return did.to_string();
         }
         tracing::warn!(
-            "OPENVTC_ORG_DID value '{}' is not a valid DID (must start with 'did:'), using default",
+            "org DID override '{}' is not a valid DID (must start with 'did:'), using default",
             did
         );
     }
@@ -301,13 +307,8 @@ impl From<KeyType> for KeyPurpose {
 }
 
 #[cfg(test)]
-#[allow(unsafe_code)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Guards tests that mutate OPENVTC_MEDIATOR_DID / OPENVTC_ORG_DID env vars.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn all_message_types() -> [MessageType; 11] {
         [
@@ -421,9 +422,7 @@ mod tests {
 
     #[test]
     fn test_mediator_did_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("OPENVTC_MEDIATOR_DID") };
-        let did = mediator_did();
+        let did = mediator_did(None);
         assert_eq!(did, LF_PUBLIC_MEDIATOR_DID);
         assert!(
             did.starts_with("did:webvh:"),
@@ -433,9 +432,7 @@ mod tests {
 
     #[test]
     fn test_org_did_default() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::remove_var("OPENVTC_ORG_DID") };
-        let did = org_did();
+        let did = org_did(None);
         assert_eq!(did, LF_ORG_DID);
         assert!(
             did.starts_with("did:webvh:"),
@@ -445,46 +442,34 @@ mod tests {
 
     #[test]
     fn test_mediator_did_valid_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let custom = "did:web:example.com:mediator";
-        unsafe { std::env::set_var("OPENVTC_MEDIATOR_DID", custom) };
-        let did = mediator_did();
+        let did = mediator_did(Some(custom));
         assert_eq!(did, custom);
-        unsafe { std::env::remove_var("OPENVTC_MEDIATOR_DID") };
     }
 
     #[test]
     fn test_mediator_did_invalid_override_falls_back() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("OPENVTC_MEDIATOR_DID", "not-a-did") };
-        let did = mediator_did();
+        let did = mediator_did(Some("not-a-did"));
         assert_eq!(
             did, LF_PUBLIC_MEDIATOR_DID,
-            "Invalid env value should fall back to default"
+            "Invalid override value should fall back to default"
         );
-        unsafe { std::env::remove_var("OPENVTC_MEDIATOR_DID") };
     }
 
     #[test]
     fn test_org_did_valid_override() {
-        let _guard = ENV_LOCK.lock().unwrap();
         let custom = "did:web:example.com:org";
-        unsafe { std::env::set_var("OPENVTC_ORG_DID", custom) };
-        let did = org_did();
+        let did = org_did(Some(custom));
         assert_eq!(did, custom);
-        unsafe { std::env::remove_var("OPENVTC_ORG_DID") };
     }
 
     #[test]
     fn test_org_did_invalid_override_falls_back() {
-        let _guard = ENV_LOCK.lock().unwrap();
-        unsafe { std::env::set_var("OPENVTC_ORG_DID", "bogus-value") };
-        let did = org_did();
+        let did = org_did(Some("bogus-value"));
         assert_eq!(
             did, LF_ORG_DID,
-            "Invalid env value should fall back to default"
+            "Invalid override value should fall back to default"
         );
-        unsafe { std::env::remove_var("OPENVTC_ORG_DID") };
     }
 
     #[test]
