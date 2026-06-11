@@ -133,7 +133,9 @@ impl SaveScheduler {
         self.dirty || self.in_flight || self.deadline.is_some()
     }
 
-    #[cfg(test)]
+    /// Whether a backgrounded save is currently running on a blocking thread.
+    /// Used by the shutdown path to await an in-flight save before the
+    /// force-flush, so the two never run concurrent `Config::save`s.
     pub(crate) fn in_flight(&self) -> bool {
         self.in_flight
     }
@@ -399,6 +401,48 @@ mod tests {
             sched
                 .take_for_save(|| test_config().clone_for_save())
                 .is_ok()
+        );
+    }
+
+    /// Shutdown ordering invariant (R11): the runtime teardown awaits an
+    /// in-flight background save (draining its completion → `finish`) BEFORE its
+    /// force-flush, so the two never run concurrent `Config::save`s against the
+    /// same (non-atomic) file/keyring. This asserts the scheduler bookkeeping
+    /// that decision relies on.
+    #[test]
+    fn shutdown_awaits_inflight_then_flushes_only_if_newly_dirty() {
+        // Case 1: nothing dirtied while the save ran → after awaiting it, the
+        // shutdown force-flush is skipped (no redundant/concurrent save).
+        let mut sched = SaveScheduler::new("test");
+        sched.mark_dirty();
+        let _pending = sched
+            .take_for_save(|| test_config().clone_for_save())
+            .expect("save due")
+            .expect("snapshot ok");
+        assert!(
+            sched.in_flight(),
+            "teardown must observe the in-flight save and await it"
+        );
+        sched.finish(true);
+        assert!(
+            !sched.needs_flush(),
+            "after the awaited in-flight save, no redundant shutdown save is run"
+        );
+
+        // Case 2: a mutation lands while the save is in flight → after awaiting
+        // the save, the shutdown force-flush must still persist the newer state
+        // (now race-free, since the in-flight save already completed).
+        let mut sched = SaveScheduler::new("test");
+        sched.mark_dirty();
+        let _pending = sched
+            .take_for_save(|| test_config().clone_for_save())
+            .expect("save due")
+            .expect("snapshot ok");
+        sched.mark_dirty(); // mutation during the in-flight save
+        sched.finish(true);
+        assert!(
+            sched.needs_flush(),
+            "a mutation during the in-flight save must still be flushed at shutdown"
         );
     }
 

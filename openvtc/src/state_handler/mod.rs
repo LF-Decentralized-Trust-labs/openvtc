@@ -1161,7 +1161,9 @@ impl StateHandler {
                     match &result {
                         Ok(()) => {}
                         Err(reason) => {
-                            state.main_page.log(format!("Failed to save config: {reason}"));
+                            state
+                                .main_page
+                                .log_error("Failed to save config", &anyhow::anyhow!("{reason}"));
                         }
                     }
                     save.finish(result.is_ok());
@@ -1174,6 +1176,21 @@ impl StateHandler {
             }
             let _ = self.state_tx.send(state.clone());
         };
+
+        // R11: if a backgrounded coalesced save was still running when the loop
+        // broke, wait for it to complete before the force-flush below. A
+        // `spawn_blocking` task is NOT cancelled when its `JoinHandle` is dropped,
+        // so that save is still live; running the shutdown save concurrently would
+        // mean two `Config::save`s racing the same (non-atomic) file + keyring
+        // writes. Draining the completion channel serialises shutdown after it.
+        // After `finish`, `needs_flush()` is only still true if the config was
+        // dirtied *after* the in-flight save's snapshot — exactly what the
+        // force-flush must persist.
+        if save.in_flight()
+            && let Some(result) = save_done_rx.recv().await
+        {
+            save.finish(result.is_ok());
+        }
 
         // R11 force-flush: persist the latest state before tearing down, so
         // coalescing never loses the final mutation on Exit/interrupt. Runs a

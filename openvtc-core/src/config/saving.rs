@@ -88,6 +88,16 @@ impl Config {
     /// an `.await`, preserving the single-mutator / unidirectional-data-flow
     /// invariant.
     ///
+    /// Note: the per-record `Arc<Mutex<Relationship>>` / `Arc<Mutex<Task>>` inside
+    /// the protected tier are clone-of-`Arc` (the snapshot *shares* those Mutexes
+    /// with the live config), not deep copies. This is intentional and safe: each
+    /// record's `Mutex` gives per-record exclusion, so a concurrent loop-thread
+    /// mutation can never tear a single record mid-serialize; and any post-snapshot
+    /// mutation re-runs `mark_dirty()`, so cross-record skew self-heals via the next
+    /// coalesced save (and the shutdown force-flush captures the final state). The
+    /// loop never holds a record lock across the `.await` where a save is spawned,
+    /// so there is no deadlock between the save thread and the loop.
+    ///
     /// # Errors
     ///
     /// Returns [`OpenVTCError::BIP32`] if a BIP32 backend's root cannot be
