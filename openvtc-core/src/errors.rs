@@ -55,6 +55,21 @@ pub enum OpenVTCError {
     #[error("Config Error: {0}")]
     Config(String),
 
+    /// A VTA connection, session, or transport failure (e.g. a DIDComm session
+    /// could not be opened against the mediator). Distinct from [`Self::Config`]:
+    /// this is a retryable runtime fault — the on-disk config is not corrupt, so
+    /// the caller should advise checking VTA reachability / retrying rather than
+    /// resetting the configuration.
+    #[error("VTA Error: {0}")]
+    Vta(String),
+
+    /// A VTA authentication failure (e.g. the challenge-response handshake was
+    /// rejected). Distinct from [`Self::Config`]: the on-disk config is not
+    /// corrupt, so the caller should advise re-authenticating rather than
+    /// resetting the configuration.
+    #[error("Auth Error: {0}")]
+    Auth(String),
+
     /// The configuration file could not be found at the expected path.
     #[error("Config Not Found! path({0}): {1}")]
     ConfigNotFound(String, std::io::Error),
@@ -126,6 +141,8 @@ mod tests {
             Box::new(OpenVTCError::Secret("missing seed".into())),
             Box::new(OpenVTCError::Resolver("timeout".into())),
             Box::new(OpenVTCError::Config("not found".into())),
+            Box::new(OpenVTCError::Vta("session open failed".into())),
+            Box::new(OpenVTCError::Auth("challenge rejected".into())),
             Box::new(OpenVTCError::ConfigNotFound(
                 "/tmp/missing".into(),
                 std::io::Error::new(std::io::ErrorKind::NotFound, "no file"),
@@ -151,6 +168,44 @@ mod tests {
             "Display should include the inner message, got: {}",
             msg
         );
+    }
+
+    #[test]
+    fn test_vta_and_auth_variants_render_their_messages() {
+        let vta = OpenVTCError::Vta("DIDComm session open failed: timeout".to_string());
+        let vta_msg = format!("{vta}");
+        assert!(
+            vta_msg.starts_with("VTA Error:"),
+            "Vta should render its #[error(...)] prefix, got: {vta_msg}"
+        );
+        assert!(vta_msg.contains("DIDComm session open failed: timeout"));
+
+        let auth = OpenVTCError::Auth("VTA authentication failed: 401".to_string());
+        let auth_msg = format!("{auth}");
+        assert!(
+            auth_msg.starts_with("Auth Error:"),
+            "Auth should render its #[error(...)] prefix, got: {auth_msg}"
+        );
+        assert!(auth_msg.contains("VTA authentication failed: 401"));
+    }
+
+    /// A retryable VTA/auth failure must NOT be classified as a `Config` error:
+    /// `Config` triggers reset-style guidance in callers, whereas these are
+    /// "check VTA / re-auth" runtime faults (R18).
+    #[test]
+    fn test_vta_and_auth_are_distinct_from_config() {
+        assert!(matches!(
+            OpenVTCError::Vta("x".into()),
+            OpenVTCError::Vta(_)
+        ));
+        assert!(!matches!(
+            OpenVTCError::Vta("x".into()),
+            OpenVTCError::Config(_)
+        ));
+        assert!(!matches!(
+            OpenVTCError::Auth("x".into()),
+            OpenVTCError::Config(_)
+        ));
     }
 
     #[test]
