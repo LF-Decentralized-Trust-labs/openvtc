@@ -60,6 +60,7 @@ mod join_flow;
 pub mod main_page;
 mod message_dispatch;
 mod relationship_actions;
+mod save_coalesce;
 mod settings_actions;
 mod setup_did_actions;
 mod setup_did_git_sign_actions;
@@ -580,6 +581,18 @@ impl StateHandler {
             mpsc::unbounded_channel::<background_dispatch::DispatchOutcome>();
         let mut in_flight = background_dispatch::InFlight::default();
 
+        // Coalesced + offloaded config persistence (R11). Mutation sites mark the
+        // config dirty on the loop thread instead of saving inline; the
+        // `deadline` arm below debounces a burst into a single `spawn_blocking`
+        // save, with at most one in flight at a time. Durability-critical points
+        // (Exit, passphrase/protection change, export) force-flush synchronously.
+        let mut save = save_coalesce::SaveScheduler::new(self.profile.clone());
+        // Channel carrying a completed background save's success flag, so the loop
+        // can clear the in-flight flag and re-arm if the config was dirtied again
+        // while the save ran. Save failures are surfaced as a status/log here,
+        // matching the pre-R11 inline `save_config` failure handling.
+        let (save_done_tx, mut save_done_rx) = mpsc::unbounded_channel::<Result<(), String>>();
+
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -612,7 +625,7 @@ impl StateHandler {
                             .communities_for_display(false)
                             .get(i)
                             .map(|c| c.persona_ref);
-                        self.remove_community(&mut state, &mut config, i);
+                        self.remove_community(&mut state, &mut config, &mut save, i);
                         // A deleted community must not leave its persona's
                         // mediator connection running. If that persona no longer
                         // has any live community, stop and remove its listener so
@@ -727,7 +740,7 @@ impl StateHandler {
                                     &tdk,
                                     &didcomm_service,
                                     &mut state,
-                                    &self.profile,
+                                    &mut save,
                                     admin_vta.as_ref(),
                                 )
                                 .await
@@ -757,7 +770,7 @@ impl StateHandler {
                                 &tdk,
                                 &didcomm_service,
                                 &mut state,
-                                &self.profile,
+                                &mut save,
                                 admin_vta.as_ref(),
                             )
                             .await;
@@ -786,7 +799,7 @@ impl StateHandler {
                                     &tdk,
                                     &didcomm_service,
                                     &mut state,
-                                    &self.profile,
+                                    &mut save,
                                     admin_vta.as_ref(),
                                 )
                                 .await
@@ -820,7 +833,7 @@ impl StateHandler {
                                 &tdk,
                                 &didcomm_service,
                                 &mut state,
-                                &self.profile,
+                                &mut save,
                                 admin_vta.as_ref(),
                             )
                             .await;
@@ -833,7 +846,7 @@ impl StateHandler {
                             &tdk,
                             &didcomm_service,
                             &mut state,
-                            &self.profile,
+                            &mut save,
                         )
                         .await;
                     },
@@ -842,6 +855,7 @@ impl StateHandler {
                             sa,
                             &mut config,
                             &mut state,
+                            &mut save,
                             &self.profile,
                         )
                         .await
@@ -924,9 +938,13 @@ impl StateHandler {
                             .await
                             {
                                 Ok(true) => {
-                                    if let Err(e) = settings_actions::save_config(&config, &self.profile) {
-                                        state.main_page.log_error("Failed to save config", &e);
-                                    }
+                                    // R11: a config-mutating inbound message used
+                                    // to save inline here — the per-message cost
+                                    // that turned a mediator redelivery burst into
+                                    // N sequential keyring+file+card writes. Now we
+                                    // mark dirty (coalesced + offloaded); the UI
+                                    // sync stays immediate.
+                                    save.mark_dirty();
                                     state.main_page.sync_from_config(&config);
                                     // Extract short type name for summary
                                     let short_type = msg_type.rsplit('/').next().unwrap_or(&msg_type);
@@ -1074,7 +1092,7 @@ impl StateHandler {
                     background_dispatch::apply_outcome(
                         &mut state,
                         &mut config,
-                        &self.profile,
+                        &mut save,
                         &mut in_flight,
                         outcome,
                     );
@@ -1109,6 +1127,45 @@ impl StateHandler {
                         }
                     }
                 },
+                // Coalesced-save debounce (R11). Fires when the debounce window
+                // since the first dirty mark of a burst elapses. Builds an owned
+                // snapshot on this (the single mutator) thread and runs the heavy
+                // serialize+encrypt+keyring+card I/O on a blocking thread so the
+                // loop stays responsive. At most one save is in flight; a mark
+                // that lands while a save runs is re-scheduled on completion.
+                // When nothing is scheduled the arm parks forever (no busy-wait).
+                _ = save.wait_deadline() => {
+                    match save.take_for_save(|| config.clone_for_save()) {
+                        Ok(Ok(pending)) => {
+                            let done_tx = save_done_tx.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let result = pending.run().map_err(|e| format!("{e}"));
+                                let _ = done_tx.send(result);
+                            });
+                        }
+                        // Snapshot failed: surface like an inline save failure.
+                        // The scheduler kept the config dirty + re-armed, so it
+                        // retries on the next deadline.
+                        Ok(Err(e)) => {
+                            state.main_page.log_error("Failed to save config", &e);
+                        }
+                        // NotDirty / InFlight — nothing to start right now.
+                        Err(_) => {}
+                    }
+                },
+                // A backgrounded coalesced save finished (R11). Clear the
+                // in-flight flag and re-arm if the config was dirtied again. A
+                // failed save is surfaced exactly as the old inline `save_config`
+                // failure did (status + log) and left dirty for retry.
+                Some(result) = save_done_rx.recv() => {
+                    match &result {
+                        Ok(()) => {}
+                        Err(reason) => {
+                            state.main_page.log(format!("Failed to save config: {reason}"));
+                        }
+                    }
+                    save.finish(result.is_ok());
+                },
                 // (keepalive removed — WebSocket-level pings handle connectivity)
                 // Catch and handle interrupt signal to gracefully shutdown
                 Ok(interrupted) = interrupt_rx.recv() => {
@@ -1117,6 +1174,28 @@ impl StateHandler {
             }
             let _ = self.state_tx.send(state.clone());
         };
+
+        // R11 force-flush: persist the latest state before tearing down, so
+        // coalescing never loses the final mutation on Exit/interrupt. Runs a
+        // direct blocking save (the loop has broken; there is no runtime arm left
+        // to schedule against). `needs_flush` is true when the config is dirty or
+        // a background save was still in flight when the loop broke.
+        if save.needs_flush() {
+            match save.snapshot_now(&config) {
+                Ok(pending) => {
+                    if let Err(e) = pending.run() {
+                        state
+                            .main_page
+                            .log_error("Failed to save config on exit", &e);
+                    }
+                }
+                Err(e) => {
+                    state
+                        .main_page
+                        .log_error("Failed to snapshot config on exit", &e);
+                }
+            }
+        }
 
         // Shut down the DIDComm service gracefully
         shutdown_token.cancel();
@@ -1134,7 +1213,13 @@ impl StateHandler {
     /// a live (Pending/Active) membership first (R-C-8 — for a pending join this
     /// is the withdrawal), then delete the record, persist, and refresh the
     /// panel. Surfaces the outcome as a status message.
-    fn remove_community(&self, state: &mut State, config: &mut Config, index: usize) {
+    fn remove_community(
+        &self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut save_coalesce::SaveScheduler,
+        index: usize,
+    ) {
         let Some(vtc) = config
             .account
             .communities_for_display(false)
@@ -1152,15 +1237,10 @@ impl StateHandler {
         }
         match config.account.delete_community(&vtc) {
             Ok(_) => {
-                if let Err(e) = config.save(
-                    &self.profile,
-                    #[cfg(feature = "openpgp-card")]
-                    &|| eprintln!("Touch confirmation needed for decryption"),
-                ) {
-                    state
-                        .main_page
-                        .log_error("Failed to save after removing community", &e);
-                }
+                // R11: coalesced save (was an inline `config.save`). The
+                // Exit/shutdown force-flush guarantees the deletion is persisted
+                // even if the user quits within the debounce window.
+                save.mark_dirty();
                 state.main_page.sync_from_config(config);
                 state.main_page.content_panel.communities.status_message =
                     Some("Community removed.".to_string());
@@ -1255,6 +1335,10 @@ impl StateHandler {
         state: &mut State,
         mut join_ctx: Option<DegradedJoinContext>,
     ) -> Result<DegradedOutcome> {
+        // R11: the degraded loop persists only via `remove_community` (State-A
+        // community withdrawal); `join_flow` saves itself synchronously. Coalesce
+        // here too and force-flush on every exit path so a withdrawal isn't lost.
+        let mut save = save_coalesce::SaveScheduler::new(self.profile.clone());
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -1277,7 +1361,19 @@ impl StateHandler {
                     }
                     Action::DeleteCommunity(i) => {
                         if let Some(ctx) = join_ctx.as_mut() {
-                            self.remove_community(state, &mut ctx.config, i);
+                            self.remove_community(state, &mut ctx.config, &mut save, i);
+                            // The degraded loop has no debounce arm and a `Joined`
+                            // handoff carries the config into the runtime loop, so
+                            // force-flush this single destructive action now rather
+                            // than risk losing it on handoff. (Low-traffic State-A
+                            // path — no burst to coalesce.)
+                            if save.needs_flush()
+                                && let Err(e) = save.flush(&ctx.config).await
+                            {
+                                state
+                                    .main_page
+                                    .log_error("Failed to save after removing community", &e);
+                            }
                         }
                     }
                     Action::StartJoin => {

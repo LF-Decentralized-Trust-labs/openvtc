@@ -88,6 +88,11 @@ linux-keyutils-keyring-store.workspace = true
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-native-keyring-store.workspace = true
 
+[dev-dependencies]
+# `test-util` enables tokio's paused clock (`start_paused`) used by the R11
+# save-coalescing debounce tests; test-only, not pulled into the binary build.
+tokio = { workspace = true, features = ["test-util"] }
+
 [[bin]]
 name = "openvtc"
 path = "src/main.rs"

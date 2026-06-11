@@ -2,7 +2,7 @@
 
 use crate::{
     config::{
-        Config, ConfigProtectionType, ExportedConfig,
+        Config, ConfigProtectionType, ExportedConfig, KeyBackend,
         public_config::PublicConfig,
         secured_config::{SecuredConfig, passphrase_encrypt_v2},
     },
@@ -10,13 +10,109 @@ use crate::{
     logs::LogFamily,
 };
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
-use secrecy::{ExposeSecret, SecretString};
+use ed25519_dalek_bip32::ExtendedSigningKey;
+use secrecy::{ExposeSecret, SecretBox, SecretString};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use std::{fs, sync::Arc};
+use std::{collections::BTreeMap, fs, sync::Arc};
 use tracing::warn;
 
+/// Deep-clone a [`KeyBackend`] for a save snapshot.
+///
+/// Re-wraps the non-`Clone` `SecretBox<Vec<u8>>` encryption seed by value, and
+/// rebuilds the non-`Clone` BIP32 `ExtendedSigningKey` root from the stored
+/// base64url seed exactly as the load path does
+/// ([`crate::config::Config::load_step2`]). Used by [`Config::clone_for_save`]
+/// to build an owned, `Send`-able save snapshot.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::BIP32`] if the stored seed cannot be decoded or the
+/// root cannot be re-derived from it.
+fn clone_key_backend(backend: &KeyBackend) -> Result<KeyBackend, OpenVTCError> {
+    Ok(match backend {
+        KeyBackend::Bip32 { seed, .. } => {
+            // The `ExtendedSigningKey` root is not `Clone` (ed25519-dalek-bip32
+            // 0.3), so reconstruct it from the persisted seed, mirroring the load
+            // path. The seed is the source of truth and the root is a pure
+            // function of it, so the snapshot's root is identical to the live one.
+            let root = ExtendedSigningKey::from_seed(
+                BASE64_URL_SAFE_NO_PAD
+                    .decode(seed.expose_secret())
+                    .map_err(|e| {
+                        OpenVTCError::BIP32(format!("Couldn't decode BIP32 seed for save: {e}"))
+                    })?
+                    .as_slice(),
+            )
+            .map_err(|e| {
+                OpenVTCError::BIP32(format!("Couldn't rebuild BIP32 root for save: {e}"))
+            })?;
+            KeyBackend::Bip32 {
+                root,
+                seed: seed.clone(),
+            }
+        }
+        KeyBackend::Vta {
+            credential_bundle,
+            credential_did,
+            credential_private_key,
+            vta_did,
+            vta_url,
+            mediator_did,
+            encryption_seed,
+        } => KeyBackend::Vta {
+            credential_bundle: credential_bundle.clone(),
+            credential_did: credential_did.clone(),
+            credential_private_key: credential_private_key.clone(),
+            vta_did: vta_did.clone(),
+            vta_url: vta_url.clone(),
+            mediator_did: mediator_did.clone(),
+            encryption_seed: SecretBox::new(Box::new(encryption_seed.expose_secret().clone())),
+        },
+    })
+}
+
 impl Config {
+    /// Produce an owned, `Send + 'static` snapshot of everything [`Config::save`]
+    /// reads, so the (blocking) serialize + encrypt + file/keyring/card I/O can be
+    /// moved off the async runtime onto a `spawn_blocking` thread (R11).
+    ///
+    /// `Config` is deliberately not `Clone` (it holds non-`Clone`
+    /// `SecretBox<Vec<u8>>` secrets and runtime-only `identities`), so this
+    /// deep-clones the persisted tiers and re-wraps the secret material by value.
+    /// The `identities` map is *not* persisted — it is rebuilt at load — so it is
+    /// dropped from the snapshot (replaced with an empty map) rather than cloned.
+    ///
+    /// The snapshot is taken on the loop thread (the single mutator) and then
+    /// owned by the blocking closure: the live `Config` is never borrowed across
+    /// an `.await`, preserving the single-mutator / unidirectional-data-flow
+    /// invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenVTCError::BIP32`] if a BIP32 backend's root cannot be
+    /// rebuilt from its seed (the same failure the load path would surface).
+    pub fn clone_for_save(&self) -> Result<Config, OpenVTCError> {
+        Ok(Config {
+            public: self.public.clone(),
+            private: self.private.clone(),
+            key_backend: clone_key_backend(&self.key_backend)?,
+            key_info: self.key_info.clone(),
+            protection_method: self.protection_method.clone(),
+            #[cfg(feature = "openpgp-card")]
+            token_admin_pin: self.token_admin_pin.clone(),
+            #[cfg(feature = "openpgp-card")]
+            token_user_pin: self.token_user_pin.clone(),
+            unlock_code: self
+                .unlock_code
+                .as_ref()
+                .map(|s| SecretBox::new(Box::new(s.expose_secret().clone()))),
+            account: self.account.clone(),
+            // Runtime-only; rebuilt at load and unused by `save`.
+            identities: BTreeMap::new(),
+        })
+    }
+
     /// Persists the full configuration (public, protected, and secured) to disk.
     ///
     /// - `profile`: Configuration profile name (determines file paths).

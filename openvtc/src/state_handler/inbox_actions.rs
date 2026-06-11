@@ -132,7 +132,7 @@ use crate::state_handler::{
     actions::InboxAction,
     dispatch_util,
     main_page::content::{ActiveTaskView, TaskKind},
-    settings_actions,
+    save_coalesce::SaveScheduler,
     state::State,
 };
 
@@ -191,7 +191,7 @@ fn handle_inbox_open_detail(state: &mut State, index: usize) {
 fn save_and_sync(
     config: &Config,
     state: &mut State,
-    profile: &str,
+    save: &mut SaveScheduler,
     success_status: &str,
     success_log: &str,
 ) {
@@ -199,7 +199,7 @@ fn save_and_sync(
     dispatch_util::save_and_sync(
         &mut state.main_page,
         config,
-        profile,
+        save,
         dispatch_util::Persist::SaveAndSync,
         |mp| &mut mp.content_panel.inbox.status_message,
         success_status.to_string(),
@@ -216,12 +216,17 @@ fn record_error(state: &mut State, context: &str, err: &anyhow::Error) {
     );
 }
 
-fn handle_accept_vrc(config: &mut Box<Config>, state: &mut State, profile: &str, task_id: &str) {
+fn handle_accept_vrc(
+    config: &mut Box<Config>,
+    state: &mut State,
+    save: &mut SaveScheduler,
+    task_id: &str,
+) {
     match accept_vrc(config, task_id) {
         Ok(()) => save_and_sync(
             config,
             state,
-            profile,
+            save,
             "VRC accepted and stored",
             "VRC accepted and stored",
         ),
@@ -390,7 +395,7 @@ impl InboxOutcome {
     /// Apply the post-send mutation on the loop thread, reproducing the old
     /// inline success/error block. The status slot is `inbox.status_message`; on
     /// success the active task is cleared (as `save_and_sync` did before).
-    pub(crate) fn apply(self, state: &mut State, config: &mut Config, profile: &str) {
+    pub(crate) fn apply(self, state: &mut State, config: &mut Config, save: &mut SaveScheduler) {
         match self.effect {
             InboxEffect::AcceptRelationship {
                 task_id,
@@ -426,7 +431,7 @@ impl InboxOutcome {
                         save_and_sync(
                             config,
                             state,
-                            profile,
+                            save,
                             "Relationship request accepted",
                             "Accepted relationship request",
                         );
@@ -456,7 +461,7 @@ impl InboxOutcome {
                     save_and_sync(
                         config,
                         state,
-                        profile,
+                        save,
                         "Relationship request rejected",
                         "Rejected relationship request",
                     );
@@ -492,7 +497,7 @@ impl InboxOutcome {
                     save_and_sync(
                         config,
                         state,
-                        profile,
+                        save,
                         "VRC issued and sent",
                         "VRC issued and sent",
                     );
@@ -521,7 +526,7 @@ impl InboxOutcome {
                     save_and_sync(
                         config,
                         state,
-                        profile,
+                        save,
                         "VRC request rejected",
                         "Rejected VRC request",
                     );
@@ -807,28 +812,31 @@ fn prepare_reject_vrc_request(
     }))
 }
 
-fn handle_dismiss_task(config: &mut Box<Config>, state: &mut State, profile: &str, task_id: &str) {
+fn handle_dismiss_task(
+    config: &mut Box<Config>,
+    state: &mut State,
+    save: &mut SaveScheduler,
+    task_id: &str,
+) {
     if let Err(e) = dismiss_task(config, task_id) {
         state.main_page.log_error("Failed to dismiss task", &e);
         return;
     }
     state.main_page.content_panel.inbox.active_task = None;
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
+    // R11: coalesced save (was inline `save_config`).
+    save.mark_dirty();
     state.main_page.sync_from_config(config);
     state.main_page.log("Task dismissed");
 }
 
-fn handle_clear_all(config: &mut Box<Config>, state: &mut State, profile: &str) {
+fn handle_clear_all(config: &mut Box<Config>, state: &mut State, save: &mut SaveScheduler) {
     if let Err(e) = clear_all_tasks(config) {
         state.main_page.log_error("Failed to clear inbox", &e);
         return;
     }
     state.main_page.content_panel.inbox.active_task = None;
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
+    // R11: coalesced save (was inline `save_config`).
+    save.mark_dirty();
     state.main_page.sync_from_config(config);
     state.main_page.log("All inbox tasks cleared");
 }
@@ -867,10 +875,9 @@ pub(crate) async fn dispatch(
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
+    save: &mut SaveScheduler,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> InboxDispatch {
-    let _ = profile;
     match action {
         InboxAction::SelectTask(index) => handle_inbox_select(state, index),
         InboxAction::OpenDetail(index) => handle_inbox_open_detail(state, index),
@@ -902,7 +909,7 @@ pub(crate) async fn dispatch(
                 Err(e) => record_error(state, "Failed to reject relationship", &e),
             }
         }
-        InboxAction::AcceptVrc { task_id } => handle_accept_vrc(config, state, profile, &task_id),
+        InboxAction::AcceptVrc { task_id } => handle_accept_vrc(config, state, save, &task_id),
         InboxAction::AcceptVrcRequest { task_id } => {
             match prepare_accept_vrc_request(config, tdk, service, state, &task_id).await {
                 Ok(job) => return InboxDispatch::Spawn(job),
@@ -915,10 +922,8 @@ pub(crate) async fn dispatch(
                 Err(e) => record_error(state, "Failed to reject VRC request", &e),
             }
         }
-        InboxAction::DismissTask { task_id } => {
-            handle_dismiss_task(config, state, profile, &task_id)
-        }
-        InboxAction::ClearAll => handle_clear_all(config, state, profile),
+        InboxAction::DismissTask { task_id } => handle_dismiss_task(config, state, save, &task_id),
+        InboxAction::ClearAll => handle_clear_all(config, state, save),
     }
     InboxDispatch::Handled
 }
@@ -934,6 +939,7 @@ mod r14_tests {
     #[test]
     fn accept_relationship_success_inserts_relationship() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let from = Arc::new("did:peer:from".to_string());
         let task_id = Arc::new("task-acc".to_string());
@@ -961,7 +967,7 @@ mod r14_tests {
             },
             result: Ok(()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(
             config.private.relationships.get(&from).is_some(),
@@ -988,6 +994,7 @@ mod r14_tests {
     #[test]
     fn accept_relationship_failure_keeps_task_and_no_relationship() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let from = Arc::new("did:peer:from".to_string());
         let task_id = Arc::new("task-acc".to_string());
@@ -1006,7 +1013,7 @@ mod r14_tests {
             },
             result: Err("send failed".to_string()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(
             config.private.relationships.get(&from).is_none(),
@@ -1030,6 +1037,7 @@ mod r14_tests {
     #[test]
     fn reject_relationship_success_removes_task() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let task_id = Arc::new("task-rej".to_string());
         config
@@ -1045,7 +1053,7 @@ mod r14_tests {
             },
             result: Ok(()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(config.private.tasks.get_by_id(&task_id).is_none());
         assert_eq!(
@@ -1063,6 +1071,7 @@ mod r14_tests {
     #[test]
     fn reject_relationship_failure_keeps_task() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let task_id = Arc::new("task-rej".to_string());
         config
@@ -1078,7 +1087,7 @@ mod r14_tests {
             },
             result: Err("send failed".to_string()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(
             config.private.tasks.get_by_id(&task_id).is_some(),

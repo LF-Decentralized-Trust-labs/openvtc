@@ -80,6 +80,7 @@ use crate::state_handler::{
     actions::CredentialAction,
     dispatch_util, log_did,
     main_page::content::{CredentialTab, CredentialsMode},
+    save_coalesce::SaveScheduler,
     state::State,
 };
 
@@ -145,7 +146,7 @@ async fn handle_submit_request(
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
+    save: &mut SaveScheduler,
     relationship_p_did: &str,
     reason: Option<&str>,
 ) {
@@ -155,7 +156,7 @@ async fn handle_submit_request(
             dispatch_util::save_and_sync(
                 &mut state.main_page,
                 config,
-                profile,
+                save,
                 dispatch_util::Persist::SaveAndSync,
                 |mp| &mut mp.content_panel.credentials.status_message,
                 format!("VRC request sent to {}", log_did(relationship_p_did)),
@@ -176,7 +177,12 @@ async fn handle_submit_request(
     }
 }
 
-fn handle_remove(config: &mut Box<Config>, state: &mut State, profile: &str, vrc_id: &str) {
+fn handle_remove(
+    config: &mut Box<Config>,
+    state: &mut State,
+    save: &mut SaveScheduler,
+    vrc_id: &str,
+) {
     if let Err(e) = remove_vrc(config, vrc_id) {
         state.main_page.log_error("Failed to remove VRC", &e);
         return;
@@ -186,7 +192,7 @@ fn handle_remove(config: &mut Box<Config>, state: &mut State, profile: &str, vrc
     dispatch_util::save_and_sync(
         &mut state.main_page,
         config,
-        profile,
+        save,
         dispatch_util::Persist::SaveAndSync,
         |mp| &mut mp.content_panel.credentials.status_message,
         "VRC removed",
@@ -201,7 +207,7 @@ pub(crate) async fn dispatch(
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
+    save: &mut SaveScheduler,
 ) {
     match action {
         CredentialAction::SwitchTab => handle_switch_tab(state),
@@ -222,12 +228,12 @@ pub(crate) async fn dispatch(
                 tdk,
                 service,
                 state,
-                profile,
+                save,
                 &relationship_p_did,
                 reason.as_deref(),
             )
             .await
         }
-        CredentialAction::Remove { vrc_id } => handle_remove(config, state, profile, &vrc_id),
+        CredentialAction::Remove { vrc_id } => handle_remove(config, state, save, &vrc_id),
     }
 }

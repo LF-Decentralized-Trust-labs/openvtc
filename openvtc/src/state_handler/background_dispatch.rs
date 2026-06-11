@@ -36,6 +36,7 @@ use openvtc_core::config::Config;
 use crate::state_handler::didcomm::ReconnectOutcome;
 use crate::state_handler::inbox_actions::InboxOutcome;
 use crate::state_handler::relationship_actions::{DidDeleteOutcome, RelationshipOutcome};
+use crate::state_handler::save_coalesce::SaveScheduler;
 use crate::state_handler::state::{self, State};
 
 /// A domain that can have at most one background dispatch in flight at a time.
@@ -215,7 +216,7 @@ pub(crate) fn spawn_dispatch<F>(
 pub(crate) fn apply_outcome(
     state: &mut State,
     config: &mut Config,
-    profile: &str,
+    save: &mut SaveScheduler,
     in_flight: &mut InFlight,
     outcome: DispatchOutcome,
 ) {
@@ -232,9 +233,9 @@ pub(crate) fn apply_outcome(
                 state.main_page.log(format!("Reconnect failed: {reason}"));
             }
         },
-        DispatchOutcome::Relationship(outcome) => outcome.apply(state, config, profile),
-        DispatchOutcome::Inbox(outcome) => outcome.apply(state, config, profile),
-        DispatchOutcome::Did(outcome) => outcome.apply(state, config, profile),
+        DispatchOutcome::Relationship(outcome) => outcome.apply(state, config, save),
+        DispatchOutcome::Inbox(outcome) => outcome.apply(state, config, save),
+        DispatchOutcome::Did(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic
             // failure so the user isn't left staring at a stuck "in progress"; the
@@ -314,13 +315,14 @@ mod tests {
     fn apply_connected_outcome_sets_connected_and_clears_flag() {
         let mut state = State::default();
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut in_flight = InFlight::default();
         assert!(in_flight.try_begin(DispatchDomain::Mediator));
 
         apply_outcome(
             &mut state,
             &mut config,
-            "test",
+            &mut save,
             &mut in_flight,
             DispatchOutcome::MediatorReconnect(ReconnectOutcome::Connected),
         );
@@ -342,13 +344,14 @@ mod tests {
     fn apply_failed_outcome_sets_failed_and_clears_flag() {
         let mut state = State::default();
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut in_flight = InFlight::default();
         assert!(in_flight.try_begin(DispatchDomain::Mediator));
 
         apply_outcome(
             &mut state,
             &mut config,
-            "test",
+            &mut save,
             &mut in_flight,
             DispatchOutcome::MediatorReconnect(ReconnectOutcome::Failed("dead mediator".into())),
         );
@@ -369,13 +372,14 @@ mod tests {
     fn apply_panicked_outcome_clears_flag() {
         let mut state = State::default();
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut in_flight = InFlight::default();
         assert!(in_flight.try_begin(DispatchDomain::Relationship));
 
         apply_outcome(
             &mut state,
             &mut config,
-            "test",
+            &mut save,
             &mut in_flight,
             DispatchOutcome::Panicked(DispatchDomain::Relationship),
         );
@@ -438,6 +442,7 @@ mod tests {
 
         let mut state = State::default();
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut in_flight = InFlight::default();
 
         // Begin a dispatch (busy-flag set) and spawn its "I/O" — it parks on the
@@ -477,7 +482,7 @@ mod tests {
                     }
                 }
                 Some(outcome) = dispatch_rx.recv() => {
-                    apply_outcome(&mut state, &mut config, "test", &mut in_flight, outcome);
+                    apply_outcome(&mut state, &mut config, &mut save, &mut in_flight, outcome);
                 }
             }
         };

@@ -15,40 +15,45 @@ pub fn save_config(config: &Config, profile: &str) -> Result<()> {
     Ok(())
 }
 
-/// Update the friendly name and save.
-pub fn update_friendly_name(config: &mut Config, profile: &str, name: &str) -> Result<()> {
+/// Update the friendly name.
+///
+/// R11: mutates + logs only; persistence is the caller's responsibility (the
+/// loop marks the config dirty for a coalesced save via `Persist::SaveAndSync`).
+/// This is a routine, non-durability-critical setting (no key re-derivation),
+/// so coalescing is safe — the Exit force-flush guarantees it is persisted.
+pub fn update_friendly_name(config: &mut Config, name: &str) {
     config.public.friendly_name = name.to_string();
     config.public.logs.insert(
         LogFamily::Config,
         format!("Friendly name changed to '{}'", name),
     );
-    save_config(config, profile)?;
     info!(name = %name, "friendly name updated");
-    Ok(())
 }
 
-/// Update the mediator DID and save.
-pub fn update_mediator_did(config: &mut Config, profile: &str, did: &str) -> Result<()> {
+/// Update the mediator DID.
+///
+/// R11: mutates + logs only (see [`update_friendly_name`]). The subsequent
+/// reconnect (R13 background dispatch) does not depend on the file being on disk
+/// yet — it reads the in-memory config — so coalescing the save is safe.
+pub fn update_mediator_did(config: &mut Config, did: &str) {
     config.set_active_mediator_did(did);
     config.public.logs.insert(
         LogFamily::Config,
         format!("Mediator DID changed to '{}'", did),
     );
-    save_config(config, profile)?;
     info!(did = %did, "mediator DID updated (reconnect needed)");
-    Ok(())
 }
 
-/// Update the organization DID and save.
-pub fn update_org_did(config: &mut Config, profile: &str, did: &str) -> Result<()> {
+/// Update the organization DID.
+///
+/// R11: mutates + logs only (see [`update_friendly_name`]).
+pub fn update_org_did(config: &mut Config, did: &str) {
     config.account.org_did = did.to_string();
     config
         .public
         .logs
         .insert(LogFamily::Config, format!("Org DID changed to '{}'", did));
-    save_config(config, profile)?;
     info!(did = %did, "org DID updated");
-    Ok(())
 }
 
 /// Set a passphrase to encrypt the config in the keyring.
@@ -130,6 +135,7 @@ use crate::state_handler::{
     actions::SettingsAction,
     dispatch_util,
     main_page::content::SettingsMode,
+    save_coalesce::SaveScheduler,
     state::{self, State},
 };
 
@@ -260,55 +266,48 @@ fn handle_protection_tab_switch(state: &mut State, next_field: usize) {
 }
 
 /// Returns `true` if the mediator DID was changed and a reconnect is needed.
+///
+/// R11: the per-setting save is now coalesced (`Persist::SaveAndSync` marks the
+/// config dirty rather than saving inline). The mutation can no longer fail
+/// (the `update_*` helpers are infallible now that they don't persist), so the
+/// former `Err` arm is gone.
 fn handle_submit_edit(
     config: &mut Box<Config>,
     state: &mut State,
-    profile: &str,
+    save: &mut SaveScheduler,
     value: &str,
 ) -> bool {
     let idx = state.main_page.content_panel.settings.selected_index;
-    let result = match idx {
-        0 => update_friendly_name(config, profile, value),
-        1 => update_mediator_did(config, profile, value),
-        2 => update_org_did(config, profile, value),
-        _ => Ok(()),
-    };
-    match result {
-        Ok(()) => {
-            let setting_name = match idx {
-                0 => "Friendly name",
-                1 => "Mediator DID",
-                2 => "Organization DID",
-                _ => "Setting",
-            };
-            state.main_page.content_panel.settings.mode = SettingsMode::View;
-            dispatch_util::save_and_sync(
-                &mut state.main_page,
-                config,
-                profile,
-                dispatch_util::Persist::SyncOnly,
-                |mp| &mut mp.content_panel.settings.status_message,
-                "Setting saved",
-                dispatch_util::SyncLog::Plain(format!("{} updated", setting_name)),
-            );
-            // Mediator DID is index 1 — caller should trigger reconnect
-            idx == 1
-        }
-        Err(e) => {
-            dispatch_util::record_error(
-                &mut state.main_page,
-                |mp| &mut mp.content_panel.settings.status_message,
-                "Failed to save setting",
-                &e,
-            );
-            false
-        }
+    match idx {
+        0 => update_friendly_name(config, value),
+        1 => update_mediator_did(config, value),
+        2 => update_org_did(config, value),
+        _ => {}
     }
+    let setting_name = match idx {
+        0 => "Friendly name",
+        1 => "Mediator DID",
+        2 => "Organization DID",
+        _ => "Setting",
+    };
+    state.main_page.content_panel.settings.mode = SettingsMode::View;
+    dispatch_util::save_and_sync(
+        &mut state.main_page,
+        config,
+        save,
+        dispatch_util::Persist::SaveAndSync,
+        |mp| &mut mp.content_panel.settings.status_message,
+        "Setting saved",
+        dispatch_util::SyncLog::Plain(format!("{} updated", setting_name)),
+    );
+    // Mediator DID is index 1 — caller should trigger reconnect
+    idx == 1
 }
 
 fn handle_export_config_action(
     config: &mut Box<Config>,
     state: &mut State,
+    save: &mut SaveScheduler,
     profile: &str,
     path: &str,
     passphrase: &str,
@@ -319,16 +318,24 @@ fn handle_export_config_action(
                 .public
                 .logs
                 .insert(LogFamily::Config, format!("Config exported to {}", path));
+            // R11 force-flush: export is durability-critical (the exported file
+            // must reflect persisted state and the export-log entry must hit
+            // disk now). Keep this save synchronous on the loop thread — it is a
+            // deliberate force-flush point, not the coalesced hot path. It also
+            // clears any pending coalesced dirty state, so we drop the scheduler's
+            // deadline below.
             if let Err(e) = save_config(config, profile) {
                 state
                     .main_page
                     .log_error("Failed to persist export-log entry", &e);
+            } else {
+                save.clear_after_external_save();
             }
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             dispatch_util::save_and_sync(
                 &mut state.main_page,
                 config,
-                profile,
+                save,
                 dispatch_util::Persist::None,
                 |mp| &mut mp.content_panel.settings.status_message,
                 format!("Config exported to {}", path),
@@ -346,6 +353,7 @@ fn handle_export_config_action(
 fn handle_import_config_action(
     config: &mut Box<Config>,
     state: &mut State,
+    save: &mut SaveScheduler,
     profile: &str,
     path: &str,
     passphrase: &str,
@@ -356,16 +364,19 @@ fn handle_import_config_action(
                 .public
                 .logs
                 .insert(LogFamily::Config, format!("Config imported from {}", path));
+            // Force-flush the import-log entry (see export handler).
             if let Err(e) = save_config(config, profile) {
                 state
                     .main_page
                     .log_error("Failed to persist import-log entry", &e);
+            } else {
+                save.clear_after_external_save();
             }
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             dispatch_util::save_and_sync(
                 &mut state.main_page,
                 config,
-                profile,
+                save,
                 dispatch_util::Persist::None,
                 |mp| &mut mp.content_panel.settings.status_message,
                 msg.clone(),
@@ -392,16 +403,26 @@ fn handle_change_protection(state: &mut State) {
 fn handle_set_passphrase(
     config: &mut Box<Config>,
     state: &mut State,
+    save: &mut SaveScheduler,
     profile: &str,
     passphrase: &str,
 ) {
+    // R11 force-flush: a protection change re-derives the unlock key and rewrites
+    // the secured config; it MUST be persisted before reporting success (the
+    // keyring entry now requires the new passphrase to decrypt). `set_passphrase`
+    // saves synchronously — a deliberate force-flush point. (R12 moves its Argon2
+    // derivation off the runtime.)
     match set_passphrase(config, profile, passphrase) {
         Ok(()) => {
+            // The synchronous save above already persisted the latest state;
+            // drop any pending coalesced dirty mark so we don't redundantly
+            // re-save.
+            save.clear_after_external_save();
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             dispatch_util::save_and_sync(
                 &mut state.main_page,
                 config,
-                profile,
+                save,
                 dispatch_util::Persist::SyncOnly,
                 |mp| &mut mp.content_panel.settings.status_message,
                 "Passphrase protection enabled",
@@ -419,14 +440,23 @@ fn handle_set_passphrase(
     }
 }
 
-fn handle_remove_passphrase(config: &mut Box<Config>, state: &mut State, profile: &str) {
+fn handle_remove_passphrase(
+    config: &mut Box<Config>,
+    state: &mut State,
+    save: &mut SaveScheduler,
+    profile: &str,
+) {
+    // R11 force-flush: same rationale as `handle_set_passphrase` — a protection
+    // change must be on disk before reporting success. `remove_passphrase` saves
+    // synchronously.
     match remove_passphrase(config, profile) {
         Ok(()) => {
+            save.clear_after_external_save();
             state.main_page.content_panel.settings.mode = SettingsMode::View;
             dispatch_util::save_and_sync(
                 &mut state.main_page,
                 config,
-                profile,
+                save,
                 dispatch_util::Persist::SyncOnly,
                 |mp| &mut mp.content_panel.settings.status_message,
                 "Protection reverted to keyring only",
@@ -643,6 +673,7 @@ pub(crate) async fn dispatch(
     action: SettingsAction,
     config: &mut Box<Config>,
     state: &mut State,
+    save: &mut SaveScheduler,
     profile: &str,
 ) -> SettingsOutcome {
     match action {
@@ -669,7 +700,7 @@ pub(crate) async fn dispatch(
         }
         SettingsAction::PassphraseLen(len) => handle_passphrase_len(state, len),
         SettingsAction::SubmitEdit { value } => {
-            if handle_submit_edit(config, state, profile, &value) {
+            if handle_submit_edit(config, state, save, &value) {
                 // The mediator DID was changed. Set the synchronous "Connecting"
                 // state now; the loop spawns the slow reconnect I/O (R13).
                 begin_reconnect_status(state);
@@ -677,16 +708,16 @@ pub(crate) async fn dispatch(
             }
         }
         SettingsAction::ExportConfig { path, passphrase } => {
-            handle_export_config_action(config, state, profile, &path, &passphrase)
+            handle_export_config_action(config, state, save, profile, &path, &passphrase)
         }
         SettingsAction::ImportConfig { path, passphrase } => {
-            handle_import_config_action(config, state, profile, &path, &passphrase)
+            handle_import_config_action(config, state, save, profile, &path, &passphrase)
         }
         SettingsAction::ChangeProtection => handle_change_protection(state),
         SettingsAction::SetPassphrase { passphrase } => {
-            handle_set_passphrase(config, state, profile, &passphrase)
+            handle_set_passphrase(config, state, save, profile, &passphrase)
         }
-        SettingsAction::RemovePassphrase => handle_remove_passphrase(config, state, profile),
+        SettingsAction::RemovePassphrase => handle_remove_passphrase(config, state, save, profile),
         #[cfg(feature = "openpgp-card")]
         SettingsAction::TokenManagement => handle_token_management(state),
         #[cfg(feature = "openpgp-card")]

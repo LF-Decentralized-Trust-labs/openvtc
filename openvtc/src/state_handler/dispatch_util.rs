@@ -17,7 +17,7 @@
 use openvtc_core::config::Config;
 
 use crate::state_handler::main_page::MainPageState;
-use crate::state_handler::settings_actions;
+use crate::state_handler::save_coalesce::SaveScheduler;
 
 /// Activity-log entry to write after an action completes.
 pub(crate) enum SyncLog {
@@ -38,21 +38,26 @@ impl SyncLog {
 
 /// How to persist + refresh UI after a successful action.
 pub(crate) enum Persist {
-    /// Save the config (logging on failure), then sync UI from config.
+    /// Request a **coalesced** save (mark the config dirty — R11), then sync UI
+    /// from config immediately. The persistence is debounced + offloaded to a
+    /// blocking thread by the loop's [`SaveScheduler`]; the UI rebuild still
+    /// happens synchronously on the loop thread, exactly as before.
     SaveAndSync,
-    /// The action already saved the config itself; only sync UI from config.
+    /// The action already requested/performed the save itself; only sync UI from
+    /// config.
     SyncOnly,
-    /// The action already saved the config and no UI sync is required.
+    /// The action already requested/performed the save and no UI sync is required.
     None,
 }
 
 impl Persist {
-    fn apply(self, main_page: &mut MainPageState, config: &Config, profile: &str) {
+    fn apply(self, main_page: &mut MainPageState, config: &Config, save: &mut SaveScheduler) {
         match self {
+            // R11: was a synchronous `Config::save` on the loop thread. Now it
+            // only marks the config dirty — the actual save is debounced and run
+            // on a blocking thread. The UI sync stays immediate.
             Persist::SaveAndSync => {
-                if let Err(e) = settings_actions::save_config(config, profile) {
-                    main_page.log_error("Failed to save config", &e);
-                }
+                save.mark_dirty();
                 main_page.sync_from_config(config);
             }
             Persist::SyncOnly => main_page.sync_from_config(config),
@@ -66,17 +71,21 @@ impl Persist {
 ///
 /// `status` returns a mutable reference to the panel's status slot, e.g.
 /// `|mp| &mut mp.content_panel.inbox.status_message`.
+///
+/// R11: `save` is the loop's coalescing scheduler. A `Persist::SaveAndSync`
+/// marks it dirty rather than saving inline; the loop persists later (debounced,
+/// off the runtime).
 pub(crate) fn save_and_sync(
     main_page: &mut MainPageState,
     config: &Config,
-    profile: &str,
+    save: &mut SaveScheduler,
     persist: Persist,
     status: impl FnOnce(&mut MainPageState) -> &mut Option<String>,
     success_status: impl Into<String>,
     log: SyncLog,
 ) {
     *status(main_page) = Some(success_status.into());
-    persist.apply(main_page, config, profile);
+    persist.apply(main_page, config, save);
     log.write(main_page);
 }
 

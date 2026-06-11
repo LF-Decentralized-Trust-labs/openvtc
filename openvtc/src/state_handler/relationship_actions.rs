@@ -11,6 +11,7 @@ use affinidi_tdk::{
     secrets_resolver::{SecretsResolver, secrets::Secret},
 };
 use anyhow::Result;
+use base64::Engine;
 use chrono::Utc;
 use ed25519_dalek_bip32::DerivationPath;
 use openvtc_core::{
@@ -85,8 +86,19 @@ pub(crate) fn plan_relationship_did(
     admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> Result<RDidPlan> {
     match &config.key_backend {
-        KeyBackend::Bip32 { root, .. } => {
-            let root = Box::new(root.clone());
+        KeyBackend::Bip32 { seed, .. } => {
+            // `ExtendedSigningKey` (ed25519-dalek-bip32 0.3) is not `Clone`, so
+            // reconstruct an owned root from the persisted seed — the same
+            // derivation the load path uses, and a pure function of the seed, so
+            // the rebuilt root is identical to the live one.
+            let root = Box::new(
+                ed25519_dalek_bip32::ExtendedSigningKey::from_seed(
+                    &base64::prelude::BASE64_URL_SAFE_NO_PAD
+                        .decode(secrecy::ExposeSecret::expose_secret(seed))
+                        .map_err(|e| anyhow::anyhow!("couldn't decode BIP32 seed: {e}"))?,
+                )
+                .map_err(|e| anyhow::anyhow!("couldn't rebuild BIP32 root: {e}"))?,
+            );
             let v_path = format!("m/3'/1'/1'/{}'", config.private.relationships.path_pointer);
             config.private.relationships.path_pointer += 1;
             let e_path = format!("m/3'/1'/1'/{}'", config.private.relationships.path_pointer);
@@ -352,7 +364,7 @@ fn create_request_message(
 
 use crate::state_handler::{
     actions::RelationshipAction, dispatch_util, log_did, main_page::content::RelationshipsMode,
-    resolve_did_to_display, settings_actions, state::State,
+    resolve_did_to_display, state::State,
 };
 use openvtc_core::config::protected_config::Contact;
 use openvtc_core::relationships::Relationship as RelRecord;
@@ -632,7 +644,12 @@ impl RelationshipOutcome {
     /// handler did *after* the await; on failure it records the same error
     /// status, leaving config untouched (so a failed send records no
     /// relationship/task — matching the pre-R14 ordering and durability).
-    pub(crate) fn apply(self, state: &mut State, config: &mut Config, profile: &str) {
+    pub(crate) fn apply(
+        self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut crate::state_handler::save_coalesce::SaveScheduler,
+    ) {
         // Accessor for the relationships-panel status slot, used by the
         // `dispatch_util` save/error helpers below (a free fn so its HRTB is
         // inferred correctly).
@@ -703,9 +720,8 @@ impl RelationshipOutcome {
                             // "request sent" UI. If the record exists, persist the
                             // `our_did` update made above; otherwise nothing changed.
                             if outcome == Some(false) {
-                                if let Err(e) = settings_actions::save_config(config, profile) {
-                                    state.main_page.log_error("Failed to save config", &e);
-                                }
+                                // R11: coalesced save (was inline `save_config`).
+                                save.mark_dirty();
                                 state.main_page.sync_from_config(config);
                             }
                             return;
@@ -740,7 +756,7 @@ impl RelationshipOutcome {
                         dispatch_util::save_and_sync(
                             &mut state.main_page,
                             config,
-                            profile,
+                            save,
                             dispatch_util::Persist::SaveAndSync,
                             status,
                             format!("Request sent to {}", log_did(&respondent_did)),
@@ -816,7 +832,7 @@ impl RelationshipOutcome {
                     dispatch_util::save_and_sync(
                         &mut state.main_page,
                         config,
-                        profile,
+                        save,
                         dispatch_util::Persist::SaveAndSync,
                         status,
                         "Ping sent",
@@ -874,7 +890,7 @@ impl RelationshipOutcome {
                     dispatch_util::save_and_sync(
                         &mut state.main_page,
                         config,
-                        profile,
+                        save,
                         dispatch_util::Persist::SaveAndSync,
                         status,
                         format!("VRC requested from {display_name}"),
@@ -921,7 +937,7 @@ impl RelationshipOutcome {
                 dispatch_util::save_and_sync(
                     &mut state.main_page,
                     config,
-                    profile,
+                    save,
                     dispatch_util::Persist::SaveAndSync,
                     status,
                     "Relationship removed",
@@ -986,17 +1002,20 @@ impl DidDeleteOutcome {
     /// mirroring the tail of the old inline `delete_context_did`. The VTA delete
     /// and listener teardown already happened in the task (best-effort, as before
     /// — failures there were logged and did not block local cleanup).
-    pub(crate) fn apply(self, state: &mut State, config: &mut Config, profile: &str) {
+    pub(crate) fn apply(
+        self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut crate::state_handler::save_coalesce::SaveScheduler,
+    ) {
         config.account.personas.remove(&self.persona_id);
         config.identities.remove(&self.persona_id);
         for kid in &self.key_ids {
             config.key_info.remove(kid);
         }
-        if let Err(e) = settings_actions::save_config(config, profile) {
-            state
-                .main_page
-                .log_error("Failed to save after removing DID", &e);
-        }
+        // R11: coalesced save (was inline `save_config`). Persisted by the
+        // debounce arm, or by the Exit force-flush if the user quits first.
+        save.mark_dirty();
         state.main_page.sync_from_config(config);
         state
             .main_page
@@ -1296,7 +1315,7 @@ fn prepare_request_vrc(
 fn handle_edit_alias(
     config: &mut Box<Config>,
     state: &mut State,
-    profile: &str,
+    save: &mut crate::state_handler::save_coalesce::SaveScheduler,
     remote_p_did: &str,
     alias: &str,
 ) {
@@ -1333,9 +1352,8 @@ fn handle_edit_alias(
         ),
     );
 
-    if let Err(e) = settings_actions::save_config(config, profile) {
-        state.main_page.log_error("Failed to save config", &e);
-    }
+    // R11: coalesced save (was inline `save_config`).
+    save.mark_dirty();
     state.main_page.sync_from_config(config);
     let index = state
         .main_page
@@ -1352,7 +1370,7 @@ fn handle_edit_alias(
     dispatch_util::save_and_sync(
         &mut state.main_page,
         config,
-        profile,
+        save,
         dispatch_util::Persist::None,
         |mp| &mut mp.content_panel.relationships.status_message,
         "Alias updated",
@@ -1400,7 +1418,7 @@ pub(crate) async fn dispatch(
     tdk: &TDK,
     service: &DIDCommService,
     state: &mut State,
-    profile: &str,
+    save: &mut crate::state_handler::save_coalesce::SaveScheduler,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> RelationshipDispatch {
     match action {
@@ -1497,7 +1515,7 @@ pub(crate) async fn dispatch(
         RelationshipAction::EditAlias {
             remote_p_did,
             alias,
-        } => handle_edit_alias(config, state, profile, &remote_p_did, &alias),
+        } => handle_edit_alias(config, state, save, &remote_p_did, &alias),
         RelationshipAction::CancelEditAlias { index } => {
             state.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
                 index,
@@ -1557,6 +1575,7 @@ mod tests {
     #[test]
     fn ping_success_applies_task_and_status() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let remote = "did:peer:remote";
         let rel = register_relationship(&mut config, remote);
@@ -1573,7 +1592,7 @@ mod tests {
             },
             result: Ok(()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert_eq!(
             state
@@ -1599,6 +1618,7 @@ mod tests {
     #[test]
     fn ping_failure_sets_status_and_creates_no_task() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let remote = "did:peer:remote";
         let rel = register_relationship(&mut config, remote);
@@ -1615,7 +1635,7 @@ mod tests {
             },
             result: Err("dead peer".to_string()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         let status = state
             .main_page
@@ -1660,6 +1680,7 @@ mod tests {
     #[test]
     fn create_success_inserts_relationship_and_keyinfo() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let respondent = Arc::new("did:peer:respondent".to_string());
         insert_provisional(&mut config, &respondent);
@@ -1686,7 +1707,7 @@ mod tests {
             },
             result: Ok(()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         let rel = config
             .private
@@ -1742,6 +1763,7 @@ mod tests {
     #[test]
     fn create_success_does_not_clobber_raced_established() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let respondent = Arc::new("did:peer:respondent".to_string());
         insert_provisional(&mut config, &respondent);
@@ -1766,7 +1788,7 @@ mod tests {
             },
             result: Ok(()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         let rel = config.private.relationships.get(&respondent).unwrap();
         let lock = rel.lock().unwrap();
@@ -1797,6 +1819,7 @@ mod tests {
     #[test]
     fn create_failure_records_keyinfo_but_no_relationship() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let respondent = Arc::new("did:peer:respondent".to_string());
         // `prepare_submit` pre-inserted a provisional record; a send failure must
@@ -1823,7 +1846,7 @@ mod tests {
             },
             result: Err("send failed".to_string()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(
             config.private.relationships.get(&respondent).is_none(),
@@ -1856,6 +1879,7 @@ mod tests {
     #[test]
     fn remove_applies_record_removal() {
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         let remote = "did:peer:remote";
         register_relationship(&mut config, remote);
@@ -1866,7 +1890,7 @@ mod tests {
             },
             result: Ok(()),
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(
             config
@@ -1893,6 +1917,7 @@ mod tests {
     fn did_delete_applies_local_cleanup() {
         use openvtc_core::config::account::PersonaId;
         let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         let mut state = State::default();
         config.key_info.insert(
             "z-persona-key".to_string(),
@@ -1910,7 +1935,7 @@ mod tests {
             persona_id: PersonaId::new(),
             key_ids: vec!["z-persona-key".to_string()],
         };
-        outcome.apply(&mut state, &mut config, "test");
+        outcome.apply(&mut state, &mut config, &mut save);
 
         assert!(
             !config.key_info.contains_key("z-persona-key"),
