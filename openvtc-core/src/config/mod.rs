@@ -93,6 +93,41 @@ pub fn derive_passphrase_key_v2(passphrase: &[u8], salt: &[u8]) -> Result<[u8; 3
     derive_argon2_key(passphrase, salt)
 }
 
+/// Async wrapper for [`derive_passphrase_key`] that runs the (CPU-bound,
+/// ~0.5–1 s) Argon2id derivation on `tokio::task::spawn_blocking` instead of
+/// inline on the async runtime (R12).
+///
+/// The synchronous [`derive_passphrase_key`] pegs a tokio worker for the full
+/// derive; at the user-initiated set/change-passphrase site that worker is the
+/// event-loop thread, freezing the UI for ~1 s. This helper owns its inputs (so
+/// the closure is `Send + 'static`) and moves the blocking crypto onto the
+/// blocking pool, keeping the runtime / render task live. The KDF, salt
+/// handling (the legacy v1 deterministic info-salt), and result are identical
+/// to the sync path — only *where* the CPU work runs changes.
+///
+/// `passphrase` is taken by value so the secret bytes are moved into the
+/// closure and dropped there; callers should pass an owned copy of the exposed
+/// secret rather than logging or widening its exposure.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::Config`] if Argon2 derivation fails, or if the
+/// blocking task panics. The `JoinError` carries only the thread/panic
+/// location — never the passphrase or the derived key — so the secret cannot
+/// leak through the error path.
+pub async fn derive_passphrase_key_blocking(
+    passphrase: Vec<u8>,
+    info: Vec<u8>,
+) -> Result<[u8; 32], OpenVTCError> {
+    // Wrap the moved passphrase copy in `Zeroizing` so the transient plaintext
+    // is wiped when the closure scope ends, preserving the zeroization the
+    // borrowed `SecretString`/`SecretBox` would otherwise give.
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    tokio::task::spawn_blocking(move || derive_passphrase_key(&passphrase, &info))
+        .await
+        .map_err(|e| OpenVTCError::Config(format!("Argon2 derivation task panicked: {e}")))?
+}
+
 /// Shared Argon2id derivation. OWASP "high-value KEK" profile:
 ///   m = 128 MiB (GPU-resistant; fits comfortably on 4 GiB devices)
 ///   t = 4 iterations

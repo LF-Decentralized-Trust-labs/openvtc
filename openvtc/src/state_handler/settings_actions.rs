@@ -57,11 +57,25 @@ pub fn update_org_did(config: &mut Config, did: &str) {
 }
 
 /// Set a passphrase to encrypt the config in the keyring.
-pub fn set_passphrase(config: &mut Config, profile: &str, passphrase: &str) -> Result<()> {
-    use openvtc_core::config::{ConfigProtectionType, derive_passphrase_key, validate_passphrase};
+///
+/// R12: the Argon2id unlock-key derivation (~0.5–1 s of pure CPU) runs on a
+/// `spawn_blocking` thread via [`derive_passphrase_key_blocking`] so it does
+/// not peg the async event-loop / render task. The passphrase bytes are owned
+/// by the blocking closure and zeroized there; the derived key is the only
+/// thing returned. The subsequent `save_config` does not run Argon2 (it
+/// AES-encrypts with the already-derived key), so this is the only KDF on this
+/// path.
+pub async fn set_passphrase(config: &mut Config, profile: &str, passphrase: &str) -> Result<()> {
+    use openvtc_core::config::{
+        ConfigProtectionType, derive_passphrase_key_blocking, validate_passphrase,
+    };
 
     validate_passphrase(passphrase)?;
-    let key = derive_passphrase_key(passphrase.as_bytes(), b"openvtc-unlock-code-v1")?;
+    let key = derive_passphrase_key_blocking(
+        passphrase.as_bytes().to_vec(),
+        b"openvtc-unlock-code-v1".to_vec(),
+    )
+    .await?;
     config.unlock_code = Some(SecretBox::new(Box::new(key.to_vec())));
     config.public.protection = ConfigProtectionType::Encrypted;
     config.public.logs.insert(
@@ -100,10 +114,13 @@ fn validate_file_path(path: &str) -> Result<()> {
 }
 
 /// Export the config to a file, encrypted with the given passphrase.
-pub fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()> {
+///
+/// R12: `Config::export` now derives its Argon2 export key off the runtime
+/// (`spawn_blocking`), so this awaits it instead of blocking the loop.
+pub async fn export_config(config: &Config, path: &str, passphrase: &str) -> Result<()> {
     validate_file_path(path)?;
     let secret = SecretString::new(passphrase.to_string().into());
-    config.export(secret, path)?;
+    config.export(secret, path).await?;
     info!(path = %path, "config exported");
     Ok(())
 }
@@ -138,6 +155,7 @@ use crate::state_handler::{
     save_coalesce::SaveScheduler,
     state::{self, State},
 };
+use tokio::sync::watch;
 
 fn handle_select(state: &mut State, index: usize) {
     #[cfg(feature = "openpgp-card")]
@@ -304,15 +322,25 @@ fn handle_submit_edit(
     idx == 1
 }
 
-fn handle_export_config_action(
+async fn handle_export_config_action(
     config: &mut Box<Config>,
     state: &mut State,
+    state_tx: &watch::Sender<State>,
     save: &mut SaveScheduler,
     profile: &str,
     path: &str,
     passphrase: &str,
 ) {
-    match export_config(config, path, passphrase) {
+    // R12: surface a "deriving" status *before* the blocking Argon2 derive so
+    // the user sees progress while the key is computed off the runtime. Push it
+    // to the render task now — `export_config` then awaits a `spawn_blocking`
+    // derive, during which the loop is parked here but the render task keeps
+    // drawing this status (the runtime is no longer pegged by the KDF).
+    state.main_page.content_panel.settings.status_message =
+        Some("Deriving encryption key…".to_string());
+    let _ = state_tx.send(state.clone());
+
+    match export_config(config, path, passphrase).await {
         Ok(()) => {
             config
                 .public
@@ -400,19 +428,28 @@ fn handle_change_protection(state: &mut State) {
     };
 }
 
-fn handle_set_passphrase(
+async fn handle_set_passphrase(
     config: &mut Box<Config>,
     state: &mut State,
+    state_tx: &watch::Sender<State>,
     save: &mut SaveScheduler,
     profile: &str,
     passphrase: &str,
 ) {
+    // R12: surface a "deriving" status *before* the blocking Argon2 derive so
+    // the user sees progress while the unlock key is computed off the runtime.
+    // Push it to the render task now; `set_passphrase` then awaits a
+    // `spawn_blocking` derive, during which the render task keeps drawing.
+    state.main_page.content_panel.settings.status_message =
+        Some("Deriving encryption key…".to_string());
+    let _ = state_tx.send(state.clone());
+
     // R11 force-flush: a protection change re-derives the unlock key and rewrites
     // the secured config; it MUST be persisted before reporting success (the
     // keyring entry now requires the new passphrase to decrypt). `set_passphrase`
     // saves synchronously — a deliberate force-flush point. (R12 moves its Argon2
     // derivation off the runtime.)
-    match set_passphrase(config, profile, passphrase) {
+    match set_passphrase(config, profile, passphrase).await {
         Ok(()) => {
             // The synchronous save above already persisted the latest state;
             // drop any pending coalesced dirty mark so we don't redundantly
@@ -673,6 +710,7 @@ pub(crate) async fn dispatch(
     action: SettingsAction,
     config: &mut Box<Config>,
     state: &mut State,
+    state_tx: &watch::Sender<State>,
     save: &mut SaveScheduler,
     profile: &str,
 ) -> SettingsOutcome {
@@ -708,14 +746,15 @@ pub(crate) async fn dispatch(
             }
         }
         SettingsAction::ExportConfig { path, passphrase } => {
-            handle_export_config_action(config, state, save, profile, &path, &passphrase)
+            handle_export_config_action(config, state, state_tx, save, profile, &path, &passphrase)
+                .await
         }
         SettingsAction::ImportConfig { path, passphrase } => {
             handle_import_config_action(config, state, save, profile, &path, &passphrase)
         }
         SettingsAction::ChangeProtection => handle_change_protection(state),
         SettingsAction::SetPassphrase { passphrase } => {
-            handle_set_passphrase(config, state, save, profile, &passphrase)
+            handle_set_passphrase(config, state, state_tx, save, profile, &passphrase).await
         }
         SettingsAction::RemovePassphrase => handle_remove_passphrase(config, state, save, profile),
         #[cfg(feature = "openpgp-card")]

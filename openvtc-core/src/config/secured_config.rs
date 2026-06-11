@@ -684,6 +684,42 @@ pub fn passphrase_encrypt_v2(
     Ok(out)
 }
 
+/// Async wrapper for [`passphrase_encrypt_v2`] that runs the (CPU-bound,
+/// ~0.5–1 s) Argon2id key derivation on `tokio::task::spawn_blocking` instead
+/// of inline on the async runtime (R12).
+///
+/// `passphrase_encrypt_v2` derives a fresh-salt Argon2 key before AES-GCM
+/// encrypting; at the config-export site that derive runs on the event-loop
+/// thread and freezes the UI for ~1 s. This helper owns its inputs (so the
+/// closure is `Send + 'static`) and moves the whole encrypt — including the
+/// random per-call salt generation — onto the blocking pool. The salt is still
+/// generated fresh per call inside the closure (not weakened), and the
+/// resulting v2 blob is byte-for-byte the same shape as the sync path: a blob
+/// produced here is decryptable by [`passphrase_decrypt`].
+///
+/// `passphrase` is taken by value so the secret bytes are moved into the
+/// closure and dropped there.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError`] if derivation/encryption fails, or
+/// [`OpenVTCError::Encrypt`] if the blocking task panics. The `JoinError`
+/// carries only the panic location — never the passphrase, derived key, or
+/// plaintext.
+pub async fn passphrase_encrypt_v2_blocking(
+    passphrase: Vec<u8>,
+    info: Vec<u8>,
+    plaintext: Vec<u8>,
+) -> Result<Vec<u8>, OpenVTCError> {
+    // Wrap the moved secret copies in `Zeroizing` so the transient plaintext
+    // passphrase and config bytes are wiped when the closure scope ends.
+    let passphrase = zeroize::Zeroizing::new(passphrase);
+    let plaintext = zeroize::Zeroizing::new(plaintext);
+    tokio::task::spawn_blocking(move || passphrase_encrypt_v2(&passphrase, &info, &plaintext))
+        .await
+        .map_err(|e| OpenVTCError::Encrypt(format!("Argon2 encrypt task panicked: {e}")))?
+}
+
 /// Decrypt a passphrase-protected blob written by either:
 ///   * `passphrase_encrypt_v2` (v2: random salt embedded in the blob), or
 ///   * the legacy v1 path where the caller derived a key with the

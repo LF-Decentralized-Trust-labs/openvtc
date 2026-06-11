@@ -855,6 +855,7 @@ impl StateHandler {
                             sa,
                             &mut config,
                             &mut state,
+                            &self.state_tx,
                             &mut save,
                             &self.profile,
                         )

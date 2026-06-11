@@ -4,7 +4,7 @@ use crate::{
     config::{
         Config, ConfigProtectionType, ExportedConfig, KeyBackend,
         public_config::PublicConfig,
-        secured_config::{SecuredConfig, passphrase_encrypt_v2},
+        secured_config::{SecuredConfig, passphrase_encrypt_v2_blocking},
     },
     errors::OpenVTCError,
     logs::LogFamily,
@@ -171,7 +171,13 @@ impl Config {
     ///
     /// Returns an error if passphrase derivation fails, serialization fails,
     /// encryption fails, or the file cannot be written.
-    pub fn export(&self, passphrase: SecretString, file: &str) -> Result<(), OpenVTCError> {
+    ///
+    /// R12: the Argon2id key derivation inside `passphrase_encrypt_v2` (~0.5–1 s
+    /// of pure CPU) runs on a `spawn_blocking` thread via
+    /// [`passphrase_encrypt_v2_blocking`] so the export does not peg the async
+    /// event-loop / render task while the key is derived. The per-export random
+    /// salt and the resulting blob are unchanged from the sync path.
+    pub async fn export(&self, passphrase: SecretString, file: &str) -> Result<(), OpenVTCError> {
         let pc = PublicConfig::from(self);
         let sc = SecuredConfig::from(self);
 
@@ -181,11 +187,16 @@ impl Config {
         // independent ciphertexts (and the same operator exporting twice
         // does too). Decrypt path auto-detects v1/v2 for backward compat
         // with previously-exported files.
-        let secured = passphrase_encrypt_v2(
-            passphrase.expose_secret().as_bytes(),
-            b"openvtc-export-v1",
-            &serialized,
-        )?;
+        //
+        // Own the exposed passphrase bytes so they move into the blocking
+        // closure (and zeroize there); `serialized` is also moved in. Neither
+        // is logged or surfaced in an error.
+        let secured = passphrase_encrypt_v2_blocking(
+            passphrase.expose_secret().as_bytes().to_vec(),
+            b"openvtc-export-v1".to_vec(),
+            serialized,
+        )
+        .await?;
 
         fs::write(file, BASE64_URL_SAFE_NO_PAD.encode(&secured)).map_err(|e| {
             OpenVTCError::Config(format!("Couldn't write to file ({file}). Reason: {e}"))

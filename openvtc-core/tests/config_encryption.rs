@@ -223,6 +223,52 @@ fn v2_roundtrip_succeeds() {
     assert_eq!(recovered, plaintext);
 }
 
+// ── R12: off-runtime (spawn_blocking) Argon2 wrappers ─────────────────────────
+//
+// These prove the async wrappers produce artifacts identical in shape to the
+// sync path (decryptable by the unchanged `passphrase_decrypt` / matching the
+// sync derive), and that the `spawn_blocking` derive runs without panicking
+// under a tokio runtime.
+
+/// `passphrase_encrypt_v2_blocking` must produce a v2 blob decryptable by the
+/// existing (sync) `passphrase_decrypt` — behaviour parity with
+/// `passphrase_encrypt_v2`, only the derive runs off the runtime.
+#[tokio::test]
+async fn v2_blocking_roundtrip_decryptable_by_sync_decrypt() {
+    use openvtc_core::config::secured_config::passphrase_encrypt_v2_blocking;
+    let pass = b"my-passphrase-2026";
+    let info = b"openvtc-export-v1";
+    let plaintext = b"sensitive config blob";
+    let blob = passphrase_encrypt_v2_blocking(pass.to_vec(), info.to_vec(), plaintext.to_vec())
+        .await
+        .expect("blocking encrypt v2 should not panic under a runtime");
+    assert_eq!(
+        &blob[..4],
+        V2_MAGIC,
+        "blocking v2 blob must begin with OPV2 magic, same as sync"
+    );
+    let recovered = passphrase_decrypt(pass, info, &blob).expect("sync decrypt of blocking blob");
+    assert_eq!(recovered, plaintext);
+}
+
+/// `derive_passphrase_key_blocking` must return the *same* key as the sync
+/// `derive_passphrase_key` for the same inputs — only the thread it runs on
+/// changes. Also exercises the `spawn_blocking` path without panicking.
+#[tokio::test]
+async fn derive_passphrase_key_blocking_matches_sync() {
+    use openvtc_core::config::derive_passphrase_key_blocking;
+    let pass = b"unlock-passphrase";
+    let info = b"openvtc-unlock-code-v1";
+    let sync_key = derive_passphrase_key(pass, info).expect("sync derive");
+    let blocking_key = derive_passphrase_key_blocking(pass.to_vec(), info.to_vec())
+        .await
+        .expect("blocking derive should not panic under a runtime");
+    assert_eq!(
+        sync_key, blocking_key,
+        "off-runtime derive must produce an identical key (same KDF params + salt)"
+    );
+}
+
 #[test]
 fn v2_two_encrypts_produce_distinct_blobs() {
     let pass = b"same-passphrase";
@@ -366,8 +412,13 @@ mod export_import {
 
     /// (a) A real `Config::export` output must round-trip through the
     /// import decrypt path on a populated config.
-    #[test]
-    fn export_import_roundtrip_with_populated_config() {
+    ///
+    /// `Config::export` is async (R12 runs its Argon2 derive on
+    /// `spawn_blocking`), so this drives it under a tokio runtime and asserts
+    /// the produced blob is still decryptable by the unchanged import path —
+    /// proving behaviour parity with the old sync export.
+    #[tokio::test]
+    async fn export_import_roundtrip_with_populated_config() {
         let seed_b64 = BASE64_URL_SAFE_NO_PAD.encode([7u8; 32]);
         let config = populated_config(&seed_b64);
         let passphrase = "round-trip-passphrase";
@@ -377,6 +428,7 @@ mod export_import {
         let file = file.to_str().unwrap().to_string();
         config
             .export(SecretString::new(passphrase.into()), &file)
+            .await
             .expect("export should succeed");
 
         let content = std::fs::read_to_string(&file).expect("read export file");
@@ -442,8 +494,8 @@ mod export_import {
     }
 
     /// (c) A tampered v2 export must fail with a clear error — never panic.
-    #[test]
-    fn tampered_v2_export_fails_with_error() {
+    #[tokio::test]
+    async fn tampered_v2_export_fails_with_error() {
         let seed_b64 = BASE64_URL_SAFE_NO_PAD.encode([11u8; 32]);
         let config = populated_config(&seed_b64);
         let passphrase = "tamper-test-passphrase";
@@ -452,6 +504,7 @@ mod export_import {
         let file = file.to_str().unwrap().to_string();
         config
             .export(SecretString::new(passphrase.into()), &file)
+            .await
             .expect("export should succeed");
         let content = std::fs::read_to_string(&file).expect("read export file");
         let _ = std::fs::remove_file(&file);
