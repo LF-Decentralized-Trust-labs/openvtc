@@ -87,7 +87,23 @@ impl StateHandler {
                             state.join.info(format!("Joining {vtc_did}…"));
                             let _ = self.state_tx.send(state.clone());
 
-                            run_join_sequence(
+                            // R15: race the multi-step VTA sequence against the
+                            // interrupt so Ctrl-C / Exit stay live for its whole
+                            // (potentially many-second, network-bound) duration.
+                            // When an interrupt fires, the sequence future is
+                            // DROPPED — cancelled at whatever `.await` it was
+                            // parked on — and we leave via `JoinExit::Exit`, the
+                            // existing path that restores the terminal.
+                            //
+                            // `minted_persona` is the only handle to mid-sequence
+                            // persisted state: `mint_persona_into` writes a
+                            // persona to disk before the join receipt, so a cancel
+                            // after that point must roll it back to honour the
+                            // "leaves no partial config" contract. It lives in the
+                            // outer scope (not borrowed by the future) so it is
+                            // readable after the future is dropped.
+                            let mut minted_persona: Option<PersonaId> = None;
+                            let sequence = run_join_sequence(
                                 self,
                                 state,
                                 tdk,
@@ -95,8 +111,37 @@ impl StateHandler {
                                 admin_vta,
                                 profile,
                                 vtc_did,
-                            )
-                            .await;
+                                &mut minted_persona,
+                            );
+                            let interrupted =
+                                race_against_interrupt(sequence, interrupt_rx).await;
+
+                            if let Some(interrupted) = interrupted {
+                                // The sequence future has been dropped here, so
+                                // its `&mut config` / `&mut state` borrows are
+                                // released and we can clean up. If a persona was
+                                // minted (and persisted) but never bound to a
+                                // community, roll it back so the next load sees no
+                                // orphan identity — the same cleanup the failure
+                                // paths use. A persona already referenced by a
+                                // community means the join completed before the
+                                // interrupt landed; leave it.
+                                if let Some(persona_id) = minted_persona
+                                    && !config.account.persona_referenced(&persona_id)
+                                {
+                                    rollback_minted_persona(
+                                        config, persona_id, state, profile,
+                                    );
+                                }
+                                state.join.processing = false;
+                                state.join.completed = Completion::CompletedFail;
+                                state.join.info(
+                                    "Join cancelled. Any partially-minted persona was rolled back; a sub-context may remain at the VTA.",
+                                );
+                                state.main_page.log("Join cancelled by user.");
+                                let _ = self.state_tx.send(state.clone());
+                                return Ok(JoinExit::Exit(interrupted));
+                            }
 
                             state.join.processing = false;
                             let _ = self.state_tx.send(state.clone());
@@ -127,6 +172,11 @@ pub(crate) enum JoinExit {
 /// All progress and errors land in `state.join`. On success
 /// `state.join.completed` is `CompletedOK` and `created_community` holds the new
 /// pending record; on any failure it is `CompletedFail` with the error logged.
+///
+/// `minted_persona` is written as soon as the persona is minted-and-persisted so
+/// the caller can roll it back if the whole future is cancelled (R15) before the
+/// persona is bound to a community.
+#[allow(clippy::too_many_arguments)]
 async fn run_join_sequence(
     handler: &StateHandler,
     state: &mut State,
@@ -135,6 +185,7 @@ async fn run_join_sequence(
     admin_vta: Option<&VtaClient>,
     profile: &str,
     vtc_did: String,
+    minted_persona: &mut Option<PersonaId>,
 ) {
     // 1. Idempotency (R-B-9): refuse a duplicate live/pending membership.
     if config.account.live_community(&vtc_did).is_some() {
@@ -256,7 +307,11 @@ async fn run_join_sequence(
         openvtc_core::config::context_path::render_for_display(&vtc_did).to_string()
     });
 
-    // 5. Persist the persona into the account.
+    // 5. Persist the persona into the account. `mint_persona_into` writes the
+    // persona record + runtime identity + key info to disk *immediately* (a
+    // synchronous `Config::save`), so from here until the community record is
+    // persisted (step 9) the on-disk config holds a persona with no community.
+    // Record its id so a cancel (R15) or later failure can roll it back.
     let persona_id = match Config::mint_persona_into(config, &state.setup, tdk, profile).await {
         Ok(id) => id,
         Err(e) => {
@@ -264,6 +319,7 @@ async fn run_join_sequence(
             return;
         }
     };
+    *minted_persona = Some(persona_id);
     let persona_did = state.setup.webvh_address.did.clone();
     state.join.info(format!("Persona created: {persona_did}"));
     let _ = handler.state_tx.send(state.clone());
@@ -425,6 +481,27 @@ fn save_config(config: &Config, profile: &str) -> Result<(), openvtc_core::error
     )
 }
 
+/// Race a sequence future against the interrupt channel (R15).
+///
+/// Returns `None` if `sequence` completed first, or `Some(interrupted)` if an
+/// interrupt arrived while it was still running — in which case `sequence` is
+/// DROPPED (cancelled at its current `.await` point) by the `select!`. Dropping
+/// the future is what makes Ctrl-C / Exit take effect within ~1 s even while a
+/// network await is parked; the caller is responsible for any state cleanup the
+/// dropped future may have left behind (e.g. a persisted-but-unbound persona).
+async fn race_against_interrupt<F>(
+    sequence: F,
+    interrupt_rx: &mut broadcast::Receiver<Interrupted>,
+) -> Option<Interrupted>
+where
+    F: std::future::Future<Output = ()>,
+{
+    tokio::select! {
+        () = sequence => None,
+        Ok(interrupted) = interrupt_rx.recv() => Some(interrupted),
+    }
+}
+
 /// Best-effort display name from a resolved VTC DID document. Prefers a
 /// non-empty `name`-like service/alias if present; falls back to `None` so the
 /// sub-context derivation uses the DID-derived token (D9).
@@ -433,4 +510,80 @@ fn resolved_display_name(_doc: &affinidi_tdk::did_common::Document) -> Option<St
     // (whois/metadata) is a later enrichment. Returning `None` keeps the
     // derivation deterministic (DID-token slug) until that lands.
     None
+}
+
+#[cfg(test)]
+mod tests {
+    //! R15: these tests cover the *select-against-interrupt wiring* in
+    //! isolation — i.e. that an interrupt delivered while the join sequence is
+    //! still running wins the race, drops the sequence future, and surfaces the
+    //! interrupt. The full end-to-end cancel-safety property (a Ctrl-C against a
+    //! live/unreachable VTA leaves no persisted-but-unbound persona) needs a real
+    //! `StateHandler` + `TDK` + VTA session and is NOT unit-testable here; it is
+    //! covered by manual verification and the in-code rollback at the cancel site
+    //! (`join_flow` → `rollback_minted_persona` when `!persona_referenced`).
+
+    use super::race_against_interrupt;
+    use crate::Interrupted;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::broadcast;
+
+    #[tokio::test]
+    async fn completes_when_no_interrupt() {
+        let (_tx, mut rx) = broadcast::channel::<Interrupted>(4);
+        let ran = Arc::new(AtomicBool::new(false));
+        let ran2 = ran.clone();
+        let outcome = race_against_interrupt(
+            async move {
+                ran2.store(true, Ordering::SeqCst);
+            },
+            &mut rx,
+        )
+        .await;
+        assert!(outcome.is_none(), "no interrupt → sequence wins the race");
+        assert!(
+            ran.load(Ordering::SeqCst),
+            "sequence future ran to completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupt_cancels_pending_sequence() {
+        let (tx, mut rx) = broadcast::channel::<Interrupted>(4);
+        // Deliver the interrupt before the race so the recv arm is immediately
+        // ready; the sequence is a never-completing future, so the only way to
+        // return is via the interrupt arm dropping it.
+        tx.send(Interrupted::UserInt).expect("send interrupt");
+        let completed = Arc::new(AtomicBool::new(false));
+        let completed2 = completed.clone();
+        let outcome = race_against_interrupt(
+            async move {
+                std::future::pending::<()>().await;
+                // Unreachable: the future is dropped at the await above.
+                completed2.store(true, Ordering::SeqCst);
+            },
+            &mut rx,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Some(Interrupted::UserInt)),
+            "interrupt wins and is surfaced: {outcome:?}"
+        );
+        assert!(
+            !completed.load(Ordering::SeqCst),
+            "pending sequence future was dropped, not run to completion"
+        );
+    }
+
+    #[tokio::test]
+    async fn surfaces_os_sigint_variant() {
+        let (tx, mut rx) = broadcast::channel::<Interrupted>(4);
+        tx.send(Interrupted::OsSigInt).expect("send interrupt");
+        let outcome = race_against_interrupt(std::future::pending::<()>(), &mut rx).await;
+        assert!(
+            matches!(outcome, Some(Interrupted::OsSigInt)),
+            "the specific interrupt variant propagates: {outcome:?}"
+        );
+    }
 }

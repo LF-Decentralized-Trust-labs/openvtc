@@ -99,7 +99,22 @@ impl StateHandler {
                     if let Some(c) = admin_client.take() {
                         c.shutdown().await;
                     }
-                    admin_client = setup_vta_actions::handle_vta_start_provision(state, &self.state_tx, context_id).await?;
+                    // R15: provisioning is the one genuinely multi-step inline
+                    // sequence in setup (resolve → connection-test → connect →
+                    // authenticate), so it can block for many seconds against an
+                    // unreachable VTA. Race it against the interrupt so Ctrl-C /
+                    // Exit stay live; on interrupt the provisioning future is
+                    // dropped (it has persisted nothing — no config exists until
+                    // `create_account`, so a cancel here leaves no on-disk state)
+                    // and we leave via the existing `Interrupted` exit path.
+                    tokio::select! {
+                        result = setup_vta_actions::handle_vta_start_provision(state, &self.state_tx, context_id) => {
+                            admin_client = result?;
+                        }
+                        Ok(interrupted) = interrupt_rx.recv() => {
+                            break SetupWizardExit::Interrupted(interrupted);
+                        }
+                    }
                 },
                 Action::VtaCreateKeys
                     if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx, admin_client.as_ref()).await? =>
