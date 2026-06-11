@@ -16,9 +16,6 @@ use openvtc_core::relationships::RelationshipState;
 use tokio::sync::mpsc;
 use tracing::debug;
 
-/// Standard message expiry: 48 hours.
-pub const MESSAGE_EXPIRY_SECS: u64 = 60 * 60 * 48;
-
 /// Fallback listener ID for the persona DID listener when no DID is available
 /// (e.g. a State-A account with no persona).
 pub const PERSONA_LISTENER_ID: &str = "persona";
@@ -38,31 +35,10 @@ pub fn persona_listener_id(persona_did: &str) -> String {
 }
 
 /// Build a timestamped DIDComm message with standard 48-hour expiry.
-pub fn build_didcomm_message(
-    type_url: &str,
-    body: serde_json::Value,
-    from: &str,
-    to: &str,
-    thid: Option<&str>,
-) -> Result<affinidi_tdk::didcomm::Message, anyhow::Error> {
-    use std::time::SystemTime;
-    let now = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)?
-        .as_secs();
-    let mut builder = affinidi_tdk::didcomm::Message::build(
-        uuid::Uuid::new_v4().to_string(),
-        type_url.to_string(),
-        body,
-    )
-    .from(from.to_string())
-    .to(to.to_string())
-    .created_time(now)
-    .expires_time(now + MESSAGE_EXPIRY_SECS);
-    if let Some(t) = thid {
-        builder = builder.thid(t.to_string());
-    }
-    Ok(builder.finalize())
-}
+///
+/// Re-exported from [`openvtc_core::messaging`]; the implementation moved to
+/// core (it is pure) so the protocol logic there can build its own messages.
+pub use openvtc_core::messaging::build_didcomm_message;
 
 /// Events sent from DIDComm router handlers to the state handler main loop.
 #[derive(Debug)]

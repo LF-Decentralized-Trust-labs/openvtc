@@ -534,7 +534,7 @@ impl StateHandler {
 
         // Process-lifetime LRU of inbound message IDs. Backstop for replay
         // and mediator-pickup duplicates beyond what the TDK already filters.
-        let mut seen_messages = message_dispatch::SeenMessages::new();
+        let mut seen_messages = openvtc_core::messaging::SeenMessages::new();
 
         // Forward lifecycle events (connect/disconnect/restart) to the activity log
         let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
