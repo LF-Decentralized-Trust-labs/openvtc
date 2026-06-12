@@ -204,6 +204,19 @@ pub struct InboxState {
     pub active_task: Option<ActiveTaskView>,
     /// Transient status message (e.g., "Task accepted", "Error: ...")
     pub status_message: Option<String>,
+    /// When `Some`, a destructive inbox action (dismiss one task, or clear all)
+    /// is awaiting `y`/`n` confirmation; the panel shows a prompt and other keys
+    /// are suppressed. Mirrors the Communities/VTA-DID confirm pattern (R25).
+    pub confirm: Option<InboxConfirm>,
+}
+
+/// A pending destructive inbox action awaiting `y`/`n` confirmation (R25).
+#[derive(Clone, Debug)]
+pub enum InboxConfirm {
+    /// Dismiss a single task (by id) — armed from the list or a task detail.
+    Dismiss { task_id: String },
+    /// Clear every pending task.
+    ClearAll,
 }
 
 /// Lightweight display summary of a task (no Arc/Mutex).
@@ -304,6 +317,10 @@ pub struct RelationshipsState {
     pub mode: RelationshipsMode,
     /// Transient status message
     pub status_message: Option<String>,
+    /// When `Some(remote_p_did)`, removal of that relationship is awaiting
+    /// `y`/`n` confirmation (armed from the detail view). Mirrors the
+    /// Communities/VTA-DID confirm pattern (R25).
+    pub confirm_delete: Option<String>,
 }
 
 /// Display modes for the relationships panel.
@@ -395,6 +412,10 @@ pub struct CredentialsState {
     pub mode: CredentialsMode,
     /// Transient status message
     pub status_message: Option<String>,
+    /// When `Some(vrc_id)`, removal of that credential is awaiting `y`/`n`
+    /// confirmation (armed from the detail view). Mirrors the Communities/
+    /// VTA-DID confirm pattern (R25).
+    pub confirm_delete: Option<String>,
 }
 
 /// Which credential tab is active.

@@ -1,6 +1,6 @@
 use super::panel::Panel;
 use crate::colors::{
-    COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
     COLOR_WARNING_ACCESSIBLE_RED,
 };
 use crate::state_handler::{
@@ -186,7 +186,16 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    lines.push(Line::from("d: remove  c: copy JSON  Esc: back").fg(COLOR_DARK_GRAY));
+    // A pending removal confirmation replaces the footer hint (R25).
+    if state.confirm_delete.is_some() {
+        lines.push(
+            Line::from("Remove this credential?   y: confirm    n: cancel")
+                .fg(COLOR_ORANGE)
+                .bold(),
+        );
+    } else {
+        lines.push(Line::from("d: remove  c: copy JSON  Esc: back").fg(COLOR_DARK_GRAY));
+    }
 
     lines
 }

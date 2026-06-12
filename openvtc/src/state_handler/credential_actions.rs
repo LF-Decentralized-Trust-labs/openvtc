@@ -184,6 +184,8 @@ fn handle_remove(
     save: &mut SaveScheduler,
     vrc_id: &str,
 ) {
+    // The confirmation is now resolved.
+    state.main_page.content_panel.credentials.confirm_delete = None;
     if let Err(e) = remove_vrc(config, vrc_id) {
         state.main_page.log_error("Failed to remove VRC", &e);
         return;
@@ -236,6 +238,13 @@ pub(crate) async fn dispatch(
             .await
         }
         CredentialAction::Remove { vrc_id } => handle_remove(config, state, save, &vrc_id),
+        // R25 confirmation arming/cancel — pure state mutations.
+        CredentialAction::ConfirmRemove { vrc_id } => {
+            state.main_page.content_panel.credentials.confirm_delete = Some(vrc_id);
+        }
+        CredentialAction::CancelRemove => {
+            state.main_page.content_panel.credentials.confirm_delete = None;
+        }
     }
 }
 

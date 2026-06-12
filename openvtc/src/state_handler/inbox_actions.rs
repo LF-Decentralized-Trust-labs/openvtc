@@ -126,7 +126,7 @@ fn build_reject_message(from: &str, to: &str, reason: Option<&str>, thid: &str) 
 use crate::state_handler::{
     actions::InboxAction,
     dispatch_util,
-    main_page::content::{ActiveTaskView, TaskKind},
+    main_page::content::{ActiveTaskView, InboxConfirm, TaskKind},
     save_coalesce::SaveScheduler,
     state::State,
 };
@@ -797,6 +797,8 @@ fn handle_dismiss_task(
     save: &mut SaveScheduler,
     task_id: &str,
 ) {
+    // The confirmation (if any) is now resolved.
+    state.main_page.content_panel.inbox.confirm = None;
     if let Err(e) = dismiss_task(config, task_id) {
         state.main_page.log_error("Failed to dismiss task", &e);
         return;
@@ -809,6 +811,8 @@ fn handle_dismiss_task(
 }
 
 fn handle_clear_all(config: &mut Box<Config>, state: &mut State, save: &mut SaveScheduler) {
+    // The confirmation (if any) is now resolved.
+    state.main_page.content_panel.inbox.confirm = None;
     if let Err(e) = clear_all_tasks(config) {
         state.main_page.log_error("Failed to clear inbox", &e);
         return;
@@ -903,6 +907,16 @@ pub(crate) async fn dispatch(
         }
         InboxAction::DismissTask { task_id } => handle_dismiss_task(config, state, save, &task_id),
         InboxAction::ClearAll => handle_clear_all(config, state, save),
+        // R25 confirmation arming/cancel — pure state mutations, never network.
+        InboxAction::ConfirmDismiss { task_id } => {
+            state.main_page.content_panel.inbox.confirm = Some(InboxConfirm::Dismiss { task_id });
+        }
+        InboxAction::ConfirmClearAll => {
+            state.main_page.content_panel.inbox.confirm = Some(InboxConfirm::ClearAll);
+        }
+        InboxAction::CancelConfirm => {
+            state.main_page.content_panel.inbox.confirm = None;
+        }
     }
     InboxDispatch::Handled
 }

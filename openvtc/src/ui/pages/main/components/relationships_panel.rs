@@ -318,12 +318,21 @@ fn render_detail(
     }
 
     lines.push(Line::from(""));
-    lines.push(
-        Line::from(
-            "e: edit alias  p: ping  v: request VRC  d: remove  \u{2191}/\u{2193}: browse VRCs  Esc: back",
-        )
-        .fg(COLOR_DARK_GRAY),
-    );
+    // A pending removal confirmation replaces the footer hint (R25).
+    if state.confirm_delete.is_some() {
+        lines.push(
+            Line::from("Remove this relationship?   y: confirm    n: cancel")
+                .fg(COLOR_ORANGE)
+                .bold(),
+        );
+    } else {
+        lines.push(
+            Line::from(
+                "e: edit alias  p: ping  v: request VRC  d: remove  \u{2191}/\u{2193}: browse VRCs  Esc: back",
+            )
+            .fg(COLOR_DARK_GRAY),
+        );
+    }
 
     lines
 }

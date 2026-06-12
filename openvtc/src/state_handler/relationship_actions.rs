@@ -1245,6 +1245,8 @@ fn prepare_remove(
         .map(|rel| Arc::clone(&rel.our_did))
         .filter(|our_did| !config.is_persona_did(our_did.as_str()));
     let listener_id = our_did.map(|our_did| super::didcomm::listener_id_for_did(&our_did, config));
+    // The confirmation is now resolved.
+    state.main_page.content_panel.relationships.confirm_delete = None;
     state.main_page.content_panel.relationships.status_message =
         Some("Removing relationship...".to_string());
     RelationshipJob::Remove {
@@ -1479,6 +1481,13 @@ pub(crate) async fn dispatch(
                 job: prepare_remove(config, service, state, &remote_p_did),
                 is_ping: false,
             };
+        }
+        // R25 confirmation arming/cancel — pure state mutations, never network.
+        RelationshipAction::ConfirmRemove { remote_p_did } => {
+            state.main_page.content_panel.relationships.confirm_delete = Some(remote_p_did);
+        }
+        RelationshipAction::CancelRemove => {
+            state.main_page.content_panel.relationships.confirm_delete = None;
         }
         RelationshipAction::StartEditAlias {
             index,

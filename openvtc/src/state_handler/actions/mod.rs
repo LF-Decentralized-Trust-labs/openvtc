@@ -47,6 +47,14 @@ pub enum InboxAction {
         task_id: String,
     },
     ClearAll,
+    /// Arm the confirmation for dismissing a single task (R25).
+    ConfirmDismiss {
+        task_id: String,
+    },
+    /// Arm the confirmation for clearing all tasks (R25).
+    ConfirmClearAll,
+    /// Cancel a pending dismiss/clear-all confirmation (R25).
+    CancelConfirm,
     Back,
 }
 
@@ -67,6 +75,12 @@ pub enum RelationshipAction {
     Remove {
         remote_p_did: String,
     },
+    /// Arm the confirmation for removing a relationship (R25).
+    ConfirmRemove {
+        remote_p_did: String,
+    },
+    /// Cancel a pending relationship-removal confirmation (R25).
+    CancelRemove,
     Back,
     InputUpdate {
         field: usize,
@@ -113,6 +127,12 @@ pub enum CredentialAction {
     Remove {
         vrc_id: String,
     },
+    /// Arm the confirmation for removing a credential (R25).
+    ConfirmRemove {
+        vrc_id: String,
+    },
+    /// Cancel a pending credential-removal confirmation (R25).
+    CancelRemove,
 }
 
 pub enum SettingsAction {

@@ -4,7 +4,7 @@ use crate::colors::{
     COLOR_WARNING_ACCESSIBLE_RED,
 };
 use crate::state_handler::{
-    main_page::content::{ActiveTaskView, ContentPanelState, InboxState, TaskKind},
+    main_page::content::{ActiveTaskView, ContentPanelState, InboxConfirm, InboxState, TaskKind},
     state::{ConnectionState, MediatorStatus},
 };
 use ratatui::{
@@ -29,7 +29,13 @@ impl Panel for InboxPanel {
 pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'static>> {
     // If viewing a specific task detail
     if let Some(active_task) = &state.active_task {
-        return render_task_detail(active_task);
+        let mut lines = render_task_detail(active_task);
+        // A pending dismiss confirmation overrides the detail footer hint (R25).
+        if let Some(confirm) = &state.confirm {
+            lines.push(Line::from(""));
+            lines.push(confirm_prompt_line(confirm));
+        }
+        return lines;
     }
 
     let mut lines = vec![Line::from("")];
@@ -113,12 +119,27 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
         }
 
         lines.push(Line::from(""));
-        lines.push(
-            Line::from("↑/↓ navigate  Enter: view  d: dismiss  c: clear all").fg(COLOR_DARK_GRAY),
-        );
+        // A pending dismiss/clear-all confirmation replaces the footer hint (R25).
+        if let Some(confirm) = &state.confirm {
+            lines.push(confirm_prompt_line(confirm));
+        } else {
+            lines.push(
+                Line::from("↑/↓ navigate  Enter: view  d: dismiss  c: clear all")
+                    .fg(COLOR_DARK_GRAY),
+            );
+        }
     }
 
     lines
+}
+
+/// Footer prompt shown while a destructive inbox action awaits `y`/`n` (R25).
+fn confirm_prompt_line(confirm: &InboxConfirm) -> Line<'static> {
+    let text = match confirm {
+        InboxConfirm::Dismiss { .. } => "Dismiss this task?   y: confirm    n: cancel",
+        InboxConfirm::ClearAll => "Clear all tasks?   y: confirm    n: cancel",
+    };
+    Line::from(text).fg(COLOR_ORANGE).bold()
 }
 
 /// Render detail view for a selected inbox task.

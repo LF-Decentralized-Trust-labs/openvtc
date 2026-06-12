@@ -4,7 +4,11 @@ use crate::colors::{
 use crate::{
     state_handler::{
         actions::{Action, CredentialAction, InboxAction, RelationshipAction, SettingsAction},
-        main_page::{MainPageState, MainPanel, content::ActiveTaskView, menu::MainMenu},
+        main_page::{
+            MainPageState, MainPanel,
+            content::{ActiveTaskView, InboxConfirm},
+            menu::MainMenu,
+        },
         state::{ConnectionState, MediatorStatus, State},
     },
     ui::component::{Component, ComponentRender},
@@ -430,6 +434,26 @@ impl MainPage {
     fn handle_inbox_key(&mut self, key: KeyEvent) -> bool {
         let inbox = &self.props.main_page.content_panel.inbox;
 
+        // A destructive-action confirmation is pending: only y/Enter commits;
+        // anything else cancels. Mirrors the Communities/VTA-DID pattern (R25).
+        if let Some(confirm) = inbox.confirm.clone() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let commit = match confirm {
+                        InboxConfirm::Dismiss { task_id } => InboxAction::DismissTask { task_id },
+                        InboxConfirm::ClearAll => InboxAction::ClearAll,
+                    };
+                    let _ = self.action_tx.send(Action::Inbox(commit));
+                }
+                _ => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::Inbox(InboxAction::CancelConfirm));
+                }
+            }
+            return true;
+        }
+
         // If viewing a task detail, handle detail keys
         if let Some(active_task) = &inbox.active_task {
             // Extract what we need before borrowing self mutably
@@ -503,7 +527,7 @@ impl MainPage {
                 KeyCode::Char('d') => {
                     let _ = self
                         .action_tx
-                        .send(Action::Inbox(InboxAction::DismissTask { task_id }));
+                        .send(Action::Inbox(InboxAction::ConfirmDismiss { task_id }));
                     true
                 }
                 _ => false,
@@ -538,11 +562,13 @@ impl MainPage {
                 let task_id = inbox.tasks[selected].id.clone();
                 let _ = self
                     .action_tx
-                    .send(Action::Inbox(InboxAction::DismissTask { task_id }));
+                    .send(Action::Inbox(InboxAction::ConfirmDismiss { task_id }));
                 true
             }
             KeyCode::Char('c') if task_count > 0 => {
-                let _ = self.action_tx.send(Action::Inbox(InboxAction::ClearAll));
+                let _ = self
+                    .action_tx
+                    .send(Action::Inbox(InboxAction::ConfirmClearAll));
                 true
             }
             KeyCode::Esc => {
@@ -652,6 +678,25 @@ impl MainPage {
             } => {
                 let index = *index;
                 let current_vrc = *selected_vrc;
+
+                // A removal confirmation is pending: y/Enter commits, anything
+                // else cancels. Mirrors the Communities/VTA-DID pattern (R25).
+                if let Some(remote_p_did) = rels.confirm_delete.clone() {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Enter => {
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::Remove { remote_p_did },
+                            ));
+                        }
+                        _ => {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Relationship(RelationshipAction::CancelRemove));
+                        }
+                    }
+                    return true;
+                }
+
                 match key.code {
                     KeyCode::Down => {
                         if let Some(rel) = rels.relationships.get(index) {
@@ -719,7 +764,7 @@ impl MainPage {
                     KeyCode::Char('d') => {
                         if let Some(rel) = rels.relationships.get(index) {
                             let _ = self.action_tx.send(Action::Relationship(
-                                RelationshipAction::Remove {
+                                RelationshipAction::ConfirmRemove {
                                     remote_p_did: rel.remote_p_did.clone(),
                                 },
                             ));
@@ -884,6 +929,25 @@ impl MainPage {
             }
             CredentialsMode::Detail { index } => {
                 let detail_index = *index;
+
+                // A removal confirmation is pending: y/Enter commits, anything
+                // else cancels. Mirrors the Communities/VTA-DID pattern (R25).
+                if let Some(vrc_id) = creds.confirm_delete.clone() {
+                    match key.code {
+                        KeyCode::Char('y') | KeyCode::Enter => {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Credential(CredentialAction::Remove { vrc_id }));
+                        }
+                        _ => {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Credential(CredentialAction::CancelRemove));
+                        }
+                    }
+                    return true;
+                }
+
                 match key.code {
                     KeyCode::Esc => {
                         let _ = self
@@ -903,11 +967,11 @@ impl MainPage {
                         if creds.selected_tab != CredentialTab::Membership
                             && let Some(vrc) = active_list.get(detail_index)
                         {
-                            let _ =
-                                self.action_tx
-                                    .send(Action::Credential(CredentialAction::Remove {
-                                        vrc_id: vrc.vrc_id.clone(),
-                                    }));
+                            let _ = self.action_tx.send(Action::Credential(
+                                CredentialAction::ConfirmRemove {
+                                    vrc_id: vrc.vrc_id.clone(),
+                                },
+                            ));
                         }
                         true
                     }
