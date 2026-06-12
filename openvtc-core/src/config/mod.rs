@@ -462,43 +462,36 @@ pub async fn build_runtime_vta_client(
         ));
     };
 
-    if let Some(mediator) = mediator_did {
-        // DIDComm transport: the rotated admin credential opens a fresh
-        // session against the advertised mediator. `vta_url` is passed
-        // through as a fallback for REST-only operations like /health,
-        // and is allowed to be empty for fully-DIDComm VTAs.
-        let rest_fallback = if vta_url.is_empty() {
-            None
-        } else {
-            Some(vta_url.clone())
-        };
-        vta_sdk::client::VtaClient::connect_didcomm(
-            credential_did,
-            credential_private_key.expose_secret(),
-            vta_did,
-            mediator,
-            rest_fallback,
-        )
-        .await
-        .map_err(|e| OpenVTCError::Vta(format!("DIDComm session open failed: {e}")))
-    } else {
-        // REST transport: legacy challenge-response + bearer token.
-        if vta_url.is_empty() {
-            return Err(OpenVTCError::Config(
-                "REST transport selected but vta_url is empty".to_string(),
-            ));
-        }
-        let token = vta_sdk::session::challenge_response(
-            vta_url,
-            credential_did,
-            credential_private_key.expose_secret(),
-            vta_did,
-        )
-        .await
-        .map_err(|e| OpenVTCError::Auth(format!("VTA authentication failed: {e}")))?;
-        let client = vta_sdk::client::VtaClient::new(vta_url);
-        client.set_token(token.access_token);
-        Ok(client)
+    // The transport choice (DIDComm vs REST), the `rest_fallback` derivation,
+    // and the empty-URL rule are SDK-level knowledge — `connect_auto`
+    // encapsulates them so this no longer hand-rolls the branch (R22). The
+    // issued REST token is dropped: runtime clients re-auth per process and
+    // never cached it here.
+    vta_sdk::client::VtaClient::connect_auto(vta_sdk::client::AutoConnect {
+        vta_url,
+        vta_did,
+        credential_did,
+        private_key_multibase: credential_private_key.expose_secret(),
+        mediator_did: mediator_did.as_deref(),
+    })
+    .await
+    .map(|connected| connected.client)
+    .map_err(map_connect_error)
+}
+
+/// Map a `vta_sdk` connect error onto the typed [`OpenVTCError`] taxonomy so
+/// callers can keep distinguishing retryable transport/auth failures from
+/// genuine config corruption (R18). An empty `vta_url` on the REST path comes
+/// back as [`vta_sdk::error::VtaError::Validation`] — that is a bad on-disk
+/// config, so it maps to [`OpenVTCError::Config`]; auth rejection maps to
+/// [`OpenVTCError::Auth`]; everything else (network, DIDComm session open) is a
+/// live-VTA reachability problem, [`OpenVTCError::Vta`].
+fn map_connect_error(e: vta_sdk::error::VtaError) -> OpenVTCError {
+    use vta_sdk::error::VtaError;
+    match e {
+        VtaError::Validation(msg) => OpenVTCError::Config(msg),
+        VtaError::Auth(msg) => OpenVTCError::Auth(format!("VTA authentication failed: {msg}")),
+        other => OpenVTCError::Vta(format!("VTA connection failed: {other}")),
     }
 }
 
