@@ -2284,7 +2284,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.10.0",
+ "vta-sdk 0.11.2",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -5192,7 +5192,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.10.0",
+ "vta-sdk 0.11.2",
  "windows-native-keyring-store",
  "x25519-dalek",
  "zeroize",
@@ -5241,7 +5241,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.10.0",
+ "vta-sdk 0.11.2",
  "x25519-dalek",
  "zeroize",
 ]
@@ -5871,7 +5871,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -8532,9 +8532,9 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.10.0"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af1e8bd4a1747816874aacfe79f868331875e5f432976990fc6c97511d7b5c45"
+checksum = "3e910424bff341e8e6e064256317d48216390399b3c991bd4240788818c9a7b7"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",

@@ -1,8 +1,5 @@
 use anyhow::{Context, Result, bail};
-use vta_sdk::{
-    client::VtaClient,
-    session::{TokenResult, challenge_response},
-};
+use vta_sdk::client::{AutoConnect, ConnectedVta, VtaClient};
 use zeroize::Zeroize;
 
 use crate::config::{self, SigningConfig, VtaCredentials};
@@ -25,55 +22,35 @@ pub async fn authenticate(cfg: &SigningConfig) -> Result<(VtaClient, VtaCredenti
     let creds = config::load_vta_credentials(&cfg.did_key_id)?;
     validate_credentials(&creds)?;
 
-    if let Some(mediator) = &creds.mediator_did {
-        // DIDComm transport. Each `git commit` opens a fresh session;
-        // VtaClient::connect_didcomm handles the handshake and the
-        // resulting client routes get_key_secret over DIDComm via the
-        // SDK's built-in rpc() dispatch.
-        let rest_fallback = if creds.vta_url.is_empty() {
-            None
-        } else {
-            Some(creds.vta_url.clone())
-        };
-        let client = VtaClient::connect_didcomm(
-            &creds.credential_did,
-            &creds.private_key_multibase,
-            &creds.vta_did,
-            mediator,
-            rest_fallback,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("DIDComm session open failed: {e}"))?;
-        return Ok((client, creds));
-    }
-
-    // REST transport.
-    let client = VtaClient::new(&creds.vta_url);
-
-    // Try cached token first
-    if let Some(token) = config::load_cached_token(&cfg.did_key_id) {
+    // REST transport with a cached bearer token: short-circuit the handshake.
+    // Token caching stays caller-side — the SDK deliberately leaves it to us.
+    if creds.mediator_did.is_none()
+        && let Some(token) = config::load_cached_token(&cfg.did_key_id)
+    {
+        let client = VtaClient::new(&creds.vta_url);
         client.set_token(token);
         return Ok((client, creds));
     }
 
-    // Fall back to challenge-response auth with retry
-    let token_result = auth_with_retry(
-        &creds.vta_url,
-        &creds.credential_did,
-        &creds.private_key_multibase,
-        &creds.vta_did,
-    )
-    .await?;
+    // Let the SDK pick the transport and run the handshake. `connect_auto`
+    // encapsulates the DIDComm-vs-REST branch, the `rest_fallback` derivation,
+    // and the empty-URL rule we used to hand-roll here and in openvtc-core —
+    // that logic is SDK-level knowledge, so it lives there now (R22). We keep
+    // the transient-failure retry and (REST) token caching, both of which are
+    // application policy.
+    let connected = connect_with_retry(&creds).await?;
 
-    // Cache the token for future invocations
-    let _ = config::cache_token(
-        &cfg.did_key_id,
-        &token_result.access_token,
-        token_result.access_expires_at,
-    );
+    // DIDComm sessions carry no bearer token (`rest_token` is `None`); a REST
+    // handshake issues one, which we cache for the next invocation.
+    if let Some(token) = &connected.rest_token {
+        let _ = config::cache_token(
+            &cfg.did_key_id,
+            &token.access_token,
+            token.access_expires_at,
+        );
+    }
 
-    client.set_token(token_result.access_token);
-    Ok((client, creds))
+    Ok((connected.client, creds))
 }
 
 /// Validate VTA credentials before use.
@@ -118,27 +95,38 @@ fn validate_credentials(creds: &VtaCredentials) -> Result<()> {
     Ok(())
 }
 
-/// Perform challenge-response authentication with retry on transient failures.
-async fn auth_with_retry(
-    vta_url: &str,
-    credential_did: &str,
-    private_key_multibase: &str,
-    vta_did: &str,
-) -> Result<TokenResult> {
+/// Connect via [`VtaClient::connect_auto`] with retry on transient failures.
+///
+/// The transport (DIDComm vs REST) is chosen by the SDK from `creds`. Retry
+/// covers both paths uniformly — a transient mediator or network hiccup is
+/// worth a second attempt regardless of transport.
+async fn connect_with_retry(creds: &VtaCredentials) -> Result<ConnectedVta> {
     let mut last_err = None;
     for attempt in 1..=MAX_AUTH_RETRIES {
-        match challenge_response(vta_url, credential_did, private_key_multibase, vta_did).await {
-            Ok(result) => {
-                if result.access_token.is_empty() {
+        let result = VtaClient::connect_auto(AutoConnect {
+            vta_url: &creds.vta_url,
+            vta_did: &creds.vta_did,
+            credential_did: &creds.credential_did,
+            private_key_multibase: &creds.private_key_multibase,
+            mediator_did: creds.mediator_did.as_deref(),
+        })
+        .await;
+        match result {
+            Ok(connected) => {
+                // A REST handshake must yield a non-empty bearer token; DIDComm
+                // carries none (`rest_token` is `None`), so this skips it.
+                if let Some(token) = &connected.rest_token
+                    && token.access_token.is_empty()
+                {
                     bail!("VTA returned an empty access token");
                 }
-                return Ok(result);
+                return Ok(connected);
             }
             Err(e) => {
                 let err_msg = format!("{e}");
                 if attempt < MAX_AUTH_RETRIES {
                     eprintln!(
-                        "VTA auth attempt {attempt}/{MAX_AUTH_RETRIES} failed: {err_msg}, retrying..."
+                        "VTA connect attempt {attempt}/{MAX_AUTH_RETRIES} failed: {err_msg}, retrying..."
                     );
                 }
                 last_err = Some(err_msg);
@@ -146,7 +134,7 @@ async fn auth_with_retry(
         }
     }
     bail!(
-        "VTA authentication failed after {MAX_AUTH_RETRIES} attempts: {}",
+        "VTA connection failed after {MAX_AUTH_RETRIES} attempts: {}",
         last_err.unwrap_or_else(|| "unknown error".to_string())
     )
 }
