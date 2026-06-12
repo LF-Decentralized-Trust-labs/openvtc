@@ -238,3 +238,113 @@ pub(crate) async fn dispatch(
         CredentialAction::Remove { vrc_id } => handle_remove(config, state, save, &vrc_id),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Table-driven tests for the pure mode-transition handlers in this module.
+    //! Each is a pure function of `&mut State`; the tables drive the handler from
+    //! a starting `State` and assert on the resulting credentials-panel mode/tab.
+    //! Mirrors the table-test style in `ui/pages/setup_flow/navigation.rs`.
+    use super::*;
+
+    /// `handle_switch_tab` cycles Received → Issued → Membership → Received and
+    /// resets the selection index each time.
+    #[test]
+    fn switch_tab_cycles_and_resets_index() {
+        // (starting tab, expected next tab)
+        let cases: &[(CredentialTab, CredentialTab)] = &[
+            (CredentialTab::Received, CredentialTab::Issued),
+            (CredentialTab::Issued, CredentialTab::Membership),
+            (CredentialTab::Membership, CredentialTab::Received),
+        ];
+        for (start, expected) in cases {
+            let mut state = State::default();
+            state.main_page.content_panel.credentials.selected_tab = *start;
+            state.main_page.content_panel.credentials.selected_index = 5;
+            handle_switch_tab(&mut state);
+            assert_eq!(
+                state.main_page.content_panel.credentials.selected_tab, *expected,
+                "from {start:?}"
+            );
+            assert_eq!(
+                state.main_page.content_panel.credentials.selected_index, 0,
+                "index reset on tab switch from {start:?}"
+            );
+        }
+    }
+
+    /// `handle_open_detail` enters `Detail { index }` and tracks the index;
+    /// `handle_back` returns to `List` resetting the index.
+    #[test]
+    fn open_detail_and_back_transitions() {
+        for index in [0usize, 3, 42] {
+            let mut state = State::default();
+            handle_open_detail(&mut state, index);
+            assert!(
+                matches!(
+                    state.main_page.content_panel.credentials.mode,
+                    CredentialsMode::Detail { index: i } if i == index
+                ),
+                "open_detail({index}) enters Detail"
+            );
+            assert_eq!(
+                state.main_page.content_panel.credentials.selected_index,
+                index
+            );
+
+            handle_back(&mut state);
+            assert!(
+                matches!(
+                    state.main_page.content_panel.credentials.mode,
+                    CredentialsMode::List
+                ),
+                "back returns to List"
+            );
+            assert_eq!(state.main_page.content_panel.credentials.selected_index, 0);
+        }
+    }
+
+    /// `handle_start_new_request` enters the `NewRequest` form with a zeroed
+    /// relationship index and an empty reason.
+    #[test]
+    fn start_new_request_enters_form() {
+        let mut state = State::default();
+        handle_start_new_request(&mut state);
+        match &state.main_page.content_panel.credentials.mode {
+            CredentialsMode::NewRequest {
+                relationship_index,
+                reason_input,
+            } => {
+                assert_eq!(*relationship_index, 0);
+                assert!(reason_input.is_empty());
+            }
+            other => panic!("expected NewRequest, got {other:?}"),
+        }
+    }
+
+    /// `handle_reason_update` writes the reason only while in `NewRequest`, and is
+    /// a no-op in other modes. Table-driven over the starting mode.
+    #[test]
+    fn reason_update_only_in_new_request() {
+        // In NewRequest: the reason is written.
+        let mut state = State::default();
+        handle_start_new_request(&mut state);
+        handle_reason_update(&mut state, "because".to_string());
+        assert!(matches!(
+            &state.main_page.content_panel.credentials.mode,
+            CredentialsMode::NewRequest { reason_input, .. } if reason_input == "because"
+        ));
+
+        // In List / Detail: a no-op (mode unchanged).
+        for mode in [CredentialsMode::List, CredentialsMode::Detail { index: 1 }] {
+            let mut state = State::default();
+            state.main_page.content_panel.credentials.mode = mode.clone();
+            handle_reason_update(&mut state, "ignored".to_string());
+            assert_eq!(
+                std::mem::discriminant(&state.main_page.content_panel.credentials.mode),
+                std::mem::discriminant(&mode),
+                "reason_update is a no-op outside NewRequest"
+            );
+        }
+    }
+}

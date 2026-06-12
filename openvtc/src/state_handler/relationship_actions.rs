@@ -1916,4 +1916,151 @@ mod tests {
             "key_info entry removed"
         );
     }
+
+    // ----------------------------------------------------------------
+    // Table tests for the pure mode-transition handlers. Each is a pure
+    // function of `&mut State`; the tables drive the handler from a starting
+    // `State` and assert on the resulting relationships-panel mode. Mirrors the
+    // table-test style in `ui/pages/setup_flow/navigation.rs`.
+    // ----------------------------------------------------------------
+
+    fn rel_mode(state: &State) -> &RelationshipsMode {
+        &state.main_page.content_panel.relationships.mode
+    }
+
+    /// Enter `NewRequest` with empty fields; `handle_cancel_or_back` returns to
+    /// `List` clearing the status. Table over a couple of starting modes.
+    #[test]
+    fn start_new_request_and_cancel_back() {
+        let mut state = State::default();
+        handle_start_new_request(&mut state);
+        assert!(matches!(
+            rel_mode(&state),
+            RelationshipsMode::NewRequest {
+                generate_r_did: false,
+                active_field: 0,
+                ..
+            }
+        ));
+
+        // Cancel/back from any mode lands on List and clears the status.
+        for start in [
+            RelationshipsMode::NewRequest {
+                did_input: "x".to_string(),
+                alias_input: String::new(),
+                reason_input: String::new(),
+                generate_r_did: true,
+                active_field: 2,
+            },
+            RelationshipsMode::Detail {
+                index: 3,
+                selected_vrc: None,
+            },
+        ] {
+            let mut state = State::default();
+            state.main_page.content_panel.relationships.mode = start;
+            state.main_page.content_panel.relationships.status_message = Some("stale".to_string());
+            handle_cancel_or_back(&mut state);
+            assert!(matches!(rel_mode(&state), RelationshipsMode::List));
+            assert!(
+                state
+                    .main_page
+                    .content_panel
+                    .relationships
+                    .status_message
+                    .is_none(),
+                "cancel/back clears the status"
+            );
+        }
+    }
+
+    /// `handle_open_detail` enters `Detail { index, selected_vrc: None }` and
+    /// records the selected index. Table over a few indices.
+    #[test]
+    fn open_detail_enters_detail() {
+        for index in [0usize, 2, 17] {
+            let mut state = State::default();
+            handle_open_detail(&mut state, index);
+            assert!(
+                matches!(
+                    rel_mode(&state),
+                    RelationshipsMode::Detail { index: i, selected_vrc: None } if *i == index
+                ),
+                "open_detail({index})"
+            );
+            assert_eq!(
+                state.main_page.content_panel.relationships.selected_index,
+                index
+            );
+        }
+    }
+
+    /// `handle_input_update` routes by field index into the `NewRequest` form's
+    /// did/alias/reason inputs, and is a no-op outside `NewRequest`.
+    #[test]
+    fn input_update_routes_by_field() {
+        // (field, expected (did, alias, reason))
+        let cases: &[(usize, (&str, &str, &str))] = &[
+            (0, ("the-did", "", "")),
+            (1, ("", "the-alias", "")),
+            (2, ("", "", "the-reason")),
+            (9, ("", "", "the-reason")), // default arm writes reason
+        ];
+        for (field, (did, alias, reason)) in cases {
+            let mut state = State::default();
+            handle_start_new_request(&mut state);
+            let value = match field {
+                0 => "the-did",
+                1 => "the-alias",
+                _ => "the-reason",
+            };
+            handle_input_update(&mut state, *field, value.to_string());
+            match rel_mode(&state) {
+                RelationshipsMode::NewRequest {
+                    did_input,
+                    alias_input,
+                    reason_input,
+                    ..
+                } => {
+                    assert_eq!(did_input, did, "field {field} did_input");
+                    assert_eq!(alias_input, alias, "field {field} alias_input");
+                    assert_eq!(reason_input, reason, "field {field} reason_input");
+                }
+                other => panic!("expected NewRequest, got {other:?}"),
+            }
+        }
+
+        // No-op outside NewRequest.
+        let mut state = State::default();
+        handle_input_update(&mut state, 0, "ignored".to_string());
+        assert!(matches!(rel_mode(&state), RelationshipsMode::List));
+    }
+
+    /// `handle_toggle_r_did` flips the `generate_r_did` flag only in `NewRequest`.
+    #[test]
+    fn toggle_r_did_flips_flag() {
+        let mut state = State::default();
+        handle_start_new_request(&mut state);
+        handle_toggle_r_did(&mut state);
+        assert!(matches!(
+            rel_mode(&state),
+            RelationshipsMode::NewRequest {
+                generate_r_did: true,
+                ..
+            }
+        ));
+        handle_toggle_r_did(&mut state);
+        assert!(matches!(
+            rel_mode(&state),
+            RelationshipsMode::NewRequest {
+                generate_r_did: false,
+                ..
+            }
+        ));
+
+        // No-op outside NewRequest.
+        let mut state = State::default();
+        handle_toggle_r_did(&mut state);
+        assert!(matches!(rel_mode(&state), RelationshipsMode::List));
+    }
 }

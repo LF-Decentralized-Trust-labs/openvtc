@@ -75,10 +75,9 @@ impl StateHandler {
                             return Ok(JoinExit::Returned);
                         }
                         Action::JoinSubmitVtc(vtc_did) => {
-                            let vtc_did = vtc_did.trim().to_string();
-                            if vtc_did.is_empty() {
+                            let Some(vtc_did) = validate_join_input(&vtc_did) else {
                                 continue;
-                            }
+                            };
                             // Move to the progress page and lock input.
                             state.join.page = JoinPage::Progress;
                             state.join.processing = true;
@@ -167,6 +166,57 @@ pub(crate) enum JoinExit {
     Exit(Interrupted),
 }
 
+/// Validate the raw VTC DID the operator submitted on the EnterDid page.
+///
+/// Pure decision peeled out of the `JoinSubmitVtc` arm: trims surrounding
+/// whitespace and rejects an empty input (the loop `continue`s, staying on the
+/// EnterDid page). Returns the cleaned DID to drive the sequence with, or `None`
+/// when there is nothing to submit.
+fn validate_join_input(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+/// Idempotency decision (R-B-9): is there already a *live* (Active/Pending)
+/// membership for this VTC?
+///
+/// Pure decision peeled out of step 1 of [`run_join_sequence`]; a `true` result
+/// surfaces the "already a member" failure instead of submitting a duplicate.
+/// Delegates to [`Account::live_community`] so the live/inactive policy stays in
+/// one place.
+fn is_duplicate_membership(config: &Config, vtc_did: &str) -> bool {
+    config
+        .account
+        .live_community(&vtc_did.to_string())
+        .is_some()
+}
+
+/// Build the `Pending` [`CommunityRecord`] recorded on a successful submit.
+///
+/// Pure decision peeled out of step 9 of [`run_join_sequence`]; delegates to
+/// [`CommunityRecord::new_pending`] so the record shape stays defined in core.
+fn build_pending_record(
+    vtc_did: String,
+    display_name: Option<String>,
+    sub_context_id: String,
+    persona_id: PersonaId,
+    request_id: uuid::Uuid,
+    now: chrono::DateTime<Utc>,
+) -> CommunityRecord {
+    CommunityRecord::new_pending(
+        vtc_did,
+        display_name,
+        sub_context_id,
+        persona_id,
+        request_id,
+        now,
+    )
+}
+
 /// Run the automated mint → sub-context → join-submit → persist sequence.
 ///
 /// All progress and errors land in `state.join`. On success
@@ -188,7 +238,7 @@ async fn run_join_sequence(
     minted_persona: &mut Option<PersonaId>,
 ) {
     // 1. Idempotency (R-B-9): refuse a duplicate live/pending membership.
-    if config.account.live_community(&vtc_did).is_some() {
+    if is_duplicate_membership(config, &vtc_did) {
         state
             .join
             .fail("Already a member of (or have a pending request for) this community.");
@@ -416,7 +466,7 @@ async fn run_join_sequence(
     };
 
     // 9. Record the pending membership and persist.
-    let record = CommunityRecord::new_pending(
+    let record = build_pending_record(
         vtc_did.clone(),
         display_name,
         sub_context_id,
@@ -524,10 +574,113 @@ mod tests {
     //! (`join_flow` → `rollback_minted_persona` when `!persona_referenced`).
 
     use super::race_against_interrupt;
+    use super::{build_pending_record, is_duplicate_membership, validate_join_input};
     use crate::Interrupted;
+    use crate::state_handler::dispatch_util::test_config;
+    use openvtc_core::config::account::{CommunityRecord, CommunityStatus, PersonaId};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::broadcast;
+
+    // ---- Pure-decision tests (peeled out of the join sequence) ----
+
+    /// `validate_join_input` trims and rejects empties; otherwise returns the
+    /// cleaned DID. Table-driven over (raw input, expected).
+    #[test]
+    fn validate_join_input_table() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("", None),
+            ("   ", None),
+            ("\t\n", None),
+            ("did:webvh:example", Some("did:webvh:example")),
+            ("  did:webvh:example  ", Some("did:webvh:example")),
+            ("\tdid:peer:abc\n", Some("did:peer:abc")),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(
+                validate_join_input(raw).as_deref(),
+                *expected,
+                "validate_join_input({raw:?})"
+            );
+        }
+    }
+
+    /// `is_duplicate_membership` mirrors `Account::live_community`: live
+    /// (Active/Pending) memberships are duplicates; inactive ones and unknown
+    /// DIDs are not. Table-driven over the membership status.
+    #[test]
+    fn is_duplicate_membership_table() {
+        // (status to register for "did:vtc:known", is_duplicate?)
+        let cases: &[(Option<CommunityStatus>, bool)] = &[
+            (None, false),
+            (
+                Some(CommunityStatus::Pending {
+                    request_id: uuid::Uuid::new_v4(),
+                }),
+                true,
+            ),
+            (Some(CommunityStatus::Active), true),
+            (Some(CommunityStatus::Left), false),
+            (Some(CommunityStatus::Rejected), false),
+            (Some(CommunityStatus::Removed), false),
+            (Some(CommunityStatus::Expired), false),
+        ];
+        let vtc = "did:vtc:known";
+        for (status, expected) in cases {
+            let mut config = test_config();
+            if let Some(status) = status {
+                let mut rec = CommunityRecord::new_pending(
+                    vtc.to_string(),
+                    None,
+                    "ctx/slug".to_string(),
+                    PersonaId::new(),
+                    uuid::Uuid::new_v4(),
+                    chrono::Utc::now(),
+                );
+                rec.status = status.clone();
+                config.account.communities.insert(vtc.to_string(), rec);
+            }
+            assert_eq!(
+                is_duplicate_membership(&config, vtc),
+                *expected,
+                "is_duplicate_membership for status {status:?}"
+            );
+            // An unrelated DID is never a duplicate regardless of registered state.
+            assert!(
+                !is_duplicate_membership(&config, "did:vtc:other"),
+                "unknown DID is not a duplicate (status {status:?})"
+            );
+        }
+    }
+
+    /// `build_pending_record` produces a `Pending` record carrying the submit
+    /// inputs (vtc/display name/sub-context/persona/request id/requested_at).
+    #[test]
+    fn build_pending_record_carries_inputs() {
+        let persona = PersonaId::new();
+        let request_id = uuid::Uuid::new_v4();
+        let now = chrono::Utc::now();
+        let rec = build_pending_record(
+            "did:vtc:c".to_string(),
+            Some("Community".to_string()),
+            "top/slug".to_string(),
+            persona,
+            request_id,
+            now,
+        );
+        assert_eq!(rec.vtc_did, "did:vtc:c");
+        assert_eq!(rec.display_name.as_deref(), Some("Community"));
+        assert_eq!(rec.sub_context_id, "top/slug");
+        assert_eq!(rec.persona_ref, persona);
+        assert_eq!(rec.requested_at, Some(now));
+        assert!(rec.is_live(), "a fresh Pending record is live");
+        match rec.status {
+            CommunityStatus::Pending { request_id: got } => {
+                assert_eq!(got, request_id, "request id is carried into the status");
+            }
+            other => panic!("expected Pending status, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn completes_when_no_interrupt() {
