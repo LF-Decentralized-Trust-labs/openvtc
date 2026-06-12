@@ -1170,6 +1170,10 @@ impl StateHandler {
                     break interrupted;
                 }
             }
+            // Keep the working-context selection valid against any account change
+            // this iteration applied (join/leave/status transition) before the UI
+            // re-renders from the broadcast (D10 / R-C-6).
+            state.reconcile_selected_community(&config.account);
             let _ = self.state_tx.send(state.clone());
         };
 

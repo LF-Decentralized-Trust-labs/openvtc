@@ -16,6 +16,16 @@ pub struct State {
     pub join: JoinState,
     pub connection: ConnectionState,
 
+    /// The community the main page is currently scoped to (D10 / R-C-6/7) — the
+    /// "working context". The community-scoped panels (inbox / relationships /
+    /// VRCs) and outbound actions resolve through this rather than through a
+    /// single global persona. `None` means no active community (State-A, or every
+    /// membership inactive); the main page shows its "no active community" state.
+    ///
+    /// Runtime-only (not persisted): re-defaulted from the account on each launch
+    /// via [`State::reconcile_selected_community`].
+    pub selected_community: Option<openvtc_core::config::account::VtcDid>,
+
     /// Rotating-tip index for the startup loading screen, advanced as startup
     /// steps stream so the tip changes during the load/connect.
     pub tip_index: usize,
@@ -41,6 +51,29 @@ pub struct State {
     /// Not gated behind the openpgp-card feature so the StateHandler's
     /// select loop can update it unconditionally regardless of build config.
     pub token_touch_pending: bool,
+}
+
+impl State {
+    /// Keep [`State::selected_community`] valid against the current account
+    /// (D10): drop a selection that is no longer an Active membership (e.g. it
+    /// was left, rejected, or deleted), then default to the deterministic
+    /// working community when none is selected. Idempotent; called whenever the
+    /// account may have changed so the working context never dangles.
+    pub fn reconcile_selected_community(
+        &mut self,
+        account: &openvtc_core::config::account::Account,
+    ) {
+        if let Some(selected) = &self.selected_community
+            && !account
+                .community(selected)
+                .is_some_and(|c| c.status.is_active())
+        {
+            self.selected_community = None;
+        }
+        if self.selected_community.is_none() {
+            self.selected_community = account.default_working_community();
+        }
+    }
 }
 
 /// Lifecycle state of a single loading task or sub-step.
@@ -236,4 +269,45 @@ pub enum MediatorStatus {
     /// there is no DID to open a DIDComm session for. The app runs without
     /// messaging until the user joins a community.
     NoActiveCommunity,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use openvtc_core::config::account::{Account, CommunityRecord, PersonaId};
+    use uuid::Uuid;
+
+    #[test]
+    fn reconcile_defaults_to_active_then_clears_when_it_leaves() {
+        let mut account = Account::default();
+        let pid = PersonaId::new();
+        let now = Utc::now();
+        let mut active = CommunityRecord::new_pending(
+            "did:web:vtc-a".into(),
+            None,
+            "openvtc/a".into(),
+            pid,
+            Uuid::new_v4(),
+            now,
+        );
+        active.activate(now);
+        account.communities.insert(active.vtc_did.clone(), active);
+
+        let mut state = State::default();
+        assert_eq!(state.selected_community, None);
+
+        // With one active community and no selection, reconcile defaults to it.
+        state.reconcile_selected_community(&account);
+        assert_eq!(state.selected_community.as_deref(), Some("did:web:vtc-a"));
+
+        // Once it leaves (no longer active), the stale selection is dropped and
+        // there is nothing to default to → no active community.
+        account
+            .community_mut(&"did:web:vtc-a".to_string())
+            .unwrap()
+            .leave();
+        state.reconcile_selected_community(&account);
+        assert_eq!(state.selected_community, None);
+    }
 }
