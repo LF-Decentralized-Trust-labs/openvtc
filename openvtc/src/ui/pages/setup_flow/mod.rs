@@ -40,6 +40,7 @@ use ratatui::{
 };
 use tokio::sync::mpsc::UnboundedSender;
 
+pub mod choice_page;
 pub mod config_import;
 pub mod did_git_sign_ask;
 pub mod did_git_sign_setup;
