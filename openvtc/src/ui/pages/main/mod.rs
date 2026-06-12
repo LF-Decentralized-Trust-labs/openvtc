@@ -1748,3 +1748,297 @@ impl ComponentRender<()> for MainPage {
         );
     }
 }
+
+#[cfg(test)]
+mod key_handler_tests {
+    //! Key-handler tests for the main page (R26 slice 2): construct a `MainPage`
+    //! over a `State`, feed a `KeyEvent` through the public `handle_key_event`
+    //! entry point, and assert on the `Action`(s) emitted on the channel. There
+    //! is at least one test per content panel, with the R25 destructive-confirm
+    //! flow (arm → confirm/cancel) covered for every panel that has one.
+    //!
+    //! `Action` and its sub-enums derive neither `PartialEq` nor `Debug`, so
+    //! assertions pattern-match the expected variant rather than `assert_eq!`.
+    use super::*;
+    use crate::state_handler::main_page::content::{
+        CredentialTab, CredentialsMode, InboxConfirm, RawCredential, RelationshipSummary,
+        RelationshipsMode, TaskKind, TaskSummary, VrcSummary,
+    };
+    use crossterm::event::KeyModifiers;
+    use std::sync::Arc;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    /// Build a focused `MainPage` on the given menu, after `mutate` populates the
+    /// panel state. Returns the page and the receiver to read emitted actions.
+    fn page_for(
+        menu: MainMenu,
+        mutate: impl FnOnce(&mut State),
+    ) -> (MainPage, UnboundedReceiver<Action>) {
+        let (tx, rx) = unbounded_channel();
+        let mut state = State::default();
+        state.main_page.menu_panel.selected_menu = menu;
+        // The content panel must be focused for keys to route to its handler.
+        state.main_page.content_panel.selected = true;
+        mutate(&mut state);
+        let page = MainPage::new(&state, tx);
+        (page, rx)
+    }
+
+    /// A `Press` key event (the only kind `handle_key_event` acts on).
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn rel_summary(remote_p_did: &str) -> RelationshipSummary {
+        RelationshipSummary {
+            remote_p_did: remote_p_did.to_string(),
+            alias: None,
+            state: "Established".to_string(),
+            our_did: "did:example:me".to_string(),
+            remote_did: "did:example:them".to_string(),
+            created: String::new(),
+            vrcs_issued: Vec::new(),
+            vrcs_received: Vec::new(),
+        }
+    }
+
+    fn vrc_summary(vrc_id: &str) -> VrcSummary {
+        VrcSummary {
+            vrc_id: vrc_id.to_string(),
+            remote_p_did: "did:example:them".to_string(),
+            raw_json: RawCredential::Value(Arc::new(serde_json::Value::Null)),
+            alias: None,
+            issuer: "did:example:issuer".to_string(),
+            subject: "did:example:subject".to_string(),
+            valid_from: String::new(),
+            valid_until: None,
+        }
+    }
+
+    fn task_summary(id: &str) -> TaskSummary {
+        TaskSummary {
+            id: id.to_string(),
+            type_display: "Trust Ping".to_string(),
+            kind: TaskKind::TrustPing,
+            remote_did: "did:example:them".to_string(),
+            created: String::new(),
+        }
+    }
+
+    // ----- Communities -------------------------------------------------------
+
+    #[test]
+    fn communities_confirm_commits_and_cancels() {
+        // y/Enter while a removal is armed commits the delete at that index.
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.confirm_delete = Some(2);
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::DeleteCommunity(2)) => {}
+            _ => panic!("expected DeleteCommunity(2)"),
+        }
+
+        // Any other key cancels.
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.confirm_delete = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Char('n')));
+        match rx.try_recv() {
+            Ok(Action::CommunityCancelDelete) => {}
+            _ => panic!("expected CommunityCancelDelete"),
+        }
+    }
+
+    // ----- VTA / DID manager -------------------------------------------------
+
+    #[test]
+    fn vta_confirm_commits_and_cancels() {
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.confirm_delete_did = Some(1);
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::DeleteDid(1)) => {}
+            _ => panic!("expected DeleteDid(1)"),
+        }
+
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.confirm_delete_did = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::DidCancelDelete) => {}
+            _ => panic!("expected DidCancelDelete"),
+        }
+    }
+
+    // ----- Inbox -------------------------------------------------------------
+
+    #[test]
+    fn inbox_d_and_c_arm_confirmation() {
+        // `d` on a selected task arms a dismiss confirmation (R25) — it no longer
+        // dismisses instantly.
+        let (mut page, mut rx) = page_for(MainMenu::Inbox, |s| {
+            s.main_page.content_panel.inbox.tasks = Arc::from(vec![task_summary("t1")]);
+        });
+        page.handle_key_event(press(KeyCode::Char('d')));
+        match rx.try_recv() {
+            Ok(Action::Inbox(InboxAction::ConfirmDismiss { task_id })) => {
+                assert_eq!(task_id, "t1");
+            }
+            _ => panic!("expected Inbox(ConfirmDismiss)"),
+        }
+
+        // `c` arms a clear-all confirmation.
+        let (mut page, mut rx) = page_for(MainMenu::Inbox, |s| {
+            s.main_page.content_panel.inbox.tasks = Arc::from(vec![task_summary("t1")]);
+        });
+        page.handle_key_event(press(KeyCode::Char('c')));
+        match rx.try_recv() {
+            Ok(Action::Inbox(InboxAction::ConfirmClearAll)) => {}
+            _ => panic!("expected Inbox(ConfirmClearAll)"),
+        }
+    }
+
+    #[test]
+    fn inbox_confirm_commits_and_cancels() {
+        // A pending dismiss commits on y.
+        let (mut page, mut rx) = page_for(MainMenu::Inbox, |s| {
+            s.main_page.content_panel.inbox.confirm = Some(InboxConfirm::Dismiss {
+                task_id: "t1".to_string(),
+            });
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::Inbox(InboxAction::DismissTask { task_id })) => {
+                assert_eq!(task_id, "t1");
+            }
+            _ => panic!("expected Inbox(DismissTask)"),
+        }
+
+        // A pending clear-all commits on Enter.
+        let (mut page, mut rx) = page_for(MainMenu::Inbox, |s| {
+            s.main_page.content_panel.inbox.confirm = Some(InboxConfirm::ClearAll);
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::Inbox(InboxAction::ClearAll)) => {}
+            _ => panic!("expected Inbox(ClearAll)"),
+        }
+
+        // Any other key cancels.
+        let (mut page, mut rx) = page_for(MainMenu::Inbox, |s| {
+            s.main_page.content_panel.inbox.confirm = Some(InboxConfirm::ClearAll);
+        });
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::Inbox(InboxAction::CancelConfirm)) => {}
+            _ => panic!("expected Inbox(CancelConfirm)"),
+        }
+    }
+
+    // ----- Relationships -----------------------------------------------------
+
+    #[test]
+    fn relationship_detail_d_arms_then_confirms() {
+        // `d` in the detail view arms a removal (R25), carrying the remote DID.
+        let (mut page, mut rx) = page_for(MainMenu::Relationships, |s| {
+            s.main_page.content_panel.relationships.relationships =
+                Arc::from(vec![rel_summary("did:example:partner")]);
+            s.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
+                index: 0,
+                selected_vrc: None,
+            };
+        });
+        page.handle_key_event(press(KeyCode::Char('d')));
+        match rx.try_recv() {
+            Ok(Action::Relationship(RelationshipAction::ConfirmRemove { remote_p_did })) => {
+                assert_eq!(remote_p_did, "did:example:partner");
+            }
+            _ => panic!("expected Relationship(ConfirmRemove)"),
+        }
+
+        // While armed, y commits the Remove.
+        let (mut page, mut rx) = page_for(MainMenu::Relationships, |s| {
+            s.main_page.content_panel.relationships.mode = RelationshipsMode::Detail {
+                index: 0,
+                selected_vrc: None,
+            };
+            s.main_page.content_panel.relationships.confirm_delete =
+                Some("did:example:partner".to_string());
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::Relationship(RelationshipAction::Remove { remote_p_did })) => {
+                assert_eq!(remote_p_did, "did:example:partner");
+            }
+            _ => panic!("expected Relationship(Remove)"),
+        }
+    }
+
+    // ----- Credentials -------------------------------------------------------
+
+    #[test]
+    fn credential_detail_d_arms_then_confirms() {
+        // `d` in the detail view arms a removal (R25) on a non-membership tab.
+        let (mut page, mut rx) = page_for(MainMenu::Credentials, |s| {
+            s.main_page.content_panel.credentials.selected_tab = CredentialTab::Received;
+            s.main_page.content_panel.credentials.received = Arc::from(vec![vrc_summary("vrc1")]);
+            s.main_page.content_panel.credentials.mode = CredentialsMode::Detail { index: 0 };
+        });
+        page.handle_key_event(press(KeyCode::Char('d')));
+        match rx.try_recv() {
+            Ok(Action::Credential(CredentialAction::ConfirmRemove { vrc_id })) => {
+                assert_eq!(vrc_id, "vrc1");
+            }
+            _ => panic!("expected Credential(ConfirmRemove)"),
+        }
+
+        // While armed, y commits the Remove.
+        let (mut page, mut rx) = page_for(MainMenu::Credentials, |s| {
+            s.main_page.content_panel.credentials.mode = CredentialsMode::Detail { index: 0 };
+            s.main_page.content_panel.credentials.confirm_delete = Some("vrc1".to_string());
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::Credential(CredentialAction::Remove { vrc_id })) => {
+                assert_eq!(vrc_id, "vrc1");
+            }
+            _ => panic!("expected Credential(Remove)"),
+        }
+    }
+
+    // ----- Settings / Logs / Help (one nav test each) ------------------------
+
+    #[test]
+    fn settings_view_down_moves_selection() {
+        // Default settings mode is View at index 0; Down advances the selection.
+        let (mut page, mut rx) = page_for(MainMenu::Settings, |_| {});
+        page.handle_key_event(press(KeyCode::Down));
+        match rx.try_recv() {
+            Ok(Action::Settings(SettingsAction::Select(1))) => {}
+            _ => panic!("expected Settings(Select(1))"),
+        }
+    }
+
+    #[test]
+    fn logs_esc_returns_to_menu() {
+        let (mut page, mut rx) = page_for(MainMenu::Logs, |_| {});
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::MainPanelSwitch(MainPanel::MainMenu)) => {}
+            _ => panic!("expected MainPanelSwitch(MainMenu)"),
+        }
+    }
+
+    #[test]
+    fn help_esc_returns_to_menu() {
+        let (mut page, mut rx) = page_for(MainMenu::Help, |_| {});
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::MainPanelSwitch(MainPanel::MainMenu)) => {}
+            _ => panic!("expected MainPanelSwitch(MainMenu)"),
+        }
+    }
+}
