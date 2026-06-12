@@ -815,4 +815,227 @@ mod tests {
     fn test_validate_file_path_rejects_hidden_traversal() {
         assert!(validate_file_path("/tmp/safe/../../../etc/shadow").is_err());
     }
+
+    // ----------------------------------------------------------------
+    // Table tests for the pure mode-transition handlers. Each is a pure
+    // function of `&mut State`; the tables drive the handler from a starting
+    // `State` and assert on the resulting settings-panel mode. Mirrors the
+    // table-test style in `ui/pages/setup_flow/navigation.rs`.
+    // ----------------------------------------------------------------
+
+    fn settings(state: &State) -> &super::SettingsMode {
+        &state.main_page.content_panel.settings.mode
+    }
+
+    /// A constructor for a representative `SettingsMode`, used by the tables to
+    /// seed a starting mode / check a target discriminant.
+    type ModeFn = fn() -> SettingsMode;
+
+    /// `handle_start_edit` maps the selected setting index to the matching edit
+    /// mode, seeding the input from the current value; unknown indices fall back
+    /// to `View`. Table-driven over (selected_index, expected mode discriminant).
+    #[test]
+    fn start_edit_maps_index_to_mode() {
+        // Closures returning a representative mode for the discriminant check.
+        let cases: &[(usize, ModeFn)] = &[
+            (0, || SettingsMode::EditFriendlyName {
+                input: String::new(),
+            }),
+            (1, || SettingsMode::EditMediatorDid {
+                input: String::new(),
+            }),
+            (2, || SettingsMode::EditOrgDid {
+                input: String::new(),
+            }),
+            (5, || SettingsMode::ExportConfig {
+                path_input: String::new(),
+                passphrase_len: 0,
+                active_field: 0,
+            }),
+            (6, || SettingsMode::ImportConfig {
+                path_input: String::new(),
+                passphrase_len: 0,
+                active_field: 0,
+            }),
+            (3, || SettingsMode::View),
+            (99, || SettingsMode::View),
+        ];
+        for (idx, expected) in cases {
+            let mut state = State::default();
+            state.main_page.content_panel.settings.friendly_name = "Alice".to_string();
+            state.main_page.content_panel.settings.mediator_did = "did:med".to_string();
+            state.main_page.content_panel.settings.org_did = "did:org".to_string();
+            state.main_page.content_panel.settings.selected_index = *idx;
+            handle_start_edit(&mut state);
+            assert_eq!(
+                std::mem::discriminant(settings(&state)),
+                std::mem::discriminant(&expected()),
+                "start_edit index {idx}"
+            );
+        }
+        // The edit modes seed `input` from the current value.
+        let mut state = State::default();
+        state.main_page.content_panel.settings.friendly_name = "Alice".to_string();
+        state.main_page.content_panel.settings.selected_index = 0;
+        handle_start_edit(&mut state);
+        assert!(matches!(
+            settings(&state),
+            SettingsMode::EditFriendlyName { input } if input == "Alice"
+        ));
+    }
+
+    /// `handle_field_update` writes the single-line input for the three edit
+    /// modes and is a no-op elsewhere.
+    #[test]
+    fn field_update_writes_edit_input() {
+        let edit_modes: &[ModeFn] = &[
+            || SettingsMode::EditFriendlyName {
+                input: String::new(),
+            },
+            || SettingsMode::EditMediatorDid {
+                input: String::new(),
+            },
+            || SettingsMode::EditOrgDid {
+                input: String::new(),
+            },
+        ];
+        for make in edit_modes {
+            let mut state = State::default();
+            state.main_page.content_panel.settings.mode = make();
+            handle_field_update(&mut state, "new-value".to_string());
+            let input = match settings(&state) {
+                SettingsMode::EditFriendlyName { input }
+                | SettingsMode::EditMediatorDid { input }
+                | SettingsMode::EditOrgDid { input } => input.clone(),
+                other => panic!("unexpected mode {other:?}"),
+            };
+            assert_eq!(input, "new-value");
+        }
+        // No-op in View.
+        let mut state = State::default();
+        handle_field_update(&mut state, "ignored".to_string());
+        assert!(matches!(settings(&state), SettingsMode::View));
+    }
+
+    /// `handle_change_protection` enters the `ChangeProtection` form zeroed, and
+    /// the protection sub-field handlers then mutate exactly their field.
+    #[test]
+    fn change_protection_form_field_transitions() {
+        let mut state = State::default();
+        handle_change_protection(&mut state);
+        assert!(matches!(
+            settings(&state),
+            SettingsMode::ChangeProtection {
+                selected_option: 0,
+                passphrase_len: 0,
+                confirm_len: 0,
+                active_field: 0,
+            }
+        ));
+
+        handle_protection_option_select(&mut state, 1);
+        handle_protection_passphrase_len(&mut state, 7);
+        handle_protection_confirm_len(&mut state, 9);
+        handle_protection_tab_switch(&mut state, 2);
+        assert!(matches!(
+            settings(&state),
+            SettingsMode::ChangeProtection {
+                selected_option: 1,
+                passphrase_len: 7,
+                confirm_len: 9,
+                active_field: 2,
+            }
+        ));
+
+        // `handle_protection_start_input` forces the active field to the
+        // passphrase (1).
+        let mut state = State::default();
+        handle_change_protection(&mut state);
+        handle_protection_start_input(&mut state);
+        assert!(matches!(
+            settings(&state),
+            SettingsMode::ChangeProtection {
+                active_field: 1,
+                ..
+            }
+        ));
+    }
+
+    /// `handle_form_tab_switch` toggles the export/import form active field
+    /// between 0 and 1; `handle_form_field_update`/`handle_passphrase_len`
+    /// populate the path/passphrase-length.
+    #[test]
+    fn export_import_form_field_transitions() {
+        for make in [
+            (|| SettingsMode::ExportConfig {
+                path_input: String::new(),
+                passphrase_len: 0,
+                active_field: 0,
+            }) as ModeFn,
+            || SettingsMode::ImportConfig {
+                path_input: String::new(),
+                passphrase_len: 0,
+                active_field: 0,
+            },
+        ] {
+            let mut state = State::default();
+            state.main_page.content_panel.settings.mode = make();
+            handle_form_field_update(&mut state, 0, "backup.enc".to_string());
+            handle_passphrase_len(&mut state, 4);
+            handle_form_tab_switch(&mut state); // 0 -> 1
+            let (path, plen, field) = match settings(&state) {
+                SettingsMode::ExportConfig {
+                    path_input,
+                    passphrase_len,
+                    active_field,
+                }
+                | SettingsMode::ImportConfig {
+                    path_input,
+                    passphrase_len,
+                    active_field,
+                } => (path_input.clone(), *passphrase_len, *active_field),
+                other => panic!("unexpected mode {other:?}"),
+            };
+            assert_eq!(path, "backup.enc");
+            assert_eq!(plen, 4);
+            assert_eq!(field, 1, "tab switch toggled 0 -> 1");
+            handle_form_tab_switch(&mut state); // 1 -> 0
+            let field = match settings(&state) {
+                SettingsMode::ExportConfig { active_field, .. }
+                | SettingsMode::ImportConfig { active_field, .. } => *active_field,
+                other => panic!("unexpected mode {other:?}"),
+            };
+            assert_eq!(field, 0, "tab switch toggled 1 -> 0");
+        }
+    }
+
+    /// `handle_wipe_start` enters `WipeConfirm` (empty input) and
+    /// `handle_wipe_input` records the typed confirmation token.
+    #[test]
+    fn wipe_start_and_input_transitions() {
+        let mut state = State::default();
+        handle_wipe_start(&mut state);
+        assert!(matches!(
+            settings(&state),
+            SettingsMode::WipeConfirm { confirm_input } if confirm_input.is_empty()
+        ));
+        handle_wipe_input(&mut state, "WIPE".to_string());
+        assert!(matches!(
+            settings(&state),
+            SettingsMode::WipeConfirm { confirm_input } if confirm_input == "WIPE"
+        ));
+
+        // `handle_wipe_input` is a no-op outside WipeConfirm.
+        let mut state = State::default();
+        handle_wipe_input(&mut state, "WIPE".to_string());
+        assert!(matches!(settings(&state), SettingsMode::View));
+    }
+
+    /// `handle_select` updates the selected index in `View`.
+    #[test]
+    fn select_updates_index() {
+        let mut state = State::default();
+        handle_select(&mut state, 4);
+        assert_eq!(state.main_page.content_panel.settings.selected_index, 4);
+    }
 }
