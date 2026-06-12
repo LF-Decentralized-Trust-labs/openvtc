@@ -185,6 +185,7 @@ mod tests {
             member_since: None,
             requested_at: None,
             relationships: Default::default(),
+            tasks: Default::default(),
             vrcs_issued: Default::default(),
             vrcs_received: Default::default(),
             credentials: Default::default(),

@@ -18,6 +18,7 @@ use crate::CredentialKind;
 use crate::config::KeyTypes;
 use crate::errors::OpenVTCError;
 use crate::relationships::Relationships;
+use crate::tasks::Tasks;
 use crate::vrc::Vrcs;
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
@@ -201,6 +202,14 @@ pub struct CommunityRecord {
     /// DIDComm relationships scoped to this community.
     #[serde(default)]
     pub relationships: Relationships,
+    /// Reserved per-community inbox (protocol-workflow tasks). The eventual home
+    /// for a physically per-community inbox; **not yet populated** — PR-1 scopes
+    /// the main page by attribution (relationships/tasks carry an owning-persona
+    /// tag and are filtered to the working community) while the collections stay
+    /// in the global [`ProtectedConfig`] tier. Additive + serde(default)-tolerant
+    /// so older configs load and a later physical-move migration can fill it.
+    #[serde(default)]
+    pub tasks: Tasks,
     /// VRCs we have issued within this community.
     #[serde(default)]
     pub vrcs_issued: Vrcs,
@@ -245,6 +254,8 @@ struct CommunityRecordShadow {
     requested_at: Option<DateTime<Utc>>,
     #[serde(default)]
     relationships: Relationships,
+    #[serde(default)]
+    tasks: Tasks,
     #[serde(default)]
     vrcs_issued: Vrcs,
     #[serde(default)]
@@ -297,6 +308,7 @@ impl From<CommunityRecordShadow> for CommunityRecord {
             member_since: shadow.member_since,
             requested_at: shadow.requested_at,
             relationships: shadow.relationships,
+            tasks: shadow.tasks,
             vrcs_issued: shadow.vrcs_issued,
             vrcs_received: shadow.vrcs_received,
             credentials,
@@ -335,6 +347,7 @@ impl CommunityRecord {
             member_since: None,
             requested_at: Some(now),
             relationships: Relationships::default(),
+            tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
             credentials: BTreeMap::new(),
@@ -564,6 +577,18 @@ impl Account {
         list
     }
 
+    /// The community to use as the default working context (D10 / R-C-6/7) when
+    /// the user hasn't explicitly selected one: the first **Active** community in
+    /// display order (favourites first, then by name, then VTC DID). Returns
+    /// `None` when there is no active community (the "no active community" state).
+    /// Deterministic so the working context is stable across launches.
+    pub fn default_working_community(&self) -> Option<VtcDid> {
+        self.communities_for_display(false)
+            .into_iter()
+            .find(|c| c.status.is_active())
+            .map(|c| c.vtc_did.clone())
+    }
+
     /// Archive an inactive community (R-C-8): retain its data but hide it from
     /// the default list. Errors if the community is unknown or still
     /// active/pending (it must be left first).
@@ -633,10 +658,63 @@ mod tests {
             member_since: None,
             requested_at: None,
             relationships: Relationships::default(),
+            tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
             credentials: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn default_working_community_prefers_favourite_active_and_skips_inactive() {
+        let p = persona("p");
+        let mut acct = Account::default();
+        // No communities → no working context.
+        assert_eq!(acct.default_working_community(), None);
+
+        // An inactive (Left) community is never the working context.
+        let left = community("did:web:left", p.persona_id, CommunityStatus::Left);
+        acct.communities.insert(left.vtc_did.clone(), left);
+        assert_eq!(acct.default_working_community(), None);
+
+        // A plain active community becomes the default.
+        let act = community("did:web:active", p.persona_id, CommunityStatus::Active);
+        acct.communities.insert(act.vtc_did.clone(), act);
+        assert_eq!(
+            acct.default_working_community().as_deref(),
+            Some("did:web:active")
+        );
+
+        // A favourited active community wins (sorts first in display order).
+        let mut fav = community("did:web:fav", p.persona_id, CommunityStatus::Active);
+        fav.favourite = true;
+        acct.communities.insert(fav.vtc_did.clone(), fav);
+        acct.personas.insert(p.persona_id, p);
+        assert_eq!(
+            acct.default_working_community().as_deref(),
+            Some("did:web:fav")
+        );
+    }
+
+    #[test]
+    fn community_record_tasks_survive_json_round_trip() {
+        use crate::tasks::TaskType;
+        use std::sync::Arc;
+
+        let pid = PersonaId::new();
+        let mut comm = community("did:web:vtc-rt", pid, CommunityStatus::Active);
+        comm.tasks.new_task(
+            &Arc::new("task-rt".to_string()),
+            TaskType::RelationshipRequestRejected,
+        );
+        let json = serde_json::to_string(&comm).expect("serialize");
+        let back: CommunityRecord = serde_json::from_str(&json).expect("deserialize");
+        assert!(
+            back.tasks
+                .get_by_id(&Arc::new("task-rt".to_string()))
+                .is_some(),
+            "per-community task should survive the round trip"
+        );
     }
 
     /// Pre-R19 configs stored credentials as flat `membership_credential` /
