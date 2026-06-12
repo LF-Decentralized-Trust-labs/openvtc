@@ -624,35 +624,24 @@ impl MainPage {
                         ));
                         true
                     }
-                    KeyCode::Backspace if active_field < 3 => {
-                        let mut current = match active_field {
-                            0 => did_input.clone(),
-                            1 => alias_input.clone(),
-                            _ => reason_input.clone(),
+                    code if active_field < 3 => {
+                        let current = match active_field {
+                            0 => did_input,
+                            1 => alias_input,
+                            _ => reason_input,
                         };
-                        current.pop();
-                        let _ = self.action_tx.send(Action::Relationship(
-                            RelationshipAction::InputUpdate {
-                                field: active_field,
-                                value: current,
-                            },
-                        ));
-                        true
-                    }
-                    KeyCode::Char(c) if active_field < 3 => {
-                        let mut current = match active_field {
-                            0 => did_input.clone(),
-                            1 => alias_input.clone(),
-                            _ => reason_input.clone(),
-                        };
-                        current.push(c);
-                        let _ = self.action_tx.send(Action::Relationship(
-                            RelationshipAction::InputUpdate {
-                                field: active_field,
-                                value: current,
-                            },
-                        ));
-                        true
+                        match edit_text(code, current) {
+                            Some(value) => {
+                                let _ = self.action_tx.send(Action::Relationship(
+                                    RelationshipAction::InputUpdate {
+                                        field: active_field,
+                                        value,
+                                    },
+                                ));
+                                true
+                            }
+                            None => false,
+                        }
                     }
                     _ => false,
                 }
@@ -770,23 +759,15 @@ impl MainPage {
                         }
                         true
                     }
-                    KeyCode::Backspace => {
-                        let mut current = alias_input.clone();
-                        current.pop();
-                        let _ = self.action_tx.send(Action::Relationship(
-                            RelationshipAction::EditAliasUpdate(current),
-                        ));
-                        true
-                    }
-                    KeyCode::Char(c) => {
-                        let mut current = alias_input.clone();
-                        current.push(c);
-                        let _ = self.action_tx.send(Action::Relationship(
-                            RelationshipAction::EditAliasUpdate(current),
-                        ));
-                        true
-                    }
-                    _ => false,
+                    code => match edit_text(code, alias_input) {
+                        Some(value) => {
+                            let _ = self.action_tx.send(Action::Relationship(
+                                RelationshipAction::EditAliasUpdate(value),
+                            ));
+                            true
+                        }
+                        None => false,
+                    },
                 }
             }
             RelationshipsMode::List => {
@@ -890,23 +871,15 @@ impl MainPage {
                         }
                         true
                     }
-                    KeyCode::Backspace => {
-                        let mut r = reason_input.clone();
-                        r.pop();
-                        let _ = self
-                            .action_tx
-                            .send(Action::Credential(CredentialAction::ReasonUpdate(r)));
-                        true
-                    }
-                    KeyCode::Char(c) => {
-                        let mut r = reason_input.clone();
-                        r.push(c);
-                        let _ = self
-                            .action_tx
-                            .send(Action::Credential(CredentialAction::ReasonUpdate(r)));
-                        true
-                    }
-                    _ => false,
+                    code => match edit_text(code, reason_input) {
+                        Some(r) => {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Credential(CredentialAction::ReasonUpdate(r)));
+                            true
+                        }
+                        None => false,
+                    },
                 }
             }
             CredentialsMode::Detail { index } => {
@@ -1031,23 +1004,15 @@ impl MainPage {
                             }));
                         true
                     }
-                    KeyCode::Backspace => {
-                        let mut v = current;
-                        v.pop();
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::FieldUpdate(v)));
-                        true
-                    }
-                    KeyCode::Char(c) => {
-                        let mut v = current;
-                        v.push(c);
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::FieldUpdate(v)));
-                        true
-                    }
-                    _ => false,
+                    code => match edit_text(code, &current) {
+                        Some(v) => {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::FieldUpdate(v)));
+                            true
+                        }
+                        None => false,
+                    },
                 }
             }
             SettingsMode::ExportConfig {
@@ -1056,68 +1021,10 @@ impl MainPage {
                 ..
             } => {
                 let active = *active_field;
-                match key.code {
-                    KeyCode::Esc => {
-                        self.passphrase_buffer.clear();
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::CancelEdit));
-                        true
-                    }
-                    KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::FormTabSwitch));
-                        true
-                    }
-                    KeyCode::Enter if active == 1 => {
-                        let passphrase = std::mem::take(&mut self.passphrase_buffer);
-                        let _ =
-                            self.action_tx
-                                .send(Action::Settings(SettingsAction::ExportConfig {
-                                    path: path_input.clone(),
-                                    passphrase,
-                                }));
-                        true
-                    }
-                    KeyCode::Backspace => {
-                        if active == 0 {
-                            let mut current = path_input.clone();
-                            current.pop();
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::FormFieldUpdate {
-                                    field: 0,
-                                    value: current,
-                                },
-                            ));
-                        } else {
-                            self.passphrase_buffer.pop();
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
-                            ));
-                        }
-                        true
-                    }
-                    KeyCode::Char(c) => {
-                        if active == 0 {
-                            let mut current = path_input.clone();
-                            current.push(c);
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::FormFieldUpdate {
-                                    field: 0,
-                                    value: current,
-                                },
-                            ));
-                        } else {
-                            self.passphrase_buffer.push(c);
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
-                            ));
-                        }
-                        true
-                    }
-                    _ => false,
-                }
+                let path = path_input.clone();
+                self.handle_config_form_key(key, active, path, |path, passphrase| {
+                    SettingsAction::ExportConfig { path, passphrase }
+                })
             }
             SettingsMode::ChangeProtection {
                 selected_option,
@@ -1193,36 +1100,30 @@ impl MainPage {
                         }
                         true
                     }
-                    KeyCode::Backspace if active >= 1 => {
-                        if active == 1 {
-                            self.passphrase_buffer.pop();
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::ProtectionPassphraseLen(
-                                    self.passphrase_buffer.len(),
-                                ),
-                            ));
+                    code if active >= 1 => {
+                        // Secure passphrase / confirm buffers: apply the keystroke
+                        // to the active buffer and report only its length.
+                        let buffer = if active == 1 {
+                            &mut self.passphrase_buffer
                         } else {
-                            self.confirm_buffer.pop();
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::ProtectionConfirmLen(self.confirm_buffer.len()),
-                            ));
+                            &mut self.confirm_buffer
+                        };
+                        match code {
+                            KeyCode::Backspace => {
+                                buffer.pop();
+                            }
+                            KeyCode::Char(c) => {
+                                buffer.push(c);
+                            }
+                            _ => return false,
                         }
-                        true
-                    }
-                    KeyCode::Char(c) if active >= 1 => {
-                        if active == 1 {
-                            self.passphrase_buffer.push(c);
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::ProtectionPassphraseLen(
-                                    self.passphrase_buffer.len(),
-                                ),
-                            ));
+                        let len = buffer.len();
+                        let action = if active == 1 {
+                            SettingsAction::ProtectionPassphraseLen(len)
                         } else {
-                            self.confirm_buffer.push(c);
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::ProtectionConfirmLen(self.confirm_buffer.len()),
-                            ));
-                        }
+                            SettingsAction::ProtectionConfirmLen(len)
+                        };
+                        let _ = self.action_tx.send(Action::Settings(action));
                         true
                     }
                     _ => false,
@@ -1275,68 +1176,10 @@ impl MainPage {
                 ..
             } => {
                 let active = *active_field;
-                match key.code {
-                    KeyCode::Esc => {
-                        self.passphrase_buffer.clear();
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::CancelEdit));
-                        true
-                    }
-                    KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::FormTabSwitch));
-                        true
-                    }
-                    KeyCode::Enter if active == 1 => {
-                        let passphrase = std::mem::take(&mut self.passphrase_buffer);
-                        let _ =
-                            self.action_tx
-                                .send(Action::Settings(SettingsAction::ImportConfig {
-                                    path: path_input.clone(),
-                                    passphrase,
-                                }));
-                        true
-                    }
-                    KeyCode::Backspace => {
-                        if active == 0 {
-                            let mut current = path_input.clone();
-                            current.pop();
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::FormFieldUpdate {
-                                    field: 0,
-                                    value: current,
-                                },
-                            ));
-                        } else {
-                            self.passphrase_buffer.pop();
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
-                            ));
-                        }
-                        true
-                    }
-                    KeyCode::Char(c) => {
-                        if active == 0 {
-                            let mut current = path_input.clone();
-                            current.push(c);
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::FormFieldUpdate {
-                                    field: 0,
-                                    value: current,
-                                },
-                            ));
-                        } else {
-                            self.passphrase_buffer.push(c);
-                            let _ = self.action_tx.send(Action::Settings(
-                                SettingsAction::PassphraseLen(self.passphrase_buffer.len()),
-                            ));
-                        }
-                        true
-                    }
-                    _ => false,
-                }
+                let path = path_input.clone();
+                self.handle_config_form_key(key, active, path, |path, passphrase| {
+                    SettingsAction::ImportConfig { path, passphrase }
+                })
             }
             SettingsMode::View => {
                 let selected = settings.selected_index;
@@ -1422,27 +1265,84 @@ impl MainPage {
                             .send(Action::Settings(SettingsAction::WipeProfileConfirm));
                         true
                     }
-                    KeyCode::Backspace => {
-                        let mut next = current;
-                        next.pop();
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::WipeProfileInput(next)));
-                        true
-                    }
-                    KeyCode::Char(c) => {
-                        let mut next = current;
-                        next.push(c);
-                        let _ = self
-                            .action_tx
-                            .send(Action::Settings(SettingsAction::WipeProfileInput(next)));
-                        true
-                    }
-                    _ => false,
+                    code => match edit_text(code, &current) {
+                        Some(next) => {
+                            let _ = self
+                                .action_tx
+                                .send(Action::Settings(SettingsAction::WipeProfileInput(next)));
+                            true
+                        }
+                        None => false,
+                    },
                 }
             }
         }
     }
+
+    /// Shared key handling for the Export/Import config forms. The two forms are
+    /// identical except for the submit Action, supplied via `make_submit`
+    /// (called with the path and the taken passphrase buffer). `active` is the
+    /// focused field (0 = path, 1 = passphrase).
+    fn handle_config_form_key(
+        &mut self,
+        key: KeyEvent,
+        active: usize,
+        path: String,
+        make_submit: impl FnOnce(String, String) -> SettingsAction,
+    ) -> bool {
+        match key.code {
+            KeyCode::Esc => {
+                self.passphrase_buffer.clear();
+                let _ = self
+                    .action_tx
+                    .send(Action::Settings(SettingsAction::CancelEdit));
+                true
+            }
+            KeyCode::Tab | KeyCode::Up | KeyCode::Down => {
+                let _ = self
+                    .action_tx
+                    .send(Action::Settings(SettingsAction::FormTabSwitch));
+                true
+            }
+            KeyCode::Enter if active == 1 => {
+                let passphrase = std::mem::take(&mut self.passphrase_buffer);
+                let _ = self
+                    .action_tx
+                    .send(Action::Settings(make_submit(path, passphrase)));
+                true
+            }
+            code => {
+                if active == 0 {
+                    match edit_text(code, &path) {
+                        Some(value) => {
+                            let _ = self.action_tx.send(Action::Settings(
+                                SettingsAction::FormFieldUpdate { field: 0, value },
+                            ));
+                            true
+                        }
+                        None => false,
+                    }
+                } else {
+                    match code {
+                        KeyCode::Backspace => {
+                            self.passphrase_buffer.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            self.passphrase_buffer.push(c);
+                        }
+                        _ => return false,
+                    }
+                    let _ = self
+                        .action_tx
+                        .send(Action::Settings(SettingsAction::PassphraseLen(
+                            self.passphrase_buffer.len(),
+                        )));
+                    true
+                }
+            }
+        }
+    }
+
     fn handle_logs_key(&mut self, key: KeyEvent) -> bool {
         let total = self.props.main_page.activity_log.len();
 
@@ -1563,6 +1463,26 @@ impl MainPage {
             }
             _ => false,
         }
+    }
+}
+
+/// Apply one text-editing keystroke to `current`, returning the new value when
+/// the key edits the buffer, or `None` otherwise. Append-only semantics
+/// (printable char appends at the end; Backspace removes the last char) — these
+/// inline editors have no cursor, matching the prior behavior exactly.
+fn edit_text(code: KeyCode, current: &str) -> Option<String> {
+    match code {
+        KeyCode::Char(c) => {
+            let mut s = current.to_string();
+            s.push(c);
+            Some(s)
+        }
+        KeyCode::Backspace => {
+            let mut s = current.to_string();
+            s.pop();
+            Some(s)
+        }
+        _ => None,
     }
 }
 
