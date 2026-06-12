@@ -103,6 +103,11 @@ pub async fn process_inbound_message(
         .cloned()
         .unwrap_or_else(|| config.persona_did().to_string());
 
+    // The persona this message was addressed to, for D10 attribution: inbox
+    // tasks created from this message are tagged with it so they scope to the
+    // right community on the main page (R-C-6).
+    let recipient_persona = config.account.persona_id_for_did(&recipient_did);
+
     // Validate message body size to prevent DoS via oversized payloads
     let body_size = serde_json::to_string(&message.body)
         .map(|s| s.len())
@@ -427,13 +432,14 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            config.private.tasks.new_task(
+            config.private.tasks.new_task_for(
                 &task_id,
                 TaskType::RelationshipRequestInbound {
                     from: from_did.clone(),
                     to: to_did,
                     request: body,
                 },
+                recipient_persona,
             );
 
             config.public.logs.insert(
@@ -467,12 +473,13 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            config.private.tasks.new_task(
+            config.private.tasks.new_task_for(
                 &task_id,
                 TaskType::VRCRequestInbound {
                     request: body,
                     remote_p_did,
                 },
+                recipient_persona,
             );
 
             config.public.logs.insert(
@@ -525,10 +532,11 @@ pub async fn process_inbound_message(
                 return Ok(false);
             }
 
-            config
-                .private
-                .tasks
-                .new_task(&task_id, TaskType::VRCIssued { vrc: Box::new(vrc) });
+            config.private.tasks.new_task_for(
+                &task_id,
+                TaskType::VRCIssued { vrc: Box::new(vrc) },
+                recipient_persona,
+            );
 
             config.public.logs.insert(
                 LogFamily::Task,
@@ -562,13 +570,14 @@ pub async fn process_inbound_message(
                 .find_by_remote_did(&from_did)
                 .map(|rel| Arc::clone(&rel.remote_p_did))
             {
-                config.private.tasks.new_task(
+                config.private.tasks.new_task_for(
                     &task_id,
                     TaskType::TrustPing {
                         from: from_did.clone(),
                         to: to_did,
                         remote_p_did,
                     },
+                    recipient_persona,
                 );
             }
             debug!(from = %from_did, "trust-ping task created");

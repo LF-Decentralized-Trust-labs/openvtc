@@ -2,10 +2,27 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use openvtc_core::{
-    config::{Config, KeyBackend},
+    config::{Config, KeyBackend, account::PersonaId},
     display::truncate_did,
     tasks::TaskType,
 };
+
+/// Whether an item owned by `item_persona` is in scope for the working community
+/// whose persona is `active` (D10 / R-C-6). Tagged items match when their persona
+/// is the active one. Untagged items (legacy, pre-attribution) show only when the
+/// account has at most one persona, where there is no ambiguity; with multiple
+/// personas an untagged item is hidden until re-tagged. With no active selection
+/// (no working community), only the single/zero-persona case shows everything.
+fn persona_in_scope(
+    item_persona: Option<PersonaId>,
+    active: Option<PersonaId>,
+    persona_count: usize,
+) -> bool {
+    match active {
+        Some(p) => item_persona == Some(p) || (item_persona.is_none() && persona_count <= 1),
+        None => persona_count <= 1,
+    }
+}
 
 use crate::state_handler::main_page::{
     content::{
@@ -107,12 +124,19 @@ impl MainPageState {
         // Update header config
         self.config = MainMenuConfigState::from(config);
 
+        // The working community's persona scopes the relationship/inbox/VRC
+        // panels (D10 / R-C-6): only items owned by it (plus untagged legacy
+        // items in a single-persona account) are shown.
+        let active_persona = config.active_persona;
+        let persona_count = config.account.personas.len();
+
         // Sync inbox tasks
         let mut inbox_tasks: Vec<TaskSummary> = config
             .private
             .tasks
             .tasks
             .values()
+            .filter(|task| persona_in_scope(task.our_persona, active_persona, persona_count))
             .map(|task| {
                 let kind = match &task.type_ {
                     TaskType::RelationshipRequestInbound { from, request, .. } => {
@@ -184,12 +208,13 @@ impl MainPageState {
         inbox_tasks.sort_by(|a, b| b.created.cmp(&a.created));
         self.content_panel.inbox.tasks = inbox_tasks.into();
 
-        // Sync relationships
+        // Sync relationships (scoped to the working community's persona)
         self.content_panel.relationships.relationships = config
             .private
             .relationships
             .relationships
             .iter()
+            .filter(|(_, rel)| persona_in_scope(rel.our_persona, active_persona, persona_count))
             .map(|(remote_p_did, rel)| {
                 let alias = config
                     .private
@@ -253,11 +278,21 @@ impl MainPageState {
             })
             .collect();
 
-        // Sync credentials
-        self.content_panel.credentials.received =
-            collect_vrcs(&config.private.vrcs_received, config).into();
-        self.content_panel.credentials.issued =
-            collect_vrcs(&config.private.vrcs_issued, config).into();
+        // Sync credentials (scoped to the working community's persona)
+        self.content_panel.credentials.received = collect_vrcs(
+            &config.private.vrcs_received,
+            config,
+            active_persona,
+            persona_count,
+        )
+        .into();
+        self.content_panel.credentials.issued = collect_vrcs(
+            &config.private.vrcs_issued,
+            config,
+            active_persona,
+            persona_count,
+        )
+        .into();
         self.content_panel.credentials.membership = collect_membership_creds(config).into();
 
         // Sync settings
@@ -428,9 +463,24 @@ fn community_status_label(status: &openvtc_core::config::account::CommunityStatu
 
 /// Collect VRC summaries from a Vrcs collection.
 #[must_use]
-fn collect_vrcs(vrcs: &openvtc_core::vrc::Vrcs, config: &Config) -> Vec<VrcSummary> {
+fn collect_vrcs(
+    vrcs: &openvtc_core::vrc::Vrcs,
+    config: &Config,
+    active_persona: Option<PersonaId>,
+    persona_count: usize,
+) -> Vec<VrcSummary> {
     let mut result = Vec::new();
     for remote_p_did in vrcs.keys() {
+        // Scope to the working community: a VRC belongs to the community of the
+        // relationship with its remote party (D10 / R-C-6).
+        let rel_persona = config
+            .private
+            .relationships
+            .get(remote_p_did)
+            .and_then(|r| r.our_persona);
+        if !persona_in_scope(rel_persona, active_persona, persona_count) {
+            continue;
+        }
         let alias = config
             .private
             .contacts
@@ -679,6 +729,29 @@ impl MainPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- persona_in_scope (community-scoping filter, D10/R-C-6) ---
+
+    #[test]
+    fn persona_in_scope_filters_by_active_persona() {
+        let a = PersonaId::new();
+        let b = PersonaId::new();
+
+        // With a selection, only the active persona's items (and untagged items
+        // in a single-persona account) are in scope.
+        assert!(persona_in_scope(Some(a), Some(a), 2));
+        assert!(!persona_in_scope(Some(b), Some(a), 2));
+        // Untagged item: hidden when multiple personas (ambiguous)...
+        assert!(!persona_in_scope(None, Some(a), 2));
+        // ...but shown in a single-persona account (no ambiguity).
+        assert!(persona_in_scope(None, Some(a), 1));
+
+        // No active selection: only the single/zero-persona case shows items.
+        assert!(persona_in_scope(Some(a), None, 1));
+        assert!(persona_in_scope(None, None, 1));
+        assert!(!persona_in_scope(Some(a), None, 2));
+        assert!(!persona_in_scope(None, None, 2));
+    }
 
     // --- sanitize_display ---
 

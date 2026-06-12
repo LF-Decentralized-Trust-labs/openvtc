@@ -724,12 +724,15 @@ impl RelationshipOutcome {
                         }
 
                         // No race: create the outbound task + log (post-send tail of
-                        // `send_relationship_request`).
-                        config.private.tasks.new_task(
+                        // `send_relationship_request`), tagged with the working
+                        // community's persona (D10).
+                        let our_persona = config.active_persona;
+                        config.private.tasks.new_task_for(
                             &msg_id,
                             TaskType::RelationshipRequestOutbound {
                                 to: Arc::clone(&respondent_did),
                             },
+                            our_persona,
                         );
                         config.public.logs.insert(
                         LogFamily::Relationship,
@@ -809,13 +812,15 @@ impl RelationshipOutcome {
                         LogFamily::Relationship,
                         format!("Sent ping to {remote_did} via {our_did}"),
                     );
-                    config.private.tasks.new_task(
+                    let our_persona = config.active_persona;
+                    config.private.tasks.new_task_for(
                         &msg_id,
                         TaskType::TrustPing {
                             from: Arc::clone(&our_did),
                             to: Arc::clone(&remote_did),
                             remote_p_did: Arc::new(remote_p_did.clone()),
                         },
+                        our_persona,
                     );
                     info!(to = %remote_p_did, "trust-ping sent");
 
@@ -868,11 +873,13 @@ impl RelationshipOutcome {
                 display_name,
             } => match self.result {
                 Ok(()) => {
-                    config.private.tasks.new_task(
+                    let our_persona = config.active_persona;
+                    config.private.tasks.new_task_for(
                         &msg_id,
                         TaskType::VRCRequestOutbound {
                             remote_p_did: Arc::new(remote_p_did.clone()),
                         },
+                        our_persona,
                     );
                     config.public.logs.insert(
                         LogFamily::Relationship,
@@ -1152,6 +1159,9 @@ async fn prepare_submit(
             remote_did: Arc::clone(&respondent_arc),
             created: Utc::now(),
             state: RelationshipState::RequestSent,
+            // Tag the relationship with the working community's persona (D10) so
+            // it scopes to the right community on the main page (R-C-6).
+            our_persona: config.active_persona,
         },
     );
 
@@ -1555,6 +1565,7 @@ mod tests {
             remote_did: Arc::clone(&key),
             created: Utc::now(),
             state: RelationshipState::Established,
+            our_persona: config.active_persona,
         };
         config.private.relationships.relationships.insert(key, rel);
     }
@@ -1657,6 +1668,7 @@ mod tests {
                 remote_did: Arc::clone(respondent),
                 created: Utc::now(),
                 state: RelationshipState::RequestSent,
+                our_persona: None,
             },
         );
     }

@@ -127,5 +127,6 @@ pub(crate) fn test_config() -> Config {
         unlock_code: None,
         account: Account::default(),
         identities: std::collections::BTreeMap::new(),
+        active_persona: None,
     }
 }

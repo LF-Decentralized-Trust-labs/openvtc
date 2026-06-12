@@ -319,6 +319,13 @@ pub struct Config {
     /// therefore [`Config::active_identity`] — is deterministic across process
     /// runs and insertion orders.
     pub identities: BTreeMap<account::PersonaId, crate::identity::IdentityContext>,
+
+    /// The persona the user's selected working community resolves to (D10) — the
+    /// runtime "active identity". Set by the StateHandler loop from
+    /// `State.selected_community`; `None` falls back to the first persona so
+    /// startup/setup (which run before any selection) behave exactly as before.
+    /// Not persisted — a pure runtime selection pointer over `identities`.
+    pub active_persona: Option<account::PersonaId>,
 }
 
 /// Serializable bundle of public and secured config, used for import/export.
@@ -346,15 +353,28 @@ impl Config {
         }
     }
 
-    /// The currently-active runtime identity.
+    /// The currently-active runtime identity — the persona the selected working
+    /// community resolves to (D10 / R-C-6/7).
     ///
-    /// T1 migration: for the single-persona case this returns the one resolved
-    /// identity. With multiple personas the entry with the lowest
-    /// [`account::PersonaId`] wins — deterministic across runs because
-    /// `identities` is a `BTreeMap`. This is an interim heuristic until
-    /// explicit persona selection lands (T1 Stage 5).
+    /// Honours [`Config::active_persona`] (set by the loop from the selected
+    /// community) so all identity-derived reads — [`Config::persona_did`],
+    /// [`Config::mediator_did`], the main-page identity chrome, outbound actions —
+    /// scope to the working community without threading a selection through every
+    /// call site. Falls back to the first persona (lowest [`account::PersonaId`],
+    /// deterministic because `identities` is a `BTreeMap`) when no selection is
+    /// set — i.e. during startup/setup, or single-persona accounts — preserving
+    /// the prior behaviour.
     pub fn active_identity(&self) -> Option<&crate::identity::IdentityContext> {
-        self.identities.values().next()
+        self.active_persona
+            .and_then(|id| self.identities.get(&id))
+            .or_else(|| self.identities.values().next())
+    }
+
+    /// Point the runtime active identity at `persona` (the selected working
+    /// community's persona, D10), or clear it back to the first-persona default.
+    /// A no-op-safe setter the loop calls each iteration from the selection.
+    pub fn set_active_persona(&mut self, persona: Option<account::PersonaId>) {
+        self.active_persona = persona;
     }
 
     /// The active persona's `did:webvh` as a string slice.
@@ -696,6 +716,7 @@ mod tests {
             unlock_code: None,
             account: account::Account::default(),
             identities,
+            active_persona: None,
         }
     }
 

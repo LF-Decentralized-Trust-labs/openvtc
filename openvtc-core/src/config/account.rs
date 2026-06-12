@@ -206,7 +206,7 @@ pub struct CommunityRecord {
     /// for a physically per-community inbox; **not yet populated** — PR-1 scopes
     /// the main page by attribution (relationships/tasks carry an owning-persona
     /// tag and are filtered to the working community) while the collections stay
-    /// in the global [`ProtectedConfig`] tier. Additive + serde(default)-tolerant
+    /// in the global `ProtectedConfig` tier. Additive + serde(default)-tolerant
     /// so older configs load and a later physical-move migration can fill it.
     #[serde(default)]
     pub tasks: Tasks,
@@ -481,6 +481,16 @@ impl Account {
         self.personas.get(&community.persona_ref)
     }
 
+    /// The id of the account persona whose `did` equals `did`, if any. Maps an
+    /// addressed persona DID (e.g. an inbound message's recipient) back to its
+    /// [`PersonaId`] for D10 attribution tagging.
+    pub fn persona_id_for_did(&self, did: &str) -> Option<PersonaId> {
+        self.personas
+            .iter()
+            .find(|(_, p)| p.did == did)
+            .map(|(id, _)| *id)
+    }
+
     /// True if any community references this persona.
     pub fn persona_referenced(&self, id: &PersonaId) -> bool {
         self.communities.values().any(|c| &c.persona_ref == id)
@@ -663,6 +673,18 @@ mod tests {
             vrcs_received: Vrcs::default(),
             credentials: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn persona_id_for_did_maps_addressed_did_to_persona() {
+        let pa = persona("alice");
+        let pb = persona("bob");
+        let (pid_a, did_a) = (pa.persona_id, pa.did.clone());
+        let mut acct = Account::default();
+        acct.personas.insert(pa.persona_id, pa);
+        acct.personas.insert(pb.persona_id, pb);
+        assert_eq!(acct.persona_id_for_did(&did_a), Some(pid_a));
+        assert_eq!(acct.persona_id_for_did("did:web:nobody"), None);
     }
 
     #[test]

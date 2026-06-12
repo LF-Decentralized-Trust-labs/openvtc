@@ -41,12 +41,14 @@ pub async fn send_vrc_request(
         .await
         .map_err(|e| anyhow::anyhow!("failed to send VRC request: {e}"))?;
 
-    // Create tracking task
-    config.private.tasks.new_task(
+    // Create tracking task, tagged with the working community's persona (D10).
+    let our_persona = config.active_persona;
+    config.private.tasks.new_task_for(
         &msg_id,
         TaskType::VRCRequestOutbound {
             remote_p_did: remote_key,
         },
+        our_persona,
     );
 
     config.public.logs.insert(

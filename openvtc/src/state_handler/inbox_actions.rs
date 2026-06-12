@@ -415,6 +415,15 @@ impl InboxOutcome {
                                 our_did,
                                 created: Utc::now(),
                                 state: RelationshipState::RequestAccepted,
+                                // The accept is built and signed under
+                                // `persona_did_arc()` (the active/selected
+                                // persona), so the new relationship belongs to
+                                // that persona (D10). Invariant: the inbox is
+                                // filtered to the active persona (R-C-6), so a
+                                // selectable inbound-request task's addressed
+                                // persona (`task.our_persona`) always equals the
+                                // active persona — tag and signing persona agree.
+                                our_persona: config.active_persona,
                             },
                         );
                         config.private.tasks.remove(&task_id);

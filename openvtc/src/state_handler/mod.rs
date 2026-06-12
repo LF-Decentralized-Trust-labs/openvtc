@@ -483,6 +483,20 @@ impl StateHandler {
             (tdk, config, admin_vta)
         };
 
+        // Point the runtime active identity at the default working community and
+        // refilter the community-scoped panels before the first paint (D10 /
+        // R-C-6) — otherwise a multi-persona account renders empty panels until
+        // the first event re-syncs (the per-path syncs above run with no
+        // selection set yet).
+        state.reconcile_selected_community(&config.account);
+        let initial_active = state
+            .selected_community
+            .as_ref()
+            .and_then(|vtc| config.account.community(vtc))
+            .map(|c| c.persona_ref);
+        config.set_active_persona(initial_active);
+        state.main_page.sync_from_config(&config);
+
         // Send initial state immediately so the UI renders without blocking
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());
@@ -655,6 +669,24 @@ impl StateHandler {
                         if !config.account.communities.values().any(|c| c.is_live()) {
                             state.connection.status = state::MediatorStatus::NoActiveCommunity;
                             state.connection.messaging_active = false;
+                        }
+                    },
+                    Action::SetActiveCommunity(i) => {
+                        // Switch the working context to the Active community at
+                        // display index `i` (R-C-6 / D10). Extract owned values to
+                        // end the immutable account borrow before mutating config.
+                        let target = config
+                            .account
+                            .communities_for_display(false)
+                            .get(i)
+                            .filter(|c| c.status.is_active())
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona)) = target {
+                            state.selected_community = Some(vtc);
+                            config.set_active_persona(Some(persona));
+                            // Refilter the community-scoped panels immediately so
+                            // the switch is reflected this frame.
+                            state.main_page.sync_from_config(&config);
                         }
                     },
                     Action::DeleteDid(i) => {
@@ -1172,8 +1204,22 @@ impl StateHandler {
             }
             // Keep the working-context selection valid against any account change
             // this iteration applied (join/leave/status transition) before the UI
-            // re-renders from the broadcast (D10 / R-C-6).
+            // re-renders from the broadcast (D10 / R-C-6), then point the runtime
+            // active identity at the selected community's persona so all
+            // identity-derived reads scope to the working community. When the
+            // working persona actually changes (e.g. the active community left and
+            // the default shifted), refilter the community-scoped panels so the UI
+            // reflects the new context this frame.
             state.reconcile_selected_community(&config.account);
+            let active_persona = state
+                .selected_community
+                .as_ref()
+                .and_then(|vtc| config.account.community(vtc))
+                .map(|c| c.persona_ref);
+            if active_persona != config.active_persona {
+                config.set_active_persona(active_persona);
+                state.main_page.sync_from_config(&config);
+            }
             let _ = self.state_tx.send(state.clone());
         };
 

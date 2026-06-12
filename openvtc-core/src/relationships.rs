@@ -9,6 +9,7 @@ use crate::{
     bip32::Bip32Extension,
     config::{
         KeyBackend, KeyTypes,
+        account::PersonaId,
         secured_config::{KeyInfoConfig, KeySourceMaterial},
     },
     errors::OpenVTCError,
@@ -106,6 +107,16 @@ pub struct Relationship {
 
     /// Current state of the relationship lifecycle.
     pub state: RelationshipState,
+
+    /// Which of our account personas owns this relationship (D10 attribution).
+    /// Set at creation to the working community's persona (outbound) or the
+    /// addressed persona (inbound); the community-scoped main page filters
+    /// relationships to the selected community's persona via this tag (R-C-6).
+    /// `None` on relationships created before this field (legacy/single-persona),
+    /// which are attributed to the sole persona at view time. Skipped when
+    /// `None` so older configs round-trip byte-identically (R20 invariant).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub our_persona: Option<PersonaId>,
 }
 
 impl From<RelationshipsShadow> for Relationships {
@@ -592,6 +603,7 @@ mod tests {
             remote_p_did: Arc::new(remote_p_did.to_string()),
             created: Utc::now(),
             state,
+            our_persona: None,
         }
     }
 

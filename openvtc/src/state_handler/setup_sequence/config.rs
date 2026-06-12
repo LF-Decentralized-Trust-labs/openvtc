@@ -304,6 +304,7 @@ impl ConfigExtension for Config {
         let config = Config {
             account,
             identities: BTreeMap::new(),
+            active_persona: None,
             key_backend,
             public: PublicConfig {
                 config_version: openvtc_core::config::public_config::CONFIG_VERSION,

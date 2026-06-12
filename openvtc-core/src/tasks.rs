@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use tracing::debug;
 
-use crate::{relationships::RelationshipRequestBody, vrc::VrcRequest};
+use crate::{config::account::PersonaId, relationships::RelationshipRequestBody, vrc::VrcRequest};
 
 /// Defined Task Types for OpenVTC.
 ///
@@ -118,14 +118,29 @@ impl Tasks {
         removed
     }
 
-    /// Creates a new task with the given ID and type, inserts it, and returns a
-    /// reference to it.
+    /// Creates a new untagged task (no owning persona) with the given ID and
+    /// type, inserts it, and returns a reference to it. Use [`Tasks::new_task_for`]
+    /// to attribute the task to a specific persona for community-scoping (D10).
     pub fn new_task(&mut self, id: &Arc<String>, type_: TaskType) -> &Task {
+        self.new_task_for(id, type_, None)
+    }
+
+    /// Like [`Tasks::new_task`] but tags the task with the persona that owns it
+    /// (D10 attribution): the working community's persona for an outbound task, or
+    /// the addressed persona for an inbound one. The community-scoped inbox filters
+    /// tasks to the selected community's persona via this tag (R-C-6).
+    pub fn new_task_for(
+        &mut self,
+        id: &Arc<String>,
+        type_: TaskType,
+        our_persona: Option<PersonaId>,
+    ) -> &Task {
         debug!("task created: type={:?}, id={}", type_, id);
         let task = Task {
             id: id.clone(),
             type_,
             created: Utc::now(),
+            our_persona,
         };
         self.tasks.entry(id.clone()).insert_entry(task).into_mut()
     }
@@ -161,6 +176,15 @@ pub struct Task {
 
     /// Timestamp when this task was created.
     pub created: DateTime<Utc>,
+
+    /// Which of our account personas owns this task (D10 attribution). Set to the
+    /// working community's persona (outbound) or the addressed persona (inbound);
+    /// the community-scoped inbox filters tasks to the selected community's
+    /// persona via this tag (R-C-6). `None` on legacy/single-persona tasks,
+    /// attributed to the sole persona at view time. Skipped when `None` so older
+    /// configs round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub our_persona: Option<PersonaId>,
 }
 
 #[cfg(test)]

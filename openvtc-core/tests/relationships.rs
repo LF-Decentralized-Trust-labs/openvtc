@@ -17,6 +17,7 @@ fn make_relationship(
         remote_p_did: Arc::new(remote_p_did.to_string()),
         created: chrono::Utc::now(),
         state,
+        our_persona: None,
     }
 }
 

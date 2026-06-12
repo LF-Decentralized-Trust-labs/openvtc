@@ -415,6 +415,11 @@ impl MainPage {
                     .send(Action::CommunitySelect((selected + 1).min(count - 1)));
                 true
             }
+            KeyCode::Enter if selected < count => {
+                // Make the highlighted community the working context (R-C-6).
+                let _ = self.action_tx.send(Action::SetActiveCommunity(selected));
+                true
+            }
             KeyCode::Char('d') | KeyCode::Delete if selected < count => {
                 let _ = self
                     .action_tx

@@ -394,6 +394,7 @@ mod export_import {
             // Type-inferred so this fixture is agnostic to the `identities`
             // map type (HashMap today, BTreeMap after the determinism fix).
             identities: Default::default(),
+            active_persona: None,
         }
     }
 

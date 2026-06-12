@@ -427,6 +427,7 @@ impl Config {
             Config {
                 account,
                 identities,
+                active_persona: None,
                 key_backend,
                 public: public_config,
                 private: private_cfg,
@@ -530,6 +531,7 @@ mod tests {
                 remote_p_did: did.clone(),
                 created: chrono::Utc::now(),
                 state: RelationshipState::Established,
+                our_persona: None,
             },
         );
 

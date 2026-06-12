@@ -120,6 +120,7 @@ impl Config {
             account: self.account.clone(),
             // Runtime-only; rebuilt at load and unused by `save`.
             identities: BTreeMap::new(),
+            active_persona: None,
         })
     }
 

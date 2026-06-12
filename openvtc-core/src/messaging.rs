@@ -834,6 +834,7 @@ mod tests {
             remote_p_did: Arc::new(remote_p.to_string()),
             created: Utc::now(),
             state,
+            our_persona: None,
         }
     }
 
