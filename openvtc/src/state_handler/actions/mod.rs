@@ -229,9 +229,25 @@ pub enum Action {
     /// both the degraded loop (State-A first join) and the runtime select loop.
     StartJoin,
 
-    /// Submit the entered community VTC DID — kicks off the automated
-    /// persona-mint + sub-context + join-submit sequence.
+    /// Submit the entered community VTC DID. With existing personas this opens
+    /// the identity-choice page (R-B-3); with none it kicks off the mint+join
+    /// sequence directly.
     JoinSubmitVtc(String),
+
+    /// Move the identity-choice highlight to this row (reuse option, or the
+    /// trailing "mint new" row).
+    JoinIdentitySelect(usize),
+
+    /// Commit the highlighted identity choice: "mint new" launches the sequence;
+    /// a reuse option arms the cross-community linkage warning (R-B-3 / D1).
+    JoinIdentityChoose,
+
+    /// Confirm reusing the highlighted persona (after the linkage warning) and
+    /// launch the join sequence with it.
+    JoinReuseConfirm,
+
+    /// Dismiss the reuse linkage warning without choosing.
+    JoinReuseCancel,
 
     /// Cancel the join flow and return to the main page.
     JoinCancel,

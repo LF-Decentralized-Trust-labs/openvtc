@@ -29,11 +29,21 @@ use crate::{
     state_handler::{
         StateHandler,
         actions::Action,
-        join::JoinPage,
+        join::{JoinPage, PersonaOption},
+        main_page::shorten_did,
         setup_sequence::{Completion, config::ConfigExtension, vta},
         state::{ActivePage, State},
     },
 };
+
+/// Which identity to present to the community being joined (R-B-3 / D1).
+#[derive(Clone, Debug)]
+enum JoinIdentityChoice {
+    /// Mint a fresh, self-contained `did:webvh` persona (D6).
+    Mint,
+    /// Reuse an existing account persona (links the user across communities).
+    Reuse(PersonaId),
+}
 
 impl StateHandler {
     /// Run the join flow until the user cancels or the sequence finishes.
@@ -78,71 +88,107 @@ impl StateHandler {
                             let Some(vtc_did) = validate_join_input(&vtc_did) else {
                                 continue;
                             };
-                            // Move to the progress page and lock input.
-                            state.join.page = JoinPage::Progress;
-                            state.join.processing = true;
-                            state.join.completed = Completion::NotFinished;
-                            state.join.messages.clear();
-                            state.join.info(format!("Joining {vtc_did}…"));
-                            let _ = self.state_tx.send(state.clone());
-
-                            // R15: race the multi-step VTA sequence against the
-                            // interrupt so Ctrl-C / Exit stay live for its whole
-                            // (potentially many-second, network-bound) duration.
-                            // When an interrupt fires, the sequence future is
-                            // DROPPED — cancelled at whatever `.await` it was
-                            // parked on — and we leave via `JoinExit::Exit`, the
-                            // existing path that restores the terminal.
-                            //
-                            // `minted_persona` is the only handle to mid-sequence
-                            // persisted state: `mint_persona_into` writes a
-                            // persona to disk before the join receipt, so a cancel
-                            // after that point must roll it back to honour the
-                            // "leaves no partial config" contract. It lives in the
-                            // outer scope (not borrowed by the future) so it is
-                            // readable after the future is dropped.
-                            let mut minted_persona: Option<PersonaId> = None;
-                            let sequence = run_join_sequence(
-                                self,
-                                state,
-                                tdk,
-                                config,
-                                admin_vta,
-                                profile,
-                                vtc_did,
-                                &mut minted_persona,
-                            );
-                            let interrupted =
-                                race_against_interrupt(sequence, interrupt_rx).await;
-
-                            if let Some(interrupted) = interrupted {
-                                // The sequence future has been dropped here, so
-                                // its `&mut config` / `&mut state` borrows are
-                                // released and we can clean up. If a persona was
-                                // minted (and persisted) but never bound to a
-                                // community, roll it back so the next load sees no
-                                // orphan identity — the same cleanup the failure
-                                // paths use. A persona already referenced by a
-                                // community means the join completed before the
-                                // interrupt landed; leave it.
-                                if let Some(persona_id) = minted_persona
-                                    && !config.account.persona_referenced(&persona_id)
-                                {
-                                    rollback_minted_persona(
-                                        config, persona_id, state, profile,
-                                    );
-                                }
-                                state.join.processing = false;
-                                state.join.completed = Completion::CompletedFail;
-                                state.join.info(
-                                    "Join cancelled. Any partially-minted persona was rolled back; a sub-context may remain at the VTA.",
+                            // Idempotency (R-B-9): refuse a duplicate live/pending
+                            // membership before bothering the user with an identity
+                            // choice.
+                            if is_duplicate_membership(config, &vtc_did) {
+                                state.join.page = JoinPage::Progress;
+                                state.join.fail(
+                                    "Already a member of (or have a pending request for) this community.",
                                 );
-                                state.main_page.log("Join cancelled by user.");
                                 let _ = self.state_tx.send(state.clone());
+                                continue;
+                            }
+                            // R-B-3 / D1: with existing personas, let the user choose
+                            // to reuse one or mint a fresh identity; with none (the
+                            // first join), there's nothing to reuse — mint directly.
+                            let options = build_persona_options(config);
+                            if options.is_empty() {
+                                if let Some(interrupted) = self
+                                    .launch_join_sequence(
+                                        JoinIdentityChoice::Mint,
+                                        vtc_did,
+                                        interrupt_rx,
+                                        state,
+                                        tdk,
+                                        config,
+                                        admin_vta,
+                                        profile,
+                                    )
+                                    .await
+                                {
+                                    return Ok(JoinExit::Exit(interrupted));
+                                }
+                            } else {
+                                state.join.pending_vtc = Some(vtc_did);
+                                state.join.persona_options = options;
+                                state.join.identity_selected = 0;
+                                state.join.reuse_confirm = None;
+                                state.join.page = JoinPage::IdentityChoice;
+                                let _ = self.state_tx.send(state.clone());
+                            }
+                        }
+                        Action::JoinIdentitySelect(i) => {
+                            // Clamp to the reuse rows plus the trailing "mint" row.
+                            state.join.identity_selected = i.min(state.join.mint_row());
+                            // Moving the highlight dismisses any armed warning.
+                            state.join.reuse_confirm = None;
+                            let _ = self.state_tx.send(state.clone());
+                        }
+                        Action::JoinIdentityChoose => {
+                            if state.join.mint_row_selected() {
+                                let Some(vtc_did) = state.join.pending_vtc.clone() else {
+                                    continue;
+                                };
+                                if let Some(interrupted) = self
+                                    .launch_join_sequence(
+                                        JoinIdentityChoice::Mint,
+                                        vtc_did,
+                                        interrupt_rx,
+                                        state,
+                                        tdk,
+                                        config,
+                                        admin_vta,
+                                        profile,
+                                    )
+                                    .await
+                                {
+                                    return Ok(JoinExit::Exit(interrupted));
+                                }
+                            } else if let Some(opt) =
+                                state.join.persona_options.get(state.join.identity_selected)
+                            {
+                                // Arm the cross-community linkage warning (D1).
+                                state.join.reuse_confirm = Some(opt.id);
+                                let _ = self.state_tx.send(state.clone());
+                            }
+                        }
+                        Action::JoinReuseConfirm => {
+                            let Some(persona_id) = state.join.reuse_confirm else {
+                                continue;
+                            };
+                            let Some(vtc_did) = state.join.pending_vtc.clone() else {
+                                continue;
+                            };
+                            state.join.reuse_confirm = None;
+                            if let Some(interrupted) = self
+                                .launch_join_sequence(
+                                    JoinIdentityChoice::Reuse(persona_id),
+                                    vtc_did,
+                                    interrupt_rx,
+                                    state,
+                                    tdk,
+                                    config,
+                                    admin_vta,
+                                    profile,
+                                )
+                                .await
+                            {
                                 return Ok(JoinExit::Exit(interrupted));
                             }
-
-                            state.join.processing = false;
+                        }
+                        Action::JoinReuseCancel => {
+                            state.join.reuse_confirm = None;
                             let _ = self.state_tx.send(state.clone());
                         }
                         _ => {}
@@ -155,6 +201,106 @@ impl StateHandler {
             let _ = self.state_tx.send(state.clone());
         }
     }
+
+    /// Move to the progress page and run [`run_join_sequence`] for the chosen
+    /// identity, raced against the interrupt (R15). Returns `Some(interrupted)`
+    /// when the user cancelled mid-sequence (the caller then exits the flow);
+    /// `None` when the sequence ran to its own success/failure terminal.
+    #[allow(clippy::too_many_arguments)]
+    async fn launch_join_sequence(
+        &self,
+        choice: JoinIdentityChoice,
+        vtc_did: String,
+        interrupt_rx: &mut broadcast::Receiver<Interrupted>,
+        state: &mut State,
+        tdk: &TDK,
+        config: &mut Config,
+        admin_vta: Option<&VtaClient>,
+        profile: &str,
+    ) -> Option<Interrupted> {
+        // Move to the progress page and lock input.
+        state.join.page = JoinPage::Progress;
+        state.join.processing = true;
+        state.join.completed = Completion::NotFinished;
+        state.join.messages.clear();
+        state.join.info(format!("Joining {vtc_did}…"));
+        let _ = self.state_tx.send(state.clone());
+
+        // R15: race the multi-step VTA sequence against the interrupt so Ctrl-C /
+        // Exit stay live for its whole (network-bound) duration. On interrupt the
+        // sequence future is DROPPED — cancelled at whatever `.await` it parked
+        // on. `minted_persona` is the only handle to mid-sequence persisted state
+        // (`mint_persona_into` writes a persona before the receipt), so a cancel
+        // after that point rolls it back. It lives outside the future so it stays
+        // readable after the drop. A *reused* persona is never set here, so it is
+        // never rolled back.
+        let mut minted_persona: Option<PersonaId> = None;
+        let sequence = run_join_sequence(
+            self,
+            state,
+            tdk,
+            config,
+            admin_vta,
+            profile,
+            vtc_did,
+            choice,
+            &mut minted_persona,
+        );
+        let interrupted = race_against_interrupt(sequence, interrupt_rx).await;
+
+        if let Some(interrupted) = interrupted {
+            if let Some(persona_id) = minted_persona
+                && !config.account.persona_referenced(&persona_id)
+            {
+                rollback_minted_persona(config, persona_id, state, profile);
+            }
+            state.join.processing = false;
+            state.join.completed = Completion::CompletedFail;
+            state.join.info(
+                "Join cancelled. Any partially-minted persona was rolled back; a sub-context may remain at the VTA.",
+            );
+            state.main_page.log("Join cancelled by user.");
+            let _ = self.state_tx.send(state.clone());
+            return Some(interrupted);
+        }
+
+        state.join.processing = false;
+        let _ = self.state_tx.send(state.clone());
+        None
+    }
+}
+
+/// Build the reuse options for the identity-choice page (R-B-3): every existing
+/// persona, labelled, with the communities it is already presented to (the
+/// linkage-warning detail). Sorted by label for a stable list.
+fn build_persona_options(config: &Config) -> Vec<PersonaOption> {
+    let mut options: Vec<PersonaOption> = config
+        .account
+        .personas
+        .values()
+        .map(|p| {
+            let mut linked_communities: Vec<String> = config
+                .account
+                .communities
+                .values()
+                .filter(|c| c.persona_ref == p.persona_id)
+                .map(|c| {
+                    c.display_name
+                        .clone()
+                        .unwrap_or_else(|| shorten_did(&c.vtc_did, 40))
+                })
+                .collect();
+            linked_communities.sort();
+            PersonaOption {
+                id: p.persona_id,
+                label: p.label.clone().unwrap_or_else(|| shorten_did(&p.did, 32)),
+                did: p.did.clone(),
+                linked_communities,
+            }
+        })
+        .collect();
+    options.sort_by(|a, b| a.label.cmp(&b.label).then_with(|| a.did.cmp(&b.did)));
+    options
 }
 
 /// Outcome of a `join_flow` invocation.
@@ -235,17 +381,13 @@ async fn run_join_sequence(
     admin_vta: Option<&VtaClient>,
     profile: &str,
     vtc_did: String,
+    choice: JoinIdentityChoice,
     minted_persona: &mut Option<PersonaId>,
 ) {
-    // 1. Idempotency (R-B-9): refuse a duplicate live/pending membership.
-    if is_duplicate_membership(config, &vtc_did) {
-        state
-            .join
-            .fail("Already a member of (or have a pending request for) this community.");
-        return;
-    }
+    // Idempotency (R-B-9) was already enforced at submit, before the identity
+    // choice — no re-check here.
 
-    // 3. The mint + join sequence needs the admin VTA session.
+    // The mint + join sequence needs the admin VTA session.
     let Some(admin_vta) = admin_vta else {
         state
             .join
@@ -265,114 +407,141 @@ async fn run_join_sequence(
 
     let top_context_id = config.account.top_context_id.clone();
 
-    // 4. Mint a fresh persona into `state.setup` (reusing the setup helpers).
-    // Persona signing/auth/encryption keys.
-    state
-        .join
-        .info("Creating persona keys (signing, authentication, encryption)…");
-    let _ = handler.state_tx.send(state.clone());
-    match vta::create_persona_keys(admin_vta, Some(&top_context_id)).await {
-        Ok(keys) => state.setup.did_keys = Some(keys),
-        Err(e) => {
-            state
-                .join
-                .fail(format!("Failed to create persona keys: {e}"));
-            return;
-        }
-    }
-    // WebVH update keys.
-    state.join.info("Creating DID update keys…");
-    let _ = handler.state_tx.send(state.clone());
-    match vta::create_update_keys(admin_vta, Some(&top_context_id)).await {
-        Ok((update, next_update)) => {
-            state.setup.vta.update_secret = Some(update);
-            state.setup.vta.next_update_secret = Some(next_update);
-        }
-        Err(e) => {
-            state
-                .join
-                .fail(format!("Failed to create update keys: {e}"));
-            return;
-        }
-    }
-
-    // Pick the first WebVH server. Serverless mint is a deliberate follow-up.
-    state.join.info("Finding a DID hosting server…");
-    let _ = handler.state_tx.send(state.clone());
-    let server_id = match vta::list_webvh_servers(admin_vta).await {
-        Ok(servers) => match servers.into_iter().next() {
-            Some(s) => s.id,
+    // Resolve the persona to present: reuse an existing account persona (R-B-3)
+    // or mint a fresh, self-contained one (D6). Only a *minted* persona is
+    // recorded in `minted_persona` for rollback — a reused persona pre-exists and
+    // must never be rolled back.
+    let (persona_id, persona_did) = match choice {
+        JoinIdentityChoice::Reuse(persona_id) => match config.identities.get(&persona_id) {
+            Some(ident) => {
+                let did = ident.persona_did().to_string();
+                state.join.info(format!("Reusing persona {did}…"));
+                let _ = handler.state_tx.send(state.clone());
+                (persona_id, did)
+            }
             None => {
-                state.join.fail(
-                    "No WebVH server available from the VTA (serverless mint not yet supported).",
-                );
+                state
+                    .join
+                    .fail("Selected persona is unavailable — cannot reuse it.");
                 return;
             }
         },
-        Err(e) => {
+        JoinIdentityChoice::Mint => {
+            // 4. Mint a fresh persona into `state.setup` (reusing the setup helpers).
+            // Persona signing/auth/encryption keys.
             state
                 .join
-                .fail(format!("Failed to list WebVH servers: {e}"));
-            return;
-        }
-    };
+                .info("Creating persona keys (signing, authentication, encryption)…");
+            let _ = handler.state_tx.send(state.clone());
+            match vta::create_persona_keys(admin_vta, Some(&top_context_id)).await {
+                Ok(keys) => state.setup.did_keys = Some(keys),
+                Err(e) => {
+                    state
+                        .join
+                        .fail(format!("Failed to create persona keys: {e}"));
+                    return;
+                }
+            }
+            // WebVH update keys.
+            state.join.info("Creating DID update keys…");
+            let _ = handler.state_tx.send(state.clone());
+            match vta::create_update_keys(admin_vta, Some(&top_context_id)).await {
+                Ok((update, next_update)) => {
+                    state.setup.vta.update_secret = Some(update);
+                    state.setup.vta.next_update_secret = Some(next_update);
+                }
+                Err(e) => {
+                    state
+                        .join
+                        .fail(format!("Failed to create update keys: {e}"));
+                    return;
+                }
+            }
 
-    // Create the persona did:webvh via the server (auto-assigned path).
-    state
-        .join
-        .info(format!("Creating persona DID via {server_id}…"));
-    let _ = handler.state_tx.send(state.clone());
-    match vta::create_did_via_server(
-        admin_vta,
-        tdk,
-        &top_context_id,
-        &server_id,
-        WebvhPathMode::AutoAssign,
-    )
-    .await
-    {
-        Ok((keys, did, document, _mnemonic)) => {
-            state.setup.did_keys = Some(keys);
-            state.setup.webvh_address.did = did;
-            state.setup.webvh_address.document = document;
-        }
-        Err(e) => {
+            // Pick the first WebVH server. Serverless mint is a deliberate follow-up.
+            state.join.info("Finding a DID hosting server…");
+            let _ = handler.state_tx.send(state.clone());
+            let server_id = match vta::list_webvh_servers(admin_vta).await {
+                Ok(servers) => match servers.into_iter().next() {
+                    Some(s) => s.id,
+                    None => {
+                        state.join.fail(
+                    "No WebVH server available from the VTA (serverless mint not yet supported).",
+                );
+                        return;
+                    }
+                },
+                Err(e) => {
+                    state
+                        .join
+                        .fail(format!("Failed to list WebVH servers: {e}"));
+                    return;
+                }
+            };
+
+            // Create the persona did:webvh via the server (auto-assigned path).
             state
                 .join
-                .fail(format!("Failed to create persona DID: {e}"));
-            return;
-        }
-    }
+                .info(format!("Creating persona DID via {server_id}…"));
+            let _ = handler.state_tx.send(state.clone());
+            match vta::create_did_via_server(
+                admin_vta,
+                tdk,
+                &top_context_id,
+                &server_id,
+                WebvhPathMode::AutoAssign,
+            )
+            .await
+            {
+                Ok((keys, did, document, _mnemonic)) => {
+                    state.setup.did_keys = Some(keys);
+                    state.setup.webvh_address.did = did;
+                    state.setup.webvh_address.document = document;
+                }
+                Err(e) => {
+                    state
+                        .join
+                        .fail(format!("Failed to create persona DID: {e}"));
+                    return;
+                }
+            }
 
-    // The persona's mediator is the account's VTA mediator: the DID minted via
-    // the VTA's webvh server advertises that mediator in its DIDComm service, so
-    // the persona listener must use the same one. Hardcoding `None` (the public
-    // default) left the persona with no usable mediator — the listener then
-    // failed with "No Mediator is configured" and retried forever.
-    state.setup.custom_mediator = match &config.key_backend {
-        openvtc_core::config::KeyBackend::Vta { mediator_did, .. } => mediator_did.clone(),
-        _ => None,
-    };
-    state.setup.username = display_name.clone().unwrap_or_else(|| {
-        openvtc_core::config::context_path::render_for_display(&vtc_did).to_string()
-    });
+            // The persona's mediator is the account's VTA mediator: the DID minted via
+            // the VTA's webvh server advertises that mediator in its DIDComm service, so
+            // the persona listener must use the same one. Hardcoding `None` (the public
+            // default) left the persona with no usable mediator — the listener then
+            // failed with "No Mediator is configured" and retried forever.
+            state.setup.custom_mediator = match &config.key_backend {
+                openvtc_core::config::KeyBackend::Vta { mediator_did, .. } => mediator_did.clone(),
+                _ => None,
+            };
+            state.setup.username = display_name.clone().unwrap_or_else(|| {
+                openvtc_core::config::context_path::render_for_display(&vtc_did).to_string()
+            });
 
-    // 5. Persist the persona into the account. `mint_persona_into` writes the
-    // persona record + runtime identity + key info to disk *immediately* (a
-    // synchronous `Config::save`), so from here until the community record is
-    // persisted (step 9) the on-disk config holds a persona with no community.
-    // Record its id so a cancel (R15) or later failure can roll it back.
-    let persona_id = match Config::mint_persona_into(config, &state.setup, tdk, profile).await {
-        Ok(id) => id,
-        Err(e) => {
-            state.join.fail(format!("Failed to save persona: {e}"));
-            return;
+            // 5. Persist the persona into the account. `mint_persona_into` writes the
+            // persona record + runtime identity + key info to disk *immediately* (a
+            // synchronous `Config::save`), so from here until the community record is
+            // persisted (step 9) the on-disk config holds a persona with no community.
+            // Record its id so a cancel (R15) or later failure can roll it back.
+            let persona_id =
+                match Config::mint_persona_into(config, &state.setup, tdk, profile).await {
+                    Ok(id) => id,
+                    Err(e) => {
+                        state.join.fail(format!("Failed to save persona: {e}"));
+                        return;
+                    }
+                };
+            *minted_persona = Some(persona_id);
+            let persona_did = state.setup.webvh_address.did.clone();
+            state.join.info(format!("Persona created: {persona_did}"));
+            let _ = handler.state_tx.send(state.clone());
+            (persona_id, persona_did)
         }
     };
-    *minted_persona = Some(persona_id);
-    let persona_did = state.setup.webvh_address.did.clone();
-    state.join.info(format!("Persona created: {persona_did}"));
-    let _ = handler.state_tx.send(state.clone());
+    // Only a freshly-minted persona is rolled back on a later failure; a reused
+    // persona pre-existed and is left intact.
+    let minted = minted_persona.is_some();
 
     // 6. Derive the per-community sub-context id (D9, collision-safe).
     let sub_context_id =
@@ -388,7 +557,9 @@ async fn run_join_sequence(
                 state
                     .join
                     .fail(format!("Failed to derive sub-context id: {e}"));
-                rollback_minted_persona(config, persona_id, state, profile);
+                if minted {
+                    rollback_minted_persona(config, persona_id, state, profile);
+                }
                 return;
             }
         };
@@ -402,7 +573,9 @@ async fn run_join_sequence(
         state
             .join
             .fail(format!("Failed to create sub-context: {e}"));
-        rollback_minted_persona(config, persona_id, state, profile);
+        if minted {
+            rollback_minted_persona(config, persona_id, state, profile);
+        }
         return;
     }
 
@@ -423,7 +596,9 @@ async fn run_join_sequence(
         state
             .join
             .fail("Messaging (ATM) unavailable — cannot submit the join request.");
-        rollback_minted_persona(config, persona_id, state, profile);
+        if minted {
+            rollback_minted_persona(config, persona_id, state, profile);
+        }
         return;
     };
     let (applicant_did, persona_profile, persona_mediator) =
@@ -437,7 +612,9 @@ async fn run_join_sequence(
                 state
                     .join
                     .fail("Persona identity unavailable after mint — cannot submit.");
-                rollback_minted_persona(config, persona_id, state, profile);
+                if minted {
+                    rollback_minted_persona(config, persona_id, state, profile);
+                }
                 return;
             }
         };

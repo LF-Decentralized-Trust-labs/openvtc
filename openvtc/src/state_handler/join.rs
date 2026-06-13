@@ -7,7 +7,7 @@
 //! [`SetupState`](crate::state_handler::setup_sequence::SetupState) on
 //! `State.setup`; this struct only tracks the join-specific surface.
 
-use openvtc_core::config::account::CommunityRecord;
+use openvtc_core::config::account::{CommunityRecord, PersonaId};
 
 use crate::state_handler::setup_sequence::{Completion, MessageType};
 
@@ -17,8 +17,25 @@ pub enum JoinPage {
     /// Operator enters the community (VTC) DID.
     #[default]
     EnterDid,
+    /// Choose the identity to present (R-B-3 / D1): reuse an existing persona or
+    /// mint a fresh one. Skipped when the account has no personas yet.
+    IdentityChoice,
     /// Automated mint + join sequence progress / result.
     Progress,
+}
+
+/// One selectable existing persona on the identity-choice page (R-B-3).
+#[derive(Clone, Debug)]
+pub struct PersonaOption {
+    /// Stable persona id, the reuse target.
+    pub id: PersonaId,
+    /// Human label (the persona's label, or a shortened DID).
+    pub label: String,
+    /// The persona's `did:webvh` (shown as detail).
+    pub did: String,
+    /// Display names of communities this persona is *already* presented to —
+    /// drives the cross-community linkage warning (D1).
+    pub linked_communities: Vec<String>,
 }
 
 /// Transient state for the join flow.
@@ -28,6 +45,17 @@ pub struct JoinState {
     pub page: JoinPage,
     /// Display name resolved from the VTC DID document (best-effort).
     pub display_name: Option<String>,
+    /// The VTC DID awaiting an identity choice (set on `EnterDid` submit, read
+    /// when the chosen identity launches the sequence).
+    pub pending_vtc: Option<String>,
+    /// Existing personas offered for reuse on the identity-choice page (R-B-3).
+    pub persona_options: Vec<PersonaOption>,
+    /// Highlighted row on the identity-choice page. `0..persona_options.len()`
+    /// indexes a reuse option; `persona_options.len()` is the "mint new" row.
+    pub identity_selected: usize,
+    /// When `Some(id)`, the cross-community linkage warning for reusing that
+    /// persona is shown and awaiting `y`/`n` confirmation (D1).
+    pub reuse_confirm: Option<PersonaId>,
     /// True while the background mint+join sequence is running. Locks input.
     pub processing: bool,
     /// Progress / error log shown on the `JoinProgress` page.
@@ -36,7 +64,7 @@ pub struct JoinState {
     pub completed: Completion,
     /// The pending community record created on success (for the success page).
     pub created_community: Option<CommunityRecord>,
-    /// The DID of the persona minted for this community, shown on the success
+    /// The DID of the persona presented for this community, shown on the success
     /// page alongside the community DID.
     pub created_persona_did: Option<String>,
 }
@@ -45,6 +73,16 @@ impl JoinState {
     /// Reset to a fresh `EnterDid` page (called when the flow opens).
     pub fn reset(&mut self) {
         *self = JoinState::default();
+    }
+
+    /// The index of the "mint a new identity" row (one past the reuse options).
+    pub fn mint_row(&self) -> usize {
+        self.persona_options.len()
+    }
+
+    /// Whether the highlighted identity-choice row is the "mint new" row.
+    pub fn mint_row_selected(&self) -> bool {
+        self.identity_selected >= self.persona_options.len()
     }
 
     /// Append an info message to the progress log.
@@ -57,5 +95,36 @@ impl JoinState {
         self.messages.push(MessageType::Error(msg.into()));
         self.completed = Completion::CompletedFail;
         self.processing = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn opt() -> PersonaOption {
+        PersonaOption {
+            id: PersonaId::new(),
+            label: "p".to_string(),
+            did: "did:webvh:x".to_string(),
+            linked_communities: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mint_row_sits_past_the_reuse_options() {
+        let mut js = JoinState::default();
+        // No personas: the only row is "mint", at index 0.
+        assert_eq!(js.mint_row(), 0);
+        assert!(js.mint_row_selected());
+
+        js.persona_options = vec![opt(), opt()];
+        assert_eq!(js.mint_row(), 2);
+        js.identity_selected = 0;
+        assert!(!js.mint_row_selected());
+        js.identity_selected = 1;
+        assert!(!js.mint_row_selected());
+        js.identity_selected = 2;
+        assert!(js.mint_row_selected());
     }
 }

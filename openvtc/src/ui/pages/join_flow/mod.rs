@@ -15,7 +15,10 @@ use crate::{
     },
     ui::{
         component::{Component, ComponentRender},
-        pages::join_flow::{join_progress::JoinProgress, vtc_enter_did::VtcEnterDid},
+        pages::join_flow::{
+            identity_choice::IdentityChoice, join_progress::JoinProgress,
+            vtc_enter_did::VtcEnterDid,
+        },
     },
 };
 use crossterm::event::{KeyEvent, KeyEventKind};
@@ -23,6 +26,7 @@ use ratatui::Frame;
 use tokio::sync::mpsc::UnboundedSender;
 use tui_input::Input;
 
+pub mod identity_choice;
 pub mod join_progress;
 pub mod vtc_enter_did;
 
@@ -38,6 +42,7 @@ pub struct JoinFlow {
 
     // Page handlers (zero-sized — they read from `props.state`).
     pub vtc_enter_did: VtcEnterDid,
+    pub identity_choice: IdentityChoice,
     pub join_progress: JoinProgress,
 
     /// State-mapped join props.
@@ -66,6 +71,7 @@ impl Component for JoinFlow {
             action_tx,
             vtc_did: Input::default(),
             vtc_enter_did: VtcEnterDid,
+            identity_choice: IdentityChoice,
             join_progress: JoinProgress,
             props: Props::from(state),
         }
@@ -88,6 +94,7 @@ impl Component for JoinFlow {
         }
         match self.props.state.page {
             JoinPage::EnterDid => VtcEnterDid::handle_key_event(self, key),
+            JoinPage::IdentityChoice => IdentityChoice::handle_key_event(self, key),
             JoinPage::Progress => JoinProgress::handle_key_event(self, key),
         }
     }
@@ -107,6 +114,7 @@ impl ComponentRender<()> for JoinFlow {
                 self.vtc_enter_did
                     .render(&self.props.state, &self.vtc_did, frame)
             }
+            JoinPage::IdentityChoice => self.identity_choice.render(&self.props.state, frame),
             JoinPage::Progress => self.join_progress.render(&self.props.state, frame),
         }
     }
