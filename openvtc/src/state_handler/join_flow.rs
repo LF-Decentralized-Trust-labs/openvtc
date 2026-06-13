@@ -17,7 +17,7 @@ use anyhow::Result;
 use chrono::Utc;
 use openvtc_core::config::{
     Config,
-    account::{CommunityRecord, PersonaId},
+    account::{CommunityRecord, PersonaId, VtcDid},
     context_path::build_sub_context_id,
 };
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver};
@@ -29,7 +29,7 @@ use crate::{
     state_handler::{
         StateHandler,
         actions::Action,
-        join::{JoinPage, PersonaOption},
+        join::{JoinPage, JoinState, PersonaOption},
         main_page::shorten_did,
         setup_sequence::{Completion, config::ConfigExtension, vta},
         state::{ActivePage, State},
@@ -43,6 +43,26 @@ enum JoinIdentityChoice {
     Mint,
     /// Reuse an existing account persona (links the user across communities).
     Reuse(PersonaId),
+}
+
+/// The persona + community of a just-completed join, handed back to the runtime
+/// loop so it can bring a live session up immediately (R-B-5 / D11) rather than
+/// only on the next launch.
+pub(crate) struct JoinedSession {
+    pub persona_id: PersonaId,
+    pub persona_did: String,
+    pub vtc_did: VtcDid,
+}
+
+/// Extract the [`JoinedSession`] from a finished join's state — `Some` only when
+/// the sequence persisted a community (i.e. the join succeeded).
+fn joined_session(js: &JoinState) -> Option<JoinedSession> {
+    let record = js.created_community.as_ref()?;
+    Some(JoinedSession {
+        persona_id: record.persona_ref,
+        persona_did: js.created_persona_did.clone().unwrap_or_default(),
+        vtc_did: record.vtc_did.clone(),
+    })
 }
 
 impl StateHandler {
@@ -81,8 +101,10 @@ impl StateHandler {
                         }
                         Action::JoinCancel => {
                             // Leave the flow; the caller restores the main page.
+                            // Hand back the joined session (if any) so the runtime
+                            // loop can bring its live session up (R-B-5).
                             state.active_page = ActivePage::Main;
-                            return Ok(JoinExit::Returned);
+                            return Ok(JoinExit::Returned(joined_session(&state.join)));
                         }
                         Action::JoinSubmitVtc(vtc_did) => {
                             let Some(vtc_did) = validate_join_input(&vtc_did) else {
@@ -306,8 +328,9 @@ fn build_persona_options(config: &Config) -> Vec<PersonaOption> {
 /// Outcome of a `join_flow` invocation.
 pub(crate) enum JoinExit {
     /// User cancelled / finished — return to the main page and resume the
-    /// caller's loop.
-    Returned,
+    /// caller's loop. Carries the just-joined session when a join succeeded, so
+    /// the runtime loop can register it + start its listener live (R-B-5).
+    Returned(Option<JoinedSession>),
     /// Application is exiting (Exit / UXError / interrupt).
     Exit(Interrupted),
 }
@@ -751,9 +774,12 @@ mod tests {
     //! (`join_flow` → `rollback_minted_persona` when `!persona_referenced`).
 
     use super::race_against_interrupt;
-    use super::{build_pending_record, is_duplicate_membership, validate_join_input};
+    use super::{
+        build_pending_record, is_duplicate_membership, joined_session, validate_join_input,
+    };
     use crate::Interrupted;
     use crate::state_handler::dispatch_util::test_config;
+    use crate::state_handler::join::JoinState;
     use openvtc_core::config::account::{CommunityRecord, CommunityStatus, PersonaId};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -857,6 +883,31 @@ mod tests {
             }
             other => panic!("expected Pending status, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn joined_session_extracted_only_on_success() {
+        // No persisted community → nothing for the runtime loop to register (R-B-5).
+        let mut js = JoinState::default();
+        assert!(joined_session(&js).is_none());
+
+        // A successful sequence leaves the record + persona did → a session.
+        let persona = PersonaId::new();
+        let rec = build_pending_record(
+            "did:vtc:c".to_string(),
+            None,
+            "top/slug".to_string(),
+            persona,
+            uuid::Uuid::new_v4(),
+            chrono::Utc::now(),
+        );
+        js.created_community = Some(rec);
+        js.created_persona_did = Some("did:webvh:persona".to_string());
+
+        let joined = joined_session(&js).expect("a persisted community yields a session");
+        assert_eq!(joined.persona_id, persona);
+        assert_eq!(joined.persona_did, "did:webvh:persona");
+        assert_eq!(joined.vtc_did, "did:vtc:c");
     }
 
     #[tokio::test]

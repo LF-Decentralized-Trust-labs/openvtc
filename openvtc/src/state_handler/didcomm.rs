@@ -518,6 +518,32 @@ pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -
     }
 }
 
+/// Build the persona listener config for a **specific** persona (not necessarily
+/// the active one), mirroring one iteration of [`build_listener_configs`]. Used
+/// to bring a freshly-joined community's session live at runtime (R-B-5) without
+/// a restart. Returns `None` if `persona_id` does not resolve to an identity.
+pub async fn persona_listener_config_for(
+    config: &Config,
+    tdk: &affinidi_tdk::TDK,
+    persona_id: openvtc_core::config::account::PersonaId,
+) -> Option<ListenerConfig> {
+    let ident = config.identities.get(&persona_id)?;
+    let did = ident.did.as_str();
+    let secrets = get_secrets_for_did(tdk, config, did).await;
+    let mediator = ident
+        .mediator_did
+        .as_deref()
+        .unwrap_or(config.mediator_did());
+    let label = config.persona_profile_label_for(persona_id);
+    Some(ListenerConfig {
+        id: persona_listener_id(did),
+        profile: make_profile(did, mediator, &label, secrets),
+        restart_policy: default_listener_restart_policy(),
+        auto_delete: true,
+        ..Default::default()
+    })
+}
+
 /// Start the DIDComm service with the given config.
 pub async fn start_service(
     config: &Config,

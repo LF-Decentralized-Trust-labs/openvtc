@@ -858,8 +858,22 @@ impl StateHandler {
                             )
                             .await
                         {
-                            Ok(join_flow::JoinExit::Returned) => {
+                            Ok(join_flow::JoinExit::Returned(joined)) => {
                                 state.active_page = state::ActivePage::Main;
+                                // R-B-5 / D11: bring the new community's session up
+                                // live so the VTC's async receipt is received now,
+                                // not only after a restart.
+                                if let Some(joined) = joined {
+                                    register_joined_session(
+                                        &mut session_manager,
+                                        &didcomm_service,
+                                        &tdk,
+                                        &config,
+                                        joined,
+                                        &mut state,
+                                    )
+                                    .await;
+                                }
                             }
                             Ok(join_flow::JoinExit::Exit(interrupted)) => {
                                 break interrupted;
@@ -1599,7 +1613,13 @@ impl StateHandler {
                                 )
                                 .await
                             {
-                                Ok(join_flow::JoinExit::Returned) => {
+                                // The joined session is ignored here: a first join
+                                // from State A flips `joined_with_identity`, breaking
+                                // `Joined` so `run()` restarts into the full pipeline,
+                                // whose startup registration (`IdentityRegistry`)
+                                // brings the new session up (R-B-5). Live in-loop
+                                // registration is only needed in the runtime loop.
+                                Ok(join_flow::JoinExit::Returned(_)) => {
                                     // Back on the main page; resume the degraded loop.
                                     state.active_page = state::ActivePage::Main;
                                     joined_with_identity =
@@ -1781,6 +1801,66 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         _ => return false,
     }
     true
+}
+
+/// Bring a just-joined community's session live (R-B-5 / D11): register it with
+/// the multi-session manager and, when that creates a fresh session, start the
+/// persona's DIDComm listener now so the VTC's asynchronous receipt arrives
+/// without a restart. `add_listener` returns promptly — the mediator connect
+/// proceeds under the listener's restart policy, and the `ListenerEvent::Connected`
+/// handler flips the session to `Connected`. Failures are non-fatal (a restart
+/// recovers the session) and surfaced to the activity log.
+async fn register_joined_session(
+    session_manager: &mut session_manager::SessionManager,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    tdk: &TDK,
+    config: &Config,
+    joined: join_flow::JoinedSession,
+    state: &mut State,
+) {
+    use session_manager::RegisterOutcome;
+
+    let lid = didcomm::persona_listener_id(&joined.persona_did);
+    match session_manager.register(joined.persona_id, &lid, joined.vtc_did.clone()) {
+        RegisterOutcome::JoinedExisting => {
+            // A reused persona that is already live — the new community shares its
+            // session; no new listener (D1/D11).
+            state
+                .main_page
+                .log("New community attached to an existing live session.");
+        }
+        RegisterOutcome::AtCapacity => {
+            // No silent caps (D15): the join succeeded but the bound is reached.
+            state.main_page.log(format!(
+                "Joined, but its live session is not active yet: the session limit ({}) is \
+                 reached. It will connect when one frees up or on next launch.",
+                session_manager.max_sessions(),
+            ));
+        }
+        RegisterOutcome::Created => {
+            match didcomm::persona_listener_config_for(config, tdk, joined.persona_id).await {
+                Some(cfg) => {
+                    if let Err(e) = service.add_listener(cfg).await {
+                        session_manager.mark_failed(&lid, format!("{e:#}"));
+                        state.main_page.log(format!(
+                            "Joined, but couldn't start its live session now (it will connect \
+                             on next launch): {e}"
+                        ));
+                    } else {
+                        state.main_page.log("New community session connecting…");
+                    }
+                }
+                None => {
+                    // The join just wrote this identity, so this is unexpected — but
+                    // never leave a registered session with no listener behind it.
+                    session_manager.deregister(&joined.vtc_did);
+                    state.main_page.log(
+                        "Joined, but its identity could not be resolved to start a live session.",
+                    );
+                }
+            }
+        }
+    }
 }
 
 // Per-domain action dispatch lives in the corresponding sub-module:
