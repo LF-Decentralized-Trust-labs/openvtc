@@ -4,9 +4,84 @@ use sha2::{Digest, Sha512};
 use std::io::Read;
 use std::path::Path;
 
-use crate::config::SigningConfig;
+use crate::config::{self, SigningConfig};
 use crate::policy;
 use crate::vta;
+
+/// Environment variable that selects which persona signs (R-G-1), as a
+/// per-invocation override. Its value is the persona's `did:webvh:…#key-N`.
+pub const SIGNING_KEY_ENV: &str = "DID_GIT_SIGN_KEY";
+
+/// Per-repo git config key that selects which persona signs (R-G-1):
+/// `git config did-git-sign.key did:webvh:…#key-N`.
+pub const SIGNING_KEY_GIT_CONFIG: &str = "did-git-sign.key";
+
+/// Where the effective signing-key selection came from (for clear diagnostics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySource {
+    /// The [`SIGNING_KEY_ENV`] environment variable.
+    Env,
+    /// The [`SIGNING_KEY_GIT_CONFIG`] per-repo git config setting.
+    GitConfig,
+    /// The `did_key_id` from the config file git passed via `-f`.
+    ConfigFile,
+}
+
+impl std::fmt::Display for KeySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            KeySource::Env => "the DID_GIT_SIGN_KEY environment variable",
+            KeySource::GitConfig => "git config did-git-sign.key",
+            KeySource::ConfigFile => "the did-git-sign config file",
+        };
+        f.write_str(s)
+    }
+}
+
+/// Pure selection precedence (R-G-1): env var > per-repo git config > the config
+/// file's own `did_key_id`. Whitespace is trimmed and an empty value is treated
+/// as unset, so an exported-but-empty variable doesn't shadow the others.
+fn select_signing_key(
+    config_did: &str,
+    env: Option<&str>,
+    git: Option<&str>,
+) -> (String, KeySource) {
+    let clean = |v: Option<&str>| {
+        v.map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    if let Some(v) = clean(env) {
+        return (v, KeySource::Env);
+    }
+    if let Some(v) = clean(git) {
+        return (v, KeySource::GitConfig);
+    }
+    (config_did.to_string(), KeySource::ConfigFile)
+}
+
+/// Read the per-repo git config selector (`did-git-sign.key`), if set. Runs in
+/// the current directory — git sets the signer's cwd to the repo.
+fn git_config_signing_key() -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["config", "--get", SIGNING_KEY_GIT_CONFIG])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!v.is_empty()).then_some(v)
+}
+
+/// Resolve the effective signing `did_key_id` and where it came from (R-G-1),
+/// reading the env var and the per-repo git config around the pure
+/// [`select_signing_key`].
+fn resolve_signing_key(config_did: &str) -> (String, KeySource) {
+    let env = std::env::var(SIGNING_KEY_ENV).ok();
+    let git = git_config_signing_key();
+    select_signing_key(config_did, env.as_deref(), git.as_deref())
+}
 
 /// Magic preamble for SSH signatures (PROTOCOL.sshsig)
 const SSHSIG_MAGIC: &[u8; 6] = b"SSHSIG";
@@ -52,8 +127,27 @@ pub async fn handle_sign(
         );
     }
 
-    // Load config
+    // Load the config git pointed us at (`-f`).
     let cfg = SigningConfig::load(config_path)?;
+
+    // R-G-1: resolve which community persona signs — an env var or a per-repo
+    // git-config setting may override the config file's persona. R-G-2: when an
+    // override names a persona with no stored credentials, fail clearly rather
+    // than silently signing as an arbitrary (the config file's) persona.
+    let (did_key_id, source) = resolve_signing_key(&cfg.did_key_id);
+    if did_key_id != cfg.did_key_id && config::load_vta_credentials(&did_key_id).is_err() {
+        anyhow::bail!(
+            "did-git-sign: the signing persona '{did_key_id}' selected via {source} has no \
+             stored credentials. Run `did-git-sign init` for that persona, or clear the \
+             override ({} / `git config --unset {}`).",
+            SIGNING_KEY_ENV,
+            SIGNING_KEY_GIT_CONFIG,
+        );
+    }
+    let cfg = SigningConfig {
+        did_key_id,
+        user_name: cfg.user_name,
+    };
 
     // Authenticate with VTA and fetch signing key
     let (client, creds) = vta::authenticate(&cfg).await?;
@@ -206,6 +300,50 @@ fn base64_encode(data: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signing_key_selection_precedence() {
+        // env wins over git config and the config file (R-G-1).
+        let (key, src) = select_signing_key("cfg#k", Some("env#k"), Some("git#k"));
+        assert_eq!(key, "env#k");
+        assert_eq!(src, KeySource::Env);
+
+        // git config wins over the config file when no env override.
+        let (key, src) = select_signing_key("cfg#k", None, Some("git#k"));
+        assert_eq!(key, "git#k");
+        assert_eq!(src, KeySource::GitConfig);
+
+        // Falls back to the config file's own did_key_id (back-compat).
+        let (key, src) = select_signing_key("cfg#k", None, None);
+        assert_eq!(key, "cfg#k");
+        assert_eq!(src, KeySource::ConfigFile);
+    }
+
+    #[test]
+    fn signing_key_selection_ignores_blank_overrides() {
+        // An exported-but-empty / whitespace var must not shadow lower precedence.
+        let (key, src) = select_signing_key("cfg#k", Some("   "), Some("git#k"));
+        assert_eq!(key, "git#k");
+        assert_eq!(src, KeySource::GitConfig);
+
+        let (key, src) = select_signing_key("cfg#k", Some(""), None);
+        assert_eq!(key, "cfg#k");
+        assert_eq!(src, KeySource::ConfigFile);
+
+        // A value is trimmed.
+        let (key, _) = select_signing_key("cfg#k", Some("  env#k \n"), None);
+        assert_eq!(key, "env#k");
+    }
+
+    #[test]
+    fn key_source_messages_name_the_origin() {
+        assert!(KeySource::Env.to_string().contains("DID_GIT_SIGN_KEY"));
+        assert!(
+            KeySource::GitConfig
+                .to_string()
+                .contains("did-git-sign.key")
+        );
+    }
 
     #[test]
     fn test_ssh_string_encoding() {

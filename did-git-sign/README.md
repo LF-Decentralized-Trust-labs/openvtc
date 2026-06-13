@@ -108,6 +108,27 @@ Check your configuration:
 did-git-sign status
 ```
 
+### Selecting which community persona signs
+
+With more than one provisioned persona, you can choose which one signs without
+re-running `init`. At sign time the signing key is resolved in this order:
+
+1. The `DID_GIT_SIGN_KEY` environment variable (per-invocation override).
+2. The `did-git-sign.key` per-repo git config setting.
+3. The `did_key_id` in the config file git points at (the `init` default).
+
+The value is the persona's `did:webvh:…#key-N`. It must have credentials stored
+in the keyring (i.e. you ran `init` for that persona); otherwise signing fails
+with a clear message rather than silently signing as a different persona.
+
+```bash
+# One commit as a specific persona:
+DID_GIT_SIGN_KEY=did:webvh:abc:example.com#key-1 git commit -m "…"
+
+# Pin a persona for this repository:
+git config did-git-sign.key did:webvh:abc:example.com#key-1
+```
+
 ## Security Model
 
 - **No key material on disk** — the VTA credential private key is stored in the
