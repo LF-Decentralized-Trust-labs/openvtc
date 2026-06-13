@@ -25,12 +25,9 @@ use std::{
 };
 use tokio::sync::watch;
 
-use crate::{
-    state_handler::{
-        setup_sequence::{ConfigProtection, MessageType, SetupState},
-        state::State,
-    },
-    ui::pages::setup_flow::SetupFlow,
+use crate::state_handler::{
+    setup_sequence::{ConfigProtection, MessageType, SetupState},
+    state::State,
 };
 
 pub trait ConfigExtension {
@@ -49,20 +46,6 @@ pub trait ConfigExtension {
         file: &str,
         profile: &str,
     ) -> Result<()>;
-
-    /// Creates a new Config instance based on the setup state
-    /// Saves this to disk and returns the created Config.
-    ///
-    /// R-A-5: the monolithic account+persona path. Superseded by
-    /// `create_account` (State A) + `mint_persona_into` (State B); kept until the
-    /// Stage-5 cleanup removes it.
-    #[allow(dead_code)]
-    async fn create(
-        state: &SetupState,
-        setup_flow: &SetupFlow,
-        tdk: &TDK,
-        profile: &str,
-    ) -> Result<Config>;
 
     /// State A (R-A-5): build and persist an **account-only** Config from the VTA
     /// bootstrap state — no persona, no community, no `did:webvh`, no mediator.
@@ -233,103 +216,8 @@ impl ConfigExtension for Config {
         Ok(())
     }
 
-    async fn create(
-        state: &SetupState,
-        setup_flow: &SetupFlow,
-        tdk: &TDK,
-        profile: &str,
-    ) -> Result<Config> {
-        // Account bootstrap (State A) then persona mint (State B) — the legacy
-        // single-flow setup is exactly these two steps back to back. The username
-        // travels via `state.username`; mirror the legacy `setup_flow` source
-        // into it so behaviour is unchanged.
-        let mut state = state.clone();
-        state.username = setup_flow.username.username.value().to_string();
-        let mut config = Self::create_account(&state, profile).await?;
-        Self::mint_persona_into(&mut config, &state, tdk, profile).await?;
-        Ok(config)
-    }
-
     async fn create_account(state: &SetupState, profile: &str) -> Result<Config> {
-        let mut unlock_code = None;
-        let protection = match &state.protection {
-            ConfigProtection::PlainText => ConfigProtectionType::Plaintext,
-            #[cfg(feature = "openpgp-card")]
-            ConfigProtection::Token(token) => ConfigProtectionType::Token(token.to_string()),
-            ConfigProtection::Passcode(unlock) => {
-                unlock_code = Some(SecretBox::new(Box::new(unlock.expose_secret().to_vec())));
-                ConfigProtectionType::Encrypted
-            }
-        };
-
-        // Build VTA key backend from the admin credential issued during
-        // online provisioning. The on-disk `credential_bundle` is the JSON
-        // form (post-vta-sdk-0.5); confidentiality at rest is provided by
-        // the OS keyring / secured config wrapper.
-        let admin = state
-            .vta
-            .admin_credential
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("VTA admin credential not issued"))?;
-        let bundle = vta_sdk::credentials::CredentialBundle::new(
-            admin.admin_did.clone(),
-            admin.admin_private_key_mb.clone(),
-            state.vta.vta_did.clone(),
-        )
-        .vta_url(state.vta.vta_url.clone());
-        let credential_raw = serde_json::to_string(&bundle)
-            .map_err(|e| anyhow::anyhow!("Failed to serialise VTA credential bundle: {e}"))?;
-        let encryption_seed =
-            ProtectedConfig::get_seed_from_credential(&admin.admin_private_key_mb)?;
-        let key_backend = KeyBackend::Vta {
-            credential_bundle: SecretString::new(credential_raw.into()),
-            credential_did: admin.admin_did.clone(),
-            credential_private_key: SecretString::new(admin.admin_private_key_mb.clone().into()),
-            vta_did: state.vta.vta_did.clone(),
-            vta_url: state.vta.vta_url.clone(),
-            mediator_did: state.vta.mediator_did.clone(),
-            encryption_seed,
-        };
-
-        // The account owns the VTA relationship + top-level context. No persona,
-        // no community, no runtime identity yet (R-A-5).
-        let account = Account {
-            vta_did: state.vta.vta_did.clone(),
-            vta_url: state.vta.vta_url.clone(),
-            top_context_id: state.vta.context_id.clone().unwrap_or_default(),
-            org_did: LF_ORG_DID.to_string(),
-            ..Account::default()
-        };
-
-        let config = Config {
-            account,
-            identities: BTreeMap::new(),
-            active_persona: None,
-            key_backend,
-            public: PublicConfig {
-                config_version: openvtc_core::config::public_config::CONFIG_VERSION,
-                protection,
-                private: None,
-                logs: Logs {
-                    messages: VecDeque::from([LogMessage {
-                        created: Utc::now(),
-                        type_: LogFamily::Config,
-                        message: "Account bootstrap completed".to_string(),
-                    }]),
-                    ..Default::default()
-                },
-                friendly_name: String::new(),
-            },
-            private: ProtectedConfig::default(),
-            key_info: HashMap::new(),
-            #[cfg(feature = "openpgp-card")]
-            token_admin_pin: None,
-            #[cfg(feature = "openpgp-card")]
-            token_user_pin: SecretString::new(String::new().into()),
-            protection_method: ProtectionMethod::default(),
-            unlock_code,
-        };
-
+        let config = build_state_a_config(state)?;
         config.save(
             profile,
             #[cfg(feature = "openpgp-card")]
@@ -337,7 +225,6 @@ impl ConfigExtension for Config {
                 eprintln!("Touch confirmation needed for decryption");
             },
         )?;
-
         Ok(config)
     }
 
@@ -462,5 +349,172 @@ impl ConfigExtension for Config {
         )?;
 
         Ok(persona_id)
+    }
+}
+
+/// Build the State-A account-only [`Config`] from the VTA bootstrap state
+/// **without persisting it** (R-A-3/4/5). Pure — no disk or keyring I/O — so the
+/// bootstrap shape (top context set; no persona, community, `did:webvh`,
+/// mediator, or runtime identity) is unit-testable. `create_account` wraps this
+/// with a `save`.
+fn build_state_a_config(state: &SetupState) -> Result<Config> {
+    let mut unlock_code = None;
+    let protection = match &state.protection {
+        ConfigProtection::PlainText => ConfigProtectionType::Plaintext,
+        #[cfg(feature = "openpgp-card")]
+        ConfigProtection::Token(token) => ConfigProtectionType::Token(token.to_string()),
+        ConfigProtection::Passcode(unlock) => {
+            unlock_code = Some(SecretBox::new(Box::new(unlock.expose_secret().to_vec())));
+            ConfigProtectionType::Encrypted
+        }
+    };
+
+    // Build VTA key backend from the admin credential issued during online
+    // provisioning. The on-disk `credential_bundle` is the JSON form
+    // (post-vta-sdk-0.5); confidentiality at rest is provided by the OS keyring /
+    // secured config wrapper.
+    let admin = state
+        .vta
+        .admin_credential
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("VTA admin credential not issued"))?;
+    let bundle = vta_sdk::credentials::CredentialBundle::new(
+        admin.admin_did.clone(),
+        admin.admin_private_key_mb.clone(),
+        state.vta.vta_did.clone(),
+    )
+    .vta_url(state.vta.vta_url.clone());
+    let credential_raw = serde_json::to_string(&bundle)
+        .map_err(|e| anyhow::anyhow!("Failed to serialise VTA credential bundle: {e}"))?;
+    let encryption_seed = ProtectedConfig::get_seed_from_credential(&admin.admin_private_key_mb)?;
+    let key_backend = KeyBackend::Vta {
+        credential_bundle: SecretString::new(credential_raw.into()),
+        credential_did: admin.admin_did.clone(),
+        credential_private_key: SecretString::new(admin.admin_private_key_mb.clone().into()),
+        vta_did: state.vta.vta_did.clone(),
+        vta_url: state.vta.vta_url.clone(),
+        mediator_did: state.vta.mediator_did.clone(),
+        encryption_seed,
+    };
+
+    // The account owns the VTA relationship + top-level context. No persona, no
+    // community, no runtime identity yet (R-A-5).
+    let account = Account {
+        vta_did: state.vta.vta_did.clone(),
+        vta_url: state.vta.vta_url.clone(),
+        top_context_id: state.vta.context_id.clone().unwrap_or_default(),
+        org_did: LF_ORG_DID.to_string(),
+        ..Account::default()
+    };
+
+    Ok(Config {
+        account,
+        identities: BTreeMap::new(),
+        active_persona: None,
+        key_backend,
+        public: PublicConfig {
+            config_version: openvtc_core::config::public_config::CONFIG_VERSION,
+            protection,
+            private: None,
+            logs: Logs {
+                messages: VecDeque::from([LogMessage {
+                    created: Utc::now(),
+                    type_: LogFamily::Config,
+                    message: "Account bootstrap completed".to_string(),
+                }]),
+                ..Default::default()
+            },
+            friendly_name: String::new(),
+        },
+        private: ProtectedConfig::default(),
+        key_info: HashMap::new(),
+        #[cfg(feature = "openpgp-card")]
+        token_admin_pin: None,
+        #[cfg(feature = "openpgp-card")]
+        token_user_pin: SecretString::new(String::new().into()),
+        protection_method: ProtectionMethod::default(),
+        unlock_code,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_handler::setup_sequence::VtaSetupState;
+    use vta_sdk::provision_client::AdminCredentialReply;
+
+    /// A `SetupState` carrying just the VTA bootstrap output an account needs:
+    /// the admin credential, top context, and (plaintext) protection.
+    fn bootstrap_state() -> SetupState {
+        SetupState {
+            protection: ConfigProtection::PlainText,
+            vta: VtaSetupState {
+                vta_did: "did:webvh:zVTASCID:vta.example.com".to_string(),
+                vta_url: "https://vta.example.com".to_string(),
+                context_id: Some("openvtc".to_string()),
+                mediator_did: None,
+                admin_credential: Some(AdminCredentialReply {
+                    admin_did: "did:key:zAdmin".to_string(),
+                    admin_private_key_mb: "zAdminPrivKeyMultibase".to_string(),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    // R-A-3/4/5: bootstrap yields an account-only v2 config — top context set, no
+    // persona / community / runtime identity / did:webvh.
+    #[test]
+    fn state_a_config_is_account_only() {
+        let cfg = build_state_a_config(&bootstrap_state()).expect("build should succeed");
+
+        assert_eq!(
+            cfg.public.config_version,
+            openvtc_core::config::public_config::CONFIG_VERSION
+        );
+        assert_eq!(cfg.account.top_context_id, "openvtc");
+        assert_eq!(cfg.account.vta_did, "did:webvh:zVTASCID:vta.example.com");
+
+        // R-A-5: no persona, community, runtime identity, or persona key material.
+        assert!(cfg.account.personas.is_empty(), "no persona at bootstrap");
+        assert!(
+            cfg.account.communities.is_empty(),
+            "no community at bootstrap"
+        );
+        assert!(
+            cfg.active_persona.is_none(),
+            "no active persona at bootstrap"
+        );
+        assert!(
+            cfg.identities.is_empty(),
+            "no runtime identity at bootstrap"
+        );
+        assert!(
+            cfg.key_info.is_empty(),
+            "no persona key material at bootstrap"
+        );
+
+        // The only local secret is the account admin credential (D12).
+        assert!(matches!(cfg.key_backend, KeyBackend::Vta { .. }));
+    }
+
+    // Plaintext protection stores no unlock code.
+    #[test]
+    fn state_a_plaintext_protection_has_no_unlock_code() {
+        let cfg = build_state_a_config(&bootstrap_state()).unwrap();
+        assert!(cfg.unlock_code.is_none());
+        assert!(matches!(
+            cfg.public.protection,
+            ConfigProtectionType::Plaintext
+        ));
+    }
+
+    // Bootstrap cannot proceed without the VTA-issued admin credential.
+    #[test]
+    fn state_a_requires_admin_credential() {
+        let mut state = bootstrap_state();
+        state.vta.admin_credential = None;
+        assert!(build_state_a_config(&state).is_err());
     }
 }
