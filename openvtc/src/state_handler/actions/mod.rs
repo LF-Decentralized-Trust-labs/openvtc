@@ -256,6 +256,24 @@ pub enum Action {
     /// user confirms.
     DeleteCommunity(usize),
 
+    /// Toggle the favourite (★) flag on the community at this Communities-list
+    /// display index (R-C-4). Favourites sort to the top and the flag persists.
+    ToggleFavourite(usize),
+
+    /// Open the quick community switcher overlay (R-C-7): a Ctrl+K popup listing
+    /// the Active communities, reachable from anywhere on the main page.
+    OpenCommunitySwitcher,
+
+    /// Move the switcher overlay's highlighted entry to this index.
+    CommunitySwitcherMove(usize),
+
+    /// Switch the working context to the switcher's highlighted Active community
+    /// and close the overlay (R-C-6 / R-C-7).
+    CommunitySwitcherSelect,
+
+    /// Dismiss the switcher overlay without changing the working community.
+    CloseCommunitySwitcher,
+
     /// Move the Context-Identities (VTA DID manager) selection to this index.
     DidSelect(usize),
 

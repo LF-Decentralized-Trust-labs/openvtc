@@ -13,7 +13,7 @@ use crate::{
     },
     ui::component::{Component, ComponentRender},
 };
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use openvtc_core::display::truncate_did_centered;
 use ratatui::{
     Frame,
@@ -113,6 +113,17 @@ impl Component for MainPage {
 
     fn handle_key_event(&mut self, key: KeyEvent) {
         if key.kind != KeyEventKind::Press {
+            return;
+        }
+
+        // Community switcher overlay (R-C-7): while open it owns all input; while
+        // closed, Ctrl+K opens it from anywhere on the main page.
+        if self.props.main_page.switcher.is_some() {
+            self.handle_switcher_key(key);
+            return;
+        }
+        if key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            let _ = self.action_tx.send(Action::OpenCommunitySwitcher);
             return;
         }
 
@@ -420,6 +431,11 @@ impl MainPage {
                 let _ = self.action_tx.send(Action::SetActiveCommunity(selected));
                 true
             }
+            KeyCode::Char('f') if selected < count => {
+                // Toggle the favourite star (R-C-4); the row re-sorts to the top.
+                let _ = self.action_tx.send(Action::ToggleFavourite(selected));
+                true
+            }
             KeyCode::Char('d') | KeyCode::Delete if selected < count => {
                 let _ = self
                     .action_tx
@@ -433,6 +449,39 @@ impl MainPage {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Community switcher overlay keys (R-C-7): ↑/↓ move the highlight, Enter
+    /// switches the working community, Esc (or Ctrl+K again) dismisses. Called
+    /// only while the overlay is open, where it owns all input.
+    fn handle_switcher_key(&mut self, key: KeyEvent) {
+        let Some(switcher) = self.props.main_page.switcher.as_ref() else {
+            return;
+        };
+        let count = switcher.items.len();
+        let selected = switcher.selected;
+        match key.code {
+            KeyCode::Up if count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::CommunitySwitcherMove(selected.saturating_sub(1)));
+            }
+            KeyCode::Down if count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::CommunitySwitcherMove((selected + 1).min(count - 1)));
+            }
+            KeyCode::Enter if selected < count => {
+                let _ = self.action_tx.send(Action::CommunitySwitcherSelect);
+            }
+            KeyCode::Esc => {
+                let _ = self.action_tx.send(Action::CloseCommunitySwitcher);
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let _ = self.action_tx.send(Action::CloseCommunitySwitcher);
+            }
+            _ => {}
         }
     }
 
@@ -1636,12 +1685,21 @@ impl ComponentRender<()> for MainPage {
             Layout::horizontal([Percentage(35), Percentage(30), Percentage(35)]).split(main_top);
         let middle = Layout::horizontal([Percentage(20), Min(0)]).split(main_middle);
 
-        frame.render_widget(
-            Paragraph::new(" OpenVTC Dashboard")
-                .fg(COLOR_SUCCESS)
-                .alignment(Alignment::Left),
-            top[0],
-        );
+        // Top-left: the working community name with a ▾ switcher affordance
+        // (R-C-7a), or the dashboard title when there's no active community.
+        let community = &self.props.main_page.config.community;
+        let top_left = if community.is_empty() {
+            Line::from(" OpenVTC Dashboard").fg(COLOR_SUCCESS)
+        } else {
+            Line::from(vec![
+                Span::styled(
+                    format!(" {community} "),
+                    ratatui::style::Style::default().fg(COLOR_SUCCESS),
+                ),
+                Span::styled("▾", ratatui::style::Style::default().fg(COLOR_ORANGE)),
+            ])
+        };
+        frame.render_widget(Paragraph::new(top_left).alignment(Alignment::Left), top[0]);
 
         // Connection status indicator
         let connection_line = match &self.props.connection.status {
@@ -1746,11 +1804,83 @@ impl ComponentRender<()> for MainPage {
 
         // Bottom key hints (single line)
         frame.render_widget(
-            Paragraph::new(" <TAB> switch panels  <PgUp/PgDn/Home/End> scroll  <F10> quit")
-                .dark_gray()
-                .alignment(Alignment::Left),
+            Paragraph::new(
+                " <TAB> switch panels  <Ctrl+K> switch community  <PgUp/PgDn/Home/End> scroll  <F10> quit",
+            )
+            .dark_gray()
+            .alignment(Alignment::Left),
             main_bottom,
         );
+
+        // Community switcher overlay (R-C-7) floats over everything when open.
+        if let Some(switcher) = self.props.main_page.switcher.as_ref() {
+            self.render_switcher_overlay(frame, switcher);
+        }
+    }
+}
+
+impl MainPage {
+    /// Render the quick community-switcher popup (R-C-7): a centered overlay
+    /// listing the Active communities, the current one marked, the highlighted
+    /// one styled. Mirrors the hardware-token overlay's centering pattern.
+    fn render_switcher_overlay(
+        &self,
+        frame: &mut Frame,
+        switcher: &crate::state_handler::main_page::content::CommunitySwitcherState,
+    ) {
+        use ratatui::{
+            layout::{Constraint, Flex},
+            style::Style,
+            widgets::{Block, Clear, Padding},
+        };
+
+        let area = frame.area();
+        // Header + footer (3 lines) plus one line per entry, within bounds.
+        let rows = switcher.items.len() as u16;
+        // rows + border(2) + padding(2) + blank line + footer line.
+        let popup_height = (rows + 6).min(area.height.saturating_sub(2)).max(6);
+        let popup_width = 52u16.min(area.width.saturating_sub(4));
+
+        let [popup_area] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup_area] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(popup_area);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::bordered()
+            .title(" Switch community ")
+            .title_style(Style::new().fg(COLOR_ORANGE).bold())
+            .border_style(Style::new().fg(COLOR_ORANGE))
+            .padding(Padding::uniform(1));
+
+        let mut lines: Vec<Line> = switcher
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, item)| {
+                let marker = if i == switcher.selected { "▸ " } else { "  " };
+                let current = if item.is_current { "  (active)" } else { "" };
+                let style = if i == switcher.selected {
+                    Style::new().fg(COLOR_SUCCESS).bold()
+                } else {
+                    Style::new().fg(COLOR_TEXT_DEFAULT)
+                };
+                Line::from(Span::styled(
+                    format!("{marker}{}{current}", item.display_name),
+                    style,
+                ))
+            })
+            .collect();
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "↑/↓ select   ⏎ switch   esc close",
+            Style::new().fg(COLOR_BORDER),
+        )));
+
+        frame.render_widget(Paragraph::new(lines).block(block), popup_area);
     }
 }
 
@@ -1766,8 +1896,9 @@ mod key_handler_tests {
     //! assertions pattern-match the expected variant rather than `assert_eq!`.
     use super::*;
     use crate::state_handler::main_page::content::{
-        CredentialTab, CredentialsMode, InboxConfirm, RawCredential, RelationshipSummary,
-        RelationshipsMode, TaskKind, TaskSummary, VrcSummary,
+        CommunitySummary, CommunitySwitcherState, CredentialTab, CredentialsMode, InboxConfirm,
+        RawCredential, RelationshipSummary, RelationshipsMode, SwitcherItem, TaskKind, TaskSummary,
+        VrcSummary,
     };
     use crossterm::event::KeyModifiers;
     use std::sync::Arc;
@@ -1792,6 +1923,37 @@ mod key_handler_tests {
     /// A `Press` key event (the only kind `handle_key_event` acts on).
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A Ctrl-modified `Press` key event.
+    fn ctrl(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    /// A minimal Communities-panel summary row for key-routing tests.
+    fn community_summary(name: &str) -> CommunitySummary {
+        CommunitySummary {
+            display_name: name.to_string(),
+            status_label: "Active".to_string(),
+            persona_label: "persona".to_string(),
+            member_since: String::new(),
+            favourite: false,
+            needs_attention: false,
+            persona_did: "did:example:persona".to_string(),
+            vtc_did: format!("did:example:{name}"),
+            sub_context_id: format!("top/{name}"),
+            request_id: String::new(),
+            has_membership_credential: false,
+            has_role_credential: false,
+        }
+    }
+
+    fn switcher_item(name: &str, is_current: bool) -> SwitcherItem {
+        SwitcherItem {
+            vtc_did: format!("did:example:{name}"),
+            display_name: name.to_string(),
+            is_current,
+        }
     }
 
     fn rel_summary(remote_p_did: &str) -> RelationshipSummary {
@@ -1852,6 +2014,80 @@ mod key_handler_tests {
         match rx.try_recv() {
             Ok(Action::CommunityCancelDelete) => {}
             _ => panic!("expected CommunityCancelDelete"),
+        }
+    }
+
+    #[test]
+    fn communities_f_toggles_favourite_at_selection() {
+        // R-C-4: `f` on the Communities panel stars the highlighted row.
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.items = vec![
+                community_summary("a"),
+                community_summary("b"),
+                community_summary("c"),
+            ]
+            .into();
+            s.main_page.content_panel.communities.selected_index = 1;
+        });
+        page.handle_key_event(press(KeyCode::Char('f')));
+        match rx.try_recv() {
+            Ok(Action::ToggleFavourite(1)) => {}
+            _ => panic!("expected ToggleFavourite(1)"),
+        }
+    }
+
+    // ----- Community switcher overlay (R-C-7) --------------------------------
+
+    #[test]
+    fn ctrl_k_opens_switcher() {
+        // Ctrl+K opens the quick switcher from the main page (here, no overlay yet).
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |_| {});
+        page.handle_key_event(ctrl(KeyCode::Char('k')));
+        match rx.try_recv() {
+            Ok(Action::OpenCommunitySwitcher) => {}
+            _ => panic!("expected OpenCommunitySwitcher"),
+        }
+    }
+
+    #[test]
+    fn open_switcher_owns_input_and_navigates() {
+        // While the overlay is open it owns all input: ↑/↓ move, Enter switches,
+        // Esc and Ctrl+K both close.
+        let build = || {
+            page_for(MainMenu::Communities, |s| {
+                s.main_page.switcher = Some(CommunitySwitcherState {
+                    items: vec![switcher_item("a", true), switcher_item("b", false)],
+                    selected: 0,
+                });
+            })
+        };
+
+        let (mut page, mut rx) = build();
+        page.handle_key_event(press(KeyCode::Down));
+        match rx.try_recv() {
+            Ok(Action::CommunitySwitcherMove(1)) => {}
+            _ => panic!("expected CommunitySwitcherMove(1)"),
+        }
+
+        let (mut page, mut rx) = build();
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::CommunitySwitcherSelect) => {}
+            _ => panic!("expected CommunitySwitcherSelect"),
+        }
+
+        let (mut page, mut rx) = build();
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::CloseCommunitySwitcher) => {}
+            _ => panic!("expected CloseCommunitySwitcher on Esc"),
+        }
+
+        let (mut page, mut rx) = build();
+        page.handle_key_event(ctrl(KeyCode::Char('k')));
+        match rx.try_recv() {
+            Ok(Action::CloseCommunitySwitcher) => {}
+            _ => panic!("expected CloseCommunitySwitcher on Ctrl+K"),
         }
     }
 

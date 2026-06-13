@@ -202,9 +202,11 @@ impl StateHandler {
                 state.main_page.config = main_page::MainMenuConfigState {
                     name: deferred.public_config.friendly_name.clone(),
                     // The persona DID now lives in the encrypted account, which
-                    // isn't decrypted yet at this pre-load render. It populates
-                    // from the full Config once load_step2 completes.
+                    // isn't decrypted yet at this pre-load render. It (and the
+                    // working community name) populate from the full Config once
+                    // load_step2 completes.
                     did: std::sync::Arc::new(String::new()),
+                    community: String::new(),
                 };
                 state.connection.status = state::MediatorStatus::Initializing("Starting...".into());
                 let _ = self.state_tx.send(state.clone());
@@ -732,6 +734,81 @@ impl StateHandler {
                             // the switch is reflected this frame.
                             state.main_page.sync_from_config(&config);
                         }
+                    },
+                    Action::ToggleFavourite(i) => {
+                        // R-C-4: flip the star on the community at display index
+                        // `i`, persist (coalesced), then keep the highlight on it
+                        // as the list re-sorts (favourites float to the top).
+                        let vtc = config
+                            .account
+                            .communities_for_display(false)
+                            .get(i)
+                            .map(|c| c.vtc_did.clone());
+                        if let Some(vtc) = vtc {
+                            if let Some(c) = config.account.community_mut(&vtc) {
+                                c.toggle_favourite();
+                            }
+                            save.mark_dirty();
+                            state.main_page.sync_from_config(&config);
+                            if let Some(new_idx) = config
+                                .account
+                                .communities_for_display(false)
+                                .iter()
+                                .position(|c| c.vtc_did == vtc)
+                            {
+                                state.main_page.content_panel.communities.selected_index =
+                                    new_idx;
+                            }
+                        }
+                    },
+                    Action::OpenCommunitySwitcher => {
+                        // R-C-7: list the Active communities (the only switchable
+                        // ones) in display order and preselect the current one.
+                        let current = state.selected_community.clone();
+                        let items: Vec<_> = config
+                            .account
+                            .communities_for_display(false)
+                            .into_iter()
+                            .filter(|c| c.status.is_active())
+                            .map(|c| main_page::content::SwitcherItem {
+                                vtc_did: c.vtc_did.clone(),
+                                display_name: c
+                                    .display_name
+                                    .clone()
+                                    .unwrap_or_else(|| main_page::shorten_did(&c.vtc_did, 40)),
+                                is_current: Some(&c.vtc_did) == current.as_ref(),
+                            })
+                            .collect();
+                        // Don't pop an empty overlay when there's nothing to switch.
+                        if !items.is_empty() {
+                            let selected =
+                                items.iter().position(|it| it.is_current).unwrap_or(0);
+                            state.main_page.switcher =
+                                Some(main_page::content::CommunitySwitcherState {
+                                    items,
+                                    selected,
+                                });
+                        }
+                    },
+                    Action::CommunitySwitcherSelect => {
+                        // Switch the working context to the highlighted Active
+                        // community, then close the overlay (R-C-6 / R-C-7).
+                        let target = state.main_page.switcher.as_ref().and_then(|sw| {
+                            sw.items.get(sw.selected).map(|it| it.vtc_did.clone())
+                        });
+                        if let Some(vtc) = target {
+                            let persona = config
+                                .account
+                                .community(&vtc)
+                                .filter(|c| c.status.is_active())
+                                .map(|c| c.persona_ref);
+                            if let Some(persona) = persona {
+                                state.selected_community = Some(vtc);
+                                config.set_active_persona(Some(persona));
+                                state.main_page.sync_from_config(&config);
+                            }
+                        }
+                        state.main_page.switcher = None;
                     },
                     Action::DeleteDid(i) => {
                         // Identity deletion does a VTA `delete_did_webvh` + listener
@@ -1684,6 +1761,14 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         Action::CommunityCancelDelete => {
             state.main_page.content_panel.communities.confirm_delete = None;
         }
+        Action::CommunitySwitcherMove(i) => {
+            if let Some(switcher) = state.main_page.switcher.as_mut() {
+                switcher.selected = (*i).min(switcher.items.len().saturating_sub(1));
+            }
+        }
+        Action::CloseCommunitySwitcher => {
+            state.main_page.switcher = None;
+        }
         Action::DidSelect(i) => {
             state.main_page.content_panel.vta.did_selected_index = *i;
         }
@@ -1833,5 +1918,56 @@ mod tests {
             !handle_nav_action(&mut state, &Action::StartJoin),
             "StartJoin is async/loop-local"
         );
+        // The switcher's config-mutating arms resolve a community + persona and
+        // must reach the loop, not the pure reducer (R-C-7).
+        assert!(
+            !handle_nav_action(&mut state, &Action::OpenCommunitySwitcher),
+            "OpenCommunitySwitcher reads config in the loop"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::CommunitySwitcherSelect),
+            "CommunitySwitcherSelect mutates config in the loop"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::ToggleFavourite(0)),
+            "ToggleFavourite mutates + persists config in the loop"
+        );
+    }
+
+    /// The switcher's UI-only arms (move highlight / close) are handled by the
+    /// pure reducer so both loops share them (R-C-7).
+    #[test]
+    fn nav_reducer_handles_switcher_navigation() {
+        use crate::state_handler::main_page::content::{CommunitySwitcherState, SwitcherItem};
+
+        let item = |n: &str| SwitcherItem {
+            vtc_did: format!("did:example:{n}"),
+            display_name: n.to_string(),
+            is_current: false,
+        };
+        let mut state = State::default();
+        state.main_page.switcher = Some(CommunitySwitcherState {
+            items: vec![item("a"), item("b"), item("c")],
+            selected: 0,
+        });
+
+        assert!(handle_nav_action(
+            &mut state,
+            &Action::CommunitySwitcherMove(2)
+        ));
+        assert_eq!(state.main_page.switcher.as_ref().unwrap().selected, 2);
+
+        // Out-of-range moves clamp to the last entry rather than panicking.
+        assert!(handle_nav_action(
+            &mut state,
+            &Action::CommunitySwitcherMove(99)
+        ));
+        assert_eq!(state.main_page.switcher.as_ref().unwrap().selected, 2);
+
+        assert!(handle_nav_action(
+            &mut state,
+            &Action::CloseCommunitySwitcher
+        ));
+        assert!(state.main_page.switcher.is_none());
     }
 }

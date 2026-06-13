@@ -92,6 +92,28 @@ pub struct CommunitiesState {
     pub confirm_delete: Option<usize>,
 }
 
+/// Quick community-switcher overlay state (R-C-7). `Some` while the Ctrl+K popup
+/// is open; it lists the **Active** communities (the only switchable ones) and
+/// owns all key input until dismissed.
+#[derive(Clone, Debug, Default)]
+pub struct CommunitySwitcherState {
+    /// Active communities, in display order (favourites first).
+    pub items: Vec<SwitcherItem>,
+    /// Highlighted entry.
+    pub selected: usize,
+}
+
+/// One entry in the community switcher overlay.
+#[derive(Clone, Debug)]
+pub struct SwitcherItem {
+    /// The community's VTC DID — the switch target.
+    pub vtc_did: openvtc_core::config::account::VtcDid,
+    /// Display name (resolved name, or the shortened VTC DID when unnamed).
+    pub display_name: String,
+    /// Whether this is the current working community.
+    pub is_current: bool,
+}
+
 /// Lightweight display summary of a community membership (no Arc/Mutex).
 #[derive(Clone, Debug)]
 pub struct CommunitySummary {

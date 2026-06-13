@@ -57,6 +57,11 @@ pub struct MainPageState {
 
     pub config: MainMenuConfigState,
 
+    /// Quick community-switcher overlay (R-C-7). `Some` while the Ctrl+K popup is
+    /// open; `None` (the default) when closed. Lives at the page level rather
+    /// than in a content panel because it floats over whichever panel is focused.
+    pub switcher: Option<content::CommunitySwitcherState>,
+
     /// Activity log entries shown in the bottom panel (newest last).
     ///
     /// Entries are wrapped in `Arc` so cloning `MainPageState` (which happens
@@ -664,7 +669,7 @@ fn detect_did_git_sign_info(persona_did: &str) -> Option<DidGitSignInfo> {
 /// Sanitises first to drop ANSI / control bytes from untrusted input,
 /// then delegates to the canonical tail-truncate helper.
 #[must_use]
-fn shorten_did(did: &str, max_width: usize) -> String {
+pub(crate) fn shorten_did(did: &str, max_width: usize) -> String {
     let sanitized = sanitize_display(did, 256);
     truncate_did(&sanitized, max_width).into_owned()
 }
@@ -674,6 +679,9 @@ fn shorten_did(did: &str, max_width: usize) -> String {
 pub struct MainMenuConfigState {
     pub name: String,
     pub did: Arc<String>,
+    /// Display name of the working (active) community, shown top-left (R-C-7a).
+    /// Empty when there is no active community.
+    pub community: String,
 }
 
 impl From<&Box<Config>> for MainMenuConfigState {
@@ -693,6 +701,27 @@ impl From<&Config> for MainMenuConfigState {
             .communities
             .values()
             .any(|c| c.status.is_active());
+        // The working community (R-C-7a): the Active community whose persona is
+        // the active one. `active_persona` is kept in lockstep with the selected
+        // working community (set at launch, on reconcile, and on switch), so the
+        // header name matches the persona that scopes the panels. In the rare
+        // persona-reuse case (one persona across several Active communities) the
+        // first in display order is shown — those communities share a context.
+        let community = config
+            .active_persona
+            .and_then(|persona| {
+                config
+                    .account
+                    .communities_for_display(false)
+                    .into_iter()
+                    .find(|c| c.status.is_active() && c.persona_ref == persona)
+                    .map(|c| {
+                        c.display_name
+                            .clone()
+                            .unwrap_or_else(|| shorten_did(&c.vtc_did, 40))
+                    })
+            })
+            .unwrap_or_default();
         MainMenuConfigState {
             name: if in_community {
                 config.public.friendly_name.clone()
@@ -704,6 +733,7 @@ impl From<&Config> for MainMenuConfigState {
             } else {
                 Arc::new(String::new())
             },
+            community,
         }
     }
 }
