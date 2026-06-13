@@ -6,11 +6,29 @@
  * the community's display name (slugged), with a collision-suffix rule and a
  * stable DID-derived fallback when no usable name is available.
  *
- * Isolating the convention here (D2) means a later move to a real VTA
- * `parent_id` API changes only this module and the `create_context` call sites,
- * not every consumer. Per `CLAUDE.md`, the no-name fallback derives its token
- * from the VTC `did:webvh` via `didwebvh-rs` rather than hand-rolled string
- * surgery.
+ * The hierarchy is **real and VTA-enforced** (VTI #257): a context id *is* its
+ * `/`-separated path, the VTA validates depth/segments and enforces
+ * ancestry-aware ACL server-side. This module mirrors the path **construction
+ * and validation** rules from `vti-common::context_path` /
+ * `vti-common::identifier` so the CLI builds only paths the VTA will accept;
+ * the VTA remains the enforcement source of truth (it re-validates). The rules
+ * are mirrored rather than imported because `vti-common` is not consumable from
+ * this workspace (it is not a `vta-sdk` dependency and `vta-sdk` does not
+ * re-export it). The mirrored definitions are kept byte-for-byte faithful to
+ * their `vti-common` originals to avoid drift on these security-relevant rules.
+ *
+ * TODO(VTI#392): the pure validators are being lifted into `vta-sdk` (the
+ * lowest common dependency of server and clients). Once that lands and this
+ * workspace bumps `vta-sdk`, delete this mirror and re-export from `vta-sdk`
+ * instead — see OpenVTC/verifiable-trust-infrastructure#392.
+ *
+ * The ancestry/ACL helper (`is_ancestor_or_self`) is deliberately **not**
+ * mirrored: this client never makes authorization decisions — the VTA owns the
+ * "admin of a parent covers the subtree" gate — so a local copy would be unused
+ * dead code and a drift hazard.
+ *
+ * Per `CLAUDE.md`, the no-name fallback derives its token from the VTC
+ * `did:webvh` via `didwebvh-rs` rather than hand-rolled string surgery.
  */
 
 use crate::errors::OpenVTCError;
@@ -20,6 +38,113 @@ use didwebvh_rs::url::WebVHURL;
 const MAX_SLUG_LEN: usize = 32;
 /// Number of leading SCID characters kept for the no-name fallback token.
 const FALLBACK_TOKEN_LEN: usize = 12;
+
+/// Maximum nesting depth (number of path segments). Mirrors
+/// `vti-common::context_path::MAX_CONTEXT_DEPTH`. A `<top>/<community>` path is
+/// depth 2.
+pub const MAX_CONTEXT_DEPTH: usize = 8;
+
+/// The path separator. Mirrors `vti-common::context_path::SEPARATOR`. A context
+/// identifier is segments joined by this; it never appears inside a segment.
+pub const SEPARATOR: char = '/';
+
+/// Maximum length of a single context-path segment in bytes. Mirrors
+/// `vti-common::identifier::MAX_IDENTIFIER_LEN`.
+pub const MAX_IDENTIFIER_LEN: usize = 64;
+
+/// Validate a single context-path segment (one identifier). Mirrors
+/// `vti-common::identifier::validate_identifier`: non-empty, ≤
+/// [`MAX_IDENTIFIER_LEN`] bytes, and every character in `[A-Za-z0-9._-]`.
+/// Anything else — including the separators `/`, `:`, and whitespace that could
+/// let a caller traverse into or collide with adjacent VTA store namespaces — is
+/// rejected.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::Config`] describing the first rule the segment
+/// violates; `label` names the field for a self-describing message.
+pub fn validate_identifier(label: &str, value: &str) -> Result<(), OpenVTCError> {
+    if value.is_empty() {
+        return Err(OpenVTCError::Config(format!("{label} must not be empty")));
+    }
+    if value.len() > MAX_IDENTIFIER_LEN {
+        return Err(OpenVTCError::Config(format!(
+            "{label} is {} bytes; maximum is {MAX_IDENTIFIER_LEN}",
+            value.len()
+        )));
+    }
+    for (i, ch) in value.chars().enumerate() {
+        let ok = ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-';
+        if !ok {
+            return Err(OpenVTCError::Config(format!(
+                "{label} contains an invalid character {ch:?} at position {i}; \
+                 allowed: A-Z, a-z, 0-9, '.', '_', '-'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a full context path. Mirrors
+/// `vti-common::context_path::validate_context_path`: non-empty, no
+/// leading/trailing/doubled separator, ≤ [`MAX_CONTEXT_DEPTH`] segments, and
+/// every segment a valid [identifier](validate_identifier).
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::Config`] describing the first rule the path violates.
+pub fn validate_context_path(value: &str) -> Result<(), OpenVTCError> {
+    if value.is_empty() {
+        return Err(OpenVTCError::Config(
+            "context path must not be empty".into(),
+        ));
+    }
+    if value.starts_with(SEPARATOR) || value.ends_with(SEPARATOR) {
+        return Err(OpenVTCError::Config(format!(
+            "context path must not start or end with '{SEPARATOR}'"
+        )));
+    }
+
+    let segments: Vec<&str> = value.split(SEPARATOR).collect();
+    if segments.len() > MAX_CONTEXT_DEPTH {
+        return Err(OpenVTCError::Config(format!(
+            "context path is {} levels deep; maximum is {MAX_CONTEXT_DEPTH}",
+            segments.len()
+        )));
+    }
+    for segment in &segments {
+        // An empty segment means a leading/trailing/doubled separator — `split`
+        // yields `""` for each. (The leading/trailing case is caught above; this
+        // catches `a//b`.)
+        if segment.is_empty() {
+            return Err(OpenVTCError::Config(
+                "context path must not contain an empty segment ('//')".into(),
+            ));
+        }
+        validate_identifier("context path segment", segment)?;
+    }
+    Ok(())
+}
+
+/// Build a child path under `parent` by appending a single `segment`. Mirrors
+/// `vti-common::context_path::child_path`: the `segment` must be one valid
+/// identifier (it cannot itself contain a separator, else it would silently add
+/// several levels) and the resulting path must [validate](validate_context_path),
+/// depth included.
+///
+/// # Errors
+///
+/// Returns [`OpenVTCError::Config`] if `segment` is not a valid identifier or
+/// the resulting path violates [`validate_context_path`] (e.g. it would exceed
+/// [`MAX_CONTEXT_DEPTH`]).
+pub fn child_path(parent: &str, segment: &str) -> Result<String, OpenVTCError> {
+    // Reject a `segment` that is empty or contains the separator: `child_path`
+    // adds exactly one level.
+    validate_identifier("context path segment", segment)?;
+    let candidate = format!("{parent}{SEPARATOR}{segment}");
+    validate_context_path(&candidate)?;
+    Ok(candidate)
+}
 
 /// Slugify a community display name per D9.
 ///
@@ -89,10 +214,20 @@ pub fn fallback_token(vtc_did: &str) -> Result<String, OpenVTCError> {
 /// a candidate id already exists under the top context; on collision the slug
 /// gains a `-2`, `-3`, … suffix until it is unique.
 ///
+/// Every candidate is constructed via [`child_path`], so the returned id is
+/// guaranteed to satisfy the mirrored `vti-common` rules — each segment a valid
+/// identifier, the whole path within [`MAX_CONTEXT_DEPTH`] — exactly what the
+/// VTA re-validates server-side. The slug is `[a-z0-9-]` capped at
+/// [`MAX_SLUG_LEN`] and the collision suffix adds only `[0-9-]`, so a usable
+/// slug always passes segment validation; the only construction failures are an
+/// invalid/over-deep `top_context_id` or an unusable fallback DID.
+///
 /// # Errors
 ///
-/// Returns an error only when the fallback token is needed and `vtc_did` is not
-/// a usable `did:webvh`.
+/// Returns [`OpenVTCError::Config`] when the fallback token is needed and
+/// `vtc_did` is not a usable `did:webvh`, or when no valid path can be formed
+/// under `top_context_id` (e.g. the top context is itself invalid or already at
+/// [`MAX_CONTEXT_DEPTH`]).
 pub fn build_sub_context_id(
     top_context_id: &str,
     display_name: Option<&str>,
@@ -104,13 +239,16 @@ pub fn build_sub_context_id(
         _ => fallback_token(vtc_did)?,
     };
 
-    let mut candidate = format!("{top_context_id}/{base}");
+    let mut segment = base.clone();
     let mut n = 2u32;
-    while is_taken(&candidate) {
-        candidate = format!("{top_context_id}/{base}-{n}");
+    loop {
+        let candidate = child_path(top_context_id, &segment)?;
+        if !is_taken(&candidate) {
+            return Ok(candidate);
+        }
+        segment = format!("{base}-{n}");
         n += 1;
     }
-    Ok(candidate)
 }
 
 /// Split a `<top>/<slug>` id into `(top, slug)`.
@@ -237,5 +375,132 @@ mod tests {
         assert_eq!(render_for_display("openvtc/acme"), "acme");
         assert_eq!(render_for_display("org/openvtc/acme"), "acme");
         assert_eq!(render_for_display("openvtc"), "openvtc");
+    }
+
+    // --- mirrored `vti-common` validation rules ---------------------------
+
+    #[test]
+    fn validate_identifier_accepts_common_shapes() {
+        for ok in ["myapp", "My-App_1", "context.v2", "a", "0", "CamelCase"] {
+            validate_identifier("id", ok).unwrap_or_else(|e| panic!("{ok:?} rejected: {e:?}"));
+        }
+        // Exactly at the byte limit passes; one over fails.
+        validate_identifier("id", &"a".repeat(MAX_IDENTIFIER_LEN)).unwrap();
+        assert!(validate_identifier("id", &"a".repeat(MAX_IDENTIFIER_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn validate_identifier_rejects_separators_and_injection() {
+        for bad in [
+            "",
+            "global:evil",
+            "../../etc",
+            "a:b:c",
+            "my/ctx",
+            "with space",
+            "café",
+        ] {
+            assert!(
+                validate_identifier("id", bad).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_context_path_accepts_good_paths() {
+        for p in [
+            "acme",
+            "acme/eng",
+            "openvtc/acme-corp",
+            "a.b_c/d-e",
+            "x/y/z",
+        ] {
+            assert!(validate_context_path(p).is_ok(), "{p} should be valid");
+        }
+    }
+
+    #[test]
+    fn validate_context_path_rejects_malformed() {
+        assert!(validate_context_path("").is_err()); // empty
+        assert!(validate_context_path("/acme").is_err()); // leading separator
+        assert!(validate_context_path("acme/").is_err()); // trailing separator
+        assert!(validate_context_path("acme//eng").is_err()); // doubled separator
+        assert!(validate_context_path("acme/ev il").is_err()); // space in a segment
+        assert!(validate_context_path("acme/ev:il").is_err()); // keyspace separator
+    }
+
+    #[test]
+    fn validate_context_path_enforces_max_depth() {
+        let deep = (0..=MAX_CONTEXT_DEPTH)
+            .map(|i| format!("s{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(
+            validate_context_path(&deep).is_err(),
+            "{deep} exceeds max depth"
+        );
+        let ok = (0..MAX_CONTEXT_DEPTH)
+            .map(|i| format!("s{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(validate_context_path(&ok).is_ok());
+    }
+
+    #[test]
+    fn child_path_builds_and_validates() {
+        assert_eq!(child_path("acme", "eng").unwrap(), "acme/eng");
+        assert!(child_path("acme", "ev/il").is_err()); // separator in the new segment
+        assert!(child_path("acme", "").is_err()); // empty segment
+        // A child that would exceed the depth cap is rejected.
+        let at_cap = (0..MAX_CONTEXT_DEPTH)
+            .map(|i| format!("s{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        assert!(child_path(&at_cap, "more").is_err());
+    }
+
+    #[test]
+    fn build_always_yields_a_valid_context_path() {
+        let did = "did:webvh:zQmTestScidValue:example.com";
+        let cases: &[(Option<&str>, &str)] = &[
+            (Some("Acme Corp"), "openvtc"),
+            (Some("!!!"), "openvtc"), // unusable name → DID fallback
+            (None, "org/openvtc"),    // nested top, no name
+        ];
+        for (name, top) in cases {
+            let id =
+                build_sub_context_id(top, *name, did, |_| false).expect("build should succeed");
+            validate_context_path(&id)
+                .unwrap_or_else(|e| panic!("built id {id:?} failed validation: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn build_collision_suffix_stays_a_valid_identifier() {
+        let mut taken = HashSet::new();
+        taken.insert("openvtc/acme".to_string());
+        let id = build_sub_context_id(
+            "openvtc",
+            Some("ACME"),
+            "did:webvh:zScid:example.com",
+            |c| taken.contains(c),
+        )
+        .unwrap();
+        assert_eq!(id, "openvtc/acme-2");
+        validate_context_path(&id).unwrap();
+    }
+
+    #[test]
+    fn build_rejects_an_invalid_top_context() {
+        // An over-deep top context cannot accept a child.
+        let at_cap = (0..MAX_CONTEXT_DEPTH)
+            .map(|i| format!("s{i}"))
+            .collect::<Vec<_>>()
+            .join("/");
+        let r = build_sub_context_id(&at_cap, Some("acme"), "did:webvh:zScid:example.com", |_| {
+            false
+        });
+        assert!(r.is_err(), "child under a max-depth top must fail");
     }
 }
