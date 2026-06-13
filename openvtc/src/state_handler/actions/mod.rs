@@ -276,6 +276,10 @@ pub enum Action {
     /// display index (R-C-4). Favourites sort to the top and the flag persists.
     ToggleFavourite(usize),
 
+    /// Acknowledge a terminal-outcome community (Rejected / Removed / Expired) at
+    /// this display index, clearing its actions-required badge (R-S-2).
+    AcknowledgeCommunity(usize),
+
     /// Open the quick community switcher overlay (R-C-7): a Ctrl+K popup listing
     /// the Active communities, reachable from anywhere on the main page.
     OpenCommunitySwitcher,

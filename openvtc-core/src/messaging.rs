@@ -13,9 +13,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use affinidi_tdk::{TDK, didcomm::Message};
 use dtg_credentials::DTGCredential;
 use serde_json::{Value, json};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
-use vta_sdk::protocols::join_requests::JoinRequestSubmitReceiptBody;
+use vta_sdk::protocols::join_requests::{
+    JoinRequestStatusResponseBody, JoinRequestSubmitReceiptBody,
+};
 
 use crate::config::Config;
 use crate::config::account::{Account, CommunityStatus};
@@ -217,6 +219,95 @@ pub fn handle_join_submit_receipt(
             "join submit-receipt did not match a pending join with that id — ignoring",
         );
         false
+    }
+}
+
+/// Outcome of applying a VTC `join-requests/status-response` to a community.
+pub struct StatusOutcome {
+    /// The community record changed and the config needs saving.
+    pub changed: bool,
+    /// The community transitioned to an inactive (read-only) status, so the
+    /// runtime must deregister its live session (R-S-3 / D15).
+    pub inactivated: bool,
+}
+
+impl StatusOutcome {
+    const NONE: StatusOutcome = StatusOutcome {
+        changed: false,
+        inactivated: false,
+    };
+}
+
+/// Apply a VTC `join-requests/status-response` to the matching Pending community
+/// (R-B-8). Correlated by the body's `request_id` against the Pending record's
+/// stored id, and gated on the sender being the community's own VTC (anti-spoof).
+/// Maps the protocol status onto the membership lifecycle:
+///
+/// - `approved` → `Active` (also reached via the issued VMC in
+///   [`handle_credential_issue`]; idempotent here).
+/// - `rejected` → `Rejected` (inactive — the caller deregisters the session).
+/// - `deferred` → stays `Pending` ("more info required"); the content handling
+///   (evaluating `needs` / presenting the DCQL) is a **D4 stub**, and a Pending
+///   record already raises actions-required (R-S-2).
+/// - `pending` / `withdrawn` / unknown → no transition (withdrawal is the
+///   member-initiated leave, owned by T7).
+pub fn handle_join_status_response(
+    account: &mut Account,
+    message: &Message,
+    from_did: &str,
+) -> StatusOutcome {
+    let body: JoinRequestStatusResponseBody = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "malformed join status-response body — ignoring");
+            return StatusOutcome::NONE;
+        }
+    };
+    let Some(record) = account.communities.get_mut(from_did) else {
+        warn!(vtc = %from_did, "status-response from an unknown community — ignoring");
+        return StatusOutcome::NONE;
+    };
+    // Correlate: only resolve a Pending record whose request id matches the reply.
+    let matches = matches!(
+        &record.status,
+        CommunityStatus::Pending { request_id } if *request_id == body.request_id
+    );
+    if !matches {
+        warn!(vtc = %from_did, "status-response did not match a pending request id — ignoring");
+        return StatusOutcome::NONE;
+    }
+
+    match body.status.as_str() {
+        "approved" => {
+            record.activate(chrono::Utc::now());
+            info!(vtc = %from_did, "join approved by VTC — now Active");
+            StatusOutcome {
+                changed: true,
+                inactivated: false,
+            }
+        }
+        "rejected" => {
+            record.reject();
+            info!(vtc = %from_did, "join rejected by VTC");
+            StatusOutcome {
+                changed: true,
+                inactivated: true,
+            }
+        }
+        "deferred" => {
+            // "More info required" — stays Pending (still raises actions-required);
+            // evaluating `needs` / presenting the DCQL is deferred to D4.
+            info!(
+                vtc = %from_did,
+                needs = ?body.needs,
+                "join deferred — more information required (handling deferred to D4)"
+            );
+            StatusOutcome::NONE
+        }
+        other => {
+            debug!(vtc = %from_did, status = %other, "status-response: no transition");
+            StatusOutcome::NONE
+        }
     }
 }
 
@@ -542,7 +633,9 @@ mod tests {
     use crate::config::account::{Account, CommunityRecord, PersonaId, PersonaRecord};
     use chrono::Utc;
     use vta_sdk::protocols::credential_exchange::ISSUE as CREDENTIAL_ISSUE_TYPE;
-    use vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RECEIPT_TYPE;
+    use vta_sdk::protocols::join_requests::{
+        JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
+    };
 
     fn pending_account(vtc: &str, placeholder: Uuid) -> Account {
         let mut acct = Account::default();
@@ -620,6 +713,106 @@ mod tests {
             CommunityStatus::Pending { request_id } => assert_eq!(*request_id, placeholder),
             other => panic!("expected unchanged Pending, got {other:?}"),
         }
+    }
+
+    // --- status-response lifecycle resolution (R-B-8) ---
+
+    fn status_response(from: &str, request_id: Uuid, status: &str) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            JOIN_REQUEST_STATUS_RESPONSE_TYPE.to_string(),
+            serde_json::json!({ "requestId": request_id, "status": status }),
+        )
+        .from(from.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn status_response_approved_activates() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out =
+            handle_join_status_response(&mut acct, &status_response(vtc, rid, "approved"), vtc);
+        assert!(out.changed);
+        assert!(!out.inactivated, "approval keeps the live session");
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(rec.status.is_active());
+        assert!(
+            rec.member_since.is_some(),
+            "member_since stamped on activate"
+        );
+    }
+
+    #[test]
+    fn status_response_rejected_inactivates_and_raises_badge() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out =
+            handle_join_status_response(&mut acct, &status_response(vtc, rid, "rejected"), vtc);
+        assert!(out.changed);
+        assert!(
+            out.inactivated,
+            "a rejection must deregister the session (R-S-3)"
+        );
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(matches!(rec.status, CommunityStatus::Rejected));
+        assert!(
+            rec.needs_attention(),
+            "an unacknowledged rejection nags (R-S-2)"
+        );
+    }
+
+    #[test]
+    fn status_response_deferred_stays_pending() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out =
+            handle_join_status_response(&mut acct, &status_response(vtc, rid, "deferred"), vtc);
+        assert!(
+            !out.changed,
+            "more-info handling is a D4 stub — stays Pending"
+        );
+        assert!(!out.inactivated);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    #[test]
+    fn status_response_with_mismatched_request_id_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let mut acct = pending_account(vtc, Uuid::new_v4());
+
+        // A reply correlated to a different request id must not transition us.
+        let out = handle_join_status_response(
+            &mut acct,
+            &status_response(vtc, Uuid::new_v4(), "rejected"),
+            vtc,
+        );
+        assert!(!out.changed);
+        assert!(!out.inactivated);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    #[test]
+    fn status_response_from_unknown_community_is_ignored() {
+        let mut acct = pending_account("did:webvh:example:vtc", Uuid::new_v4());
+        let out = handle_join_status_response(
+            &mut acct,
+            &status_response("did:webvh:example:other", Uuid::new_v4(), "approved"),
+            "did:webvh:example:other",
+        );
+        assert!(!out.changed);
     }
 
     // --- credential-issue outcome handling ---

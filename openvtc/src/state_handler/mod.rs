@@ -644,6 +644,11 @@ impl StateHandler {
         // matching the pre-R11 inline `save_config` failure handling.
         let (save_done_tx, mut save_done_rx) = mpsc::unbounded_channel::<Result<(), String>>();
 
+        // 7-day Pending timeout sweep (R-B-7 / D16). `interval`'s first tick fires
+        // immediately, so a Pending that aged out while the app was closed expires
+        // on launch; thereafter it sweeps hourly.
+        let mut pending_expiry_tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -759,6 +764,22 @@ impl StateHandler {
                                 state.main_page.content_panel.communities.selected_index =
                                     new_idx;
                             }
+                        }
+                    },
+                    Action::AcknowledgeCommunity(i) => {
+                        // R-S-2: clear the actions-required badge on a terminal
+                        // outcome (Rejected / Expired) the user has now seen.
+                        let vtc = config
+                            .account
+                            .communities_for_display(false)
+                            .get(i)
+                            .map(|c| c.vtc_did.clone());
+                        if let Some(vtc) = vtc
+                            && let Some(c) = config.account.community_mut(&vtc)
+                        {
+                            c.acknowledge();
+                            save.mark_dirty();
+                            state.main_page.sync_from_config(&config);
                         }
                     },
                     Action::OpenCommunitySwitcher => {
@@ -1094,12 +1115,14 @@ impl StateHandler {
                             let msg_to = message.to.as_ref().and_then(|v| v.first()).cloned().unwrap_or_default();
                             let msg_thid = message.thid.clone().unwrap_or_else(|| "none".into());
 
+                            let mut inactivated = Vec::new();
                             match message_dispatch::process_inbound_message(
                                 &mut config,
                                 &tdk,
                                 &didcomm_service,
                                 &mut seen_messages,
                                 &message,
+                                &mut inactivated,
                             )
                             .await
                             {
@@ -1111,6 +1134,20 @@ impl StateHandler {
                                     // mark dirty (coalesced + offloaded); the UI
                                     // sync stays immediate.
                                     save.mark_dirty();
+                                    // R-S-3: a community resolved to an inactive
+                                    // status (e.g. a rejection) — tear down its
+                                    // live session so a dead community stops
+                                    // holding a mediator connection.
+                                    for vtc in &inactivated {
+                                        deregister_inactive_community(
+                                            &mut session_manager,
+                                            &didcomm_service,
+                                            &config,
+                                            &mut state,
+                                            vtc,
+                                        )
+                                        .await;
+                                    }
                                     state.main_page.sync_from_config(&config);
                                     // Extract short type name for summary
                                     let short_type = msg_type.rsplit('/').next().unwrap_or(&msg_type);
@@ -1314,6 +1351,32 @@ impl StateHandler {
                 // loop stays responsive. At most one save is in flight; a mark
                 // that lands while a save runs is re-scheduled on completion.
                 // When nothing is scheduled the arm parks forever (no busy-wait).
+                _ = pending_expiry_tick.tick() => {
+                    // R-B-7: expire Pending joins unanswered for 7 days, raising
+                    // actions-required, and tear down each one's now-dead session
+                    // (R-S-3). Records are retained read-only (R-S-1).
+                    let expired = config.account.expire_stale_pending(chrono::Utc::now());
+                    if !expired.is_empty() {
+                        save.mark_dirty();
+                        for vtc in &expired {
+                            deregister_inactive_community(
+                                &mut session_manager,
+                                &didcomm_service,
+                                &config,
+                                &mut state,
+                                vtc,
+                            )
+                            .await;
+                        }
+                        state.main_page.sync_from_config(&config);
+                        state.main_page.log(format!(
+                            "{} pending join{} expired (no response within 7 days).",
+                            expired.len(),
+                            if expired.len() == 1 { "" } else { "s" },
+                        ));
+                        let _ = self.state_tx.send(state.clone());
+                    }
+                },
                 _ = save.wait_deadline() => {
                     match save.take_for_save(|| config.clone_for_save()) {
                         Ok(Ok(pending)) => {
@@ -1810,6 +1873,50 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
 /// proceeds under the listener's restart policy, and the `ListenerEvent::Connected`
 /// handler flips the session to `Connected`. Failures are non-fatal (a restart
 /// recovers the session) and surfaced to the activity log.
+/// Tear down a community's live session after it transitioned to an inactive
+/// status (rejected, expired) — the lifecycle twin of [`register_joined_session`]
+/// (R-S-3 / D15). Deregisters the session and, if its persona now serves no live
+/// community, stops + removes the persona's listener so a dead community stops
+/// holding a mediator connection. The community **record is retained** (R-S-1);
+/// only the live session is dropped. Also drops the global messaging indicator to
+/// `NoActiveCommunity` when the account has no live community left.
+async fn deregister_inactive_community(
+    session_manager: &mut session_manager::SessionManager,
+    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    config: &Config,
+    state: &mut State,
+    vtc: &openvtc_core::config::account::VtcDid,
+) {
+    // The persona that served this (now-inactive but retained) community.
+    let Some(pid) = config.account.community(vtc).map(|c| c.persona_ref) else {
+        session_manager.deregister(vtc);
+        return;
+    };
+    let removed = session_manager.deregister(vtc);
+    let still_live = config
+        .account
+        .communities
+        .values()
+        .any(|c| c.persona_ref == pid && c.is_live());
+    if !still_live && let Some(did) = config.identities.get(&pid).map(|id| id.did.clone()) {
+        // Prefer the listener id the manager recorded; fall back to deriving it.
+        let listener_id = removed
+            .map(|s| s.listener_id)
+            .unwrap_or_else(|| didcomm::persona_listener_id(&did));
+        if let Err(e) = service.remove_listener(&listener_id).await {
+            debug!("remove_listener after community inactivation: {e}");
+        }
+        state
+            .main_page
+            .log("Community inactive — persona listener stopped.");
+    }
+    // Drop the global messaging indicator when no persona has a live community.
+    if !config.account.communities.values().any(|c| c.is_live()) {
+        state.connection.status = state::MediatorStatus::NoActiveCommunity;
+        state.connection.messaging_active = false;
+    }
+}
+
 async fn register_joined_session(
     session_manager: &mut session_manager::SessionManager,
     service: &affinidi_messaging_didcomm_service::DIDCommService,

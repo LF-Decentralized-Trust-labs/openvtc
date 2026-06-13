@@ -436,6 +436,11 @@ impl MainPage {
                 let _ = self.action_tx.send(Action::ToggleFavourite(selected));
                 true
             }
+            KeyCode::Char('a') if selected < count => {
+                // Acknowledge a terminal outcome, clearing its badge (R-S-2).
+                let _ = self.action_tx.send(Action::AcknowledgeCommunity(selected));
+                true
+            }
             KeyCode::Char('d') | KeyCode::Delete if selected < count => {
                 let _ = self
                     .action_tx
@@ -2033,6 +2038,21 @@ mod key_handler_tests {
         match rx.try_recv() {
             Ok(Action::ToggleFavourite(1)) => {}
             _ => panic!("expected ToggleFavourite(1)"),
+        }
+    }
+
+    #[test]
+    fn communities_a_acknowledges_at_selection() {
+        // R-S-2: `a` on the Communities panel acknowledges the highlighted row.
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.items =
+                vec![community_summary("a"), community_summary("b")].into();
+            s.main_page.content_panel.communities.selected_index = 1;
+        });
+        page.handle_key_event(press(KeyCode::Char('a')));
+        match rx.try_recv() {
+            Ok(Action::AcknowledgeCommunity(1)) => {}
+            _ => panic!("expected AcknowledgeCommunity(1)"),
         }
     }
 

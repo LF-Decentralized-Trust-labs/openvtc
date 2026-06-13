@@ -16,12 +16,12 @@ use affinidi_tdk::{TDK, didcomm::Message};
 use dtg_credentials::DTGCredential;
 use openvtc_core::messaging::{
     SeenMessages, check_message_age, check_task_capacity, create_finalize_message,
-    handle_credential_issue, handle_join_submit_receipt, require_thid, validate_did,
-    verify_vrc_proof, vet_vrc_issued,
+    handle_credential_issue, handle_join_status_response, handle_join_submit_receipt, require_thid,
+    validate_did, verify_vrc_proof, vet_vrc_issued,
 };
 use openvtc_core::{
     MessageType,
-    config::Config,
+    config::{Config, account::VtcDid},
     logs::LogFamily,
     relationships::{RelationshipAcceptBody, RelationshipRejectBody, RelationshipState},
     tasks::TaskType,
@@ -29,7 +29,9 @@ use openvtc_core::{
 };
 use tracing::{debug, info, warn};
 use vta_sdk::protocols::credential_exchange::ISSUE as CREDENTIAL_ISSUE_TYPE;
-use vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RECEIPT_TYPE;
+use vta_sdk::protocols::join_requests::{
+    JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
+};
 
 /// Maximum allowed message body size in bytes (1 MB).
 const MAX_MESSAGE_BODY_SIZE: usize = 1_048_576;
@@ -49,6 +51,7 @@ pub async fn process_inbound_message(
     service: &DIDCommService,
     seen: &mut SeenMessages,
     message: &Message,
+    inactivated: &mut Vec<VtcDid>,
 ) -> Result<bool, anyhow::Error> {
     // Drop messages outside the replay / freshness window before doing
     // any state-mutating work. Saves us from acting on stale captures
@@ -143,6 +146,18 @@ pub async fn process_inbound_message(
             message,
             &from_did,
         ));
+    }
+
+    // VTC join-requests status-response: the authoritative lifecycle resolution
+    // (approved / rejected / deferred) for a Pending join, correlated by
+    // `requestId` (R-B-8). A rejection inactivates the community, so report its
+    // VTC DID up so the loop deregisters the session (R-S-3).
+    if message.typ == JOIN_REQUEST_STATUS_RESPONSE_TYPE {
+        let outcome = handle_join_status_response(&mut config.account, message, &from_did);
+        if outcome.inactivated {
+            inactivated.push(from_did.to_string());
+        }
+        return Ok(outcome.changed);
     }
 
     let msg_type = match MessageType::try_from(message) {

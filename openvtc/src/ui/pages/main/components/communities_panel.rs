@@ -146,8 +146,11 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         );
     } else {
         lines.push(
-            Line::from("↑/↓ navigate   j: join a community   d: remove selected")
-                .fg(COLOR_DARK_GRAY),
+            Line::from(
+                "↑/↓ navigate   ⏎ open   f: ★ favourite   a: acknowledge   \
+                 j: join a community   d: remove selected",
+            )
+            .fg(COLOR_DARK_GRAY),
         );
     }
 
