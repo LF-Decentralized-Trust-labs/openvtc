@@ -18,7 +18,9 @@ use affinidi_tdk::{
 use chrono::Utc;
 use serde_json::Value;
 use uuid::Uuid;
-use vta_sdk::protocols::join_requests::{JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody};
+use vta_sdk::protocols::join_requests::{
+    JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
+};
 
 use crate::errors::OpenVTCError;
 
@@ -64,5 +66,42 @@ pub async fn submit_join_request(
     .finalize();
 
     crate::pack_and_send(atm, profile, &msg, persona_did, vtc_did, mediator_did).await?;
+    Ok(msg_id)
+}
+
+/// Send a member self-removal (`MEMBER_SELF_REMOVE`) to a VTC over DIDComm to
+/// leave the community (R-L-1). `member_did` is the persona presented to the
+/// community (the authcrypt sender authenticates it). `disposition` optionally
+/// requests how the VTC should treat the departing member's record (purge /
+/// tombstone / historical); `None` lets the VTC apply its default.
+///
+/// Returns the DIDComm message id — the thread root the VTC's
+/// `members/self-remove-receipt/1.0` reply references. The local membership is
+/// set to `Left` on send success; the receipt is advisory (logged if it
+/// arrives), so callers don't block on it.
+pub async fn submit_self_remove(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    member_did: &str,
+    vtc_did: &str,
+    mediator_did: &str,
+    disposition: Option<String>,
+) -> Result<Uuid, OpenVTCError> {
+    let body = serde_json::to_value(SelfRemoveBody { disposition })
+        .map_err(|e| OpenVTCError::Config(format!("self-remove body serialize: {e}")))?;
+
+    let msg_id = Uuid::new_v4();
+    let now = Utc::now().timestamp().max(0) as u64;
+    let msg = Message::build(
+        msg_id.to_string(),
+        MEMBER_SELF_REMOVE_TYPE.to_string(),
+        body,
+    )
+    .from(member_did.to_string())
+    .to(vtc_did.to_string())
+    .created_time(now)
+    .finalize();
+
+    crate::pack_and_send(atm, profile, &msg, member_did, vtc_did, mediator_did).await?;
     Ok(msg_id)
 }

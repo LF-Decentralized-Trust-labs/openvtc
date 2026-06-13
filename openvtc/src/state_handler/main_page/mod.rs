@@ -406,7 +406,8 @@ impl MainPageState {
         // Sync the Communities overview (R-C-*): display order from the model,
         // archived excluded, with the actions-required count for the badge.
         let mut community_items = Vec::new();
-        for c in config.account.communities_for_display(false) {
+        let show_archived = self.content_panel.communities.show_archived;
+        for c in config.account.communities_for_display(show_archived) {
             let persona = config.account.personas.get(&c.persona_ref);
             let persona_label = persona
                 .and_then(|p| p.label.clone())
@@ -430,6 +431,9 @@ impl MainPageState {
                     .map(|d| d.format("%Y-%m-%d").to_string())
                     .unwrap_or_default(),
                 favourite: c.favourite,
+                is_active: c.status.is_active(),
+                is_inactive: c.status.is_inactive(),
+                archived: c.archived,
                 needs_attention: c.needs_attention(),
                 persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
                 vtc_did: c.vtc_did.clone(),

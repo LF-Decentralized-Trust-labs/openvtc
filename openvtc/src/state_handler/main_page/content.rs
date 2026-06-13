@@ -90,6 +90,12 @@ pub struct CommunitiesState {
     /// When `Some(index)`, a removal of that community is awaiting `y`/`n`
     /// confirmation (the panel shows a prompt and other keys are suppressed).
     pub confirm_delete: Option<usize>,
+    /// When `Some(index)`, leaving that community is awaiting `y`/`n`
+    /// confirmation (R-L-1).
+    pub confirm_leave: Option<usize>,
+    /// Whether archived communities are included in the list (R-C-8). Off by
+    /// default; toggled so archived records stay discoverable.
+    pub show_archived: bool,
 }
 
 /// Quick community-switcher overlay state (R-C-7). `Some` while the Ctrl+K popup
@@ -127,6 +133,15 @@ pub struct CommunitySummary {
     pub member_since: String,
     /// Whether the user has starred this community (R-C-4).
     pub favourite: bool,
+    /// Whether the membership is Active — the only state you can leave (R-L-1)
+    /// or set as the working context (R-C-6).
+    pub is_active: bool,
+    /// Whether the membership is inactive (Left/Rejected/Removed/Expired) — the
+    /// only states that can be archived or deleted, and rendered read-only (D14).
+    pub is_inactive: bool,
+    /// Whether this community is archived (R-C-8); only shown when "show archived"
+    /// is on, with a marker.
+    pub archived: bool,
     /// Whether this community raises the actions-required indicator (R-C-3).
     pub needs_attention: bool,
     /// Full persona `did:webvh` presented to this community (troubleshooting

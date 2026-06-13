@@ -280,6 +280,26 @@ pub enum Action {
     /// this display index, clearing its actions-required badge (R-S-2).
     AcknowledgeCommunity(usize),
 
+    /// Arm a leave confirmation for the Active community at this index (the panel
+    /// prompts y/n before sending the self-removal).
+    CommunityConfirmLeave(usize),
+
+    /// Dismiss a pending leave confirmation without leaving.
+    CommunityCancelLeave,
+
+    /// Leave the Active community at this index: send `MEMBER_SELF_REMOVE`, then
+    /// set it `Left` and deregister its session (R-L-1 / R-S-3). Only sent after
+    /// the user confirms.
+    LeaveCommunity(usize),
+
+    /// Archive the inactive community at this index (hide from the default list,
+    /// retain the record) (R-C-8).
+    ArchiveCommunity(usize),
+
+    /// Toggle whether archived communities are shown in the Communities list, so
+    /// archived records stay discoverable (R-C-8).
+    ToggleShowArchived,
+
     /// Open the quick community switcher overlay (R-C-7): a Ctrl+K popup listing
     /// the Active communities, reachable from anywhere on the main page.
     OpenCommunitySwitcher,

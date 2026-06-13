@@ -679,7 +679,7 @@ impl StateHandler {
                         // up with no live community.
                         let target = config
                             .account
-                            .communities_for_display(false)
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
                             .map(|c| (c.vtc_did.clone(), c.persona_ref));
                         self.remove_community(&mut state, &mut config, &mut save, i);
@@ -728,7 +728,7 @@ impl StateHandler {
                         // end the immutable account borrow before mutating config.
                         let target = config
                             .account
-                            .communities_for_display(false)
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
                             .filter(|c| c.status.is_active())
                             .map(|c| (c.vtc_did.clone(), c.persona_ref));
@@ -746,7 +746,7 @@ impl StateHandler {
                         // as the list re-sorts (favourites float to the top).
                         let vtc = config
                             .account
-                            .communities_for_display(false)
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
                             .map(|c| c.vtc_did.clone());
                         if let Some(vtc) = vtc {
@@ -757,7 +757,7 @@ impl StateHandler {
                             state.main_page.sync_from_config(&config);
                             if let Some(new_idx) = config
                                 .account
-                                .communities_for_display(false)
+                                .communities_for_display(state.main_page.content_panel.communities.show_archived)
                                 .iter()
                                 .position(|c| c.vtc_did == vtc)
                             {
@@ -771,7 +771,7 @@ impl StateHandler {
                         // outcome (Rejected / Expired) the user has now seen.
                         let vtc = config
                             .account
-                            .communities_for_display(false)
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
                             .map(|c| c.vtc_did.clone());
                         if let Some(vtc) = vtc
@@ -782,13 +782,114 @@ impl StateHandler {
                             state.main_page.sync_from_config(&config);
                         }
                     },
+                    Action::LeaveCommunity(i) => {
+                        // R-L-1: send MEMBER_SELF_REMOVE, then set Left + deregister
+                        // the session on send success (the receipt is advisory).
+                        state.main_page.content_panel.communities.confirm_leave = None;
+                        let target = config
+                            .account
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
+                            .get(i)
+                            .filter(|c| c.status.is_active())
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona_id)) = target {
+                            // Owned send inputs from the persona's runtime identity,
+                            // so no config borrow is held across the network await.
+                            let sender = config.identities.get(&persona_id).map(|id| {
+                                (
+                                    id.persona_did().to_string(),
+                                    id.profile().clone(),
+                                    id.mediator_did.clone().unwrap_or_default(),
+                                )
+                            });
+                            let send = match (sender, tdk.atm.as_ref()) {
+                                (Some((member_did, profile, mediator)), Some(atm)) => {
+                                    openvtc_core::join::submit_self_remove(
+                                        atm, &profile, &member_did, &vtc, &mediator, None,
+                                    )
+                                    .await
+                                }
+                                _ => Err(openvtc_core::errors::OpenVTCError::Config(
+                                    "Messaging unavailable — cannot leave right now.".into(),
+                                )),
+                            };
+                            match send {
+                                Ok(_) => {
+                                    if let Some(c) = config.account.community_mut(&vtc) {
+                                        c.leave();
+                                    }
+                                    save.mark_dirty();
+                                    deregister_inactive_community(
+                                        &mut session_manager,
+                                        &didcomm_service,
+                                        &config,
+                                        &mut state,
+                                        &vtc,
+                                    )
+                                    .await;
+                                    state.main_page.sync_from_config(&config);
+                                    state
+                                        .main_page
+                                        .content_panel
+                                        .communities
+                                        .status_message = Some("Left the community.".to_string());
+                                }
+                                Err(e) => {
+                                    state.main_page.log_error("Leave failed", &e);
+                                    state
+                                        .main_page
+                                        .content_panel
+                                        .communities
+                                        .status_message = Some(format!("Couldn't leave: {e}"));
+                                }
+                            }
+                        }
+                    },
+                    Action::ArchiveCommunity(i) => {
+                        // R-C-8: archive an inactive community (hide it, retain the
+                        // record). Guarded inactive-only by `archive_community`.
+                        let vtc = config
+                            .account
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
+                            .get(i)
+                            .map(|c| c.vtc_did.clone());
+                        if let Some(vtc) = vtc {
+                            match config.account.archive_community(&vtc) {
+                                Ok(()) => {
+                                    save.mark_dirty();
+                                    state.main_page.sync_from_config(&config);
+                                    state
+                                        .main_page
+                                        .content_panel
+                                        .communities
+                                        .status_message =
+                                        Some("Community archived.".to_string());
+                                }
+                                Err(e) => {
+                                    state
+                                        .main_page
+                                        .content_panel
+                                        .communities
+                                        .status_message =
+                                        Some(format!("Couldn't archive: {e}"));
+                                }
+                            }
+                        }
+                    },
+                    Action::ToggleShowArchived => {
+                        // R-C-8: flip archived visibility and rebuild the list so
+                        // archived records stay discoverable.
+                        let comms = &mut state.main_page.content_panel.communities;
+                        comms.show_archived = !comms.show_archived;
+                        state.main_page.sync_from_config(&config);
+                    },
                     Action::OpenCommunitySwitcher => {
                         // R-C-7: list the Active communities (the only switchable
                         // ones) in display order and preselect the current one.
                         let current = state.selected_community.clone();
                         let items: Vec<_> = config
                             .account
-                            .communities_for_display(false)
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .into_iter()
                             .filter(|c| c.status.is_active())
                             .map(|c| main_page::content::SwitcherItem {
@@ -1500,7 +1601,7 @@ impl StateHandler {
     ) {
         let Some(vtc) = config
             .account
-            .communities_for_display(false)
+            .communities_for_display(state.main_page.content_panel.communities.show_archived)
             .get(index)
             .map(|c| c.vtc_did.clone())
         else {
@@ -1508,11 +1609,10 @@ impl StateHandler {
         };
         // The confirmation is now resolved.
         state.main_page.content_panel.communities.confirm_delete = None;
-        if config.account.community(&vtc).is_some_and(|c| c.is_live())
-            && let Some(c) = config.account.community_mut(&vtc)
-        {
-            c.leave();
-        }
+        // Delete is inactive-only (R-C-8): an Active/Pending community must be
+        // left first (the `d` key is gated to inactive rows, and `delete_community`
+        // re-checks). We no longer silently `leave()` here — that conflated leave
+        // with delete and skipped the protocol self-removal.
         match config.account.delete_community(&vtc) {
             Ok(_) => {
                 // R11: coalesced save (was an inline `config.save`). The
@@ -1844,6 +1944,12 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         Action::CommunityCancelDelete => {
             state.main_page.content_panel.communities.confirm_delete = None;
         }
+        Action::CommunityConfirmLeave(i) => {
+            state.main_page.content_panel.communities.confirm_leave = Some(*i);
+        }
+        Action::CommunityCancelLeave => {
+            state.main_page.content_panel.communities.confirm_leave = None;
+        }
         Action::CommunitySwitcherMove(i) => {
             if let Some(switcher) = state.main_page.switcher.as_mut() {
                 switcher.selected = (*i).min(switcher.items.len().saturating_sub(1));
@@ -2067,6 +2173,13 @@ mod tests {
                 },
             },
             Case {
+                name: "CommunityConfirmLeave arms the leave confirmation",
+                action: Action::CommunityConfirmLeave(1),
+                assert_fn: |s| {
+                    assert_eq!(s.main_page.content_panel.communities.confirm_leave, Some(1))
+                },
+            },
+            Case {
                 name: "DidConfirmDelete arms the VTA DID confirmation (degraded mode used to drop this)",
                 action: Action::DidConfirmDelete(1),
                 assert_fn: |s| {
@@ -2118,6 +2231,20 @@ mod tests {
         assert!(
             !handle_nav_action(&mut state, &Action::ToggleFavourite(0)),
             "ToggleFavourite mutates + persists config in the loop"
+        );
+        // T7 community-management arms also reach the loop (network send / config
+        // mutation / re-sync), not the pure reducer.
+        assert!(
+            !handle_nav_action(&mut state, &Action::LeaveCommunity(0)),
+            "LeaveCommunity sends MEMBER_SELF_REMOVE in the loop"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::ArchiveCommunity(0)),
+            "ArchiveCommunity mutates + persists config in the loop"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::ToggleShowArchived),
+            "ToggleShowArchived re-syncs from config in the loop"
         );
     }
 

@@ -68,6 +68,9 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         let prefix = if is_selected { "▸ " } else { "  " };
         let name_style = if is_selected {
             Style::new().fg(COLOR_SUCCESS).bold()
+        } else if c.is_inactive {
+            // Inactive communities are read-only (D14) — dimmed in the list.
+            Style::new().fg(COLOR_DARK_GRAY)
         } else {
             Style::new().fg(COLOR_TEXT_DEFAULT)
         };
@@ -89,6 +92,9 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         }
         if !c.member_since.is_empty() {
             detail.push_str(&format!("  ·  since {}", c.member_since));
+        }
+        if c.archived {
+            detail.push_str("  ·  archived");
         }
         let detail_style = if is_selected {
             Style::new().fg(COLOR_SOFT_PURPLE)
@@ -133,23 +139,42 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
     }
 
     lines.push(Line::from(""));
-    if let Some(idx) = state.confirm_delete {
-        let name = state
+    let confirm_name = |idx: usize| {
+        state
             .items
             .get(idx)
-            .map(|c| c.display_name.as_str())
-            .unwrap_or("this community");
+            .map(|c| c.display_name.clone())
+            .unwrap_or_else(|| "this community".to_string())
+    };
+    if let Some(idx) = state.confirm_delete {
         lines.push(
-            Line::from(format!("Remove “{name}”?   y: confirm    n: cancel"))
-                .fg(COLOR_ORANGE)
-                .bold(),
+            Line::from(format!(
+                "Delete “{}”?   y: confirm    n: cancel",
+                confirm_name(idx)
+            ))
+            .fg(COLOR_ORANGE)
+            .bold(),
+        );
+    } else if let Some(idx) = state.confirm_leave {
+        lines.push(
+            Line::from(format!(
+                "Leave “{}”? This sends a self-removal to the community.   y: confirm    n: cancel",
+                confirm_name(idx)
+            ))
+            .fg(COLOR_ORANGE)
+            .bold(),
         );
     } else {
+        let archived_hint = if state.show_archived {
+            "v: hide archived"
+        } else {
+            "v: show archived"
+        };
         lines.push(
-            Line::from(
-                "↑/↓ navigate   ⏎ open   f: ★ favourite   a: acknowledge   \
-                 j: join a community   d: remove selected",
-            )
+            Line::from(format!(
+                "↑/↓ navigate   ⏎ open   f: ★   a: acknowledge   l: leave   \
+                 x: archive   d: delete   j: join   {archived_hint}"
+            ))
             .fg(COLOR_DARK_GRAY),
         );
     }

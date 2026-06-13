@@ -408,6 +408,22 @@ impl MainPage {
             }
             return true;
         }
+        // A leave confirmation is pending (R-L-1): same y/n gate.
+        if let Some(idx) = comms.confirm_leave {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::LeaveCommunity(idx));
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::CommunityCancelLeave);
+                }
+            }
+            return true;
+        }
+
+        // Status of the highlighted row gates which management keys apply.
+        let sel_active = comms.items.get(selected).is_some_and(|c| c.is_active);
+        let sel_inactive = comms.items.get(selected).is_some_and(|c| c.is_inactive);
 
         match key.code {
             KeyCode::Char('j') => {
@@ -441,7 +457,24 @@ impl MainPage {
                 let _ = self.action_tx.send(Action::AcknowledgeCommunity(selected));
                 true
             }
-            KeyCode::Char('d') | KeyCode::Delete if selected < count => {
+            KeyCode::Char('l') if sel_active => {
+                // Leave an Active community (R-L-1) — arm the y/n confirmation.
+                let _ = self.action_tx.send(Action::CommunityConfirmLeave(selected));
+                true
+            }
+            KeyCode::Char('x') if sel_inactive => {
+                // Archive an inactive community (R-C-8).
+                let _ = self.action_tx.send(Action::ArchiveCommunity(selected));
+                true
+            }
+            KeyCode::Char('v') => {
+                // Toggle whether archived communities are listed (R-C-8).
+                let _ = self.action_tx.send(Action::ToggleShowArchived);
+                true
+            }
+            // Delete is inactive-only (R-C-8): an Active community must be left
+            // first. Arming on Active would only fail downstream, so it's gated.
+            KeyCode::Char('d') | KeyCode::Delete if sel_inactive => {
                 let _ = self
                     .action_tx
                     .send(Action::CommunityConfirmDelete(selected));
@@ -1937,12 +1970,21 @@ mod key_handler_tests {
 
     /// A minimal Communities-panel summary row for key-routing tests.
     fn community_summary(name: &str) -> CommunitySummary {
+        community_summary_with(name, true, false)
+    }
+
+    /// A summary with explicit active/inactive status, for the leave/archive/
+    /// delete key-gating tests.
+    fn community_summary_with(name: &str, is_active: bool, is_inactive: bool) -> CommunitySummary {
         CommunitySummary {
             display_name: name.to_string(),
-            status_label: "Active".to_string(),
+            status_label: if is_active { "Active" } else { "Left" }.to_string(),
             persona_label: "persona".to_string(),
             member_since: String::new(),
             favourite: false,
+            is_active,
+            is_inactive,
+            archived: false,
             needs_attention: false,
             persona_did: "did:example:persona".to_string(),
             vtc_did: format!("did:example:{name}"),
@@ -2053,6 +2095,92 @@ mod key_handler_tests {
         match rx.try_recv() {
             Ok(Action::AcknowledgeCommunity(1)) => {}
             _ => panic!("expected AcknowledgeCommunity(1)"),
+        }
+    }
+
+    #[test]
+    fn communities_leave_archive_delete_are_status_gated() {
+        // Active row: `l` arms a leave; `d`/`x` do nothing (must leave first).
+        let active = || {
+            page_for(MainMenu::Communities, |s| {
+                s.main_page.content_panel.communities.items =
+                    vec![community_summary_with("a", true, false)].into();
+            })
+        };
+        let (mut page, mut rx) = active();
+        page.handle_key_event(press(KeyCode::Char('l')));
+        match rx.try_recv() {
+            Ok(Action::CommunityConfirmLeave(0)) => {}
+            _ => panic!("expected CommunityConfirmLeave(0)"),
+        }
+        let (mut page, mut rx) = active();
+        page.handle_key_event(press(KeyCode::Char('d')));
+        assert!(
+            rx.try_recv().is_err(),
+            "delete is gated off for Active rows"
+        );
+        let (mut page, mut rx) = active();
+        page.handle_key_event(press(KeyCode::Char('x')));
+        assert!(
+            rx.try_recv().is_err(),
+            "archive is gated off for Active rows"
+        );
+
+        // Inactive row: `x` archives, `d` arms delete; `l` does nothing.
+        let inactive = || {
+            page_for(MainMenu::Communities, |s| {
+                s.main_page.content_panel.communities.items =
+                    vec![community_summary_with("a", false, true)].into();
+            })
+        };
+        let (mut page, mut rx) = inactive();
+        page.handle_key_event(press(KeyCode::Char('x')));
+        match rx.try_recv() {
+            Ok(Action::ArchiveCommunity(0)) => {}
+            _ => panic!("expected ArchiveCommunity(0)"),
+        }
+        let (mut page, mut rx) = inactive();
+        page.handle_key_event(press(KeyCode::Char('d')));
+        match rx.try_recv() {
+            Ok(Action::CommunityConfirmDelete(0)) => {}
+            _ => panic!("expected CommunityConfirmDelete(0)"),
+        }
+        let (mut page, mut rx) = inactive();
+        page.handle_key_event(press(KeyCode::Char('l')));
+        assert!(
+            rx.try_recv().is_err(),
+            "leave is gated off for inactive rows"
+        );
+    }
+
+    #[test]
+    fn communities_leave_confirm_commits_and_cancels() {
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.confirm_leave = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::LeaveCommunity(0)) => {}
+            _ => panic!("expected LeaveCommunity(0)"),
+        }
+
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.confirm_leave = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Char('n')));
+        match rx.try_recv() {
+            Ok(Action::CommunityCancelLeave) => {}
+            _ => panic!("expected CommunityCancelLeave"),
+        }
+    }
+
+    #[test]
+    fn communities_v_toggles_show_archived() {
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |_| {});
+        page.handle_key_event(press(KeyCode::Char('v')));
+        match rx.try_recv() {
+            Ok(Action::ToggleShowArchived) => {}
+            _ => panic!("expected ToggleShowArchived"),
         }
     }
 
