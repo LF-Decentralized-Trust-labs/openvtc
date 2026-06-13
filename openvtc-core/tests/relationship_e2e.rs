@@ -26,100 +26,16 @@ mod common;
 
 use std::time::Duration;
 
-use affinidi_messaging_didcomm_service::{
-    DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, HandlerContext,
-    ListenerConfig, RestartPolicy, RetryConfig, Router, handler_fn, ignore_handler,
-    trust_ping_handler,
-};
-use affinidi_tdk::common::profiles::TDKProfile;
+use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::didcomm::Message;
 use openvtc_core::protocol_urls::{RELATIONSHIP_REQUEST, VRC_REJECTED, VRC_REQUEST};
 use openvtc_core::relationships::RelationshipRequestBody;
 use openvtc_core::vrc::{VRCRequestReject, VrcRequest};
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
-use common::{MockMediator, TestProfile};
+use common::{MockMediator, init_test_tracing, start_profile_service};
 
 const TEST_MESSAGE_TYPE: &str = "https://example.com/openvtc-test/1.0/echo";
-
-/// Build a `DIDCommService` for `profile` with a router that captures
-/// any inbound message in `routes` into `inbound_tx`. Returns the
-/// running service plus the cancellation token guarding its background
-/// tasks.
-async fn start_profile_service(
-    profile: TestProfile,
-    routes: &[&'static str],
-    inbound_tx: mpsc::UnboundedSender<Message>,
-) -> Result<(DIDCommService, CancellationToken), Box<dyn std::error::Error + Send + Sync>> {
-    let TestProfile {
-        alias,
-        did,
-        secrets,
-        mediator_did,
-    } = profile;
-
-    let tdk_profile = TDKProfile::new(&alias, &did, Some(&mediator_did), secrets);
-
-    let config = DIDCommServiceConfig {
-        listeners: vec![ListenerConfig {
-            id: alias.clone(),
-            profile: tdk_profile,
-            restart_policy: RestartPolicy::Always {
-                backoff: RetryConfig::default(),
-            },
-            // Use the default acl_mode (None) — the mediator's own
-            // global mode (ExplicitDeny by default) is what governs
-            // whether new accounts are accepted.
-            ..Default::default()
-        }],
-    };
-
-    let make_capture = || {
-        let tx = inbound_tx.clone();
-        handler_fn(move |_ctx: HandlerContext, msg: Message| {
-            let tx = tx.clone();
-            async move {
-                let _ = tx.send(msg);
-                Ok::<Option<DIDCommResponse>, DIDCommServiceError>(None)
-            }
-        })
-    };
-
-    let mut router = Router::new()
-        // Built-in trust-ping responder so the mediator sees a connected
-        // and well-behaved listener.
-        .route(
-            affinidi_messaging_didcomm_service::TRUST_PING_TYPE,
-            handler_fn(trust_ping_handler),
-        )?
-        // Drop pickup-status messages — the SDK handles them internally
-        // but the router still gets them as a courtesy event.
-        .route(
-            affinidi_messaging_didcomm_service::MESSAGE_PICKUP_STATUS_TYPE,
-            handler_fn(ignore_handler),
-        )?;
-    for type_url in routes {
-        router = router.route(type_url, make_capture())?;
-    }
-
-    let shutdown = CancellationToken::new();
-    let service = DIDCommService::start(config, router, shutdown.clone()).await?;
-    Ok((service, shutdown))
-}
-
-/// Install a tracing subscriber so the mediator's logs surface in
-/// `cargo test -- --nocapture`. Idempotent — subsequent calls are
-/// no-ops once a global subscriber is installed.
-fn init_test_tracing() {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_test_writer()
-        .try_init();
-}
 
 /// Connect both profiles to the mediator and wait for them to settle.
 /// Bob's listener comes up first so his pickup queue is ready when
