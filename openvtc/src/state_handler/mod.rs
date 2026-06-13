@@ -16,7 +16,7 @@ use tokio::sync::{
     broadcast,
     mpsc::{self, UnboundedReceiver},
 };
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Tail-truncate a DID for log-message display, fixed at 30 chars.
 pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
@@ -59,6 +59,7 @@ pub mod main_page;
 mod message_dispatch;
 mod relationship_actions;
 mod save_coalesce;
+mod session_manager;
 mod settings_actions;
 mod setup_did_actions;
 mod setup_did_git_sign_actions;
@@ -568,14 +569,50 @@ impl StateHandler {
         // moment a `ListenerEvent::Connected` arrives — and back to Connecting on
         // a disconnect. Subscribe to typed lifecycle events for that.
         let mut listener_events = didcomm_service.subscribe();
-        // The persona listener ids (one per resolved identity, derived from each
-        // DID) are stable for the life of this loop — compute them once for event
-        // matching. A single-persona account yields a one-element set.
-        let persona_lids: std::collections::HashSet<String> = config
-            .identities
-            .values()
-            .map(|i| didcomm::persona_listener_id(&i.did))
-            .collect();
+
+        // Supervised multi-session manager (D11/D15): one persona-session per
+        // active community (a reused persona shares one), tracking per-session
+        // connection status over the listeners `start_service` already launched.
+        // Messaging runs through it from here on; at N=1 it holds one session and
+        // behaves identically to the previous single global flag.
+        let mut session_manager = session_manager::SessionManager::default();
+        {
+            use session_manager::RegisterOutcome;
+            // NOTE: a mid-session leave/reject/expire does NOT yet deregister its
+            // session (that is T6/T7), so until then `any_connected()` can read
+            // live for a persona whose communities have all gone inactive. Startup
+            // registers exactly the communities that require a live session at load
+            // time (`IdentityRegistry::sessions`).
+            let registry = openvtc_core::identity::IdentityRegistry::new(&config.account);
+            let mut at_capacity = 0usize;
+            for (persona_id, vtcs) in registry.sessions() {
+                let Some(ctx) = config.identities.get(&persona_id) else {
+                    // A live community whose persona didn't resolve to an identity
+                    // has no listener either — surfaced here for parity, not silent.
+                    debug!(%persona_id, "live-community persona missing from resolved identities — not tracked");
+                    continue;
+                };
+                let lid = didcomm::persona_listener_id(&ctx.did);
+                for vtc in vtcs {
+                    if matches!(
+                        session_manager.register(persona_id, &lid, vtc.clone()),
+                        RegisterOutcome::AtCapacity
+                    ) {
+                        at_capacity += 1;
+                        warn!(%persona_id, vtc = %vtc, "session manager at capacity — community not tracked");
+                    }
+                }
+            }
+            // No silent caps (D15): tell the user if any community exceeded the bound.
+            if at_capacity > 0 {
+                state.main_page.log(format!(
+                    "Warning: {at_capacity} communit{} exceeded the session limit ({}) and are not actively connected.",
+                    if at_capacity == 1 { "y" } else { "ies" },
+                    session_manager.max_sessions(),
+                ));
+            }
+        }
+
         state.connection.status = state::MediatorStatus::Connecting;
         state.main_page.log("Connecting to the mediator…");
         let _ = self.state_tx.send(state.clone());
@@ -629,21 +666,24 @@ impl StateHandler {
                         break interrupted;
                     },
                     Action::DeleteCommunity(i) => {
-                        // Identify the deleted community's persona BEFORE the
-                        // delete so we can tear down *its* listener (not the
-                        // active one) if it ends up with no live community.
-                        let target_persona = config
+                        // Capture the deleted community + its persona BEFORE the
+                        // delete so we can deregister its session and tear down
+                        // *its* listener (not the active one) if its persona ends
+                        // up with no live community.
+                        let target = config
                             .account
                             .communities_for_display(false)
                             .get(i)
-                            .map(|c| c.persona_ref);
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
                         self.remove_community(&mut state, &mut config, &mut save, i);
-                        // A deleted community must not leave its persona's
-                        // mediator connection running. If that persona no longer
-                        // has any live community, stop and remove its listener so
-                        // the connection is torn down with the community (not left
-                        // dangling).
-                        if let Some(pid) = target_persona {
+                        // A deleted community must not leave its persona's mediator
+                        // connection running. Deregister it from the session
+                        // manager (D15/R-S-3); if that persona no longer has any
+                        // live community, stop and remove its listener so the
+                        // connection is torn down with the community, not left
+                        // dangling.
+                        if let Some((vtc, pid)) = target {
+                            let removed = session_manager.deregister(&vtc);
                             let still_live = config
                                 .account
                                 .communities
@@ -653,7 +693,11 @@ impl StateHandler {
                                 && let Some(did) =
                                     config.identities.get(&pid).map(|id| id.did.clone())
                             {
-                                let listener_id = didcomm::persona_listener_id(&did);
+                                // Prefer the listener id the manager recorded for
+                                // the torn-down session; fall back to deriving it.
+                                let listener_id = removed
+                                    .map(|s| s.listener_id)
+                                    .unwrap_or_else(|| didcomm::persona_listener_id(&did));
                                 if let Err(e) =
                                     didcomm_service.remove_listener(&listener_id).await
                                 {
@@ -1136,22 +1180,39 @@ impl StateHandler {
                 ev = listener_events.recv() => {
                     use affinidi_messaging_didcomm_service::ListenerEvent;
                     if let Ok(ev) = ev {
-                        match ev {
-                            // Any persona listener connecting marks messaging
-                            // live; a per-persona status panel is future work.
-                            ListenerEvent::Connected { listener_id }
-                                if persona_lids.contains(&listener_id) =>
-                            {
+                        // Route persona-listener lifecycle through the session
+                        // manager (D11/D15), which holds per-session status; a
+                        // disconnect carrying an error is recorded as that one
+                        // session failing (isolated — others are untouched). The
+                        // SDK keeps retrying per its restart policy, so a restart
+                        // or clean drop is "not connected" until the next connect.
+                        // Events for R-DID listeners (not persona sessions) match
+                        // nothing and are ignored.
+                        let changed = match ev {
+                            ListenerEvent::Connected { listener_id } => {
+                                session_manager.mark_connected(&listener_id)
+                            }
+                            ListenerEvent::Disconnected { listener_id, error } => match error {
+                                Some(e) => session_manager.mark_failed(&listener_id, e),
+                                None => session_manager.mark_disconnected(&listener_id),
+                            },
+                            ListenerEvent::Restarting { listener_id, .. } => {
+                                session_manager.mark_disconnected(&listener_id)
+                            }
+                        };
+                        // Derive the global connection indicator from the
+                        // aggregate of all persona-sessions (a per-community
+                        // status panel is future UI work). Leave a
+                        // `NoActiveCommunity` state untouched when no session
+                        // exists.
+                        if changed {
+                            if session_manager.any_connected() {
                                 state.connection.status = state::MediatorStatus::Connected;
                                 state.connection.messaging_active = true;
-                            }
-                            ListenerEvent::Disconnected { listener_id, .. }
-                                if persona_lids.contains(&listener_id) =>
-                            {
+                            } else if session_manager.session_count() > 0 {
                                 state.connection.status = state::MediatorStatus::Connecting;
                                 state.connection.messaging_active = false;
                             }
-                            _ => {}
                         }
                     }
                 },
