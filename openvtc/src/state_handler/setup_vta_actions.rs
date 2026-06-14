@@ -7,8 +7,28 @@ use tokio::sync::{mpsc, watch};
 use vta_sdk::client::VtaClient;
 use vta_sdk::provision_client::{
     DiagStatus, EphemeralSetupKey, Protocol, ProvisionAsk, VtaEvent, VtaIntent, VtaReply,
-    apply_update, pending_list, run_connection_test,
+    apply_update, pending_list, provision_admin_rotated_via_rest, run_connection_test,
 };
+
+/// Env var that pins the VTA's REST base URL, bypassing `did:webvh`/DIDComm
+/// resolution. Set it (e.g. `http://127.0.0.1:8080`) to point the bootstrap at
+/// a local/loopback VTA whose DID does not resolve back to that URL — the
+/// integration-test seam (and a handy "talk to my dev VTA" override). When set,
+/// bootstrap talks plain REST to this URL and provisions URL-direct via
+/// `provision_admin_rotated_via_rest` (which never re-resolves the VTA DID).
+const VTA_URL_OVERRIDE_ENV: &str = "OPENVTC_VTA_URL";
+
+/// The trimmed, non-empty value of [`VTA_URL_OVERRIDE_ENV`], or `None`. A blank
+/// or whitespace-only value is treated as unset.
+fn vta_url_override() -> Option<String> {
+    normalize_url_override(std::env::var(VTA_URL_OVERRIDE_ENV).ok())
+}
+
+/// Pure core of [`vta_url_override`]: trim and drop blank/whitespace-only
+/// values so an exported-but-empty env var reads as unset.
+fn normalize_url_override(raw: Option<String>) -> Option<String> {
+    raw.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
 
 /// Handle the `VtaSubmitDid` action: resolve the VTA service URL from the
 /// supplied DID and mint an ephemeral did:key the operator will authorise via
@@ -28,58 +48,72 @@ pub(crate) async fn handle_vta_submit_did(
     state.setup.vta.messages.clear();
     state.setup.vta.completed = Completion::NotFinished;
     state.setup.vta.vta_did = vta_did.clone();
-    state.setup.vta.messages.push(MessageType::Info(
-        "Resolving VTA service endpoint…".to_string(),
-    ));
-    let _ = state_tx.send(state.clone());
 
-    // Use `resolve_vta` (not `resolve_vta_url`) so we get an honest answer:
-    // `rest_url` is `Some` only when the DID document advertises a `#vta-rest`
-    // service, and `mediator_did` is `Some` only when it advertises a DIDComm
-    // mediator. `resolve_vta_url` synthesizes a fake URL from the DID's
-    // domain on the assumption REST exists — which lies on DIDComm-only VTAs.
-    let resolved = match vta_sdk::provision_client::resolve_vta(&vta_did).await {
-        Ok(r) => r,
-        Err(e) => {
+    // OPENVTC_VTA_URL override: skip DID resolution and talk plain REST to the
+    // pinned URL. Lets bootstrap target a loopback/dev VTA whose DID can't be
+    // resolved back to its URL (the integration-test seam). DIDComm is not used
+    // on this path — provisioning goes URL-direct in `handle_vta_start_provision`.
+    if let Some(url) = vta_url_override() {
+        state.setup.vta.messages.push(MessageType::Info(format!(
+            "{VTA_URL_OVERRIDE_ENV} set — using REST endpoint {url} (skipping DID resolution)."
+        )));
+        let _ = state_tx.send(state.clone());
+        state.setup.vta.vta_url = url;
+        state.setup.vta.mediator_did = None;
+    } else {
+        state.setup.vta.messages.push(MessageType::Info(
+            "Resolving VTA service endpoint…".to_string(),
+        ));
+        let _ = state_tx.send(state.clone());
+
+        // Use `resolve_vta` (not `resolve_vta_url`) so we get an honest answer:
+        // `rest_url` is `Some` only when the DID document advertises a `#vta-rest`
+        // service, and `mediator_did` is `Some` only when it advertises a DIDComm
+        // mediator. `resolve_vta_url` synthesizes a fake URL from the DID's
+        // domain on the assumption REST exists — which lies on DIDComm-only VTAs.
+        let resolved = match vta_sdk::provision_client::resolve_vta(&vta_did).await {
+            Ok(r) => r,
+            Err(e) => {
+                state.setup.vta.messages.push(MessageType::Error(format!(
+                    "Could not resolve {vta_did}: {e}"
+                )));
+                state.setup.vta.completed = Completion::CompletedFail;
+                return Ok(());
+            }
+        };
+
+        if resolved.rest_url.is_none() && resolved.mediator_did.is_none() {
             state.setup.vta.messages.push(MessageType::Error(format!(
-                "Could not resolve {vta_did}: {e}"
+                "{vta_did} advertises neither a REST endpoint nor a DIDComm mediator. \
+                 The VTA cannot be reached online."
             )));
             state.setup.vta.completed = Completion::CompletedFail;
             return Ok(());
         }
-    };
 
-    if resolved.rest_url.is_none() && resolved.mediator_did.is_none() {
-        state.setup.vta.messages.push(MessageType::Error(format!(
-            "{vta_did} advertises neither a REST endpoint nor a DIDComm mediator. \
-             The VTA cannot be reached online."
-        )));
-        state.setup.vta.completed = Completion::CompletedFail;
-        return Ok(());
-    }
-
-    state.setup.vta.vta_url = resolved.rest_url.clone().unwrap_or_default();
-    state.setup.vta.mediator_did = resolved.mediator_did.clone();
-    match (&resolved.rest_url, &resolved.mediator_did) {
-        (Some(url), Some(med)) => {
-            state
-                .setup
-                .vta
-                .messages
-                .push(MessageType::Info(format!("REST: {url}")));
-            state
-                .setup
-                .vta
-                .messages
-                .push(MessageType::Info(format!("DIDComm mediator: {med}")));
+        state.setup.vta.vta_url = resolved.rest_url.clone().unwrap_or_default();
+        state.setup.vta.mediator_did = resolved.mediator_did.clone();
+        match (&resolved.rest_url, &resolved.mediator_did) {
+            (Some(url), Some(med)) => {
+                state
+                    .setup
+                    .vta
+                    .messages
+                    .push(MessageType::Info(format!("REST: {url}")));
+                state
+                    .setup
+                    .vta
+                    .messages
+                    .push(MessageType::Info(format!("DIDComm mediator: {med}")));
+            }
+            (Some(url), None) => state.setup.vta.messages.push(MessageType::Info(format!(
+                "REST: {url} (DIDComm not advertised)"
+            ))),
+            (None, Some(med)) => state.setup.vta.messages.push(MessageType::Info(format!(
+                "DIDComm-only VTA — mediator: {med}"
+            ))),
+            (None, None) => unreachable!("guarded above"),
         }
-        (Some(url), None) => state.setup.vta.messages.push(MessageType::Info(format!(
-            "REST: {url} (DIDComm not advertised)"
-        ))),
-        (None, Some(med)) => state.setup.vta.messages.push(MessageType::Info(format!(
-            "DIDComm-only VTA — mediator: {med}"
-        ))),
-        (None, None) => unreachable!("guarded above"),
     }
 
     // Mint the ephemeral admin did:key. Held in memory only — a fresh key is
@@ -145,80 +179,103 @@ pub(crate) async fn handle_vta_start_provision(
     state.setup.active_page = SetupPage::VtaProvisioning;
     state.setup.vta.messages.clear();
     state.setup.vta.completed = Completion::NotFinished;
-    state.setup.vta.diagnostics = pending_list();
     let _ = state_tx.send(state.clone());
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<VtaEvent>();
     // AdminRotated mints a fresh long-term admin DID on the VTA side; the
-    // ephemeral setup did:key is only used to authenticate the bootstrap
-    // call. The reply still arrives as `VtaReply::AdminOnly`, so the rest
-    // of this handler is unchanged.
+    // ephemeral setup did:key only authenticates the bootstrap call. The reply
+    // arrives as `VtaReply::AdminOnly` on both transports.
     let ask = ProvisionAsk::vta_admin_rotated(context_id.clone()).with_label("openvtc");
     let setup_did = setup_key.did.clone();
     let setup_priv = setup_key.private_key_multibase().to_string();
-    let runner_vta_did = vta_did.clone();
-    tokio::spawn(async move {
-        run_connection_test(
-            VtaIntent::AdminRotated,
-            runner_vta_did,
-            setup_did,
-            setup_priv,
-            ask,
-            None,
-            tx,
-        )
-        .await;
-    });
 
     let mut admin_reply: Option<vta_sdk::provision_client::AdminCredentialReply> = None;
     let mut connect_rest_url: Option<String> = None;
     let mut connect_mediator_did: Option<String> = None;
     let mut connect_protocol: Option<Protocol> = None;
 
-    while let Some(ev) = rx.recv().await {
-        match ev {
-            VtaEvent::CheckStart(check) => {
-                apply_update(&mut state.setup.vta.diagnostics, check, DiagStatus::Running);
+    if let Some(url) = vta_url_override() {
+        // URL-direct: one REST round-trip to the pinned URL via the SDK's
+        // URL-direct AdminRotated entry — no DID resolution, no DIDComm, no
+        // diagnostics stream (it never re-resolves the VTA DID). The REST
+        // branch below then authenticates + builds the client against `url`.
+        match provision_admin_rotated_via_rest(&url, &vta_did, setup_did, setup_priv, ask).await {
+            Ok(adm) => {
+                admin_reply = Some(adm);
+                connect_protocol = Some(Protocol::Rest);
+                connect_rest_url = Some(url);
             }
-            VtaEvent::CheckDone(check, status) => {
-                apply_update(&mut state.setup.vta.diagnostics, check, status);
-            }
-            VtaEvent::Resolved(resolved) => {
-                if let Some(rest) = resolved.rest_url.clone() {
-                    state.setup.vta.vta_url = rest;
-                }
-            }
-            VtaEvent::AttemptCompleted { .. } => {
-                // Per-transport telemetry; the diagnostics list already shows
-                // the operator-relevant outcome on the matching DiagCheck row.
-            }
-            VtaEvent::PreflightDone { .. } => {
-                // AdminOnly intent never reaches preflight — FullSetup-only.
-            }
-            VtaEvent::Connected {
-                protocol,
-                rest_url,
-                mediator_did,
-                reply,
-            } => {
-                connect_protocol = Some(protocol);
-                connect_rest_url = rest_url;
-                connect_mediator_did = mediator_did;
-                if let VtaReply::AdminOnly(adm) = reply {
-                    admin_reply = Some(adm);
-                }
-            }
-            VtaEvent::Failed(reason) => {
-                state
-                    .setup
-                    .vta
-                    .messages
-                    .push(MessageType::Error(reason.clone()));
+            Err(e) => {
+                state.setup.vta.messages.push(MessageType::Error(format!(
+                    "URL-direct provisioning failed: {e}"
+                )));
                 state.setup.vta.completed = Completion::CompletedFail;
                 let _ = state_tx.send(state.clone());
             }
         }
+    } else {
+        state.setup.vta.diagnostics = pending_list();
         let _ = state_tx.send(state.clone());
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<VtaEvent>();
+        let runner_vta_did = vta_did.clone();
+        tokio::spawn(async move {
+            run_connection_test(
+                VtaIntent::AdminRotated,
+                runner_vta_did,
+                setup_did,
+                setup_priv,
+                ask,
+                None,
+                tx,
+            )
+            .await;
+        });
+
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                VtaEvent::CheckStart(check) => {
+                    apply_update(&mut state.setup.vta.diagnostics, check, DiagStatus::Running);
+                }
+                VtaEvent::CheckDone(check, status) => {
+                    apply_update(&mut state.setup.vta.diagnostics, check, status);
+                }
+                VtaEvent::Resolved(resolved) => {
+                    if let Some(rest) = resolved.rest_url.clone() {
+                        state.setup.vta.vta_url = rest;
+                    }
+                }
+                VtaEvent::AttemptCompleted { .. } => {
+                    // Per-transport telemetry; the diagnostics list already shows
+                    // the operator-relevant outcome on the matching DiagCheck row.
+                }
+                VtaEvent::PreflightDone { .. } => {
+                    // AdminOnly intent never reaches preflight — FullSetup-only.
+                }
+                VtaEvent::Connected {
+                    protocol,
+                    rest_url,
+                    mediator_did,
+                    reply,
+                } => {
+                    connect_protocol = Some(protocol);
+                    connect_rest_url = rest_url;
+                    connect_mediator_did = mediator_did;
+                    if let VtaReply::AdminOnly(adm) = reply {
+                        admin_reply = Some(adm);
+                    }
+                }
+                VtaEvent::Failed(reason) => {
+                    state
+                        .setup
+                        .vta
+                        .messages
+                        .push(MessageType::Error(reason.clone()));
+                    state.setup.vta.completed = Completion::CompletedFail;
+                    let _ = state_tx.send(state.clone());
+                }
+            }
+            let _ = state_tx.send(state.clone());
+        }
     }
 
     let Some(admin) = admin_reply else {
@@ -446,4 +503,29 @@ pub(crate) async fn handle_vta_create_keys(
     }
     // No shutdown here — the wizard owns the shared admin session.
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_url_override;
+
+    #[test]
+    fn override_unset_is_none() {
+        assert_eq!(normalize_url_override(None), None);
+    }
+
+    #[test]
+    fn override_blank_or_whitespace_is_none() {
+        assert_eq!(normalize_url_override(Some(String::new())), None);
+        assert_eq!(normalize_url_override(Some("   ".to_string())), None);
+        assert_eq!(normalize_url_override(Some("\t\n".to_string())), None);
+    }
+
+    #[test]
+    fn override_value_is_trimmed() {
+        assert_eq!(
+            normalize_url_override(Some("  http://127.0.0.1:8080  ".to_string())),
+            Some("http://127.0.0.1:8080".to_string())
+        );
+    }
 }

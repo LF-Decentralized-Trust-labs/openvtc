@@ -80,7 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-vta-sdk = { version = "0.11", features = [
+vta-sdk = { version = "0.12", features = [
   "session",
   "client",
   "didcomm",

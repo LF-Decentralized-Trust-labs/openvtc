@@ -71,6 +71,12 @@ criterion = { version = "0.8", features = ["html_reports"] }
 # harness that did the same dance manually.
 affinidi-messaging-test-mediator = "0.2"
 affinidi-messaging-didcomm-service = { workspace = true }
+# In-process MockVta for the bootstrap e2e (VTI#406/#427 test-support seams).
+# `vta-service` is the VTA server crate — not published to crates.io — so it's
+# consumed as a git dev-dependency (the VTI git source is allow-listed in
+# deny.toml). Pinned to a commit on `origin/main` carrying vta-sdk 0.12.0 +
+# `provision_admin_rotated_via_rest` + the `MockVta::start_provisionable` seams.
+vta-service = { git = "https://github.com/OpenVTC/verifiable-trust-infrastructure", rev = "6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f", version = "0.9", default-features = false, features = ["test-support", "rest", "didcomm"] }
 base64 = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 secrecy = { workspace = true }
