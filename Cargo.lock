@@ -8931,7 +8931,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vta-cli-common"
 version = "0.9.1"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f#6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f"
+source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -8948,7 +8948,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
- "vta-sdk 0.12.0 (git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f)",
+ "vta-sdk 0.12.0 (git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c)",
  "x25519-dalek",
 ]
 
@@ -9023,7 +9023,7 @@ dependencies = [
 [[package]]
 name = "vta-sdk"
 version = "0.12.0"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f#6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f"
+source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9058,8 +9058,8 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.9.2"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f#6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f"
+version = "0.9.4"
+source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9122,7 +9122,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.12.0 (git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f)",
+ "vta-sdk 0.12.0 (git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c)",
  "vti-common",
  "vti-webauthn",
  "webauthn-rs",
@@ -9134,7 +9134,7 @@ dependencies = [
 [[package]]
 name = "vti-common"
 version = "0.10.1"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f#6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f"
+source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
@@ -9162,7 +9162,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
- "vta-sdk 0.12.0 (git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f)",
+ "vta-sdk 0.12.0 (git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c)",
  "webauthn-rs",
  "zeroize",
 ]
@@ -9170,7 +9170,7 @@ dependencies = [
 [[package]]
 name = "vti-webauthn"
 version = "0.1.0"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f#6a9d2e1a8fb86f928c2ee29920485ae2fde0c60f"
+source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
 dependencies = [
  "async-trait",
  "aws-lc-rs",

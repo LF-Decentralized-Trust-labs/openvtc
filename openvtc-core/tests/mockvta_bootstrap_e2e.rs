@@ -11,19 +11,20 @@
 //! Scenarios:
 //!
 //!   * `admin_rotation_provisions_against_mock_vta` — the State-A admin
-//!     rotation: an ephemeral setup `did:key` (authorized in the ACL, the
-//!     `pnm acl create` step) drives `provision_admin_rotated_via_rest`, which
-//!     returns a freshly-minted long-term admin DID + key (not the setup pair).
+//!     rotation: an ephemeral setup `did:key` (authorized in the ACL via
+//!     `grant_super_admin`, the `pnm acl create` step) drives
+//!     `provision_admin_rotated_via_rest`, which returns a freshly-minted
+//!     long-term admin DID + key (not the setup pair).
 //!   * `bootstrap_creates_top_context_and_lists_webvh_server` — the rest of the
 //!     State-A VTA surface: an authenticated client creates the account's
-//!     top-level context and sees a seeded webvh hosting server in the
-//!     catalogue (the prerequisite a later persona `did:webvh` mint resolves).
+//!     top-level context and sees a seeded webvh hosting server in the catalogue.
+//!   * `persona_did_webvh_mint_round_trips` — the State-B persona mint: against a
+//!     `MockVta::start_with_webvh_host` (an in-process stub webvh host + a
+//!     resolvable server DID), `create_did_webvh` mints a server-managed
+//!     `did:webvh` persona.
 //!
 //! The DIDComm join-request submission + lifecycle resolution that follow
-//! bootstrap are pure-mediator and covered in `join_lifecycle_e2e.rs`. The
-//! persona `did:webvh` mint itself (`create_key` → `create_did_webvh`) is not
-//! yet exercised here — `MockVta` has no webvh hosting backend, so the publish
-//! 500s; tracked as VTI#431 (and the ACL ergonomics as VTI#429).
+//! bootstrap are pure-mediator and covered in `join_lifecycle_e2e.rs`.
 //!
 //! All `#[ignore]`'d: spinning up the provisionable VTA + the provision
 //! round-trip is slow. CI's coverage job runs them via `--include-ignored`.
@@ -31,26 +32,12 @@
 //! NOTE: depends on the `vta-service` git dev-dependency (the VTA server crate
 //! is not on crates.io); its git source is allow-listed in `deny.toml`.
 
-use vta_sdk::client::{CreateContextRequest, VtaClient};
+use vta_sdk::client::{CreateContextRequest, CreateDidWebvhRequest, VtaClient};
+use vta_sdk::protocols::did_management::create::WebvhPathMode;
 use vta_sdk::provision_client::{
     EphemeralSetupKey, ProvisionAsk, provision_admin_rotated_via_rest,
 };
-use vta_service::acl::{AclEntry, Role};
 use vta_service::test_support::MockVta;
-
-/// Authorize `did` as super-admin in the mock's ACL — the `pnm acl create`
-/// step the real bootstrap performs before the setup DID can provision. (An
-/// ergonomic `MockVta` helper for this is requested in VTI#429; until then we
-/// seed the entry through the public keyspace API, mirroring vta-service's own
-/// `url_direct_admin_rotation_round_trips_against_rest_only_mock` test.)
-async fn authorize_super_admin(mock: &MockVta, did: &str) {
-    let entry = AclEntry::new(did, Role::Admin, "openvtc-e2e").with_contexts(vec![]);
-    mock.ctx
-        .acl_ks
-        .insert(format!("acl:{did}"), &entry)
-        .await
-        .expect("seed super-admin acl");
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "slow: spins up a provisionable VTA + URL-direct admin-rotation round-trip"]
@@ -62,7 +49,9 @@ async fn admin_rotation_provisions_against_mock_vta() {
     );
 
     let setup = EphemeralSetupKey::generate().expect("generate setup key");
-    authorize_super_admin(&mock, &setup.did).await;
+    // Authorize the ephemeral setup did:key as super-admin (the `pnm acl create`
+    // step) so the provision gate accepts it — VTI#429's ergonomic seam.
+    mock.grant_super_admin(&setup.did).await;
 
     // URL-direct: REST to base_url() with the configured vta_did, no DID→URL
     // resolution — the seam OpenVTC's bootstrap takes when OPENVTC_VTA_URL is set.
@@ -136,6 +125,62 @@ async fn bootstrap_creates_top_context_and_lists_webvh_server() {
         "seeded webvh server must appear in the catalogue, got {:?}",
         servers.servers
     );
+
+    mock.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "slow: spins up a provisionable VTA + an in-process stub webvh host"]
+async fn persona_did_webvh_mint_round_trips() {
+    // `start_with_webvh_host` stands up an in-process stub webvh host and
+    // registers a resolvable server DID under `WEBVH_SERVER_ID`, so a
+    // server-managed mint publishes and resolves entirely in-process (VTI#431).
+    let mock = MockVta::start_with_webvh_host().await;
+
+    let token = mock
+        .ctx
+        .mint_token("did:key:z6MkOpenVtcMintAdmin", "admin", vec![])
+        .await;
+    let client = VtaClient::new(mock.base_url());
+    client.set_token_async(token).await;
+
+    // State-B: mint the persona did:webvh against the hosting server.
+    let minted = client
+        .create_did_webvh(CreateDidWebvhRequest {
+            context_id: "ctx1".to_string(),
+            server_id: Some(MockVta::WEBVH_SERVER_ID.to_string()),
+            url: None,
+            path: None,
+            path_mode: Some(WebvhPathMode::AutoAssign),
+            domain: None,
+            label: None,
+            portable: false,
+            add_mediator_service: false,
+            additional_services: None,
+            pre_rotation_count: 0,
+            did_document: None,
+            did_log: None,
+            set_primary: false,
+            signing_key_id: None,
+            ka_key_id: None,
+            template: None,
+            template_context: None,
+            template_vars: Default::default(),
+        })
+        .await
+        .expect("create_did_webvh round-trips against the stub host");
+
+    assert!(
+        minted.did.starts_with("did:webvh:"),
+        "expected a minted did:webvh, got {}",
+        minted.did
+    );
+    assert_eq!(
+        minted.server_id.as_deref(),
+        Some(MockVta::WEBVH_SERVER_ID),
+        "result records the server the persona was minted against"
+    );
+    assert!(!minted.scid.is_empty(), "minted DID must carry an SCID");
 
     mock.shutdown().await;
 }
