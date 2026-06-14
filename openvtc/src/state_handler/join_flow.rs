@@ -257,6 +257,10 @@ impl StateHandler {
         // readable after the drop. A *reused* persona is never set here, so it is
         // never rolled back.
         let mut minted_persona: Option<PersonaId> = None;
+        // Captured before the mint so a rollback (cancel or failure) can restore
+        // it — `mint_persona_into` overwrites `public.friendly_name` with the
+        // attempted community's persona name.
+        let prior_friendly_name = config.public.friendly_name.clone();
         let sequence = run_join_sequence(
             self,
             state,
@@ -267,6 +271,7 @@ impl StateHandler {
             vtc_did,
             choice,
             &mut minted_persona,
+            &prior_friendly_name,
         );
         let interrupted = race_against_interrupt(sequence, interrupt_rx).await;
 
@@ -274,7 +279,7 @@ impl StateHandler {
             if let Some(persona_id) = minted_persona
                 && !config.account.persona_referenced(&persona_id)
             {
-                rollback_minted_persona(config, persona_id, state, profile);
+                rollback_minted_persona(config, persona_id, state, profile, &prior_friendly_name);
             }
             state.join.processing = false;
             state.join.completed = Completion::CompletedFail;
@@ -406,6 +411,7 @@ async fn run_join_sequence(
     vtc_did: String,
     choice: JoinIdentityChoice,
     minted_persona: &mut Option<PersonaId>,
+    prior_friendly_name: &str,
 ) {
     // Idempotency (R-B-9) was already enforced at submit, before the identity
     // choice — no re-check here.
@@ -581,7 +587,13 @@ async fn run_join_sequence(
                     .join
                     .fail(format!("Failed to derive sub-context id: {e}"));
                 if minted {
-                    rollback_minted_persona(config, persona_id, state, profile);
+                    rollback_minted_persona(
+                        config,
+                        persona_id,
+                        state,
+                        profile,
+                        prior_friendly_name,
+                    );
                 }
                 return;
             }
@@ -597,7 +609,7 @@ async fn run_join_sequence(
             .join
             .fail(format!("Failed to create sub-context: {e}"));
         if minted {
-            rollback_minted_persona(config, persona_id, state, profile);
+            rollback_minted_persona(config, persona_id, state, profile, prior_friendly_name);
         }
         return;
     }
@@ -620,27 +632,29 @@ async fn run_join_sequence(
             .join
             .fail("Messaging (ATM) unavailable — cannot submit the join request.");
         if minted {
-            rollback_minted_persona(config, persona_id, state, profile);
+            rollback_minted_persona(config, persona_id, state, profile, prior_friendly_name);
         }
         return;
     };
-    let (applicant_did, persona_profile, persona_mediator) =
-        match config.identities.get(&persona_id) {
-            Some(ident) => (
-                ident.persona_did().to_string(),
-                ident.profile().clone(),
-                ident.mediator_did.clone().unwrap_or_default(),
-            ),
-            None => {
-                state
-                    .join
-                    .fail("Persona identity unavailable after mint — cannot submit.");
-                if minted {
-                    rollback_minted_persona(config, persona_id, state, profile);
-                }
-                return;
+    let (applicant_did, persona_profile, persona_mediator) = match config
+        .identities
+        .get(&persona_id)
+    {
+        Some(ident) => (
+            ident.persona_did().to_string(),
+            ident.profile().clone(),
+            ident.mediator_did.clone().unwrap_or_default(),
+        ),
+        None => {
+            state
+                .join
+                .fail("Persona identity unavailable after mint — cannot submit.");
+            if minted {
+                rollback_minted_persona(config, persona_id, state, profile, prior_friendly_name);
             }
-        };
+            return;
+        }
+    };
     let vp = serde_json::json!({
         "type": "VerifiablePresentation",
         "holder": applicant_did,
@@ -660,7 +674,7 @@ async fn run_join_sequence(
             state
                 .join
                 .fail(format!("Failed to submit join request: {e}"));
-            rollback_minted_persona(config, persona_id, state, profile);
+            rollback_minted_persona(config, persona_id, state, profile, prior_friendly_name);
             return;
         }
     };
@@ -708,6 +722,7 @@ fn rollback_minted_persona(
     persona_id: PersonaId,
     state: &State,
     profile: &str,
+    prior_friendly_name: &str,
 ) {
     config.account.personas.remove(&persona_id);
     config.identities.remove(&persona_id);
@@ -716,6 +731,10 @@ fn rollback_minted_persona(
         config.key_info.remove(&keys.authentication.secret.id);
         config.key_info.remove(&keys.decryption.secret.id);
     }
+    // `mint_persona_into` set `public.friendly_name` to the attempted community's
+    // persona name; restore the pre-mint value so a failed/cancelled join doesn't
+    // leave the self-display name pointing at a community we never joined.
+    config.public.friendly_name = prior_friendly_name.to_string();
     if let Err(e) = save_config(config, profile) {
         debug!("persona rollback re-save failed after a failed join: {e}");
     }
