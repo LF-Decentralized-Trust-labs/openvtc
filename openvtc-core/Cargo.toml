@@ -17,10 +17,16 @@ openpgp-card = [
   "dep:card-backend-pcsc",
   "dep:openpgp-card-rpgp",
 ]
+# Derives `Arbitrary` on the pure parse-surface config/message/credential
+# types so the cargo-fuzz harnesses can do structure-aware fuzzing
+# (issue #124). Off by default; nightly fuzz builds opt in. Pulls chrono's
+# own `arbitrary` feature for the `LogMessage` timestamp.
+arbitrary = ["dep:arbitrary", "chrono/arbitrary"]
 
 [dependencies]
 aes-gcm.workspace = true
 anyhow.workspace = true
+arbitrary = { workspace = true, optional = true }
 argon2.workspace = true
 affinidi-tdk.workspace = true
 affinidi-data-integrity.workspace = true

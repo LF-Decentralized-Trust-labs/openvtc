@@ -64,6 +64,13 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
       - run: cargo test --workspace --no-default-features
+      # Guard the structure-aware fuzzing seam (issue #124): the cargo-fuzz
+      # harnesses build openvtc-core with `--no-default-features --features
+      # arbitrary`, so check that exact shape and run the Arbitrary seam test.
+      - name: Fuzz-shape build + Arbitrary derive seam
+        run: |
+          cargo check -p openvtc-core --no-default-features --features arbitrary
+          cargo test -p openvtc-core --features arbitrary --lib
 
   doc:
     name: Documentation

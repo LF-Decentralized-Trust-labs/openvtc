@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 /// Category of a log message.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum LogFamily {
     /// Relationship lifecycle events.
     Relationship,
@@ -35,6 +36,7 @@ impl Display for LogFamily {
 
 /// A single timestamped log entry.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LogMessage {
     /// When the log message was created.
     pub created: chrono::DateTime<Utc>,
@@ -48,6 +50,7 @@ pub struct LogMessage {
 
 /// Bounded FIFO log that evicts the oldest entries when the limit is reached.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Logs {
     /// Log entries in insertion order (oldest first).
     pub messages: VecDeque<LogMessage>,

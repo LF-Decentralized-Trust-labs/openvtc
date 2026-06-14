@@ -167,6 +167,7 @@ pub mod protocol_urls {
 /// assert_eq!(url, "https://didcomm.org/trust-ping/2.0/ping");
 /// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[non_exhaustive]
 pub enum MessageType {
     /// A request to establish a new relationship with a remote party.
@@ -283,6 +284,7 @@ impl TryFrom<&Message> for MessageType {
 /// message type and one DIDComm route, so the router needs no per-kind
 /// registration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 #[non_exhaustive]
 pub enum CredentialKind {
     /// The membership credential (VMC) proving admission to the community.

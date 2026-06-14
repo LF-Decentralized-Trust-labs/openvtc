@@ -182,6 +182,7 @@ impl UnlockCode {
 
 /// Describes how the configuration secrets are protected at rest.
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ConfigProtectionType {
     /// Requires a hardware token with the Token ID to unlock config
     /// Will need to provide the USER PIN to the token

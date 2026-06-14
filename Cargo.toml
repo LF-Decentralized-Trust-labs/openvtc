@@ -29,6 +29,10 @@ affinidi-tdk = "0.7"
 affinidi-data-integrity = "0.7"
 affinidi-messaging-didcomm-service = "0.3"
 anyhow = "1.0"
+# Structure-aware fuzzing support (issue #124). Only pulled in when a crate
+# enables its own `arbitrary` feature; the `derive` feature provides the
+# `#[derive(arbitrary::Arbitrary)]` proc-macro.
+arbitrary = { version = "1", features = ["derive"] }
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 base64 = "0.22"
 bip39 = "2.2"

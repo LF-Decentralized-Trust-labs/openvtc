@@ -36,6 +36,7 @@ pub struct DeleteProfileSummary {
 
 /// Primary structure used for storing [crate::config::Config] data that is not sensitive
 #[derive(Clone, Serialize, Deserialize, Debug, Default)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct PublicConfig {
     /// Config format version for migration support.
     /// Absent in pre-0.2.0 configs (treated as version 0).
@@ -389,5 +390,21 @@ mod tests {
         assert!(pc.friendly_name.is_empty());
         assert!(pc.private.is_none());
         assert_eq!(pc.config_version, 0);
+    }
+
+    /// Smoke-test the `arbitrary` fuzz seam (issue #124): a `PublicConfig`
+    /// must be constructible from raw bytes via `Arbitrary` and the result
+    /// must round-trip through serde, so structure-aware fuzz harnesses can
+    /// generate inputs and feed them straight at the deserializer.
+    #[cfg(feature = "arbitrary")]
+    #[test]
+    fn test_public_config_arbitrary_roundtrips() {
+        use arbitrary::{Arbitrary, Unstructured};
+
+        let raw: Vec<u8> = (0..=255u8).cycle().take(512).collect();
+        let mut u = Unstructured::new(&raw);
+        let pc = PublicConfig::arbitrary(&mut u).expect("construct from bytes");
+        let json = serde_json::to_string(&pc).expect("serialize arbitrary config");
+        serde_json::from_str::<PublicConfig>(&json).expect("re-parse serialized config");
     }
 }
