@@ -456,10 +456,43 @@ pub fn vet_vrc_issued(
 /// public key is then resolved from the issuer's DID Document via the TDK
 /// resolver and the proof verified over the proof-stripped credential.
 pub async fn verify_vrc_proof(tdk: &TDK, vrc: &DTGCredential) -> Result<(), String> {
+    let proof = check_vrc_issuer_binding(vrc)?;
+
+    // `verify_data` expects the signed document with the proof stripped.
+    let mut unsigned = vrc.clone();
+    unsigned.credential_mut().proof = None;
+
+    tdk.verify_data(&unsigned, None, &proof)
+        .await
+        .map_err(|e| format!("proof verification failed: {e}"))?;
+    Ok(())
+}
+
+/// Verify a VRC's data-integrity proof against an **explicitly supplied** issuer
+/// verifying key (raw public-key bytes), with no live [`TDK`] / DID resolution
+/// and no network. Applies the same issuer ⇄ verification-method binding check
+/// as [`verify_vrc_proof`], then verifies the proof via `dtg-credentials`'
+/// key-based path. Lets callers (and fuzz harnesses) drive the proof verifier
+/// directly by injecting the key instead of resolving it from the issuer DID.
+pub fn verify_vrc_proof_with_key(
+    vrc: &DTGCredential,
+    public_key_bytes: &[u8],
+) -> Result<(), String> {
+    check_vrc_issuer_binding(vrc)?;
+    vrc.verify_proof_with_public_key(public_key_bytes)
+        .map_err(|e| format!("proof verification failed: {e}"))
+}
+
+/// Shared guard for the VRC proof verifiers: the credential must carry a
+/// data-integrity proof and its `verification_method` must belong to the named
+/// issuer (no "issuer signs with their own key over a credential naming someone
+/// else"). Returns the proof on success.
+fn check_vrc_issuer_binding(
+    vrc: &DTGCredential,
+) -> Result<affinidi_data_integrity::DataIntegrityProof, String> {
     let Some(proof) = vrc.credential().proof.clone() else {
         return Err("credential has no data-integrity proof".to_string());
     };
-
     let vm_did = proof
         .verification_method
         .split_once('#')
@@ -471,15 +504,7 @@ pub async fn verify_vrc_proof(tdk: &TDK, vrc: &DTGCredential) -> Result<(), Stri
             vrc.issuer()
         ));
     }
-
-    // `verify_data` expects the signed document with the proof stripped.
-    let mut unsigned = vrc.clone();
-    unsigned.credential_mut().proof = None;
-
-    tdk.verify_data(&unsigned, None, &proof)
-        .await
-        .map_err(|e| format!("proof verification failed: {e}"))?;
-    Ok(())
+    Ok(proof)
 }
 
 /// Extract the thread ID (`thid`) from a message, returning an error if missing.
@@ -1222,5 +1247,35 @@ mod tests {
         let tdk = test_tdk().await;
         let vrc = unsigned_vrc("did:webvh:example:issuer");
         assert!(verify_vrc_proof(&tdk, &vrc).await.is_err());
+    }
+
+    /// Raw Ed25519 public-key bytes embedded in a `did:key` (multibase
+    /// `z`-base58btc of `0xed01 || pubkey`; strip the 2-byte multicodec prefix).
+    fn did_key_pubkey_bytes(did_key: &str) -> Vec<u8> {
+        let mb = did_key.strip_prefix("did:key:").expect("did:key prefix");
+        let (_base, decoded) = multibase::decode(mb).expect("multibase decode");
+        decoded[2..].to_vec()
+    }
+
+    #[tokio::test]
+    async fn vrc_proof_with_key_accepts_matching_key_rejects_others() {
+        let (issuer_did, issuer_secret) =
+            DID::generate_did_key(KeyType::Ed25519).expect("did:key generates");
+        let mut vrc = unsigned_vrc(&issuer_did);
+        vrc.sign(&issuer_secret, None).await.expect("signs");
+
+        // The injected issuer key verifies — no TDK / DID resolution involved.
+        assert!(verify_vrc_proof_with_key(&vrc, &did_key_pubkey_bytes(&issuer_did)).is_ok());
+
+        // A different key must not verify the same proof.
+        let (other_did, _) = DID::generate_did_key(KeyType::Ed25519).expect("did:key generates");
+        assert!(verify_vrc_proof_with_key(&vrc, &did_key_pubkey_bytes(&other_did)).is_err());
+    }
+
+    #[test]
+    fn vrc_proof_with_key_rejects_unsigned() {
+        // The issuer-binding guard fires before any key verification.
+        let vrc = unsigned_vrc("did:webvh:example:issuer");
+        assert!(verify_vrc_proof_with_key(&vrc, &[0u8; 32]).is_err());
     }
 }

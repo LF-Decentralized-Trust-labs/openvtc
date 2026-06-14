@@ -286,7 +286,15 @@ impl ProtectedConfig {
             &bytes,
         )?;
 
-        Ok(serde_json::from_slice(&bytes)?)
+        Self::parse(&bytes)
+    }
+
+    /// Deserialize a [`ProtectedConfig`] from already-decrypted plaintext JSON —
+    /// the post-decrypt half of [`load`](Self::load), split out so the
+    /// deserializer can be exercised directly (e.g. by fuzz harnesses) without a
+    /// keyring or real keys.
+    pub fn parse(plaintext: &[u8]) -> Result<ProtectedConfig, OpenVTCError> {
+        Ok(serde_json::from_slice(plaintext)?)
     }
 
     pub fn get_seed(
@@ -356,6 +364,15 @@ impl ProtectedConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_accepts_plaintext_json_and_rejects_garbage() {
+        // `parse` is the post-decrypt serde half of `load` — no keyring needed.
+        let bytes = serde_json::to_vec(&ProtectedConfig::default()).unwrap();
+        assert!(ProtectedConfig::parse(&bytes).is_ok());
+        assert!(ProtectedConfig::parse(b"not json at all").is_err());
+        assert!(ProtectedConfig::parse(&[]).is_err());
+    }
 
     fn test_seed() -> SecretBox<Vec<u8>> {
         SecretBox::new(Box::new(vec![42u8; 32]))

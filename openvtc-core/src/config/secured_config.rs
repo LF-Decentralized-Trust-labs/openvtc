@@ -443,6 +443,43 @@ impl SecuredConfig {
         Ok(())
     }
 
+    /// Deserialize the stored `SecuredConfig` wire blob from raw bytes — the
+    /// serde half of [`load`](Self::load), split out so the deserializer can be
+    /// exercised directly (e.g. by a fuzz harness) with no OS keyring. Tries the
+    /// current tagged format, then the legacy untagged shape (with `bool` =
+    /// "needs migration"); errors only if neither parses. No key material is
+    /// touched — that happens later in [`load`] under `unlock`.
+    fn parse_format(secret: &[u8]) -> Result<(SecuredConfigFormat, bool), OpenVTCError> {
+        match serde_json::from_slice::<SecuredConfigFormat>(secret) {
+            Ok(format) => Ok((format, false)),
+            Err(tagged_err) => match serde_json::from_slice::<LegacySecuredConfigFormat>(secret) {
+                Ok(legacy) => {
+                    warn!(
+                        "Tagged SecuredConfig parse failed ({tagged_err}); migrating legacy untagged blob"
+                    );
+                    Ok((SecuredConfigFormat::from(legacy), true))
+                }
+                Err(legacy_err) => {
+                    error!(
+                        "Format of SecuredConfig in OS Secure store is invalid! \
+                         Tagged: {tagged_err}; legacy: {legacy_err}"
+                    );
+                    Err(OpenVTCError::Config(format!(
+                        "Couldn't load openvtc secured configuration. Reason: {tagged_err}"
+                    )))
+                }
+            },
+        }
+    }
+
+    /// Parse-check the stored `SecuredConfig` wire blob (tagged or legacy) from
+    /// raw bytes, without an OS keyring. `Ok(())` if it deserializes into either
+    /// format; the encrypted key material is not decrypted. Exposed for fuzzing
+    /// the deserialization surface directly.
+    pub fn parse(bytes: &[u8]) -> Result<(), OpenVTCError> {
+        Self::parse_format(bytes).map(|_| ())
+    }
+
     /// Loads secret info from the OS Secure Store
     /// token: Hardware token identifier if being used
     /// unlock: Use a Password/PIN to unlock secret storage if no hardware token
@@ -471,34 +508,10 @@ impl SecuredConfig {
             }
         };
 
-        // Try the current tagged format first. If parsing fails, fall back to
-        // the legacy untagged shape and flag the blob for migration. Anything
-        // that fails both is genuinely invalid.
-        let (raw_secured_config, needs_migration) = match serde_json::from_slice::<
-            SecuredConfigFormat,
-        >(secret.as_slice())
-        {
-            Ok(format) => (format, false),
-            Err(tagged_err) => {
-                match serde_json::from_slice::<LegacySecuredConfigFormat>(secret.as_slice()) {
-                    Ok(legacy) => {
-                        warn!(
-                            "Tagged SecuredConfig parse failed ({tagged_err}); migrating legacy untagged blob"
-                        );
-                        (SecuredConfigFormat::from(legacy), true)
-                    }
-                    Err(legacy_err) => {
-                        error!(
-                            "Format of SecuredConfig in OS Secure store is invalid! \
-                             Tagged: {tagged_err}; legacy: {legacy_err}"
-                        );
-                        return Err(OpenVTCError::Config(format!(
-                            "Couldn't load openvtc secured configuration. Reason: {tagged_err}"
-                        )));
-                    }
-                }
-            }
-        };
+        // Try the current tagged format first, falling back to the legacy
+        // untagged shape (flagged for migration). Anything that fails both is
+        // genuinely invalid.
+        let (raw_secured_config, needs_migration) = Self::parse_format(secret.as_slice())?;
 
         // Layer-2 downgrade defence: cross-check the stored variant against
         // the caller's credentials before any decryption or re-save.
@@ -746,6 +759,17 @@ pub fn passphrase_decrypt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_accepts_tagged_blob_and_rejects_garbage() {
+        // `parse` exercises the stored-blob deserializer (tagged or legacy)
+        // without an OS keyring — the seam fuzz harnesses drive.
+        let bytes =
+            serde_json::to_vec(&SecuredConfigFormat::PlainText { text: "p".into() }).unwrap();
+        assert!(SecuredConfig::parse(&bytes).is_ok());
+        assert!(SecuredConfig::parse(b"{ not valid json").is_err());
+        assert!(SecuredConfig::parse(&[]).is_err());
+    }
 
     // ── Tagged-format downgrade defence ───────────────────────────────────────
 

@@ -38,6 +38,11 @@ pub mod public_config;
 pub mod saving;
 pub mod secured_config;
 
+// Convenience re-export so the plaintext config model is reachable as
+// `openvtc_core::config::PublicConfig` (it derives `Deserialize`; a clean
+// parse surface for fuzzing / external consumers).
+pub use public_config::PublicConfig;
+
 /// Derives a 32-byte key from a user-provided passphrase using Argon2id.
 ///
 /// Uses Argon2id (RFC 9106) with a domain-specific salt derived from `info`.
