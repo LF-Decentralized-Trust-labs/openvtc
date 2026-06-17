@@ -23,6 +23,7 @@ use openvtc_core::{
     relationships::{RelationshipRequestBody, RelationshipState},
     tasks::TaskType,
 };
+use crate::state_handler::setup_sequence::vta;
 use serde_json::json;
 use tracing::info;
 use uuid::Uuid;
@@ -263,8 +264,8 @@ async fn create_relationship_keys(
     use vta_sdk::keys::KeyType;
 
     info!("creating Ed25519 signing key via VTA...");
-    let sign_resp = client
-        .create_key(CreateKeyRequest {
+    let sign_resp = vta::vta_retry("create relationship signing key", || {
+        client.create_key(CreateKeyRequest {
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,
@@ -272,19 +273,21 @@ async fn create_relationship_keys(
             label: Some("relationship-signing".to_string()),
             context_id: None,
         })
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create signing key: {e}"))?;
-    let sign_secret_resp = client
-        .get_key_secret(&sign_resp.key_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get signing key secret: {e}"))?;
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create signing key: {e}"))?;
+    let sign_secret_resp = vta::vta_retry("get relationship signing key secret", || {
+        client.get_key_secret(&sign_resp.key_id)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to get signing key secret: {e}"))?;
     let mut v_secret = vta_sdk::did_key::secret_from_key_response(&sign_secret_resp)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     v_secret.id = v_secret.get_public_keymultibase()?;
 
     info!("creating X25519 encryption key via VTA...");
-    let enc_resp = client
-        .create_key(CreateKeyRequest {
+    let enc_resp = vta::vta_retry("create relationship encryption key", || {
+        client.create_key(CreateKeyRequest {
             key_type: KeyType::X25519,
             derivation_path: None,
             key_id: None,
@@ -292,12 +295,14 @@ async fn create_relationship_keys(
             label: Some("relationship-encryption".to_string()),
             context_id: None,
         })
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to create encryption key: {e}"))?;
-    let enc_secret_resp = client
-        .get_key_secret(&enc_resp.key_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get encryption key secret: {e}"))?;
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to create encryption key: {e}"))?;
+    let enc_secret_resp = vta::vta_retry("get relationship encryption key secret", || {
+        client.get_key_secret(&enc_resp.key_id)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Failed to get encryption key secret: {e}"))?;
     let mut e_secret = vta_sdk::did_key::secret_from_key_response(&enc_secret_resp)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     e_secret.id = e_secret.get_public_keymultibase()?;
@@ -970,8 +975,9 @@ impl DidDeleteJob {
             persona_id,
             key_ids,
         } = self;
-        if let Some(vta) = admin_vta
-            && let Err(e) = vta.delete_did_webvh(&did).await
+        if let Some(client) = admin_vta
+            && let Err(e) =
+                vta::vta_retry("delete WebVH DID", || client.delete_did_webvh(&did)).await
         {
             tracing::debug!("delete_did_webvh({did}) failed (continuing local cleanup): {e}");
         }
