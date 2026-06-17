@@ -118,7 +118,11 @@ pub async fn submit_self_remove(
 /// `invitation` is the signed VIC as received out-of-band (a Data-Integrity VC,
 /// object form with its own `proof`). When `None`, the VP carries no
 /// credentials and the join falls to the community's other evidence / review.
-pub fn build_join_vp(holder_did: &str, invitation: Option<&Value>) -> Value {
+pub fn build_join_vp(
+    holder_did: &str,
+    invitation: Option<&Value>,
+    linkage: Option<&SubjectLinkage>,
+) -> Value {
     let mut vp = serde_json::json!({
         "type": "VerifiablePresentation",
         "holder": holder_did,
@@ -126,7 +130,52 @@ pub fn build_join_vp(holder_did: &str, invitation: Option<&Value>) -> Value {
     if let Some(vic) = invitation {
         vp["verifiableCredential"] = Value::Array(vec![vic.clone()]);
     }
+    // Subject-linkage proof (#1b): present a VIC bound to a *different* DID by
+    // proving that DID authorized this holder. Omitted on the join-as-subject
+    // path (holder == VIC subject).
+    if let Some(l) = linkage {
+        vp["subjectLinkage"] = serde_json::json!({
+            "verificationMethod": l.verification_method,
+            "signature": l.signature_hex,
+        });
+    }
     vp
+}
+
+/// Domain tag the VIC subject signs over for a subject-linkage proof. **Must
+/// match `vtc-service`'s `SUBJECT_LINKAGE_DOMAIN_TAG`** byte-for-byte.
+pub const SUBJECT_LINKAGE_DOMAIN_TAG: &[u8] = b"vtc-invitation-subject-linkage/v1\0";
+
+/// A subject-linkage proof: the VIC subject's key signed
+/// [`subject_linkage_signing_bytes`], authorizing a different presenter to
+/// redeem the invitation.
+#[derive(Debug, Clone)]
+pub struct SubjectLinkage {
+    /// The VIC subject's verification method (`<subjectDid>#<key>`).
+    pub verification_method: String,
+    /// Hex-encoded Ed25519 signature over [`subject_linkage_signing_bytes`].
+    pub signature_hex: String,
+}
+
+/// The exact bytes a subject-linkage proof signs:
+/// `SUBJECT_LINKAGE_DOMAIN_TAG || vic_id || NUL || presenter_did`. The VTC
+/// rebuilds these identically when verifying, so both sides must agree.
+pub fn subject_linkage_signing_bytes(vic_id: &str, presenter_did: &str) -> Vec<u8> {
+    let mut bytes = SUBJECT_LINKAGE_DOMAIN_TAG.to_vec();
+    bytes.extend_from_slice(vic_id.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(presenter_did.as_bytes());
+    bytes
+}
+
+/// The DID a VIC is bound to (`credentialSubject.id`).
+pub fn invitation_subject(vic: &Value) -> Option<&str> {
+    vic.pointer("/credentialSubject/id").and_then(Value::as_str)
+}
+
+/// A VIC's top-level `id` (its consumption / linkage handle).
+pub fn invitation_id(vic: &Value) -> Option<&str> {
+    vic.get("id").and_then(Value::as_str)
 }
 
 #[cfg(test)]
@@ -134,30 +183,76 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn sample_vic() -> Value {
+        json!({
+            "id": "urn:uuid:vic-1",
+            "type": ["VerifiableCredential", "InvitationCredential"],
+            "issuer": "did:webvh:example.com:community",
+            "credentialSubject": { "id": "did:webvh:example.com:alice" },
+            "proof": { "type": "DataIntegrityProof" }
+        })
+    }
+
     #[test]
     fn vp_without_invitation_is_holder_only() {
-        let vp = build_join_vp("did:webvh:example.com:alice", None);
+        let vp = build_join_vp("did:webvh:example.com:alice", None, None);
         assert_eq!(vp["type"], "VerifiablePresentation");
         assert_eq!(vp["holder"], "did:webvh:example.com:alice");
         assert!(
             vp.get("verifiableCredential").is_none(),
             "no invitation → no credentials array"
         );
+        assert!(vp.get("subjectLinkage").is_none());
     }
 
     #[test]
     fn vp_with_invitation_embeds_the_vic() {
-        let vic = json!({
-            "type": ["VerifiableCredential", "InvitationCredential"],
-            "issuer": "did:webvh:example.com:community",
-            "credentialSubject": { "id": "did:webvh:example.com:alice" },
-            "proof": { "type": "DataIntegrityProof" }
-        });
-        let vp = build_join_vp("did:webvh:example.com:alice", Some(&vic));
+        let vic = sample_vic();
+        let vp = build_join_vp("did:webvh:example.com:alice", Some(&vic), None);
         let creds = vp["verifiableCredential"]
             .as_array()
             .expect("verifiableCredential is an array");
         assert_eq!(creds.len(), 1);
         assert_eq!(creds[0], vic, "the VIC is embedded verbatim");
+        assert!(
+            vp.get("subjectLinkage").is_none(),
+            "no linkage on the join-as-subject path"
+        );
+    }
+
+    #[test]
+    fn vp_with_linkage_embeds_the_proof() {
+        let vic = sample_vic();
+        let linkage = SubjectLinkage {
+            verification_method: "did:webvh:example.com:alice#key-0".into(),
+            signature_hex: "deadbeef".into(),
+        };
+        let vp = build_join_vp("did:key:zFreshB", Some(&vic), Some(&linkage));
+        assert_eq!(
+            vp["subjectLinkage"]["verificationMethod"],
+            "did:webvh:example.com:alice#key-0"
+        );
+        assert_eq!(vp["subjectLinkage"]["signature"], "deadbeef");
+    }
+
+    #[test]
+    fn subject_and_id_extractors() {
+        let vic = sample_vic();
+        assert_eq!(
+            invitation_subject(&vic),
+            Some("did:webvh:example.com:alice")
+        );
+        assert_eq!(invitation_id(&vic), Some("urn:uuid:vic-1"));
+        assert_eq!(invitation_subject(&json!({})), None);
+    }
+
+    #[test]
+    fn linkage_signing_bytes_are_tag_id_nul_presenter() {
+        let bytes = subject_linkage_signing_bytes("urn:uuid:vic-1", "did:key:zB");
+        let mut expected = SUBJECT_LINKAGE_DOMAIN_TAG.to_vec();
+        expected.extend_from_slice(b"urn:uuid:vic-1");
+        expected.push(0);
+        expected.extend_from_slice(b"did:key:zB");
+        assert_eq!(bytes, expected);
     }
 }

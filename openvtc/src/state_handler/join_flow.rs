@@ -31,7 +31,7 @@ use crate::{
         actions::Action,
         join::{JoinPage, JoinState, PersonaOption},
         main_page::shorten_did,
-        setup_sequence::{Completion, config::ConfigExtension, vta},
+        setup_sequence::{Completion, MessageType, config::ConfigExtension, vta},
         state::{ActivePage, State},
     },
 };
@@ -109,6 +109,25 @@ impl StateHandler {
                             state.active_page = ActivePage::Main;
                             return Ok(JoinExit::Returned(joined_session(&state.join)));
                         }
+                        Action::JoinPasteVic(text) => {
+                            // #3: a pasted invitation credential — validate it is a
+                            // VIC and stash it so the join presents it (mirrors the
+                            // `--invitation <file>` launch flag).
+                            match serde_json::from_str::<serde_json::Value>(&text) {
+                                Ok(vic) if is_invitation_credential(&vic) => {
+                                    state.invitation_credential = Some(vic);
+                                    state.join.has_invitation = true;
+                                    state.join.messages.clear();
+                                }
+                                _ => {
+                                    state.join.messages.push(MessageType::Error(
+                                        "Pasted text is not a valid invitation credential."
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                            let _ = self.state_tx.send(state.clone());
+                        }
                         Action::JoinSubmitVtc(vtc_did) => {
                             let Some(vtc_did) = validate_join_input(&vtc_did) else {
                                 continue;
@@ -122,6 +141,28 @@ impl StateHandler {
                                     "Already a member of (or have a pending request for) this community.",
                                 );
                                 let _ = self.state_tx.send(state.clone());
+                                continue;
+                            }
+                            // #1a join-as-subject: if a loaded invitation is bound
+                            // to one of our personas, present that persona
+                            // automatically — holder-binding then matches at the
+                            // VTC (presenter == VIC subject) with no linkage proof.
+                            if let Some(pid) = invitation_subject_persona(config, state) {
+                                if let Some(interrupted) = self
+                                    .launch_join_sequence(
+                                        JoinIdentityChoice::Reuse(pid),
+                                        vtc_did,
+                                        interrupt_rx,
+                                        state,
+                                        tdk,
+                                        config,
+                                        admin_vta,
+                                        profile,
+                                    )
+                                    .await
+                                {
+                                    return Ok(JoinExit::Exit(interrupted));
+                                }
                                 continue;
                             }
                             // R-B-3 / D1: with existing personas, let the user choose
@@ -356,6 +397,28 @@ fn validate_join_input(raw: &str) -> Option<String> {
     } else {
         Some(trimmed.to_string())
     }
+}
+
+/// #1a: the existing persona a loaded invitation is bound to, if any. When the
+/// VIC's `credentialSubject.id` matches one of our personas, the join can
+/// present that persona directly (holder-binding satisfied, no linkage proof).
+fn invitation_subject_persona(config: &Config, state: &State) -> Option<PersonaId> {
+    let vic = state.invitation_credential.as_ref()?;
+    let subject = openvtc_core::join::invitation_subject(vic)?;
+    config.account.persona_id_for_did(subject)
+}
+
+/// Whether a pasted/loaded JSON value is an InvitationCredential (its `type`
+/// array carries the `InvitationCredential` tag).
+fn is_invitation_credential(value: &serde_json::Value) -> bool {
+    value
+        .get("type")
+        .and_then(|t| t.as_array())
+        .is_some_and(|types| {
+            types
+                .iter()
+                .any(|t| t.as_str() == Some("InvitationCredential"))
+        })
 }
 
 /// Idempotency decision (R-B-9): is there already a *live* (Active/Pending)
@@ -668,8 +731,14 @@ async fn run_join_sequence(
             .info("Presenting your invitation credential to the community…");
         let _ = handler.state_tx.send(state.clone());
     }
-    let vp =
-        openvtc_core::join::build_join_vp(&applicant_did, state.invitation_credential.as_ref());
+    // Subject-linkage (#1b) is built only when the presenting DID differs from
+    // the VIC subject. On the join-as-subject path (#1a) — where this persona is
+    // the invited DID — no linkage is needed and `None` is passed.
+    let vp = openvtc_core::join::build_join_vp(
+        &applicant_did,
+        state.invitation_credential.as_ref(),
+        None,
+    );
     let request_id = match openvtc_core::join::submit_join_request(
         atm,
         &persona_profile,

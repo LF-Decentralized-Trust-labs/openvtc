@@ -100,9 +100,18 @@ impl Component for JoinFlow {
     }
 
     fn handle_paste_event(&mut self, text: &str) {
-        // Paste the whole DID at once (instant for long did:webvh strings).
         if self.props.state.page == JoinPage::EnterDid && !self.props.state.processing {
-            self.vtc_did = Input::new(text.trim().to_string());
+            let trimmed = text.trim();
+            // A pasted JSON object is treated as an invitation credential (VIC):
+            // hand it to the state handler to validate + stash (#3). Anything
+            // else is the VTC DID being pasted into the input.
+            if trimmed.starts_with('{') {
+                let _ = self
+                    .action_tx
+                    .send(Action::JoinPasteVic(trimmed.to_string()));
+            } else {
+                self.vtc_did = Input::new(trimmed.to_string());
+            }
         }
     }
 }

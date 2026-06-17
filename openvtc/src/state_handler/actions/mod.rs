@@ -252,6 +252,10 @@ pub enum Action {
     /// Cancel the join flow and return to the main page.
     JoinCancel,
 
+    /// Pasted text on the join entry page that looks like an invitation
+    /// credential (VIC) JSON — validated + stashed into the join flow.
+    JoinPasteVic(String),
+
     /// Move the Communities-list selection to this index.
     CommunitySelect(usize),
 

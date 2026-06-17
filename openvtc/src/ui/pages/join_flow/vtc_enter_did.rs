@@ -122,6 +122,12 @@ impl VtcEnterDid {
                 Style::new().fg(COLOR_SOFT_PURPLE).bold(),
             ));
             lines.push(Line::default());
+        } else {
+            lines.push(Line::styled(
+                "Tip: paste an invitation credential (VIC) here to auto-join.",
+                Style::new().fg(COLOR_DARK_GRAY).italic(),
+            ));
+            lines.push(Line::default());
         }
         lines.push(Line::from(vec![
             Span::styled("[ESC]", Style::new().fg(COLOR_BORDER).bold()),
