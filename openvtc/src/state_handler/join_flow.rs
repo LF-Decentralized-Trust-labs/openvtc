@@ -408,6 +408,24 @@ fn invitation_subject_persona(config: &Config, state: &State) -> Option<PersonaI
     config.account.persona_id_for_did(subject)
 }
 
+/// #2: load an invitation credential the VTA already holds for the holder, if
+/// any. Queries the credential vault for `purpose = invite` and fetches the
+/// first match's body. Best-effort — any error / empty result yields `None`.
+async fn load_invitation_from_vault(admin_vta: &VtaClient) -> Option<serde_json::Value> {
+    let listing = admin_vta
+        .cred_vault_query(serde_json::json!({ "purpose": "invite" }))
+        .await
+        .ok()?;
+    let id = listing
+        .get("credentials")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|d| d.get("id"))
+        .and_then(|i| i.as_str())?;
+    let got = admin_vta.cred_vault_get(id).await.ok()?;
+    got.get("credential").cloned()
+}
+
 /// Whether a pasted/loaded JSON value is an InvitationCredential (its `type`
 /// array carries the `InvitationCredential` tag).
 fn is_invitation_credential(value: &serde_json::Value) -> bool {
@@ -721,6 +739,20 @@ async fn run_join_sequence(
             return;
         }
     };
+    // #2: the VTA credential vault is the durable home for the holder's VIC.
+    // If one is loaded (file / paste), persist it; if not, try loading one the
+    // VTA already holds for this community. Both are best-effort — the join
+    // proceeds regardless (the in-memory VIC, if any, is still presented).
+    if let Some(vic) = state.invitation_credential.clone() {
+        if let Err(e) = admin_vta.cred_vault_receive(vic, None).await {
+            debug!(error = %e, "storing invitation in the VTA vault failed (continuing)");
+        }
+    } else if let Some(vic) = load_invitation_from_vault(admin_vta).await {
+        state.invitation_credential = Some(vic);
+        state.join.has_invitation = true;
+        let _ = handler.state_tx.send(state.clone());
+    }
+
     // Present the holder VP. When the applicant loaded an invitation credential
     // (VIC) at startup (`--invitation`), it rides in the VP's
     // `verifiableCredential` array; the VTC verifies it and auto-admits on a
