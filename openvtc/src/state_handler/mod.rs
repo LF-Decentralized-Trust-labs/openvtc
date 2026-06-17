@@ -1996,6 +1996,39 @@ impl StateHandler {
                             );
                         }
                     }
+                    Action::CreatePersonaSubmit => {
+                        // Minting needs only the admin VTA session + account
+                        // context, both present in State-A — so a brand-new account
+                        // (which runs here) can create its first persona DID.
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            self.run_create_persona(
+                                state,
+                                &ctx.tdk,
+                                &mut ctx.config,
+                                ctx.admin_vta.as_ref(),
+                            )
+                            .await;
+                        } else if let Some(o) = state.main_page.create_persona.as_mut() {
+                            o.phase = main_page::content::CreatePersonaPhase::Failed;
+                            o.messages = vec![
+                                "VTA session unavailable — cannot create a persona right now."
+                                    .to_string(),
+                            ];
+                        }
+                    }
+                    Action::CreatePersonaCopy => {
+                        if let Some(did) = state
+                            .main_page
+                            .create_persona
+                            .as_ref()
+                            .and_then(|o| o.did.clone())
+                        {
+                            let copied = crate::clipboard::copy_to_clipboard(&did).is_ok();
+                            if let Some(o) = state.main_page.create_persona.as_mut() {
+                                o.copied = copied;
+                            }
+                        }
+                    }
                     // Messaging-only actions (Inbox / Relationship / Credential /
                     // Settings / Contact, DeleteDid) are intentionally inert in the
                     // degraded loop — there's no live messaging/admin context to
@@ -2447,7 +2480,10 @@ mod tests {
             "ToggleShowArchived re-syncs from config in the loop"
         );
         // The persona mint (and its clipboard copy) reach the loop, not the pure
-        // reducer (network + config mutation).
+        // reducer (network + config mutation). NB: being loop-local, these must be
+        // wired in BOTH the runtime loop and `run_degraded_loop` — the State-A
+        // (no-identity) account that runs the degraded loop is exactly when a user
+        // creates their first persona DID.
         assert!(
             !handle_nav_action(&mut state, &Action::CreatePersonaSubmit),
             "CreatePersonaSubmit mints via the VTA in the loop"
