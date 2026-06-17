@@ -51,6 +51,13 @@ pub struct State {
     /// Not gated behind the openpgp-card feature so the StateHandler's
     /// select loop can update it unconditionally regardless of build config.
     pub token_touch_pending: bool,
+
+    /// A Verifiable Invitation Credential (VIC) the operator supplied at launch
+    /// via `--invitation <file>`, to be presented when joining a community. The
+    /// VTC verifies it and auto-admits on a valid, trusted, unconsumed invite.
+    /// Runtime-only (never persisted); injected by `main` into the
+    /// [`StateHandler`](crate::state_handler::StateHandler)'s initial state.
+    pub invitation_credential: Option<serde_json::Value>,
 }
 
 impl State {

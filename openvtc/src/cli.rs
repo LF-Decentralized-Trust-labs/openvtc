@@ -26,6 +26,14 @@ pub fn cli() -> Command {
                 .long("profile")
                 .help("Config profile to use")
                 .default_value("default"),
+            Arg::new("invitation")
+                .long("invitation")
+                .value_name("FILE")
+                .help(
+                    "Path to a Verifiable Invitation Credential (VIC) JSON file \
+                     to present when joining a community. The community verifies \
+                     it and auto-admits on a valid, trusted, unconsumed invitation.",
+                ),
         ])
         .subcommand(Command::new("setup").about("Initial configuration of the openvtc tool"))
 }

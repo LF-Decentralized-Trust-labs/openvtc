@@ -105,3 +105,59 @@ pub async fn submit_self_remove(
     crate::pack_and_send(atm, profile, &msg, member_did, vtc_did, mediator_did).await?;
     Ok(msg_id)
 }
+
+/// Build the holder presentation (VP) for a join request.
+///
+/// The VTC's raw-VP submit path performs no VP-level proof check — the DIDComm
+/// authcrypt sender authenticates the applicant — so the VP is a plain JSON
+/// object naming the `holder`. When the applicant holds a Verifiable Invitation
+/// Credential (VIC), it is embedded in the `verifiableCredential` array; the
+/// VTC extracts it, verifies its issuer signature + holder-binding, and (per the
+/// default `join.rego`) auto-admits on a valid, trusted, unconsumed invitation.
+///
+/// `invitation` is the signed VIC as received out-of-band (a Data-Integrity VC,
+/// object form with its own `proof`). When `None`, the VP carries no
+/// credentials and the join falls to the community's other evidence / review.
+pub fn build_join_vp(holder_did: &str, invitation: Option<&Value>) -> Value {
+    let mut vp = serde_json::json!({
+        "type": "VerifiablePresentation",
+        "holder": holder_did,
+    });
+    if let Some(vic) = invitation {
+        vp["verifiableCredential"] = Value::Array(vec![vic.clone()]);
+    }
+    vp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn vp_without_invitation_is_holder_only() {
+        let vp = build_join_vp("did:webvh:example.com:alice", None);
+        assert_eq!(vp["type"], "VerifiablePresentation");
+        assert_eq!(vp["holder"], "did:webvh:example.com:alice");
+        assert!(
+            vp.get("verifiableCredential").is_none(),
+            "no invitation → no credentials array"
+        );
+    }
+
+    #[test]
+    fn vp_with_invitation_embeds_the_vic() {
+        let vic = json!({
+            "type": ["VerifiableCredential", "InvitationCredential"],
+            "issuer": "did:webvh:example.com:community",
+            "credentialSubject": { "id": "did:webvh:example.com:alice" },
+            "proof": { "type": "DataIntegrityProof" }
+        });
+        let vp = build_join_vp("did:webvh:example.com:alice", Some(&vic));
+        let creds = vp["verifiableCredential"]
+            .as_array()
+            .expect("verifiableCredential is an array");
+        assert_eq!(creds.len(), 1);
+        assert_eq!(creds[0], vic, "the VIC is embedded verbatim");
+    }
+}

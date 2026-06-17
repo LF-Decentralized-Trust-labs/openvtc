@@ -84,6 +84,9 @@ impl StateHandler {
     ) -> Result<JoinExit> {
         // Enter the flow on a fresh EnterDid page.
         state.join.reset();
+        // Surface the launch-supplied invitation on the entry page (reset clears
+        // the transient join sub-state, so mirror the flag back in afterwards).
+        state.join.has_invitation = state.invitation_credential.is_some();
         state.active_page = ActivePage::Join;
         let _ = self.state_tx.send(state.clone());
 
@@ -655,10 +658,18 @@ async fn run_join_sequence(
             return;
         }
     };
-    let vp = serde_json::json!({
-        "type": "VerifiablePresentation",
-        "holder": applicant_did,
-    });
+    // Present the holder VP. When the applicant loaded an invitation credential
+    // (VIC) at startup (`--invitation`), it rides in the VP's
+    // `verifiableCredential` array; the VTC verifies it and auto-admits on a
+    // valid, trusted, unconsumed invitation (no manual approval).
+    if state.invitation_credential.is_some() {
+        state
+            .join
+            .info("Presenting your invitation credential to the community…");
+        let _ = handler.state_tx.send(state.clone());
+    }
+    let vp =
+        openvtc_core::join::build_join_vp(&applicant_did, state.invitation_credential.as_ref());
     let request_id = match openvtc_core::join::submit_join_request(
         atm,
         &persona_profile,

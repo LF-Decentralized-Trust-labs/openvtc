@@ -103,6 +103,22 @@ async fn main() -> Result<()> {
     let unlock_code_arg = matches.get_one::<String>("unlock-code").cloned();
     let setup_requested = matches!(matches.subcommand(), Some(("setup", _)));
 
+    // Optional invitation credential (VIC) to present when joining a community.
+    // Loaded eagerly so a malformed path / JSON fails fast with a clear message
+    // rather than silently dropping the invite mid-join.
+    let invitation_credential: Option<serde_json::Value> = match matches
+        .get_one::<String>("invitation")
+    {
+        Some(path) => {
+            let raw = std::fs::read_to_string(path)
+                .map_err(|e| anyhow::anyhow!("failed to read invitation file `{path}`: {e}"))?;
+            let vic: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| anyhow::anyhow!("invitation file `{path}` is not valid JSON: {e}"))?;
+            Some(vic)
+        }
+        None => None,
+    };
+
     // Which configuration profile to use?
     let profile = if let Ok(env_profile) = env::var("OPENVTC_CONFIG_PROFILE") {
         // ENV Profile will override the CLI Argument
@@ -240,7 +256,8 @@ async fn main() -> Result<()> {
 
     // Setup the initial state
     let (terminator, mut interrupt_rx) = create_termination();
-    let (state, state_rx) = StateHandler::new(&profile, starting_mode);
+    let (mut state, state_rx) = StateHandler::new(&profile, starting_mode);
+    state.set_invitation_credential(invitation_credential);
     let (ui_manager, action_rx) = UiManager::new();
 
     tokio::try_join!(

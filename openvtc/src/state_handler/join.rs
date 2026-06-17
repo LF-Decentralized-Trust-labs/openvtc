@@ -67,6 +67,12 @@ pub struct JoinState {
     /// The DID of the persona presented for this community, shown on the success
     /// page alongside the community DID.
     pub created_persona_did: Option<String>,
+    /// Whether an invitation credential (VIC) was supplied at launch and will be
+    /// presented with this join. Mirrored from the top-level
+    /// [`State`](crate::state_handler::state::State) when the flow opens (it
+    /// survives `reset`, which is called once at open) so the entry page can show
+    /// the operator that their invitation will be used.
+    pub has_invitation: bool,
 }
 
 impl JoinState {

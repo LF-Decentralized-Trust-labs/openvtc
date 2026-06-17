@@ -91,6 +91,9 @@ pub struct StateHandler {
     state_tx: tokio::sync::watch::Sender<State>,
     profile: String,
     starting_mode: StartingMode,
+    /// Invitation credential (VIC) supplied at launch via `--invitation`, seeded
+    /// into the loop's initial [`State`] so the join flow can present it.
+    invitation_credential: Option<serde_json::Value>,
 }
 
 pub(crate) enum SetupWizardExit {
@@ -110,9 +113,16 @@ impl StateHandler {
                 state_tx,
                 profile: profile.to_string(),
                 starting_mode,
+                invitation_credential: None,
             },
             state_rx,
         )
+    }
+
+    /// Seed the invitation credential (VIC) to present when joining, parsed from
+    /// the `--invitation <file>` launch argument. No-op when `None`.
+    pub fn set_invitation_credential(&mut self, vic: Option<serde_json::Value>) {
+        self.invitation_credential = vic;
     }
 
     pub async fn main_loop(
@@ -122,6 +132,10 @@ impl StateHandler {
         mut interrupt_rx: broadcast::Receiver<Interrupted>,
     ) -> Result<Interrupted> {
         let mut state = State::default();
+        // Carry the launch-supplied invitation credential into the live state so
+        // the join flow can present it (it survives `JoinState::reset`, which
+        // only clears the transient join sub-state).
+        state.invitation_credential = self.invitation_credential.take();
 
         let starting_mode = std::mem::replace(&mut self.starting_mode, StartingMode::NotSet);
         // The third element is the live admin VTA session handed back by

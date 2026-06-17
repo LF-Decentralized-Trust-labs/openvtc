@@ -114,6 +114,15 @@ impl VtcEnterDid {
                 ));
             }
         }
+        // When an invitation credential was supplied at launch, show that it
+        // will be presented — the community can then auto-admit without review.
+        if state.has_invitation {
+            lines.push(Line::styled(
+                "✓ Invitation credential loaded — it will be presented to the community.",
+                Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+            ));
+            lines.push(Line::default());
+        }
         lines.push(Line::from(vec![
             Span::styled("[ESC]", Style::new().fg(COLOR_BORDER).bold()),
             Span::styled(" to cancel  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
