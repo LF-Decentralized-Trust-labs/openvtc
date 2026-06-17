@@ -92,6 +92,98 @@ impl Config {
         })
     }
 
+    /// Build a subject-linkage proof (#1b) authorizing `presenter_did` to redeem
+    /// the invitation `vic_id` that is bound to `subject_did` — one of *our*
+    /// personas. Signs `TAG‖vic_id‖presenter` with that persona's signing key
+    /// (via the TDK Ed25519 routine), under its assertionMethod verification
+    /// method. Used when joining under a different/fresh DID than the invited one.
+    ///
+    /// Errors if `subject_did` is not one of our personas (we can't prove
+    /// control of a key we don't hold).
+    pub async fn build_subject_linkage(
+        &self,
+        subject_did: &str,
+        vta_client: Option<&vta_sdk::client::VtaClient>,
+        vic_id: &str,
+        presenter_did: &str,
+    ) -> Result<crate::join::SubjectLinkage, OpenVTCError> {
+        // The subject persona's assertionMethod VM id (the VTC resolves it to
+        // verify the signature).
+        let persona = self
+            .account
+            .personas
+            .values()
+            .find(|p| p.did == subject_did)
+            .ok_or_else(|| {
+                OpenVTCError::Config(format!(
+                    "invitation subject {subject_did} is not one of your personas"
+                ))
+            })?;
+        let doc = persona.did_document.as_ref().ok_or_else(|| {
+            OpenVTCError::Config("subject persona has no cached DID document".to_string())
+        })?;
+        let vm = doc
+            .find_assertion_method(None)
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                OpenVTCError::Config("subject persona has no assertionMethod".to_string())
+            })?
+            .to_string();
+
+        let seed = self.persona_signing_seed(subject_did, vta_client).await?;
+        crate::join::sign_subject_linkage(&seed, vm, vic_id, presenter_did)
+    }
+
+    /// Resolve a persona's Ed25519 signing-key seed (32 bytes) by DID, from
+    /// whichever backing the key uses (BIP32-derived / imported / VTA-managed).
+    /// Mirrors the per-key resolution in [`Self::load_persona_secrets`].
+    async fn persona_signing_seed(
+        &self,
+        persona_did: &str,
+        vta_client: Option<&vta_sdk::client::VtaClient>,
+    ) -> Result<[u8; 32], OpenVTCError> {
+        for (key_id, ki) in &self.key_info {
+            if !key_id.starts_with(persona_did) || !matches!(ki.purpose, KeyTypes::PersonaSigning) {
+                continue;
+            }
+            let secret = match &ki.path {
+                KeySourceMaterial::Derived { path } => {
+                    let KeyBackend::Bip32 { root, .. } = &self.key_backend else {
+                        return Err(OpenVTCError::Config(
+                            "Derived key requires a BIP32 backend".to_string(),
+                        ));
+                    };
+                    root.get_secret_from_path(path, KeyPurpose::Signing)
+                        .map_err(|e| {
+                            OpenVTCError::Secret(format!("derive subject signing key: {e}"))
+                        })?
+                }
+                KeySourceMaterial::Imported { seed } => {
+                    Secret::from_multibase(seed.expose_secret(), None)
+                        .map_err(|e| OpenVTCError::Secret(format!("imported signing key: {e}")))?
+                }
+                KeySourceMaterial::VtaManaged { key_id: vta_key_id } => {
+                    let client = vta_client.ok_or_else(|| {
+                        OpenVTCError::Config(
+                            "VTA-managed signing key requires a VTA client".to_string(),
+                        )
+                    })?;
+                    let resp = client.get_key_secret(vta_key_id).await.map_err(|e| {
+                        OpenVTCError::Config(format!("fetch subject signing key: {e}"))
+                    })?;
+                    secret_from_vta_response(&resp, KeyPurpose::Signing)?
+                }
+            };
+            return secret.get_private_bytes().try_into().map_err(|_| {
+                OpenVTCError::Secret("signing key is not a 32-byte Ed25519 seed".to_string())
+            });
+        }
+        Err(OpenVTCError::Config(format!(
+            "no signing key found for persona {persona_did}"
+        )))
+    }
+
     /// Load persona DID key secrets into the TDK resolver from this Config.
     ///
     /// Call this after creating a new config (e.g., after setup wizard) so the

@@ -143,26 +143,22 @@ impl StateHandler {
                                 let _ = self.state_tx.send(state.clone());
                                 continue;
                             }
-                            // #1a join-as-subject: if a loaded invitation is bound
-                            // to one of our personas, present that persona
-                            // automatically — holder-binding then matches at the
-                            // VTC (presenter == VIC subject) with no linkage proof.
+                            // #1a / #1b: a loaded invitation bound to one of our
+                            // personas. Show the identity choice with that persona
+                            // pre-selected — pressing Enter joins as the invited
+                            // identity (#1a, presenter == VIC subject, no linkage);
+                            // choosing a different / fresh identity builds a
+                            // subject-linkage proof so the invited persona
+                            // authorizes the presented one (#1b).
                             if let Some(pid) = invitation_subject_persona(config, state) {
-                                if let Some(interrupted) = self
-                                    .launch_join_sequence(
-                                        JoinIdentityChoice::Reuse(pid),
-                                        vtc_did,
-                                        interrupt_rx,
-                                        state,
-                                        tdk,
-                                        config,
-                                        admin_vta,
-                                        profile,
-                                    )
-                                    .await
-                                {
-                                    return Ok(JoinExit::Exit(interrupted));
-                                }
+                                let options = build_persona_options(config);
+                                let idx = options.iter().position(|o| o.id == pid).unwrap_or(0);
+                                state.join.pending_vtc = Some(vtc_did);
+                                state.join.persona_options = options;
+                                state.join.identity_selected = idx;
+                                state.join.reuse_confirm = None;
+                                state.join.page = JoinPage::IdentityChoice;
+                                let _ = self.state_tx.send(state.clone());
                                 continue;
                             }
                             // R-B-3 / D1: with existing personas, let the user choose
@@ -424,6 +420,36 @@ async fn load_invitation_from_vault(admin_vta: &VtaClient) -> Option<serde_json:
         .and_then(|i| i.as_str())?;
     let got = admin_vta.cred_vault_get(id).await.ok()?;
     got.get("credential").cloned()
+}
+
+/// #1b: build a subject-linkage proof when the presenting DID differs from the
+/// loaded VIC's subject — the invited persona authorizes the presenter. Returns
+/// `None` on the join-as-subject path (presenter == subject), when no invitation
+/// is loaded, or when the subject isn't one of our personas (we can't sign for a
+/// key we don't hold; the VTC then refuses the mismatched binding). Best-effort:
+/// a signing failure is logged and yields `None`.
+async fn build_linkage_proof(
+    config: &Config,
+    admin_vta: &VtaClient,
+    state: &State,
+    presenter_did: &str,
+) -> Option<openvtc_core::join::SubjectLinkage> {
+    let vic = state.invitation_credential.as_ref()?;
+    let subject = openvtc_core::join::invitation_subject(vic)?;
+    if subject == presenter_did {
+        return None; // join-as-subject — no linkage needed
+    }
+    let vic_id = openvtc_core::join::invitation_id(vic)?;
+    match config
+        .build_subject_linkage(subject, Some(admin_vta), vic_id, presenter_did)
+        .await
+    {
+        Ok(linkage) => Some(linkage),
+        Err(e) => {
+            debug!(subject = %subject, error = %e, "subject-linkage proof unavailable");
+            None
+        }
+    }
 }
 
 /// Whether a pasted/loaded JSON value is an InvitationCredential (its `type`
@@ -763,13 +789,14 @@ async fn run_join_sequence(
             .info("Presenting your invitation credential to the community…");
         let _ = handler.state_tx.send(state.clone());
     }
-    // Subject-linkage (#1b) is built only when the presenting DID differs from
-    // the VIC subject. On the join-as-subject path (#1a) — where this persona is
-    // the invited DID — no linkage is needed and `None` is passed.
+    // Subject-linkage (#1b): when the presenting DID differs from the VIC
+    // subject, prove the subject authorized this presenter (signed with the
+    // subject persona's key). On the join-as-subject path (#1a) this is `None`.
+    let linkage = build_linkage_proof(config, admin_vta, state, &applicant_did).await;
     let vp = openvtc_core::join::build_join_vp(
         &applicant_did,
         state.invitation_credential.as_ref(),
-        None,
+        linkage.as_ref(),
     );
     let request_id = match openvtc_core::join::submit_join_request(
         atm,

@@ -168,6 +168,30 @@ pub fn subject_linkage_signing_bytes(vic_id: &str, presenter_did: &str) -> Vec<u
     bytes
 }
 
+/// Produce a subject-linkage proof: sign [`subject_linkage_signing_bytes`] with
+/// the VIC subject's Ed25519 private key (`private_seed`, 32 raw bytes — e.g.
+/// `Secret::get_private_bytes`), authorizing `presenter_did` to redeem the
+/// invitation `vic_id`. `verification_method` is the subject's assertionMethod
+/// VM id the VTC resolves to verify the signature.
+///
+/// Signs via the TDK's Ed25519 routine
+/// ([`affinidi_tdk::affinidi_crypto::jose::signing::sign`]) — the same
+/// primitive the workspace uses elsewhere — not a hand-rolled signer.
+pub fn sign_subject_linkage(
+    private_seed: &[u8; 32],
+    verification_method: impl Into<String>,
+    vic_id: &str,
+    presenter_did: &str,
+) -> Result<SubjectLinkage, OpenVTCError> {
+    let bytes = subject_linkage_signing_bytes(vic_id, presenter_did);
+    let signature = affinidi_tdk::affinidi_crypto::jose::signing::sign(&bytes, private_seed)
+        .map_err(|e| OpenVTCError::Config(format!("subject-linkage signing failed: {e}")))?;
+    Ok(SubjectLinkage {
+        verification_method: verification_method.into(),
+        signature_hex: hex::encode(signature),
+    })
+}
+
 /// The DID a VIC is bound to (`credentialSubject.id`).
 pub fn invitation_subject(vic: &Value) -> Option<&str> {
     vic.pointer("/credentialSubject/id").and_then(Value::as_str)
@@ -244,6 +268,35 @@ mod tests {
         );
         assert_eq!(invitation_id(&vic), Some("urn:uuid:vic-1"));
         assert_eq!(invitation_subject(&json!({})), None);
+    }
+
+    #[test]
+    fn sign_subject_linkage_verifies_with_the_tdk_routine() {
+        use affinidi_tdk::affinidi_crypto::jose::signing;
+        let seed = [7u8; 32];
+        let pubkey = signing::public_key_from_private(&seed);
+        let linkage = sign_subject_linkage(
+            &seed,
+            "did:webvh:example.com:alice#key-0",
+            "urn:uuid:vic-1",
+            "did:key:zFreshB",
+        )
+        .expect("sign");
+        assert_eq!(
+            linkage.verification_method,
+            "did:webvh:example.com:alice#key-0"
+        );
+        // The signature verifies over the canonical bytes — the exact check the
+        // VTC performs against the subject's resolved key.
+        let sig: [u8; 64] = hex::decode(&linkage.signature_hex)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let bytes = subject_linkage_signing_bytes("urn:uuid:vic-1", "did:key:zFreshB");
+        assert!(signing::verify(&bytes, &sig, &pubkey).is_ok());
+        // A different presenter's bytes must NOT verify against this signature.
+        let other = subject_linkage_signing_bytes("urn:uuid:vic-1", "did:key:zOther");
+        assert!(signing::verify(&other, &sig, &pubkey).is_err());
     }
 
     #[test]
