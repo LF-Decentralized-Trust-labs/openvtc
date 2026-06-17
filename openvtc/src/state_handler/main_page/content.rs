@@ -93,6 +93,10 @@ pub struct CommunitiesState {
     /// When `Some(index)`, leaving that community is awaiting `y`/`n`
     /// confirmation (R-L-1).
     pub confirm_leave: Option<usize>,
+    /// When `Some(index)`, cancelling that community's pending join is awaiting
+    /// `y`/`n` confirmation. Transitions the record to `Withdrawn` so it can then
+    /// be deleted or re-joined.
+    pub confirm_withdraw: Option<usize>,
     /// Whether archived communities are included in the list (R-C-8). Off by
     /// default; toggled so archived records stay discoverable.
     pub show_archived: bool,
@@ -136,9 +140,13 @@ pub struct CommunitySummary {
     /// Whether the membership is Active — the only state you can leave (R-L-1)
     /// or set as the working context (R-C-6).
     pub is_active: bool,
-    /// Whether the membership is inactive (Left/Rejected/Removed/Expired) — the
-    /// only states that can be archived or deleted, and rendered read-only (D14).
+    /// Whether the membership is inactive (Left/Withdrawn/Rejected/Removed/
+    /// Expired) — the only states that can be archived or deleted, and rendered
+    /// read-only (D14).
     pub is_inactive: bool,
+    /// Whether the membership is `Pending` — the only state whose join can be
+    /// cancelled (withdrawn).
+    pub is_pending: bool,
     /// Whether this community is archived (R-C-8); only shown when "show archived"
     /// is on, with a marker.
     pub archived: bool,

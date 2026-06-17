@@ -420,10 +420,23 @@ impl MainPage {
             }
             return true;
         }
+        // A cancel-pending-join confirmation is pending: same y/n gate.
+        if let Some(idx) = comms.confirm_withdraw {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::WithdrawJoin(idx));
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::CommunityCancelWithdraw);
+                }
+            }
+            return true;
+        }
 
         // Status of the highlighted row gates which management keys apply.
         let sel_active = comms.items.get(selected).is_some_and(|c| c.is_active);
         let sel_inactive = comms.items.get(selected).is_some_and(|c| c.is_inactive);
+        let sel_pending = comms.items.get(selected).is_some_and(|c| c.is_pending);
 
         match key.code {
             KeyCode::Char('j') => {
@@ -460,6 +473,14 @@ impl MainPage {
             KeyCode::Char('l') if sel_active => {
                 // Leave an Active community (R-L-1) — arm the y/n confirmation.
                 let _ = self.action_tx.send(Action::CommunityConfirmLeave(selected));
+                true
+            }
+            // Cancel is pending-only: a Pending join can be withdrawn (arming on
+            // any other state would only fail downstream, so it's gated).
+            KeyCode::Char('c') if sel_pending => {
+                let _ = self
+                    .action_tx
+                    .send(Action::CommunityConfirmWithdraw(selected));
                 true
             }
             KeyCode::Char('x') if sel_inactive => {
@@ -1970,12 +1991,17 @@ mod key_handler_tests {
 
     /// A minimal Communities-panel summary row for key-routing tests.
     fn community_summary(name: &str) -> CommunitySummary {
-        community_summary_with(name, true, false)
+        community_summary_with(name, true, false, false)
     }
 
-    /// A summary with explicit active/inactive status, for the leave/archive/
-    /// delete key-gating tests.
-    fn community_summary_with(name: &str, is_active: bool, is_inactive: bool) -> CommunitySummary {
+    /// A summary with explicit active/inactive/pending status, for the leave/
+    /// cancel/archive/delete key-gating tests.
+    fn community_summary_with(
+        name: &str,
+        is_active: bool,
+        is_inactive: bool,
+        is_pending: bool,
+    ) -> CommunitySummary {
         CommunitySummary {
             display_name: name.to_string(),
             status_label: if is_active { "Active" } else { "Left" }.to_string(),
@@ -1984,6 +2010,7 @@ mod key_handler_tests {
             favourite: false,
             is_active,
             is_inactive,
+            is_pending,
             archived: false,
             needs_attention: false,
             persona_did: "did:example:persona".to_string(),
@@ -2104,7 +2131,7 @@ mod key_handler_tests {
         let active = || {
             page_for(MainMenu::Communities, |s| {
                 s.main_page.content_panel.communities.items =
-                    vec![community_summary_with("a", true, false)].into();
+                    vec![community_summary_with("a", true, false, false)].into();
             })
         };
         let (mut page, mut rx) = active();
@@ -2113,6 +2140,13 @@ mod key_handler_tests {
             Ok(Action::CommunityConfirmLeave(0)) => {}
             _ => panic!("expected CommunityConfirmLeave(0)"),
         }
+        // Active row: `c` (cancel pending join) does nothing.
+        let (mut page, mut rx) = active();
+        page.handle_key_event(press(KeyCode::Char('c')));
+        assert!(
+            rx.try_recv().is_err(),
+            "cancel is gated off for Active rows"
+        );
         let (mut page, mut rx) = active();
         page.handle_key_event(press(KeyCode::Char('d')));
         assert!(
@@ -2130,7 +2164,7 @@ mod key_handler_tests {
         let inactive = || {
             page_for(MainMenu::Communities, |s| {
                 s.main_page.content_panel.communities.items =
-                    vec![community_summary_with("a", false, true)].into();
+                    vec![community_summary_with("a", false, true, false)].into();
             })
         };
         let (mut page, mut rx) = inactive();
@@ -2151,6 +2185,28 @@ mod key_handler_tests {
             rx.try_recv().is_err(),
             "leave is gated off for inactive rows"
         );
+
+        // Pending row: `c` arms a cancel; `d`/`x`/`l` do nothing.
+        let pending = || {
+            page_for(MainMenu::Communities, |s| {
+                s.main_page.content_panel.communities.items =
+                    vec![community_summary_with("a", false, false, true)].into();
+            })
+        };
+        let (mut page, mut rx) = pending();
+        page.handle_key_event(press(KeyCode::Char('c')));
+        match rx.try_recv() {
+            Ok(Action::CommunityConfirmWithdraw(0)) => {}
+            _ => panic!("expected CommunityConfirmWithdraw(0)"),
+        }
+        for (k, what) in [('d', "delete"), ('x', "archive"), ('l', "leave")] {
+            let (mut page, mut rx) = pending();
+            page.handle_key_event(press(KeyCode::Char(k)));
+            assert!(
+                rx.try_recv().is_err(),
+                "{what} is gated off for pending rows"
+            );
+        }
     }
 
     #[test]
@@ -2171,6 +2227,27 @@ mod key_handler_tests {
         match rx.try_recv() {
             Ok(Action::CommunityCancelLeave) => {}
             _ => panic!("expected CommunityCancelLeave"),
+        }
+    }
+
+    #[test]
+    fn communities_cancel_confirm_commits_and_cancels() {
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.confirm_withdraw = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::WithdrawJoin(0)) => {}
+            _ => panic!("expected WithdrawJoin(0)"),
+        }
+
+        let (mut page, mut rx) = page_for(MainMenu::Communities, |s| {
+            s.main_page.content_panel.communities.confirm_withdraw = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Char('n')));
+        match rx.try_recv() {
+            Ok(Action::CommunityCancelWithdraw) => {}
+            _ => panic!("expected CommunityCancelWithdraw"),
         }
     }
 

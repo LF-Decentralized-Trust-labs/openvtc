@@ -859,6 +859,56 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::WithdrawJoin(i) => {
+                        // Cancel a Pending join: best-effort notify the VTC, set
+                        // the record `Withdrawn`, and tear down its now-dead
+                        // session (R-S-3) so it can be deleted or re-joined.
+                        state.main_page.content_panel.communities.confirm_withdraw = None;
+                        let target = config
+                            .account
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
+                            .get(i)
+                            .filter(|c| matches!(
+                                c.status,
+                                openvtc_core::config::account::CommunityStatus::Pending { .. }
+                            ))
+                            .map(|c| c.vtc_did.clone());
+                        if let Some(vtc) = target {
+                            // Best-effort VTC notification. The applicant-side
+                            // withdraw DIDComm message does not exist in vta-sdk
+                            // yet (only the `withdrawn` *status* the VTC reports),
+                            // so there is nothing to send. The cancel is otherwise
+                            // fully local; the request will also lapse to the VTC's
+                            // own timeout. TODO(VTI): once vta-sdk gains a
+                            // `join-requests/withdraw/1.0` message, send it here.
+                            debug!(
+                                vtc = %vtc,
+                                "cancel pending join: VTC notify pending protocol support (vta-sdk withdraw message)"
+                            );
+                            if config
+                                .account
+                                .community_mut(&vtc)
+                                .is_some_and(|c| c.withdraw())
+                            {
+                                save.mark_dirty();
+                                deregister_inactive_community(
+                                    &mut session_manager,
+                                    &didcomm_service,
+                                    &config,
+                                    &mut state,
+                                    &vtc,
+                                )
+                                .await;
+                                state.main_page.sync_from_config(&config);
+                                state
+                                    .main_page
+                                    .content_panel
+                                    .communities
+                                    .status_message =
+                                    Some("Join cancelled — request withdrawn.".to_string());
+                            }
+                        }
+                    },
                     Action::ArchiveCommunity(i) => {
                         // R-C-8: archive an inactive community (hide it, retain the
                         // record). Guarded inactive-only by `archive_community`.
@@ -1963,6 +2013,12 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         }
         Action::CommunityCancelLeave => {
             state.main_page.content_panel.communities.confirm_leave = None;
+        }
+        Action::CommunityConfirmWithdraw(i) => {
+            state.main_page.content_panel.communities.confirm_withdraw = Some(*i);
+        }
+        Action::CommunityCancelWithdraw => {
+            state.main_page.content_panel.communities.confirm_withdraw = None;
         }
         Action::CommunitySwitcherMove(i) => {
             if let Some(switcher) = state.main_page.switcher.as_mut() {

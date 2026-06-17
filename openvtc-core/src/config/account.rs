@@ -113,6 +113,11 @@ pub enum CommunityStatus {
     Active,
     /// Member voluntarily left (`MEMBER_SELF_REMOVE`).
     Left,
+    /// Applicant cancelled a `Pending` join before the VTC decided — the
+    /// request is withdrawn. A voluntary, user-chosen outcome (like `Left`), so
+    /// it never raises the actions-required badge. The protocol's status
+    /// vocabulary calls this `withdrawn`.
+    Withdrawn,
     /// Join request denied by the VTC.
     Rejected,
     /// Member removed by the VTC (involuntary).
@@ -133,12 +138,13 @@ impl CommunityStatus {
     }
 
     /// True for terminal/inactive states eligible for archive or delete (R-C-8):
-    /// `Left`, `Rejected`, `Removed`, `Expired`. (`Pending` is not — it is still
-    /// in flight.)
+    /// `Left`, `Withdrawn`, `Rejected`, `Removed`, `Expired`. (`Pending` is not —
+    /// it is still in flight; cancelling it transitions to `Withdrawn` first.)
     pub fn is_inactive(&self) -> bool {
         matches!(
             self,
             CommunityStatus::Left
+                | CommunityStatus::Withdrawn
                 | CommunityStatus::Rejected
                 | CommunityStatus::Removed
                 | CommunityStatus::Expired
@@ -394,6 +400,21 @@ impl CommunityRecord {
         self.acknowledged = false;
     }
 
+    /// Transition to `Withdrawn` — the applicant cancelled a `Pending` join
+    /// before the VTC decided. Like `Left`, a voluntary outcome that never
+    /// raises the actions-required badge. The record becomes inactive, so it can
+    /// then be deleted or re-joined. No-op (returns `false`) unless currently
+    /// `Pending`; callers gate the action to pending rows, and this re-checks so
+    /// a stray call can't withdraw an active/terminal membership.
+    pub fn withdraw(&mut self) -> bool {
+        if !matches!(self.status, CommunityStatus::Pending { .. }) {
+            return false;
+        }
+        self.status = CommunityStatus::Withdrawn;
+        self.acknowledged = false;
+        true
+    }
+
     /// Acknowledge a terminal outcome (`Rejected`/`Removed`/`Expired`), clearing
     /// the actions-required badge for this community (R-S-2). No effect on the
     /// `Pending` badge, which only clears when the request resolves.
@@ -411,7 +432,7 @@ impl CommunityRecord {
             CommunityStatus::Rejected | CommunityStatus::Removed | CommunityStatus::Expired => {
                 !self.acknowledged
             }
-            CommunityStatus::Active | CommunityStatus::Left => false,
+            CommunityStatus::Active | CommunityStatus::Left | CommunityStatus::Withdrawn => false,
         }
     }
 
@@ -846,6 +867,7 @@ mod tests {
 
         for s in [
             CommunityStatus::Left,
+            CommunityStatus::Withdrawn,
             CommunityStatus::Rejected,
             CommunityStatus::Removed,
             CommunityStatus::Expired,
@@ -862,6 +884,8 @@ mod tests {
         assert!(pending.needs_attention());
         assert!(CommunityStatus::Rejected.needs_attention());
         assert!(!CommunityStatus::Left.needs_attention());
+        // Withdrawn is a voluntary outcome (like Left) — it never nags.
+        assert!(!CommunityStatus::Withdrawn.needs_attention());
     }
 
     #[test]
@@ -963,6 +987,8 @@ mod tests {
         assert_eq!(j, r#"{"state":"active"}"#);
         let j = serde_json::to_string(&CommunityStatus::Expired).unwrap();
         assert_eq!(j, r#"{"state":"expired"}"#);
+        let j = serde_json::to_string(&CommunityStatus::Withdrawn).unwrap();
+        assert_eq!(j, r#"{"state":"withdrawn"}"#);
     }
 
     fn pending() -> CommunityStatus {
@@ -1000,6 +1026,33 @@ mod tests {
         let mut l = community("v", pid, CommunityStatus::Active);
         l.leave();
         assert_eq!(l.status, CommunityStatus::Left);
+    }
+
+    #[test]
+    fn withdraw_cancels_a_pending_join() {
+        let pid = PersonaId::new();
+
+        // Pending → Withdrawn: succeeds, becomes inactive, and never nags.
+        let mut p = community("v", pid, pending());
+        p.acknowledged = false;
+        assert!(p.withdraw(), "withdraw applies to a pending join");
+        assert_eq!(p.status, CommunityStatus::Withdrawn);
+        assert!(
+            p.can_archive_or_delete(),
+            "withdrawn is deletable/archivable"
+        );
+        assert!(!p.needs_attention(), "a withdrawn join must not nag");
+        assert!(!p.is_live(), "withdrawn needs no live session");
+
+        // Idempotent / guarded: a second call (now Withdrawn) is a no-op, and an
+        // Active membership can't be withdrawn (only left).
+        assert!(!p.withdraw(), "withdraw is a no-op once not pending");
+        let mut active = community("v", pid, CommunityStatus::Active);
+        assert!(
+            !active.withdraw(),
+            "withdraw must not touch an active membership"
+        );
+        assert_eq!(active.status, CommunityStatus::Active);
     }
 
     #[test]

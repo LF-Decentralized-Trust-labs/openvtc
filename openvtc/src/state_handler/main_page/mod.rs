@@ -433,6 +433,10 @@ impl MainPageState {
                 favourite: c.favourite,
                 is_active: c.status.is_active(),
                 is_inactive: c.status.is_inactive(),
+                is_pending: matches!(
+                    c.status,
+                    openvtc_core::config::account::CommunityStatus::Pending { .. }
+                ),
                 archived: c.archived,
                 needs_attention: c.needs_attention(),
                 persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
@@ -463,6 +467,7 @@ fn community_status_label(status: &openvtc_core::config::account::CommunityStatu
         CommunityStatus::Pending { .. } => "Pending",
         CommunityStatus::Active => "Active",
         CommunityStatus::Left => "Left",
+        CommunityStatus::Withdrawn => "Withdrawn",
         CommunityStatus::Rejected => "Rejected",
         CommunityStatus::Removed => "Removed",
         CommunityStatus::Expired => "Expired",

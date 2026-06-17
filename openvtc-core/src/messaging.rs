@@ -294,6 +294,17 @@ pub fn handle_join_status_response(
                 inactivated: true,
             }
         }
+        "withdrawn" => {
+            // The VTC reports the request withdrawn — reconcile our local record
+            // (it may have been cancelled from another client). `withdraw` is a
+            // no-op unless still Pending.
+            let changed = record.withdraw();
+            info!(vtc = %from_did, "join withdrawn — reconciled to Withdrawn");
+            StatusOutcome {
+                changed,
+                inactivated: changed,
+            }
+        }
         "deferred" => {
             // "More info required" — stays Pending (still raises actions-required);
             // evaluating `needs` / presenting the DCQL is deferred to D4.
@@ -788,6 +799,27 @@ mod tests {
         assert!(
             rec.needs_attention(),
             "an unacknowledged rejection nags (R-S-2)"
+        );
+    }
+
+    #[test]
+    fn status_response_withdrawn_inactivates_without_badge() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out =
+            handle_join_status_response(&mut acct, &status_response(vtc, rid, "withdrawn"), vtc);
+        assert!(out.changed);
+        assert!(
+            out.inactivated,
+            "a withdrawal must deregister the session (R-S-3)"
+        );
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(matches!(rec.status, CommunityStatus::Withdrawn));
+        assert!(
+            !rec.needs_attention(),
+            "a voluntary withdrawal never nags (like Left)"
         );
     }
 

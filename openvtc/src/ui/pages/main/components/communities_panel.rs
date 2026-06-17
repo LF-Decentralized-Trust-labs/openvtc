@@ -164,6 +164,16 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
             .fg(COLOR_ORANGE)
             .bold(),
         );
+    } else if let Some(idx) = state.confirm_withdraw {
+        lines.push(
+            Line::from(format!(
+                "Cancel the pending join to “{}”? The request will be marked withdrawn.   \
+                 y: confirm    n: cancel",
+                confirm_name(idx)
+            ))
+            .fg(COLOR_ORANGE)
+            .bold(),
+        );
     } else {
         let archived_hint = if state.show_archived {
             "v: hide archived"
@@ -173,7 +183,7 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         lines.push(
             Line::from(format!(
                 "↑/↓ navigate   ⏎ open   f: ★   a: acknowledge   l: leave   \
-                 x: archive   d: delete   j: join   {archived_hint}"
+                 c: cancel   x: archive   d: delete   j: join   {archived_hint}"
             ))
             .fg(COLOR_DARK_GRAY),
         );

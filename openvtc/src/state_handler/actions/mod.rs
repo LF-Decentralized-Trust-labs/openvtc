@@ -296,6 +296,18 @@ pub enum Action {
     /// the user confirms.
     LeaveCommunity(usize),
 
+    /// Arm a cancel confirmation for the Pending join at this index (the panel
+    /// prompts y/n before withdrawing).
+    CommunityConfirmWithdraw(usize),
+
+    /// Dismiss a pending cancel confirmation without withdrawing.
+    CommunityCancelWithdraw,
+
+    /// Cancel the Pending join at this index: best-effort notify the VTC, then
+    /// set it `Withdrawn` and deregister its session so it can be deleted or
+    /// re-joined. Only sent after the user confirms.
+    WithdrawJoin(usize),
+
     /// Archive the inactive community at this index (hide from the default list,
     /// retain the record) (R-C-8).
     ArchiveCommunity(usize),
