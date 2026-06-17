@@ -221,8 +221,17 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
                     .bold(),
             );
         } else {
-            lines.push(Line::from("↑/↓ select   d: remove selected orphan").fg(COLOR_DARK_GRAY));
+            lines.push(
+                Line::from("↑/↓ select   n: new persona   d: remove selected orphan")
+                    .fg(COLOR_DARK_GRAY),
+            );
         }
+    } else {
+        // No personas yet: still surface how to mint one.
+        lines.push(Line::from(""));
+        lines.push(
+            Line::from("No persona DIDs yet.   n: create a new persona DID").fg(COLOR_DARK_GRAY),
+        );
     }
 
     lines

@@ -49,6 +49,7 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
 
 pub mod actions;
 mod background_dispatch;
+mod create_persona;
 mod credential_actions;
 pub mod didcomm;
 mod dispatch_util;
@@ -1070,6 +1071,32 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::CreatePersonaSubmit => {
+                        // Mint a standalone persona DID using the always-on admin
+                        // VTA session; the overlay shows progress and, on success,
+                        // the new DID (copied to the clipboard).
+                        self.run_create_persona(
+                            &mut state,
+                            &tdk,
+                            &mut config,
+                            admin_vta.as_ref(),
+                        )
+                        .await;
+                    },
+                    Action::CreatePersonaCopy => {
+                        if let Some(did) = state
+                            .main_page
+                            .create_persona
+                            .as_ref()
+                            .and_then(|o| o.did.clone())
+                        {
+                            let copied = crate::clipboard::copy_to_clipboard(&did).is_ok();
+                            if let Some(overlay) = state.main_page.create_persona.as_mut() {
+                                overlay.copied = copied;
+                            }
+                            let _ = self.state_tx.send(state.clone());
+                        }
+                    },
                     Action::Inbox(ia) => {
                         // Network inbox actions (accept/reject relationship or VRC
                         // request) run off the loop (R14): claim the Inbox domain,
@@ -1652,6 +1679,90 @@ impl StateHandler {
         Ok(result)
     }
 
+    /// Mint a standalone persona DID for the open create-persona overlay, driving
+    /// it through Working → Done/Failed. Reads the entered label, runs the VTA
+    /// mint (streaming progress into the overlay), and on success stores + copies
+    /// the new DID and refreshes the VTA panel so the orphan persona appears.
+    async fn run_create_persona(
+        &self,
+        state: &mut State,
+        tdk: &TDK,
+        config: &mut Config,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+    ) {
+        use crate::state_handler::main_page::content::CreatePersonaPhase;
+
+        // Only act from the label phase; read + validate the label.
+        let label = match state.main_page.create_persona.as_ref() {
+            Some(o) if o.phase == CreatePersonaPhase::Label => o.label.value().trim().to_string(),
+            _ => return,
+        };
+        if label.is_empty() {
+            if let Some(o) = state.main_page.create_persona.as_mut() {
+                o.messages = vec!["Enter a label first.".to_string()];
+            }
+            let _ = self.state_tx.send(state.clone());
+            return;
+        }
+        let Some(admin_vta) = admin_vta else {
+            if let Some(o) = state.main_page.create_persona.as_mut() {
+                o.phase = CreatePersonaPhase::Failed;
+                o.messages = vec![
+                    "VTA session unavailable — cannot create a persona right now.".to_string(),
+                ];
+            }
+            let _ = self.state_tx.send(state.clone());
+            return;
+        };
+
+        // Lock input and enter the Working phase.
+        if let Some(o) = state.main_page.create_persona.as_mut() {
+            o.phase = CreatePersonaPhase::Working;
+            o.messages = vec![format!("Creating persona “{label}”…")];
+        }
+        let _ = self.state_tx.send(state.clone());
+
+        // Run the mint, streaming each network step into the overlay.
+        let state_tx = &self.state_tx;
+        let result = create_persona::mint_standalone_persona(
+            admin_vta,
+            tdk,
+            config,
+            self.profile.as_str(),
+            label,
+            |msg| {
+                if let Some(o) = state.main_page.create_persona.as_mut() {
+                    o.messages.push(msg.to_string());
+                }
+                let _ = state_tx.send(state.clone());
+            },
+        )
+        .await;
+
+        match result {
+            Ok((_persona_id, did)) => {
+                let copied = crate::clipboard::copy_to_clipboard(&did).is_ok();
+                if let Some(o) = state.main_page.create_persona.as_mut() {
+                    o.phase = CreatePersonaPhase::Done;
+                    o.did = Some(did.clone());
+                    o.copied = copied;
+                    o.messages.push("Persona created.".to_string());
+                }
+                // Refresh the VTA panel so the new orphan persona is listed.
+                state.main_page.sync_from_config(config);
+                state.main_page.log(format!("Created persona DID {did}"));
+            }
+            Err(e) => {
+                if let Some(o) = state.main_page.create_persona.as_mut() {
+                    o.phase = CreatePersonaPhase::Failed;
+                    o.messages.push(format!("Failed: {e}"));
+                }
+                state.main_page.log_error("Create persona failed", &e);
+            }
+        }
+        let _ = self.state_tx.send(state.clone());
+    }
+
     /// Remove the community at `index` in the Communities display list: withdraw
     /// a live (Pending/Active) membership first (R-C-8 — for a pending join this
     /// is the withdrawal), then delete the record, persist, and refresh the
@@ -2037,6 +2148,25 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         Action::DidCancelDelete => {
             state.main_page.content_panel.vta.confirm_delete_did = None;
         }
+        Action::StartCreatePersona => {
+            // Open the overlay on its label-entry phase (the mint runs later, in
+            // the loop, on CreatePersonaSubmit).
+            state.main_page.create_persona =
+                Some(main_page::content::CreatePersonaState::default());
+        }
+        Action::CreatePersonaInput(key) => {
+            use tui_input::backend::crossterm::EventHandler;
+            if let Some(overlay) = state.main_page.create_persona.as_mut()
+                && overlay.phase == main_page::content::CreatePersonaPhase::Label
+            {
+                overlay
+                    .label
+                    .handle_event(&crossterm::event::Event::Key(*key));
+            }
+        }
+        Action::CreatePersonaClose => {
+            state.main_page.create_persona = None;
+        }
         _ => return false,
     }
     true
@@ -2316,6 +2446,54 @@ mod tests {
             !handle_nav_action(&mut state, &Action::ToggleShowArchived),
             "ToggleShowArchived re-syncs from config in the loop"
         );
+        // The persona mint (and its clipboard copy) reach the loop, not the pure
+        // reducer (network + config mutation).
+        assert!(
+            !handle_nav_action(&mut state, &Action::CreatePersonaSubmit),
+            "CreatePersonaSubmit mints via the VTA in the loop"
+        );
+        assert!(
+            !handle_nav_action(&mut state, &Action::CreatePersonaCopy),
+            "CreatePersonaCopy touches the clipboard in the loop"
+        );
+    }
+
+    /// The create-persona overlay's UI-only arms (open / edit label / close) are
+    /// handled by the pure reducer so both loops share them.
+    #[test]
+    fn nav_reducer_handles_create_persona_overlay() {
+        use crate::state_handler::main_page::content::CreatePersonaPhase;
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut state = State::default();
+        // Open the overlay on its label phase.
+        assert!(handle_nav_action(&mut state, &Action::StartCreatePersona));
+        let overlay = state
+            .main_page
+            .create_persona
+            .as_ref()
+            .expect("overlay open");
+        assert_eq!(overlay.phase, CreatePersonaPhase::Label);
+
+        // Editing keys append to the label.
+        let key =
+            |c| Action::CreatePersonaInput(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        assert!(handle_nav_action(&mut state, &key('h')));
+        assert!(handle_nav_action(&mut state, &key('i')));
+        assert_eq!(
+            state
+                .main_page
+                .create_persona
+                .as_ref()
+                .unwrap()
+                .label
+                .value(),
+            "hi"
+        );
+
+        // Close clears the overlay.
+        assert!(handle_nav_action(&mut state, &Action::CreatePersonaClose));
+        assert!(state.main_page.create_persona.is_none());
     }
 
     /// The switcher's UI-only arms (move highlight / close) are handled by the

@@ -113,6 +113,39 @@ pub struct CommunitySwitcherState {
     pub selected: usize,
 }
 
+/// "Create a new persona DID" overlay. `Some` while open; floats over the main
+/// page like the switcher. Walks `Label` (enter a label) → `Working` (the VTA
+/// mint runs) → `Done` (show + copy the DID) or `Failed`. The minted persona is
+/// standalone (orphan) — handing its DID to a VTC lets the VTC issue a VIC bound
+/// to it, which a later join then redeems on the clean join-as-subject path.
+#[derive(Clone, Debug, Default)]
+pub struct CreatePersonaState {
+    /// Which step of the overlay is showing.
+    pub phase: CreatePersonaPhase,
+    /// Label/username input, used while in the `Label` phase.
+    pub label: tui_input::Input,
+    /// Progress / error lines shown in the `Working` and `Failed` phases.
+    pub messages: Vec<String>,
+    /// The minted persona `did:webvh`, set in the `Done` phase.
+    pub did: Option<String>,
+    /// Whether [`did`](Self::did) was copied to the clipboard.
+    pub copied: bool,
+}
+
+/// Step of the [`CreatePersonaState`] overlay.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum CreatePersonaPhase {
+    /// Awaiting the persona label (text input).
+    #[default]
+    Label,
+    /// The VTA mint sequence is running (input locked).
+    Working,
+    /// The persona was minted; show the DID + copy affordance.
+    Done,
+    /// The mint failed; show the error.
+    Failed,
+}
+
 /// One entry in the community switcher overlay.
 #[derive(Clone, Debug)]
 pub struct SwitcherItem {

@@ -62,6 +62,12 @@ pub struct MainPageState {
     /// than in a content panel because it floats over whichever panel is focused.
     pub switcher: Option<content::CommunitySwitcherState>,
 
+    /// "Create a new persona DID" overlay. `Some` while open; `None` (default)
+    /// when closed. Page-level (like [`switcher`](Self::switcher)) because it
+    /// floats over whichever panel is focused and is reachable from both the
+    /// top-level menu and the VTA panel.
+    pub create_persona: Option<content::CreatePersonaState>,
+
     /// Activity log entries shown in the bottom panel (newest last).
     ///
     /// Entries are wrapped in `Arc` so cloning `MainPageState` (which happens

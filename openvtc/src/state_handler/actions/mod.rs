@@ -343,6 +343,24 @@ pub enum Action {
     /// locally. Only sent after the user confirms; guarded to unbound personas.
     DeleteDid(usize),
 
+    /// Open the "create a new persona DID" overlay (label-entry phase).
+    /// Reachable from the top-level menu and the VTA panel.
+    StartCreatePersona,
+
+    /// Forward a key event to the create-persona label input (editing keys only;
+    /// Enter/Esc are handled by the panel, not forwarded here).
+    CreatePersonaInput(crossterm::event::KeyEvent),
+
+    /// Mint the persona with the entered label: run the VTA mint sequence, then
+    /// show + copy the new DID. Only sent from the overlay's label phase.
+    CreatePersonaSubmit,
+
+    /// Copy the minted persona DID to the clipboard again (Done phase).
+    CreatePersonaCopy,
+
+    /// Close the create-persona overlay.
+    CreatePersonaClose,
+
     // ************************************************************************
     // SETUP Pages
     /// Import existing Config

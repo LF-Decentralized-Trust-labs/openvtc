@@ -1,5 +1,6 @@
 use crate::colors::{
-    COLOR_BORDER, COLOR_ORANGE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
+    COLOR_BORDER, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_WARNING_ACCESSIBLE_RED,
 };
 use crate::{
     state_handler::{
@@ -116,6 +117,12 @@ impl Component for MainPage {
             return;
         }
 
+        // Create-persona overlay: while open it owns all input.
+        if self.props.main_page.create_persona.is_some() {
+            self.handle_create_persona_key(key);
+            return;
+        }
+
         // Community switcher overlay (R-C-7): while open it owns all input; while
         // closed, Ctrl+K opens it from anywhere on the main page.
         if self.props.main_page.switcher.is_some() {
@@ -157,6 +164,9 @@ impl Component for MainPage {
             KeyCode::Enter => {
                 if self.props.main_page.menu_panel.selected_menu == MainMenu::Quit {
                     let _ = self.action_tx.send(Action::Exit);
+                } else if self.props.main_page.menu_panel.selected_menu == MainMenu::CreatePersona {
+                    // Action item, not a panel: open the overlay (like Quit→Exit).
+                    let _ = self.action_tx.send(Action::StartCreatePersona);
                 } else if self.props.main_page.menu_panel.selected {
                     let _ = self
                         .action_tx
@@ -353,6 +363,11 @@ impl MainPage {
         }
 
         match key.code {
+            KeyCode::Char('n') => {
+                // Mint a new standalone persona DID (also on the top-level menu).
+                let _ = self.action_tx.send(Action::StartCreatePersona);
+                true
+            }
             KeyCode::Up if count > 0 => {
                 let _ = self
                     .action_tx
@@ -508,6 +523,44 @@ impl MainPage {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Create-persona overlay keys. Label phase: Enter mints, Esc cancels,
+    /// other keys edit the label. Working phase swallows input. Done/Failed:
+    /// `c` re-copies the DID (Done only), Enter/Esc close. Called only while the
+    /// overlay is open, where it owns all input.
+    fn handle_create_persona_key(&mut self, key: KeyEvent) {
+        use crate::state_handler::main_page::content::CreatePersonaPhase;
+        let Some(overlay) = self.props.main_page.create_persona.as_ref() else {
+            return;
+        };
+        match overlay.phase {
+            CreatePersonaPhase::Label => match key.code {
+                KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::CreatePersonaSubmit);
+                }
+                KeyCode::Esc => {
+                    let _ = self.action_tx.send(Action::CreatePersonaClose);
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::CreatePersonaInput(key));
+                }
+            },
+            // Mint in progress: lock input (no cancel — the sequence is short and
+            // persists atomically).
+            CreatePersonaPhase::Working => {}
+            CreatePersonaPhase::Done => match key.code {
+                KeyCode::Char('c') => {
+                    let _ = self.action_tx.send(Action::CreatePersonaCopy);
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::CreatePersonaClose);
+                }
+            },
+            CreatePersonaPhase::Failed => {
+                let _ = self.action_tx.send(Action::CreatePersonaClose);
+            }
         }
     }
 
@@ -1875,6 +1928,10 @@ impl ComponentRender<()> for MainPage {
         if let Some(switcher) = self.props.main_page.switcher.as_ref() {
             self.render_switcher_overlay(frame, switcher);
         }
+        // Create-persona overlay floats over everything when open.
+        if let Some(overlay) = self.props.main_page.create_persona.as_ref() {
+            self.render_create_persona_overlay(frame, overlay);
+        }
     }
 }
 
@@ -1938,6 +1995,105 @@ impl MainPage {
             "↑/↓ select   ⏎ switch   esc close",
             Style::new().fg(COLOR_BORDER),
         )));
+
+        frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+    }
+
+    /// Render the create-persona popup: a centered overlay walking the label
+    /// input → progress → result (the DID + copy hint). Mirrors the switcher
+    /// overlay's centering pattern.
+    fn render_create_persona_overlay(
+        &self,
+        frame: &mut Frame,
+        overlay: &crate::state_handler::main_page::content::CreatePersonaState,
+    ) {
+        use crate::state_handler::main_page::content::CreatePersonaPhase;
+        use ratatui::{
+            layout::{Constraint, Flex},
+            style::Style,
+            widgets::{Block, Clear, Padding},
+        };
+
+        let area = frame.area();
+        let popup_width = 64u16.min(area.width.saturating_sub(4));
+        let popup_height = 11u16.min(area.height.saturating_sub(2)).max(7);
+
+        let [popup_area] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup_area] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(popup_area);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::bordered()
+            .title(" Create persona DID ")
+            .title_style(Style::new().fg(COLOR_ORANGE).bold())
+            .border_style(Style::new().fg(COLOR_ORANGE))
+            .padding(Padding::uniform(1));
+
+        let mut lines: Vec<Line> = Vec::new();
+        match overlay.phase {
+            CreatePersonaPhase::Label => {
+                lines.push(Line::from(Span::styled(
+                    "Label for the new persona:",
+                    Style::new().fg(COLOR_TEXT_DEFAULT),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!("> {}", overlay.label.value()),
+                    Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+                )));
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    "⏎ create   esc cancel",
+                    Style::new().fg(COLOR_BORDER),
+                )));
+            }
+            CreatePersonaPhase::Working => {
+                for msg in &overlay.messages {
+                    lines.push(Line::from(Span::styled(
+                        msg.clone(),
+                        Style::new().fg(COLOR_TEXT_DEFAULT),
+                    )));
+                }
+            }
+            CreatePersonaPhase::Done => {
+                lines.push(Line::from(Span::styled(
+                    "✓ Persona created",
+                    Style::new().fg(COLOR_SUCCESS).bold(),
+                )));
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    overlay.did.clone().unwrap_or_default(),
+                    Style::new().fg(COLOR_SOFT_PURPLE),
+                )));
+                lines.push(Line::default());
+                if overlay.copied {
+                    lines.push(Line::from(Span::styled(
+                        "(copied to clipboard)",
+                        Style::new().fg(COLOR_SUCCESS),
+                    )));
+                }
+                lines.push(Line::from(Span::styled(
+                    "c: copy again   ⏎/esc close",
+                    Style::new().fg(COLOR_BORDER),
+                )));
+            }
+            CreatePersonaPhase::Failed => {
+                for msg in &overlay.messages {
+                    lines.push(Line::from(Span::styled(
+                        msg.clone(),
+                        Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED),
+                    )));
+                }
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    "⏎/esc close",
+                    Style::new().fg(COLOR_BORDER),
+                )));
+            }
+        }
 
         frame.render_widget(Paragraph::new(lines).block(block), popup_area);
     }
@@ -2337,6 +2493,110 @@ mod key_handler_tests {
             Ok(Action::DidCancelDelete) => {}
             _ => panic!("expected DidCancelDelete"),
         }
+    }
+
+    // ----- Create persona ----------------------------------------------------
+
+    #[test]
+    fn vta_n_opens_create_persona() {
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |_| {});
+        page.handle_key_event(press(KeyCode::Char('n')));
+        match rx.try_recv() {
+            Ok(Action::StartCreatePersona) => {}
+            _ => panic!("expected StartCreatePersona"),
+        }
+    }
+
+    #[test]
+    fn menu_enter_on_create_persona_opens_overlay() {
+        // The top-level "Create Persona DID" item is an action, not a panel.
+        let (mut page, mut rx) = page_for(MainMenu::CreatePersona, |s| {
+            s.main_page.menu_panel.selected = true;
+            s.main_page.content_panel.selected = false;
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::StartCreatePersona) => {}
+            _ => panic!("expected StartCreatePersona"),
+        }
+    }
+
+    #[test]
+    fn create_persona_label_phase_keys() {
+        use crate::state_handler::main_page::content::CreatePersonaState;
+        // The open overlay owns all input regardless of the focused panel.
+        let open = || {
+            page_for(MainMenu::Vta, |s| {
+                s.main_page.create_persona = Some(CreatePersonaState::default());
+            })
+        };
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Char('a')));
+        match rx.try_recv() {
+            Ok(Action::CreatePersonaInput(_)) => {}
+            _ => panic!("expected CreatePersonaInput"),
+        }
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::CreatePersonaSubmit) => {}
+            _ => panic!("expected CreatePersonaSubmit"),
+        }
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::CreatePersonaClose) => {}
+            _ => panic!("expected CreatePersonaClose"),
+        }
+    }
+
+    #[test]
+    fn create_persona_done_phase_keys() {
+        use crate::state_handler::main_page::content::{CreatePersonaPhase, CreatePersonaState};
+        let done = || {
+            page_for(MainMenu::Vta, |s| {
+                s.main_page.create_persona = Some(CreatePersonaState {
+                    phase: CreatePersonaPhase::Done,
+                    did: Some("did:webvh:example:alice".to_string()),
+                    copied: true,
+                    ..Default::default()
+                });
+            })
+        };
+
+        // `c` re-copies; any other key closes.
+        let (mut page, mut rx) = done();
+        page.handle_key_event(press(KeyCode::Char('c')));
+        match rx.try_recv() {
+            Ok(Action::CreatePersonaCopy) => {}
+            _ => panic!("expected CreatePersonaCopy"),
+        }
+
+        let (mut page, mut rx) = done();
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::CreatePersonaClose) => {}
+            _ => panic!("expected CreatePersonaClose"),
+        }
+    }
+
+    #[test]
+    fn create_persona_working_phase_swallows_input() {
+        use crate::state_handler::main_page::content::{CreatePersonaPhase, CreatePersonaState};
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.create_persona = Some(CreatePersonaState {
+                phase: CreatePersonaPhase::Working,
+                ..Default::default()
+            });
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        assert!(
+            rx.try_recv().is_err(),
+            "the Working phase locks input until the mint resolves"
+        );
     }
 
     // ----- Inbox -------------------------------------------------------------
