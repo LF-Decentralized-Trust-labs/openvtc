@@ -1,8 +1,9 @@
 use affinidi_tdk::{
     did_common::{
         Document,
-        service::{Endpoint, Service},
-        verification_method::{VerificationMethod, VerificationRelationship},
+        builder::{ServiceBuilder, VerificationMethodBuilder},
+        service::Endpoint,
+        verification_method::VerificationRelationship,
     },
     secrets_resolver::secrets::Secret,
 };
@@ -44,6 +45,9 @@ pub fn mediator_from_document(doc: &Document) -> Option<String> {
                 };
                 obj.get("uri").and_then(Value::as_str).map(str::to_owned)
             }
+            // `Endpoint` is `#[non_exhaustive]`; unknown future shapes carry no
+            // mediator URI we can read here.
+            _ => None,
         })
         .filter(|m| !m.is_empty())
 }
@@ -110,14 +114,15 @@ pub async fn create_initial_webvh_did(
             "Couldn't set verificationMethod Key ID for #key-1: {e}"
         ))
     })?;
-    did_document.verification_method.push(VerificationMethod {
-        id: key_id.clone(),
-        type_: "Multikey".to_string(),
-        controller: did_document.id.clone(),
-        revoked: None,
-        expires: None,
-        property_set: property_set.clone(),
-    });
+    did_document.verification_method.push(
+        VerificationMethodBuilder::from_urls(
+            key_id.clone(),
+            "Multikey".to_string(),
+            did_document.id.clone(),
+        )
+        .properties(property_set.clone())
+        .build(),
+    );
     did_document
         .assertion_method
         .push(VerificationRelationship::Reference(key_id.to_string()));
@@ -141,14 +146,15 @@ pub async fn create_initial_webvh_did(
             "Couldn't set verificationMethod key ID for #key-2: {e}"
         ))
     })?;
-    did_document.verification_method.push(VerificationMethod {
-        id: key_id.clone(),
-        type_: "Multikey".to_string(),
-        controller: did_document.id.clone(),
-        revoked: None,
-        expires: None,
-        property_set: property_set.clone(),
-    });
+    did_document.verification_method.push(
+        VerificationMethodBuilder::from_urls(
+            key_id.clone(),
+            "Multikey".to_string(),
+            did_document.id.clone(),
+        )
+        .properties(property_set.clone())
+        .build(),
+    );
     did_document
         .authentication
         .push(VerificationRelationship::Reference(key_id.to_string()));
@@ -172,32 +178,31 @@ pub async fn create_initial_webvh_did(
             "Couldn't set verificationMethod key ID for #key-3: {e}"
         ))
     })?;
-    did_document.verification_method.push(VerificationMethod {
-        id: key_id.clone(),
-        type_: "Multikey".to_string(),
-        controller: did_document.id.clone(),
-        revoked: None,
-        expires: None,
-        property_set: property_set.clone(),
-    });
+    did_document.verification_method.push(
+        VerificationMethodBuilder::from_urls(
+            key_id.clone(),
+            "Multikey".to_string(),
+            did_document.id.clone(),
+        )
+        .properties(property_set.clone())
+        .build(),
+    );
     did_document
         .key_agreement
         .push(VerificationRelationship::Reference(key_id.to_string()));
 
     // Add a service endpoint for this persona
     let endpoint = Endpoint::Map(json!([{"accept": ["didcomm/v2"], "uri": mediator_did}]));
-    did_document.service.push(Service {
-        id: Some(
-            Url::parse(&[&placeholder_did, "#public-didcomm"].concat()).map_err(|e| {
-                DIDWebVHError::InvalidMethodIdentifier(format!(
-                    "Couldn't set Service Endpoint for #public-didcomm: {e}"
-                ))
-            })?,
-        ),
-        type_: vec!["DIDCommMessaging".to_string()],
-        property_set: HashMap::new(),
-        service_endpoint: endpoint,
-    });
+    let service_id = Url::parse(&[&placeholder_did, "#public-didcomm"].concat()).map_err(|e| {
+        DIDWebVHError::InvalidMethodIdentifier(format!(
+            "Couldn't set Service Endpoint for #public-didcomm: {e}"
+        ))
+    })?;
+    did_document.service.push(
+        ServiceBuilder::new("DIDCommMessaging", endpoint)
+            .id_url(service_id)
+            .build(),
+    );
 
     // Prepare the update secret with proper did:key ID
     let mut update_secret = update_secret;

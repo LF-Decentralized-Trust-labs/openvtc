@@ -25,7 +25,7 @@ dtg-credentials = "0.1"
 
 aes-gcm = "0.10"
 argon2 = "0.5"
-affinidi-tdk = "0.7"
+affinidi-tdk = "0.8"
 affinidi-data-integrity = "0.7"
 affinidi-messaging-didcomm-service = "0.3"
 anyhow = "1.0"
@@ -84,7 +84,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-vta-sdk = { version = "0.12", features = [
+vta-sdk = { version = "0.17", features = [
   "session",
   "client",
   "didcomm",
