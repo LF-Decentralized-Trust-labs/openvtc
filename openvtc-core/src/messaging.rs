@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use vta_sdk::protocols::join_requests::{
-    JoinRequestStatusResponseBody, JoinRequestSubmitReceiptBody,
+    JoinRequestStatusResponseBody, JoinRequestSubmitReceiptBody, VerdictEffect, VerdictResponse,
 };
 
 use crate::config::Config;
@@ -319,6 +319,136 @@ pub fn handle_join_status_response(
             debug!(vtc = %from_did, status = %other, "status-response: no transition");
             StatusOutcome::NONE
         }
+    }
+}
+
+/// Handle a VTC join-request `submit/#response` carrying a [`VerdictResponse`] —
+/// the synchronous admission decision in the trust-task join model (it replaces
+/// the old submit-receipt → status-response path). Correlate by `thid` = our
+/// submit message id (the placeholder held on the `Pending` record), then map
+/// the verdict effect: `allow` → Active, `deny` → Rejected; `refer` /
+/// `request_more` leave the record Pending (logged — they still raise the
+/// actions-required indicator). Mirrors [`handle_join_status_response`].
+pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &str) -> StatusOutcome {
+    let Some(thid) = message.thid.as_deref() else {
+        warn!("join verdict without thid — cannot correlate; ignoring");
+        return StatusOutcome::NONE;
+    };
+    let Ok(placeholder) = Uuid::parse_str(thid) else {
+        warn!(thid = %thid, "join verdict thid is not a uuid — ignoring");
+        return StatusOutcome::NONE;
+    };
+    let body: VerdictResponse = match serde_json::from_value(message.body.clone()) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!(error = %e, "malformed join verdict body — ignoring");
+            return StatusOutcome::NONE;
+        }
+    };
+    let Some(record) = account.communities.get_mut(from_did) else {
+        warn!(vtc = %from_did, "verdict from an unknown community — ignoring");
+        return StatusOutcome::NONE;
+    };
+    let matches = matches!(
+        &record.status,
+        CommunityStatus::Pending { request_id } if *request_id == placeholder
+    );
+    if !matches {
+        warn!(vtc = %from_did, "verdict did not match a pending request id — ignoring");
+        return StatusOutcome::NONE;
+    }
+
+    match body.verdict.effect {
+        VerdictEffect::Allow => {
+            record.activate(chrono::Utc::now());
+            info!(vtc = %from_did, "join allowed by VTC — now Active");
+            StatusOutcome {
+                changed: true,
+                inactivated: false,
+            }
+        }
+        VerdictEffect::Deny => {
+            record.reject();
+            info!(
+                vtc = %from_did,
+                code = body.verdict.with.code.as_deref().unwrap_or(""),
+                reason = body.verdict.with.reason.as_deref().unwrap_or(""),
+                "join denied by VTC policy — now Rejected"
+            );
+            StatusOutcome {
+                changed: true,
+                inactivated: true,
+            }
+        }
+        VerdictEffect::Refer => {
+            info!(
+                vtc = %from_did,
+                queue = body.verdict.with.queue.as_deref().unwrap_or(""),
+                "join referred for human review — stays Pending"
+            );
+            StatusOutcome::NONE
+        }
+        VerdictEffect::RequestMore => {
+            info!(
+                vtc = %from_did,
+                needs = ?body.verdict.with.needs,
+                "join needs more evidence — stays Pending"
+            );
+            StatusOutcome::NONE
+        }
+    }
+}
+
+/// Handle a DIDComm problem-report threaded to our join submit — the framework
+/// failure path of the trust-task join (invalid/expired/malformed VIC, bad
+/// signature). Correlate by `thid`, then branch on the `e.p.msg.*` code:
+/// `forbidden` (the invitation was not accepted) → Rejected, surfacing the
+/// `comment`; any other code (bad-request / internal) is logged but leaves the
+/// record Pending (it's a transient/client problem, not a policy rejection).
+pub fn handle_join_problem_report(
+    account: &mut Account,
+    message: &Message,
+    from_did: &str,
+) -> StatusOutcome {
+    use vta_sdk::protocols::problem_report_codes as codes;
+
+    let Some(thid) = message.thid.as_deref() else {
+        warn!("join problem-report without thid — ignoring");
+        return StatusOutcome::NONE;
+    };
+    let Ok(placeholder) = Uuid::parse_str(thid) else {
+        return StatusOutcome::NONE;
+    };
+    let (code, comment) = vta_sdk::protocols::extract_problem_report(&message.body);
+    let Some(record) = account.communities.get_mut(from_did) else {
+        warn!(vtc = %from_did, code = %code, "problem-report from an unknown community — ignoring");
+        return StatusOutcome::NONE;
+    };
+    let matches = matches!(
+        &record.status,
+        CommunityStatus::Pending { request_id } if *request_id == placeholder
+    );
+    if !matches {
+        warn!(vtc = %from_did, code = %code, "problem-report did not match a pending request id — ignoring");
+        return StatusOutcome::NONE;
+    }
+
+    if code == codes::FORBIDDEN {
+        record.reject();
+        info!(
+            vtc = %from_did,
+            comment = %comment,
+            "join rejected by VTC — invitation not accepted (now Rejected)"
+        );
+        StatusOutcome {
+            changed: true,
+            inactivated: true,
+        }
+    } else {
+        // bad-request / internal / other: the submit didn't admit, but it's not a
+        // policy rejection — surface the detail and leave the record Pending.
+        warn!(vtc = %from_did, code = %code, comment = %comment, "join submit failed — left Pending");
+        StatusOutcome::NONE
     }
 }
 
@@ -836,6 +966,145 @@ mod tests {
             "more-info handling is a D4 stub — stays Pending"
         );
         assert!(!out.inactivated);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    // ----- Verdict-model join (trust-task) -----------------------------------
+
+    fn verdict(thid: &str, from: &str, effect: &str, with: serde_json::Value) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RESPONSE_TYPE.to_string(),
+            serde_json::json!({
+                "requestId": Uuid::new_v4(),
+                "verdict": { "effect": effect, "with": with },
+            }),
+        )
+        .from(from.to_string())
+        .thid(thid.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn verdict_allow_activates() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_verdict(
+            &mut acct,
+            &verdict(&rid.to_string(), vtc, "allow", serde_json::json!({})),
+            vtc,
+        );
+        assert!(out.changed);
+        assert!(!out.inactivated);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Active
+        ));
+    }
+
+    #[test]
+    fn verdict_deny_rejects_and_inactivates() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let with = serde_json::json!({ "code": "policy.denied", "reason": "no" });
+        let out = handle_join_verdict(
+            &mut acct,
+            &verdict(&rid.to_string(), vtc, "deny", with),
+            vtc,
+        );
+        assert!(out.changed);
+        assert!(out.inactivated, "a deny deregisters the session");
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Rejected
+        ));
+    }
+
+    #[test]
+    fn verdict_request_more_stays_pending() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let with = serde_json::json!({ "needs": ["proof-of-age"] });
+        let out = handle_join_verdict(
+            &mut acct,
+            &verdict(&rid.to_string(), vtc, "request_more", with),
+            vtc,
+        );
+        assert!(!out.changed);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    #[test]
+    fn verdict_with_mismatched_thid_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let mut acct = pending_account(vtc, Uuid::new_v4());
+        // thid is a *different* uuid than the pending placeholder.
+        let out = handle_join_verdict(
+            &mut acct,
+            &verdict(&Uuid::new_v4().to_string(), vtc, "deny", serde_json::json!({})),
+            vtc,
+        );
+        assert!(!out.changed);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    fn problem_report(thid: &str, from: &str, code: &str, comment: &str) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            vta_sdk::protocols::PROBLEM_REPORT_TYPE.to_string(),
+            serde_json::json!({ "code": code, "comment": comment }),
+        )
+        .from(from.to_string())
+        .thid(thid.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn problem_report_forbidden_rejects() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_problem_report(
+            &mut acct,
+            &problem_report(&rid.to_string(), vtc, "e.p.msg.forbidden", "invitation rejected"),
+            vtc,
+        );
+        assert!(out.changed);
+        assert!(out.inactivated);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Rejected
+        ));
+    }
+
+    #[test]
+    fn problem_report_bad_request_stays_pending() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_problem_report(
+            &mut acct,
+            &problem_report(&rid.to_string(), vtc, "e.p.msg.bad-request", "malformed"),
+            vtc,
+        );
+        assert!(!out.changed, "a client/transient error must not mark Rejected");
         assert!(matches!(
             acct.communities.get(vtc).unwrap().status,
             CommunityStatus::Pending { .. }

@@ -16,8 +16,9 @@ use affinidi_tdk::{TDK, didcomm::Message};
 use dtg_credentials::DTGCredential;
 use openvtc_core::messaging::{
     SeenMessages, check_message_age, check_task_capacity, create_finalize_message,
-    handle_credential_issue, handle_join_status_response, handle_join_submit_receipt, require_thid,
-    validate_did, verify_vrc_proof, vet_vrc_issued,
+    handle_credential_issue, handle_join_problem_report, handle_join_status_response,
+    handle_join_submit_receipt, handle_join_verdict, require_thid, validate_did, verify_vrc_proof,
+    vet_vrc_issued,
 };
 use openvtc_core::{
     MessageType,
@@ -28,9 +29,11 @@ use openvtc_core::{
     vrc::VRCRequestReject,
 };
 use tracing::{debug, info, warn};
+use vta_sdk::protocols::PROBLEM_REPORT_TYPE;
 use vta_sdk::protocols::credential_exchange::ISSUE as CREDENTIAL_ISSUE_TYPE;
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
+    JOIN_REQUEST_SUBMIT_RESPONSE_TYPE,
 };
 
 /// Maximum allowed message body size in bytes (1 MB).
@@ -146,6 +149,31 @@ pub async fn process_inbound_message(
             message,
             &from_did,
         ));
+    }
+
+    // VTC join-requests submit `#response`: the synchronous admission verdict in
+    // the trust-task join model (allow / deny / refer / request_more), threaded
+    // (`thid`) on our submit message id. `allow` → Active, `deny` → Rejected; a
+    // rejection inactivates the community so the loop deregisters the session.
+    if message.typ == JOIN_REQUEST_SUBMIT_RESPONSE_TYPE {
+        let outcome = handle_join_verdict(&mut config.account, message, &from_did);
+        if outcome.inactivated {
+            inactivated.push(from_did.to_string());
+        }
+        return Ok(outcome.changed);
+    }
+
+    // DIDComm problem-report: the framework-failure path of the trust-task join
+    // (invalid/expired/malformed VIC, bad signature), threaded on our submit id.
+    // `e.p.msg.forbidden` (the invitation was not accepted) → Rejected; other
+    // codes are surfaced but leave the join Pending. Routed here so a rejection
+    // is no longer silently dropped into a stuck `Pending`.
+    if message.typ == PROBLEM_REPORT_TYPE {
+        let outcome = handle_join_problem_report(&mut config.account, message, &from_did);
+        if outcome.inactivated {
+            inactivated.push(from_did.to_string());
+        }
+        return Ok(outcome.changed);
     }
 
     // VTC join-requests status-response: the authoritative lifecycle resolution
