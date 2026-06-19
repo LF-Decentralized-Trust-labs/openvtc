@@ -94,9 +94,3 @@ skip-tree = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# Verifiable Trust Infrastructure — source of the `vta-service` git
-# dev-dependency (the in-process MockVta harness for the bootstrap e2e).
-# It is the VTA server crate and is not published to crates.io, so the
-# integration test consumes it from git. Dev/test-only; no production
-# (`cargo build`) artifact pulls from this source.
-allow-git = ["https://github.com/OpenVTC/verifiable-trust-infrastructure"]

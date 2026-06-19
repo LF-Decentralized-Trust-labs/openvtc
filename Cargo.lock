@@ -561,16 +561,11 @@ dependencies = [
 
 [[package]]
 name = "affinidi-sd-jwt-vc"
-version = "0.1.1"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c85a1cd2ffb74ee591912a8145f5a83369d2a25aaec2a15163664e15fba6538"
+checksum = "e8c9b05d34d0456f24d858fb346c4e78953da8235618819396eb9987d6e700f7"
 dependencies = [
- "affinidi-sd-jwt",
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
+ "affinidi-vc",
 ]
 
 [[package]]
@@ -704,20 +699,6 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-native-keyring-store",
-]
-
-[[package]]
-name = "affinidi-vc"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64d37a13101e2361c97cb3059a2b2a200c679274dabc91467ebd92a0a33a1641"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tracing",
- "url",
 ]
 
 [[package]]
@@ -2516,7 +2497,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.1",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -5482,7 +5463,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.1",
  "windows-native-keyring-store",
  "x25519-dalek",
  "zeroize",
@@ -5532,7 +5513,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
- "vta-sdk 0.17.0",
+ "vta-sdk 0.18.1",
  "vta-service",
  "x25519-dalek",
  "zeroize",
@@ -5683,6 +5664,12 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle",
 ]
+
+[[package]]
+name = "paste"
+version = "1.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pastey"
@@ -8844,6 +8831,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
+name = "utoipa"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bde15df68e80b16c7d16b9616e80770ad158988daa56a27dccd1e55558b0160"
+dependencies = [
+ "indexmap 2.14.0",
+ "serde",
+ "serde_json",
+ "utoipa-gen",
+]
+
+[[package]]
+name = "utoipa-axum"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c25bae5bccc842449ec0c5ddc5cbb6a3a1eaeac4503895dc105a1138f8234a0"
+dependencies = [
+ "axum",
+ "paste",
+ "tower-layer",
+ "tower-service",
+ "utoipa",
+]
+
+[[package]]
+name = "utoipa-gen"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ba0b99ee52df3028635d93840c797102da61f8a7bb3cf751032455895b52ef8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn 2.0.118",
+ "uuid",
+]
+
+[[package]]
 name = "uuid"
 version = "1.23.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8883,8 +8908,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vta-cli-common"
-version = "0.9.1"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af94a523177532ee4fde73fa7c79f2373a516dcd74cb739c05626168439e4393"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -8901,44 +8927,9 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
- "vta-sdk 0.12.0",
+ "vta-sdk 0.18.1",
+ "vti-common",
  "x25519-dalek",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.12.0"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
-dependencies = [
- "affinidi-crypto",
- "affinidi-data-integrity",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci 0.1.3",
- "affinidi-openid4vp",
- "affinidi-secrets-resolver",
- "affinidi-tdk 0.7.4",
- "affinidi-vc 0.1.2",
- "base64 0.22.1",
- "chrono",
- "ciborium",
- "curve25519-dalek",
- "didwebvh-rs",
- "ed25519-dalek",
- "getrandom 0.4.2",
- "hpke",
- "multibase",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "url",
- "uuid",
- "x25519-dalek",
- "zeroize",
 ]
 
 [[package]]
@@ -8973,9 +8964,9 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.17.0"
+version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3618f04cc29d1432cf9acfc324384a15875710d0b72c27a0d56999d859506d78"
+checksum = "37c4f9cca1d6a6721a4ef53aab46337f6b8555fa4303c8ebe47f6b93974089bb"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -8985,7 +8976,7 @@ dependencies = [
  "affinidi-openid4vp",
  "affinidi-secrets-resolver",
  "affinidi-tdk 0.8.3",
- "affinidi-vc 0.2.1",
+ "affinidi-vc",
  "base64 0.22.1",
  "chrono",
  "ciborium",
@@ -8996,6 +8987,7 @@ dependencies = [
  "hpke",
  "multibase",
  "reqwest 0.13.4",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -9004,6 +8996,7 @@ dependencies = [
  "tracing",
  "trust-tasks-rs",
  "url",
+ "utoipa",
  "uuid",
  "x25519-dalek",
  "zeroize",
@@ -9011,8 +9004,9 @@ dependencies = [
 
 [[package]]
 name = "vta-service"
-version = "0.9.4"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10e52e43ff5a4cc7ad8b494ddfcfcec34586a4a89ed42f3c40b46e55d62af12a"
 dependencies = [
  "aes-gcm",
  "affinidi-crypto",
@@ -9020,13 +9014,13 @@ dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-didcomm",
  "affinidi-messaging-didcomm-service",
- "affinidi-openid4vci 0.1.3",
+ "affinidi-openid4vci 0.2.1",
  "affinidi-openid4vp",
  "affinidi-sd-jwt",
  "affinidi-sd-jwt-vc",
  "affinidi-secrets-resolver",
  "affinidi-status-list",
- "affinidi-tdk 0.7.4",
+ "affinidi-tdk 0.8.3",
  "affinidi-tdk-common",
  "argon2",
  "async-trait",
@@ -9073,10 +9067,13 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "urlencoding",
+ "utoipa",
+ "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.12.0",
+ "vta-sdk 0.18.1",
  "vti-common",
+ "vti-secrets",
  "vti-webauthn",
  "webauthn-rs",
  "webauthn-rs-proto",
@@ -9086,12 +9083,13 @@ dependencies = [
 
 [[package]]
 name = "vti-common"
-version = "0.10.1"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1606f67812497ee90e40fc12975ade36a7ae1c7b7fb3f473337b8eb38c185c5f"
 dependencies = [
  "aes-gcm",
  "affinidi-did-resolver-cache-sdk",
- "affinidi-tdk 0.7.4",
+ "affinidi-tdk 0.8.3",
  "async-trait",
  "axum",
  "axum-extra",
@@ -9114,16 +9112,32 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "utoipa",
+ "utoipa-axum",
  "uuid",
- "vta-sdk 0.12.0",
+ "vta-sdk 0.18.1",
  "webauthn-rs",
  "zeroize",
 ]
 
 [[package]]
+name = "vti-secrets"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa43407f03dbd60a633199cce92590f9e4fd4a4726d5f613bdb08cf2ec59bc29"
+dependencies = [
+ "hex",
+ "serde",
+ "tokio",
+ "tracing",
+ "vti-common",
+]
+
+[[package]]
 name = "vti-webauthn"
 version = "0.1.0"
-source = "git+https://github.com/OpenVTC/verifiable-trust-infrastructure?rev=82097382702a88cc86f2268a1a37068027d9831c#82097382702a88cc86f2268a1a37068027d9831c"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "234719328d299d2845a540ecffb7e20f9c745092fcc5385b6e916cde2dcd6bef"
 dependencies = [
  "async-trait",
  "aws-lc-rs",

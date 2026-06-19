@@ -202,6 +202,20 @@ pub fn invitation_id(vic: &Value) -> Option<&str> {
     vic.get("id").and_then(Value::as_str)
 }
 
+/// Whether a JSON value is an InvitationCredential (its `type` array carries
+/// the `InvitationCredential` tag). Used to validate a pasted/loaded VIC
+/// before stashing it (join flow) or storing it in the vault (VIC manager).
+pub fn is_invitation_credential(value: &Value) -> bool {
+    value
+        .get("type")
+        .and_then(|t| t.as_array())
+        .is_some_and(|types| {
+            types
+                .iter()
+                .any(|t| t.as_str() == Some("InvitationCredential"))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,6 +229,21 @@ mod tests {
             "credentialSubject": { "id": "did:webvh:example.com:alice" },
             "proof": { "type": "DataIntegrityProof" }
         })
+    }
+
+    #[test]
+    fn is_invitation_credential_checks_the_type_tag() {
+        assert!(is_invitation_credential(&sample_vic()));
+        // Missing `type`.
+        assert!(!is_invitation_credential(&json!({ "id": "x" })));
+        // Wrong tag.
+        assert!(!is_invitation_credential(
+            &json!({ "type": ["VerifiableCredential", "MembershipCredential"] })
+        ));
+        // `type` not an array.
+        assert!(!is_invitation_credential(
+            &json!({ "type": "InvitationCredential" })
+        ));
     }
 
     #[test]
