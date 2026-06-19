@@ -256,6 +256,10 @@ pub enum Action {
     /// credential (VIC) JSON — validated + stashed into the join flow.
     JoinPasteVic(String),
 
+    /// Clear the loaded invitation credential on the join entry page so the
+    /// join proceeds without a VIC (explicit "ignore it" choice).
+    JoinClearVic,
+
     /// Move the Communities-list selection to this index.
     CommunitySelect(usize),
 

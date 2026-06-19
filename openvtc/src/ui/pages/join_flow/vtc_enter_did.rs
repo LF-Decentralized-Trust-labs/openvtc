@@ -7,7 +7,7 @@
 use crate::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_TEXT_DEFAULT,
 };
-use crossterm::event::{Event, KeyCode, KeyEvent};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{
@@ -46,6 +46,14 @@ impl VtcEnterDid {
             }
             KeyCode::Esc => {
                 let _ = state.action_tx.send(Action::JoinCancel);
+            }
+            // Ctrl+L: clear a loaded invitation and join without it. Ctrl-modified
+            // so it never collides with typing the VTC DID into the input field.
+            KeyCode::Char('l') | KeyCode::Char('L')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && state.props.state.has_invitation =>
+            {
+                let _ = state.action_tx.send(Action::JoinClearVic);
             }
             _ => {
                 state.vtc_did.handle_event(&Event::Key(key));
@@ -114,12 +122,25 @@ impl VtcEnterDid {
                 ));
             }
         }
-        // When an invitation credential was supplied at launch, show that it
-        // will be presented — the community can then auto-admit without review.
+        // Explicit VIC state so the operator knows exactly what will be presented:
+        //   loaded   → it will ride in the join VP (community can auto-admit)
+        //   cleared  → operator dropped it; joining without one (may need review)
+        //   none     → never had one; offer the paste tip
         if state.has_invitation {
             lines.push(Line::styled(
                 "✓ Invitation credential loaded — it will be presented to the community.",
                 Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+            ));
+            lines.push(Line::styled(
+                "[Ctrl+L] join without it   ·   paste a different VIC to replace it",
+                Style::new().fg(COLOR_DARK_GRAY).italic(),
+            ));
+            lines.push(Line::default());
+        } else if state.vic_cleared {
+            lines.push(Line::styled(
+                "Invitation cleared — joining without a credential (the community may \
+                 require manual approval). Paste a VIC to load one.",
+                Style::new().fg(COLOR_DARK_GRAY).italic(),
             ));
             lines.push(Line::default());
         } else {

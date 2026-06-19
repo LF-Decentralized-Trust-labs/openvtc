@@ -73,6 +73,11 @@ pub struct JoinState {
     /// survives `reset`, which is called once at open) so the entry page can show
     /// the operator that their invitation will be used.
     pub has_invitation: bool,
+    /// True when the operator explicitly cleared a loaded VIC on the entry page,
+    /// so the status text reads "joining without an invitation" rather than the
+    /// generic "no VIC" tip. Distinguishes a deliberate clear from never having
+    /// had one; re-pasting a VIC (`JoinPasteVic`) flips it back to `false`.
+    pub vic_cleared: bool,
 }
 
 impl JoinState {
@@ -115,6 +120,17 @@ mod tests {
             did: "did:webvh:x".to_string(),
             linked_communities: Vec::new(),
         }
+    }
+
+    #[test]
+    fn vic_cleared_defaults_false_and_resets() {
+        let mut js = JoinState::default();
+        assert!(!js.vic_cleared);
+        js.vic_cleared = true;
+        js.has_invitation = true;
+        js.reset();
+        assert!(!js.vic_cleared);
+        assert!(!js.has_invitation);
     }
 
     #[test]

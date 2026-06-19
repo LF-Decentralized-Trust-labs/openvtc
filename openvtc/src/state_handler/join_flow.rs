@@ -119,6 +119,7 @@ impl StateHandler {
                                 {
                                     state.invitation_credential = Some(vic);
                                     state.join.has_invitation = true;
+                                    state.join.vic_cleared = false;
                                     state.join.messages.clear();
                                 }
                                 _ => {
@@ -128,6 +129,16 @@ impl StateHandler {
                                     ));
                                 }
                             }
+                            let _ = self.state_tx.send(state.clone());
+                        }
+                        Action::JoinClearVic => {
+                            // Explicit "proceed without a VIC": drop the loaded
+                            // invitation so it isn't presented, and flag the clear so
+                            // the entry page shows "joining without an invitation".
+                            state.invitation_credential = None;
+                            state.join.has_invitation = false;
+                            state.join.vic_cleared = true;
+                            state.join.messages.clear();
                             let _ = self.state_tx.send(state.clone());
                         }
                         Action::JoinSubmitVtc(vtc_did) => {
