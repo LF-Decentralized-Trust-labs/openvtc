@@ -3,7 +3,7 @@ use crate::colors::{
     COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
 };
 use crate::state_handler::{
-    main_page::content::{ContentPanelState, VtaState},
+    main_page::content::{ContentPanelState, VicLifecycle, VtaFocus, VtaState},
     state::ConnectionState,
 };
 use ratatui::{
@@ -234,5 +234,108 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         );
     }
 
+    render_vics(state, &mut lines);
+
     lines
+}
+
+/// Render the "Invitation Credentials" (VIC) manager section: the held VICs with
+/// their lifecycle state, the confirm gates, and the focus-aware key hints.
+fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
+    let focused = state.focus == VtaFocus::Vics;
+    let header_style = if focused {
+        Style::new().fg(COLOR_SUCCESS).bold()
+    } else {
+        Style::new().fg(COLOR_DARK_GRAY).bold()
+    };
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            format!(" Invitation Credentials ({})", state.vics.len()),
+            header_style,
+        ),
+        Span::styled(
+            if focused { "   ◀ focus" } else { "   [Tab] focus" },
+            Style::new().fg(COLOR_DARK_GRAY),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    if state.vics.is_empty() {
+        lines.push(
+            Line::from("No invitation credentials.   a: import a VIC   ·   i: show inactive")
+                .fg(COLOR_DARK_GRAY),
+        );
+        return;
+    }
+
+    for (i, v) in state.vics.iter().enumerate() {
+        let selected = focused && i == state.vic_selected_index;
+        let prefix = if selected { "▸ " } else { "  " };
+        let (marker, marker_style) = match v.lifecycle {
+            VicLifecycle::Active => ("● ", Style::new().fg(COLOR_SUCCESS)),
+            VicLifecycle::Archived => ("○ ", Style::new().fg(COLOR_ORANGE)),
+            VicLifecycle::Deleted => ("✗ ", Style::new().fg(COLOR_DARK_GRAY)),
+        };
+        let id_style = if selected {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_TEXT_DEFAULT)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(prefix, marker_style),
+            Span::styled(marker, marker_style),
+            Span::styled(v.id.clone(), id_style),
+        ]));
+
+        let issuer = if v.issuer.is_empty() {
+            "issuer unknown".to_string()
+        } else {
+            v.issuer.clone()
+        };
+        let mut detail = format!("      {issuer}  ·  {}", v.status);
+        if v.lifecycle != VicLifecycle::Active {
+            detail.push_str(&format!("  ·  {}", v.lifecycle.tag()));
+        }
+        if !v.valid_until.is_empty() {
+            detail.push_str(&format!("  ·  until {}", v.valid_until));
+        }
+        let detail_style = if v.lifecycle == VicLifecycle::Active {
+            Style::new().fg(COLOR_DARK_GRAY)
+        } else {
+            Style::new().fg(COLOR_ORANGE)
+        };
+        lines.push(Line::from(Span::styled(detail, detail_style)));
+    }
+
+    lines.push(Line::from(""));
+    if let Some(idx) = state.confirm_purge_vic {
+        let target = state.vics.get(idx).map(|v| v.id.as_str()).unwrap_or("this VIC");
+        lines.push(
+            Line::from(format!("Purge {target} permanently?   y: confirm    n: cancel"))
+                .fg(COLOR_ORANGE)
+                .bold(),
+        );
+    } else if let Some(idx) = state.confirm_delete_vic {
+        let target = state.vics.get(idx).map(|v| v.id.as_str()).unwrap_or("this VIC");
+        lines.push(
+            Line::from(format!("Delete {target}?   y: confirm    n: cancel"))
+                .fg(COLOR_ORANGE)
+                .bold(),
+        );
+    } else if focused {
+        let sel = state.vics.get(state.vic_selected_index);
+        let restore_verb = match sel.map(|v| v.lifecycle) {
+            Some(VicLifecycle::Archived) => "u: unarchive",
+            Some(VicLifecycle::Deleted) => "u: restore",
+            _ => "r: archive",
+        };
+        lines.push(
+            Line::from(format!(
+                "↑/↓ select   a: import   {restore_verb}   d: delete   p: purge   i: inactive"
+            ))
+            .fg(COLOR_DARK_GRAY),
+        );
+    }
 }

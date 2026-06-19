@@ -242,6 +242,128 @@ pub struct VtaState {
     /// When `Some(index)`, a deletion of that context DID is awaiting `y`/`n`
     /// confirmation.
     pub confirm_delete_did: Option<usize>,
+
+    /// Invitation credentials (VICs) the holder holds in the VTA credential
+    /// vault, for the VIC manager. Populated by an async query (not derived from
+    /// `Config`), refreshed after each mutation. `Arc<[…]>` for cheap per-frame
+    /// clones.
+    pub vics: Arc<[VicSummary]>,
+    /// Selected index into [`Self::vics`] (VIC manager navigation).
+    pub vic_selected_index: usize,
+    /// When `Some(index)`, a soft-delete of that VIC is awaiting `y`/`n`.
+    pub confirm_delete_vic: Option<usize>,
+    /// When `Some(index)`, a *purge* (irreversible) of that VIC is awaiting
+    /// `y`/`n` — kept distinct from the soft-delete arm so the prompt is explicit.
+    pub confirm_purge_vic: Option<usize>,
+    /// Whether the VIC list includes archived + soft-deleted entries (the
+    /// `include_archived` / `include_deleted` query modifiers). Toggled with `i`.
+    pub vic_show_inactive: bool,
+    /// Which of the two manageable lists (Context Identities vs Invitation
+    /// Credentials) has keyboard focus, so `↑/↓` and the verbs apply to it.
+    pub focus: VtaFocus,
+}
+
+/// Which manageable list in the VTA panel has keyboard focus (toggled by `Tab`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VtaFocus {
+    /// The Context Identities (persona DID) list.
+    #[default]
+    Dids,
+    /// The Invitation Credentials (VIC) list.
+    Vics,
+}
+
+/// Display summary of one held VIC, mapped from the VTA credential-vault
+/// `CredentialDescriptor` (descriptor only — the credential body is never
+/// fetched for the list). Wire fields are camelCase.
+#[derive(Clone, Debug, Default)]
+pub struct VicSummary {
+    /// Vault id — the handle for archive / delete / restore / purge.
+    pub id: String,
+    /// Issuer DID (the community that issued the invitation), if recorded.
+    pub issuer: String,
+    /// Validity status: "valid" / "expired" / "revoked" / "unknown".
+    pub status: String,
+    /// Archival lifecycle (active / archived / deleted), orthogonal to status.
+    pub lifecycle: VicLifecycle,
+    /// RFC 3339 validity-window end, if declared (shown as detail).
+    pub valid_until: String,
+}
+
+impl VicSummary {
+    /// Map one `credentials[]` descriptor (camelCase JSON) to a summary.
+    pub fn from_descriptor(d: &serde_json::Value) -> Self {
+        let s = |k: &str| d.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+        VicSummary {
+            id: s("id"),
+            issuer: s("issuerDid"),
+            status: {
+                let st = s("status");
+                if st.is_empty() { "unknown".to_string() } else { st }
+            },
+            lifecycle: VicLifecycle::from_wire(d.get("lifecycle").and_then(|v| v.as_str())),
+            valid_until: s("validUntil"),
+        }
+    }
+}
+
+/// The archival lifecycle state of a held VIC (vault `lifecycle` dimension).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VicLifecycle {
+    /// Live and presentable. Omitted from the descriptor → defaults here.
+    #[default]
+    Active,
+    /// Hidden from presentation but retained; restorable via unarchive.
+    Archived,
+    /// Soft-deleted tombstone; restorable within the grace window, else purged.
+    Deleted,
+}
+
+impl VicLifecycle {
+    fn from_wire(s: Option<&str>) -> Self {
+        match s {
+            Some("archived") => VicLifecycle::Archived,
+            Some("deleted") => VicLifecycle::Deleted,
+            _ => VicLifecycle::Active,
+        }
+    }
+
+    /// Short tag for the panel row.
+    pub fn tag(self) -> &'static str {
+        match self {
+            VicLifecycle::Active => "active",
+            VicLifecycle::Archived => "archived",
+            VicLifecycle::Deleted => "deleted",
+        }
+    }
+}
+
+/// "Import an invitation credential" overlay (paste a VIC → store it in the
+/// vault). `Some` while open; floats over the main page like the create-persona
+/// overlay. Walks `Input` (paste the VIC JSON) → `Working` (the vault receive
+/// runs) → `Done` or `Failed`.
+#[derive(Clone, Debug, Default)]
+pub struct AddVicState {
+    /// Which step of the overlay is showing.
+    pub phase: AddVicPhase,
+    /// The pasted VIC JSON, used while in the `Input` phase.
+    pub input: tui_input::Input,
+    /// Progress / validation / error lines.
+    pub messages: Vec<String>,
+}
+
+/// Step of the [`AddVicState`] overlay.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AddVicPhase {
+    /// Awaiting the pasted VIC JSON (validated on submit).
+    #[default]
+    Input,
+    /// The vault receive is running (input locked).
+    Working,
+    /// Stored successfully.
+    Done,
+    /// Validation or storage failed; show the error.
+    Failed,
 }
 
 /// A persona DID in the account's context, for the DID manager view.

@@ -365,6 +365,47 @@ pub enum Action {
     /// Close the create-persona overlay.
     CreatePersonaClose,
 
+    // ── VIC manager (VTA panel, Invitation Credentials list) ────────────────
+    /// (Re)load the VIC list from the vault (async). Sent when the operator
+    /// focuses the VIC list so the panel is populated without polling.
+    VicRefresh,
+    /// Move the VIC-list selection to this index.
+    VicSelect(usize),
+    /// Toggle keyboard focus between the Context Identities and VIC lists (Tab).
+    VicFocusToggle,
+    /// Toggle whether archived + soft-deleted VICs are listed (`i`); triggers a
+    /// re-query.
+    VicToggleInactive,
+    /// Archive the selected VIC (async).
+    VicArchive(usize),
+    /// Unarchive the selected (archived) VIC (async).
+    VicUnarchive(usize),
+    /// Restore the selected (soft-deleted) VIC (async).
+    VicRestore(usize),
+    /// Arm the soft-delete confirmation for the VIC at this index.
+    VicConfirmDelete(usize),
+    /// Dismiss the soft-delete confirmation.
+    VicCancelDelete,
+    /// Soft-delete the VIC at this index (async; after confirm).
+    DeleteVic(usize),
+    /// Arm the irreversible-purge confirmation for the VIC at this index.
+    VicConfirmPurge(usize),
+    /// Dismiss the purge confirmation.
+    VicCancelPurge,
+    /// Irreversibly purge the VIC at this index (async; after confirm).
+    PurgeVic(usize),
+
+    /// Open the "import an invitation credential" overlay (paste phase).
+    StartAddVic,
+    /// Forward a key event to the add-VIC paste input (editing keys only).
+    AddVicInput(crossterm::event::KeyEvent),
+    /// Set the add-VIC paste input to this text (bracketed-paste path).
+    AddVicPaste(String),
+    /// Validate + store the pasted VIC (async). Sent from the overlay's input phase.
+    AddVicSubmit,
+    /// Close the add-VIC overlay.
+    AddVicClose,
+
     // ************************************************************************
     // SETUP Pages
     /// Import existing Config

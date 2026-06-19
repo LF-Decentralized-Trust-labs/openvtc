@@ -123,6 +123,12 @@ impl Component for MainPage {
             return;
         }
 
+        // Add-VIC (import invitation) overlay: while open it owns all input.
+        if self.props.main_page.add_vic.is_some() {
+            self.handle_add_vic_key(key);
+            return;
+        }
+
         // Community switcher overlay (R-C-7): while open it owns all input; while
         // closed, Ctrl+K opens it from anywhere on the main page.
         if self.props.main_page.switcher.is_some() {
@@ -181,6 +187,15 @@ impl Component for MainPage {
         use crate::state_handler::main_page::content::{
             CredentialsMode, RelationshipsMode, SettingsMode,
         };
+
+        // The add-VIC overlay owns paste while open — the operator pastes the VIC
+        // JSON straight into the import field (checked before the panel guard).
+        if self.props.main_page.add_vic.is_some() {
+            let _ = self
+                .action_tx
+                .send(Action::AddVicPaste(text.trim().to_string()));
+            return;
+        }
 
         if !self.props.main_page.content_panel.selected {
             return;
@@ -344,12 +359,34 @@ impl MainPage {
     /// selection, `d`/Del removes the selected **orphan** (unbound) DID after a
     /// y/n confirmation. Returns true if consumed.
     fn handle_vta_key(&mut self, key: KeyEvent) -> bool {
-        let vta = &self.props.main_page.content_panel.vta;
-        let count = vta.context_dids.len();
-        let selected = vta.did_selected_index;
+        use crate::state_handler::main_page::content::{VicLifecycle, VtaFocus};
 
-        // A deletion confirmation is pending: only y/Enter confirms; anything
-        // else cancels.
+        let vta = &self.props.main_page.content_panel.vta;
+        let did_count = vta.context_dids.len();
+        let did_selected = vta.did_selected_index;
+        let focus = vta.focus;
+        let vic_count = vta.vics.len();
+        let vic_selected = vta.vic_selected_index;
+        let vic_lifecycle = vta.vics.get(vic_selected).map(|v| v.lifecycle);
+
+        // VIC purge / delete confirmation gates: only y/Enter confirms.
+        if let Some(idx) = vta.confirm_purge_vic {
+            let act = match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => Action::PurgeVic(idx),
+                _ => Action::VicCancelPurge,
+            };
+            let _ = self.action_tx.send(act);
+            return true;
+        }
+        if let Some(idx) = vta.confirm_delete_vic {
+            let act = match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => Action::DeleteVic(idx),
+                _ => Action::VicCancelDelete,
+            };
+            let _ = self.action_tx.send(act);
+            return true;
+        }
+        // DID deletion confirmation: only y/Enter confirms; anything else cancels.
         if let Some(idx) = vta.confirm_delete_did {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -362,43 +399,112 @@ impl MainPage {
             return true;
         }
 
+        // Keys that apply regardless of which list has focus.
         match key.code {
+            KeyCode::Tab => {
+                // Switching to the VIC list loads it on demand (no polling).
+                if focus == VtaFocus::Dids {
+                    let _ = self.action_tx.send(Action::VicRefresh);
+                }
+                let _ = self.action_tx.send(Action::VicFocusToggle);
+                return true;
+            }
             KeyCode::Char('n') => {
                 // Mint a new standalone persona DID (also on the top-level menu).
                 let _ = self.action_tx.send(Action::StartCreatePersona);
-                true
+                return true;
             }
-            KeyCode::Up if count > 0 => {
-                let _ = self
-                    .action_tx
-                    .send(Action::DidSelect(selected.saturating_sub(1)));
-                true
+            KeyCode::Char('a') => {
+                let _ = self.action_tx.send(Action::StartAddVic);
+                return true;
             }
-            KeyCode::Down if count > 0 => {
-                let _ = self
-                    .action_tx
-                    .send(Action::DidSelect((selected + 1).min(count - 1)));
-                true
-            }
-            KeyCode::Char('d') | KeyCode::Delete if selected < count => {
-                // Only orphan (unbound) personas are removable — a persona
-                // serving a community must not be deleted out from under it.
-                if vta
-                    .context_dids
-                    .get(selected)
-                    .is_some_and(|d| d.bound_communities == 0)
-                {
-                    let _ = self.action_tx.send(Action::DidConfirmDelete(selected));
-                }
-                true
+            KeyCode::Char('i') => {
+                let _ = self.action_tx.send(Action::VicToggleInactive);
+                return true;
             }
             KeyCode::Esc => {
                 let _ = self
                     .action_tx
                     .send(Action::MainPanelSwitch(MainPanel::MainMenu));
-                true
+                return true;
             }
-            _ => false,
+            _ => {}
+        }
+
+        // List-scoped keys act on whichever list has focus.
+        match focus {
+            VtaFocus::Dids => match key.code {
+                KeyCode::Up if did_count > 0 => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::DidSelect(did_selected.saturating_sub(1)));
+                    true
+                }
+                KeyCode::Down if did_count > 0 => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::DidSelect((did_selected + 1).min(did_count - 1)));
+                    true
+                }
+                KeyCode::Char('d') | KeyCode::Delete if did_selected < did_count => {
+                    // Only orphan (unbound) personas are removable.
+                    if vta
+                        .context_dids
+                        .get(did_selected)
+                        .is_some_and(|d| d.bound_communities == 0)
+                    {
+                        let _ = self.action_tx.send(Action::DidConfirmDelete(did_selected));
+                    }
+                    true
+                }
+                _ => false,
+            },
+            VtaFocus::Vics => match key.code {
+                KeyCode::Up if vic_count > 0 => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::VicSelect(vic_selected.saturating_sub(1)));
+                    true
+                }
+                KeyCode::Down if vic_count > 0 => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::VicSelect((vic_selected + 1).min(vic_count - 1)));
+                    true
+                }
+                // r: archive an active VIC (reversible, so no confirm).
+                KeyCode::Char('r') if vic_lifecycle == Some(VicLifecycle::Active) => {
+                    let _ = self.action_tx.send(Action::VicArchive(vic_selected));
+                    true
+                }
+                // u: unarchive an archived VIC, or restore a soft-deleted one.
+                KeyCode::Char('u') => {
+                    match vic_lifecycle {
+                        Some(VicLifecycle::Archived) => {
+                            let _ = self.action_tx.send(Action::VicUnarchive(vic_selected));
+                        }
+                        Some(VicLifecycle::Deleted) => {
+                            let _ = self.action_tx.send(Action::VicRestore(vic_selected));
+                        }
+                        _ => {}
+                    }
+                    true
+                }
+                // d: soft-delete (not already deleted).
+                KeyCode::Char('d') | KeyCode::Delete
+                    if vic_selected < vic_count
+                        && vic_lifecycle != Some(VicLifecycle::Deleted) =>
+                {
+                    let _ = self.action_tx.send(Action::VicConfirmDelete(vic_selected));
+                    true
+                }
+                // p: irreversible purge.
+                KeyCode::Char('p') if vic_selected < vic_count => {
+                    let _ = self.action_tx.send(Action::VicConfirmPurge(vic_selected));
+                    true
+                }
+                _ => false,
+            },
         }
     }
 
@@ -560,6 +666,33 @@ impl MainPage {
             },
             CreatePersonaPhase::Failed => {
                 let _ = self.action_tx.send(Action::CreatePersonaClose);
+            }
+        }
+    }
+
+    /// Add-VIC overlay keys. Input phase: Enter stores, Esc cancels, other keys
+    /// edit the paste field. Working swallows input. Done/Failed: any key closes.
+    /// Called only while the overlay is open, where it owns all input.
+    fn handle_add_vic_key(&mut self, key: KeyEvent) {
+        use crate::state_handler::main_page::content::AddVicPhase;
+        let Some(overlay) = self.props.main_page.add_vic.as_ref() else {
+            return;
+        };
+        match overlay.phase {
+            AddVicPhase::Input => match key.code {
+                KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::AddVicSubmit);
+                }
+                KeyCode::Esc => {
+                    let _ = self.action_tx.send(Action::AddVicClose);
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::AddVicInput(key));
+                }
+            },
+            AddVicPhase::Working => {}
+            AddVicPhase::Done | AddVicPhase::Failed => {
+                let _ = self.action_tx.send(Action::AddVicClose);
             }
         }
     }
@@ -1932,6 +2065,10 @@ impl ComponentRender<()> for MainPage {
         if let Some(overlay) = self.props.main_page.create_persona.as_ref() {
             self.render_create_persona_overlay(frame, overlay);
         }
+        // Add-VIC (import invitation) overlay floats over everything when open.
+        if let Some(overlay) = self.props.main_page.add_vic.as_ref() {
+            self.render_add_vic_overlay(frame, overlay);
+        }
     }
 }
 
@@ -2081,6 +2218,110 @@ impl MainPage {
                 )));
             }
             CreatePersonaPhase::Failed => {
+                for msg in &overlay.messages {
+                    lines.push(Line::from(Span::styled(
+                        msg.clone(),
+                        Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED),
+                    )));
+                }
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    "⏎/esc close",
+                    Style::new().fg(COLOR_BORDER),
+                )));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+    }
+
+    fn render_add_vic_overlay(
+        &self,
+        frame: &mut Frame,
+        overlay: &crate::state_handler::main_page::content::AddVicState,
+    ) {
+        use crate::state_handler::main_page::content::AddVicPhase;
+        use ratatui::{
+            layout::{Constraint, Flex},
+            style::Style,
+            widgets::{Block, Clear, Padding},
+        };
+
+        let area = frame.area();
+        let popup_width = 64u16.min(area.width.saturating_sub(4));
+        let popup_height = 11u16.min(area.height.saturating_sub(2)).max(7);
+
+        let [popup_area] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup_area] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(popup_area);
+
+        frame.render_widget(Clear, popup_area);
+
+        let block = Block::bordered()
+            .title(" Import invitation credential ")
+            .title_style(Style::new().fg(COLOR_ORANGE).bold())
+            .border_style(Style::new().fg(COLOR_ORANGE))
+            .padding(Padding::uniform(1));
+
+        let mut lines: Vec<Line> = Vec::new();
+        match overlay.phase {
+            AddVicPhase::Input => {
+                lines.push(Line::from(Span::styled(
+                    "Paste an invitation credential (VIC) JSON, then press ⏎:",
+                    Style::new().fg(COLOR_TEXT_DEFAULT),
+                )));
+                // The pasted JSON can be long; show a char count + short preview
+                // rather than the full body in the popup.
+                let val = overlay.input.value();
+                let preview = if val.chars().count() > 40 {
+                    let head: String = val.chars().take(40).collect();
+                    format!("{head}…")
+                } else {
+                    val.to_string()
+                };
+                lines.push(Line::from(Span::styled(
+                    if val.is_empty() {
+                        "> (nothing pasted yet)".to_string()
+                    } else {
+                        format!("> {preview}   ({} chars)", val.chars().count())
+                    },
+                    Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+                )));
+                lines.push(Line::default());
+                for msg in &overlay.messages {
+                    lines.push(Line::from(Span::styled(
+                        msg.clone(),
+                        Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED),
+                    )));
+                }
+                lines.push(Line::from(Span::styled(
+                    "⏎ store   esc cancel",
+                    Style::new().fg(COLOR_BORDER),
+                )));
+            }
+            AddVicPhase::Working => {
+                for msg in &overlay.messages {
+                    lines.push(Line::from(Span::styled(
+                        msg.clone(),
+                        Style::new().fg(COLOR_TEXT_DEFAULT),
+                    )));
+                }
+            }
+            AddVicPhase::Done => {
+                lines.push(Line::from(Span::styled(
+                    "✓ Invitation credential stored",
+                    Style::new().fg(COLOR_SUCCESS).bold(),
+                )));
+                lines.push(Line::default());
+                lines.push(Line::from(Span::styled(
+                    "⏎/esc close",
+                    Style::new().fg(COLOR_BORDER),
+                )));
+            }
+            AddVicPhase::Failed => {
                 for msg in &overlay.messages {
                     lines.push(Line::from(Span::styled(
                         msg.clone(),
@@ -2580,6 +2821,171 @@ mod key_handler_tests {
         match rx.try_recv() {
             Ok(Action::CreatePersonaClose) => {}
             _ => panic!("expected CreatePersonaClose"),
+        }
+    }
+
+    // ----- VIC manager -------------------------------------------------------
+
+    use crate::state_handler::main_page::content::{
+        AddVicPhase, AddVicState, VicLifecycle, VicSummary, VtaFocus,
+    };
+
+    fn vic(id: &str, lifecycle: VicLifecycle) -> VicSummary {
+        VicSummary {
+            id: id.to_string(),
+            issuer: "did:webvh:example:community".to_string(),
+            status: "valid".to_string(),
+            lifecycle,
+            valid_until: String::new(),
+        }
+    }
+
+    /// Focus the VIC list with the given rows selected at index 0.
+    fn vta_vics(rows: Vec<VicSummary>) -> impl Fn(&mut State) {
+        move |s: &mut State| {
+            let vta = &mut s.main_page.content_panel.vta;
+            vta.focus = VtaFocus::Vics;
+            vta.vics = rows.clone().into();
+            vta.vic_selected_index = 0;
+        }
+    }
+
+    #[test]
+    fn vta_a_opens_add_vic() {
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |_| {});
+        page.handle_key_event(press(KeyCode::Char('a')));
+        match rx.try_recv() {
+            Ok(Action::StartAddVic) => {}
+            _ => panic!("expected StartAddVic"),
+        }
+    }
+
+    #[test]
+    fn vta_tab_refreshes_then_toggles_focus() {
+        // From the default (Dids) focus, Tab loads the VIC list, then switches.
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |_| {});
+        page.handle_key_event(press(KeyCode::Tab));
+        match rx.try_recv() {
+            Ok(Action::VicRefresh) => {}
+            _ => panic!("expected VicRefresh first"),
+        }
+        match rx.try_recv() {
+            Ok(Action::VicFocusToggle) => {}
+            _ => panic!("expected VicFocusToggle"),
+        }
+    }
+
+    #[test]
+    fn vta_vic_delete_confirm_cycle() {
+        // `d` on an active VIC arms the soft-delete confirmation.
+        let (mut page, mut rx) =
+            page_for(MainMenu::Vta, vta_vics(vec![vic("urn:vic:1", VicLifecycle::Active)]));
+        page.handle_key_event(press(KeyCode::Char('d')));
+        match rx.try_recv() {
+            Ok(Action::VicConfirmDelete(0)) => {}
+            _ => panic!("expected VicConfirmDelete(0)"),
+        }
+
+        // Armed: Enter commits the soft-delete.
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.confirm_delete_vic = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::DeleteVic(0)) => {}
+            _ => panic!("expected DeleteVic(0)"),
+        }
+
+        // Armed: any other key cancels.
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.confirm_delete_vic = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::VicCancelDelete) => {}
+            _ => panic!("expected VicCancelDelete"),
+        }
+    }
+
+    #[test]
+    fn vta_vic_purge_confirm_commits() {
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.confirm_purge_vic = Some(0);
+        });
+        page.handle_key_event(press(KeyCode::Char('y')));
+        match rx.try_recv() {
+            Ok(Action::PurgeVic(0)) => {}
+            _ => panic!("expected PurgeVic(0)"),
+        }
+    }
+
+    #[test]
+    fn vta_vic_unarchive_and_restore_by_lifecycle() {
+        // `u` on an archived VIC unarchives it.
+        let (mut page, mut rx) = page_for(
+            MainMenu::Vta,
+            vta_vics(vec![vic("urn:vic:1", VicLifecycle::Archived)]),
+        );
+        page.handle_key_event(press(KeyCode::Char('u')));
+        match rx.try_recv() {
+            Ok(Action::VicUnarchive(0)) => {}
+            _ => panic!("expected VicUnarchive(0)"),
+        }
+
+        // `u` on a soft-deleted VIC restores it.
+        let (mut page, mut rx) = page_for(
+            MainMenu::Vta,
+            vta_vics(vec![vic("urn:vic:1", VicLifecycle::Deleted)]),
+        );
+        page.handle_key_event(press(KeyCode::Char('u')));
+        match rx.try_recv() {
+            Ok(Action::VicRestore(0)) => {}
+            _ => panic!("expected VicRestore(0)"),
+        }
+    }
+
+    #[test]
+    fn add_vic_overlay_input_keys() {
+        let open = || {
+            page_for(MainMenu::Vta, |s| {
+                s.main_page.add_vic = Some(AddVicState::default());
+            })
+        };
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::AddVicSubmit) => {}
+            _ => panic!("expected AddVicSubmit"),
+        }
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Esc));
+        match rx.try_recv() {
+            Ok(Action::AddVicClose) => {}
+            _ => panic!("expected AddVicClose"),
+        }
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Char('x')));
+        match rx.try_recv() {
+            Ok(Action::AddVicInput(_)) => {}
+            _ => panic!("expected AddVicInput"),
+        }
+    }
+
+    #[test]
+    fn add_vic_done_phase_closes() {
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.add_vic = Some(AddVicState {
+                phase: AddVicPhase::Done,
+                ..Default::default()
+            });
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        match rx.try_recv() {
+            Ok(Action::AddVicClose) => {}
+            _ => panic!("expected AddVicClose"),
         }
     }
 

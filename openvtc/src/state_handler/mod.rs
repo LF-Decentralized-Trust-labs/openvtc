@@ -69,6 +69,7 @@ mod setup_token_actions;
 mod setup_vta_actions;
 mod setup_wizard;
 pub mod state;
+mod vic;
 
 pub struct DeferredLoad {
     pub profile: String,
@@ -132,11 +133,13 @@ impl StateHandler {
         mut action_rx: UnboundedReceiver<Action>,
         mut interrupt_rx: broadcast::Receiver<Interrupted>,
     ) -> Result<Interrupted> {
-        let mut state = State::default();
         // Carry the launch-supplied invitation credential into the live state so
         // the join flow can present it (it survives `JoinState::reset`, which
         // only clears the transient join sub-state).
-        state.invitation_credential = self.invitation_credential.take();
+        let mut state = State {
+            invitation_credential: self.invitation_credential.take(),
+            ..State::default()
+        };
 
         let starting_mode = std::mem::replace(&mut self.starting_mode, StartingMode::NotSet);
         // The third element is the live admin VTA session handed back by
@@ -1083,6 +1086,25 @@ impl StateHandler {
                         )
                         .await;
                     },
+                    Action::VicRefresh => {
+                        self.refresh_vics(&mut state, admin_vta.as_ref()).await;
+                    },
+                    Action::VicToggleInactive => {
+                        state.main_page.content_panel.vta.vic_show_inactive =
+                            !state.main_page.content_panel.vta.vic_show_inactive;
+                        self.refresh_vics(&mut state, admin_vta.as_ref()).await;
+                    },
+                    Action::AddVicSubmit => {
+                        self.run_add_vic(&mut state, admin_vta.as_ref()).await;
+                    },
+                    Action::VicArchive(i)
+                    | Action::VicUnarchive(i)
+                    | Action::VicRestore(i)
+                    | Action::DeleteVic(i)
+                    | Action::PurgeVic(i) => {
+                        self.run_vic_lifecycle(&mut state, admin_vta.as_ref(), &action, i)
+                            .await;
+                    },
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
                             .main_page
@@ -1763,6 +1785,134 @@ impl StateHandler {
         let _ = self.state_tx.send(state.clone());
     }
 
+    /// (Re)load the VIC list from the VTA credential vault into the VTA panel,
+    /// honouring the "show inactive" toggle. Best-effort: a query failure logs
+    /// and leaves the previous list in place. Called when the operator focuses
+    /// the VIC list, toggles inactive, and after every mutation.
+    async fn refresh_vics(
+        &self,
+        state: &mut State,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+    ) {
+        let Some(admin_vta) = admin_vta else { return };
+        let include_inactive = state.main_page.content_panel.vta.vic_show_inactive;
+        match vic::list_vics(admin_vta, include_inactive).await {
+            Ok(list) => {
+                let vta = &mut state.main_page.content_panel.vta;
+                vta.vic_selected_index = vta
+                    .vic_selected_index
+                    .min(list.len().saturating_sub(1));
+                vta.vics = list.into();
+            }
+            Err(e) => {
+                state.main_page.log_error("Listing invitation credentials failed", &e);
+            }
+        }
+        let _ = self.state_tx.send(state.clone());
+    }
+
+    /// Validate + store the pasted VIC from the add-VIC overlay, then refresh the
+    /// list. Mirrors [`run_create_persona`]'s phase handling.
+    async fn run_add_vic(
+        &self,
+        state: &mut State,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+    ) {
+        use crate::state_handler::main_page::content::AddVicPhase;
+
+        let json = match state.main_page.add_vic.as_ref() {
+            Some(o) if o.phase == AddVicPhase::Input => o.input.value().to_string(),
+            _ => return,
+        };
+        if json.trim().is_empty() {
+            if let Some(o) = state.main_page.add_vic.as_mut() {
+                o.messages = vec!["Paste an invitation credential (VIC) first.".to_string()];
+            }
+            let _ = self.state_tx.send(state.clone());
+            return;
+        }
+        let Some(admin_vta) = admin_vta else {
+            if let Some(o) = state.main_page.add_vic.as_mut() {
+                o.phase = AddVicPhase::Failed;
+                o.messages = vec!["VTA session unavailable — cannot store the VIC.".to_string()];
+            }
+            let _ = self.state_tx.send(state.clone());
+            return;
+        };
+
+        if let Some(o) = state.main_page.add_vic.as_mut() {
+            o.phase = AddVicPhase::Working;
+            o.messages = vec!["Storing invitation credential…".to_string()];
+        }
+        let _ = self.state_tx.send(state.clone());
+
+        match vic::add_vic(admin_vta, &json).await {
+            Ok(()) => {
+                if let Some(o) = state.main_page.add_vic.as_mut() {
+                    o.phase = AddVicPhase::Done;
+                    o.messages.push("Invitation credential stored.".to_string());
+                }
+                state.main_page.log("Stored an invitation credential.");
+                self.refresh_vics(state, Some(admin_vta)).await;
+            }
+            Err(e) => {
+                // A validation error keeps the operator on the input phase so they
+                // can fix the paste; a storage error is terminal for this attempt.
+                if let Some(o) = state.main_page.add_vic.as_mut() {
+                    o.phase = AddVicPhase::Failed;
+                    o.messages.push(format!("Failed: {e}"));
+                }
+                state.main_page.log_error("Storing the invitation credential failed", &e);
+            }
+        }
+        let _ = self.state_tx.send(state.clone());
+    }
+
+    /// Run a VIC lifecycle verb (archive / unarchive / restore / soft-delete /
+    /// purge) against the selected VIC, clearing any confirmation arm, then
+    /// refresh the list. `index` is into the displayed VIC list.
+    async fn run_vic_lifecycle(
+        &self,
+        state: &mut State,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+        action: &Action,
+        index: usize,
+    ) {
+        // Clear the confirmation arms regardless of outcome.
+        state.main_page.content_panel.vta.confirm_delete_vic = None;
+        state.main_page.content_panel.vta.confirm_purge_vic = None;
+
+        let Some(admin_vta) = admin_vta else { return };
+        let Some(id) = state
+            .main_page
+            .content_panel
+            .vta
+            .vics
+            .get(index)
+            .map(|v| v.id.clone())
+        else {
+            return;
+        };
+
+        let (result, verb) = match action {
+            Action::VicArchive(_) => (vic::archive_vic(admin_vta, &id).await, "Archived"),
+            Action::VicUnarchive(_) => (vic::unarchive_vic(admin_vta, &id).await, "Unarchived"),
+            Action::VicRestore(_) => (vic::restore_vic(admin_vta, &id).await, "Restored"),
+            Action::DeleteVic(_) => (vic::delete_vic(admin_vta, &id).await, "Deleted"),
+            Action::PurgeVic(_) => (vic::purge_vic(admin_vta, &id).await, "Purged"),
+            _ => return,
+        };
+        match result {
+            Ok(()) => state
+                .main_page
+                .log(format!("{verb} invitation credential.")),
+            Err(e) => state
+                .main_page
+                .log_error(format!("VIC {} failed", verb.to_lowercase()), &e),
+        }
+        self.refresh_vics(state, Some(admin_vta)).await;
+    }
+
     /// Remove the community at `index` in the Communities display list: withdraw
     /// a live (Pending/Active) membership first (R-C-8 — for a pending join this
     /// is the withdrawal), then delete the record, persist, and refresh the
@@ -2016,6 +2166,28 @@ impl StateHandler {
                             ];
                         }
                     }
+                    Action::VicRefresh => {
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        self.refresh_vics(state, av).await;
+                    }
+                    Action::VicToggleInactive => {
+                        state.main_page.content_panel.vta.vic_show_inactive =
+                            !state.main_page.content_panel.vta.vic_show_inactive;
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        self.refresh_vics(state, av).await;
+                    }
+                    Action::AddVicSubmit => {
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        self.run_add_vic(state, av).await;
+                    }
+                    Action::VicArchive(i)
+                    | Action::VicUnarchive(i)
+                    | Action::VicRestore(i)
+                    | Action::DeleteVic(i)
+                    | Action::PurgeVic(i) => {
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        self.run_vic_lifecycle(state, av, &action, i).await;
+                    }
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
                             .main_page
@@ -2180,6 +2352,54 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         }
         Action::DidCancelDelete => {
             state.main_page.content_panel.vta.confirm_delete_did = None;
+        }
+        Action::VicSelect(i) => {
+            state.main_page.content_panel.vta.vic_selected_index = *i;
+        }
+        Action::VicFocusToggle => {
+            use main_page::content::VtaFocus;
+            let vta = &mut state.main_page.content_panel.vta;
+            vta.focus = match vta.focus {
+                VtaFocus::Dids => VtaFocus::Vics,
+                VtaFocus::Vics => VtaFocus::Dids,
+            };
+        }
+        Action::VicConfirmDelete(i) => {
+            state.main_page.content_panel.vta.confirm_delete_vic = Some(*i);
+            state.main_page.content_panel.vta.confirm_purge_vic = None;
+        }
+        Action::VicCancelDelete => {
+            state.main_page.content_panel.vta.confirm_delete_vic = None;
+        }
+        Action::VicConfirmPurge(i) => {
+            state.main_page.content_panel.vta.confirm_purge_vic = Some(*i);
+            state.main_page.content_panel.vta.confirm_delete_vic = None;
+        }
+        Action::VicCancelPurge => {
+            state.main_page.content_panel.vta.confirm_purge_vic = None;
+        }
+        Action::StartAddVic => {
+            state.main_page.add_vic = Some(main_page::content::AddVicState::default());
+        }
+        Action::AddVicInput(key) => {
+            use tui_input::backend::crossterm::EventHandler;
+            if let Some(overlay) = state.main_page.add_vic.as_mut()
+                && overlay.phase == main_page::content::AddVicPhase::Input
+            {
+                overlay
+                    .input
+                    .handle_event(&crossterm::event::Event::Key(*key));
+            }
+        }
+        Action::AddVicPaste(text) => {
+            if let Some(overlay) = state.main_page.add_vic.as_mut()
+                && overlay.phase == main_page::content::AddVicPhase::Input
+            {
+                overlay.input = tui_input::Input::new(text.clone());
+            }
+        }
+        Action::AddVicClose => {
+            state.main_page.add_vic = None;
         }
         Action::StartCreatePersona => {
             // Open the overlay on its label-entry phase (the mint runs later, in
