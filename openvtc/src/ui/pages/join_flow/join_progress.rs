@@ -108,6 +108,47 @@ impl JoinProgress {
                         Span::styled("  Status:        ", Style::new().fg(COLOR_SUCCESS)),
                         Span::styled("Pending", Style::new().fg(COLOR_ORANGE)),
                     ]));
+                    // Whether an invitation was actually presented (auto-admit
+                    // path) or this is an open request (manual approval) — the
+                    // distinction that determines what happens next.
+                    match &state.presented_invitation {
+                        Some(vic) => {
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    "  Invitation:    ",
+                                    Style::new().fg(COLOR_SUCCESS),
+                                ),
+                                Span::styled(
+                                    format!("Presented  ·  {}", vic.id),
+                                    Style::new().fg(COLOR_SOFT_PURPLE),
+                                ),
+                            ]));
+                            if let Some(subject) = &vic.subject {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        "  Bound to:      ",
+                                        Style::new().fg(COLOR_SUCCESS),
+                                    ),
+                                    Span::styled(
+                                        subject.clone(),
+                                        Style::new().fg(COLOR_SOFT_PURPLE),
+                                    ),
+                                ]));
+                            }
+                        }
+                        None => {
+                            lines.push(Line::from(vec![
+                                Span::styled(
+                                    "  Invitation:    ",
+                                    Style::new().fg(COLOR_SUCCESS),
+                                ),
+                                Span::styled(
+                                    "None  ·  open request (awaiting approval)",
+                                    Style::new().fg(COLOR_ORANGE),
+                                ),
+                            ]));
+                        }
+                    }
                 }
                 lines.push(Line::default());
                 lines.push(Line::styled(

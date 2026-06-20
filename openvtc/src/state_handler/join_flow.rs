@@ -29,7 +29,8 @@ use crate::{
     state_handler::{
         StateHandler,
         actions::Action,
-        join::{JoinPage, JoinState, PersonaOption},
+        join::{JoinPage, JoinState, PersonaOption, PresentedInvitation},
+        main_page::content::{VicLifecycle, VicSummary},
         main_page::shorten_did,
         setup_sequence::{Completion, MessageType, config::ConfigExtension, vta},
         state::{ActivePage, State},
@@ -417,21 +418,32 @@ fn invitation_subject_persona(config: &Config, state: &State) -> Option<PersonaI
     config.account.persona_id_for_did(subject)
 }
 
-/// #2: load an invitation credential the VTA already holds for the holder, if
-/// any. Queries the credential vault for `purpose = invite` and fetches the
-/// first match's body. Best-effort — any error / empty result yields `None`.
-async fn load_invitation_from_vault(admin_vta: &VtaClient) -> Option<serde_json::Value> {
+/// #2: load a *presentable* invitation the VTA already holds for the community
+/// being joined (`vtc_did`). Queries the credential vault for `purpose = invite`
+/// and selects an active, vault-valid (not expired / revoked) VIC whose issuer is
+/// this community — preferring the one that stays valid longest — then fetches
+/// its body. The first-match grab this replaced could present a VIC for the wrong
+/// community (or an expired one), which the VTC then rejected. Best-effort: any
+/// error / no match yields `None`, and the join proceeds as an open request.
+async fn load_invitation_from_vault(
+    admin_vta: &VtaClient,
+    vtc_did: &str,
+) -> Option<serde_json::Value> {
     let listing = admin_vta
         .cred_vault_query(serde_json::json!({ "purpose": "invite" }))
         .await
         .ok()?;
-    let id = listing
-        .get("credentials")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|d| d.get("id"))
-        .and_then(|i| i.as_str())?;
-    let got = admin_vta.cred_vault_get(id).await.ok()?;
+    let descriptors = listing.get("credentials").and_then(|c| c.as_array())?;
+    // Community-matched, active, vault-valid candidates; prefer the latest
+    // `validUntil` (longest-lived). RFC 3339 timestamps sort lexicographically.
+    let best = descriptors
+        .iter()
+        .map(VicSummary::from_descriptor)
+        .filter(|v| {
+            v.issuer == vtc_did && v.status == "valid" && v.lifecycle == VicLifecycle::Active
+        })
+        .max_by(|a, b| a.valid_until.cmp(&b.valid_until))?;
+    let got = admin_vta.cred_vault_get(&best.id).await.ok()?;
     got.get("credential").cloned()
 }
 
@@ -765,30 +777,66 @@ async fn run_join_sequence(
             return;
         }
     };
-    // #2: the VTA credential vault is the durable home for the holder's VIC.
-    // If one is loaded (file / paste), persist it; if not, try loading one the
-    // VTA already holds for this community. Both are best-effort — the join
-    // proceeds regardless (the in-memory VIC, if any, is still presented).
-    if let Some(vic) = state.invitation_credential.clone() {
-        if let Err(e) = admin_vta.cred_vault_receive(vic, None).await {
+    // #2: resolve the VIC to present for THIS community. A VIC's issuer is the
+    // community's VTC DID, so a presentable invitation must match `vtc_did` and
+    // be unexpired — presenting a mismatched or expired one only earns a VTC
+    // rejection (and reads as a failed invitation rather than an open request).
+    // An explicitly loaded VIC (--invitation / paste) is still stored in the
+    // vault regardless (its durable home), but only *presented* when it matches;
+    // otherwise we fall back to a community-matched VIC the vault already holds,
+    // else submit as an open request. Setting `state.invitation_credential` to
+    // the resolved VIC keeps the VP, the linkage proof, and the summary all
+    // consistent with what is actually presented. All vault calls are
+    // best-effort — the join proceeds regardless.
+    let loaded = state.invitation_credential.take();
+    let mut presentable: Option<serde_json::Value> = None;
+    if let Some(vic) = loaded {
+        if let Err(e) = admin_vta.cred_vault_receive(vic.clone(), None).await {
             debug!(error = %e, "storing invitation in the VTA vault failed (continuing)");
         }
-    } else if let Some(vic) = load_invitation_from_vault(admin_vta).await {
-        state.invitation_credential = Some(vic);
-        state.join.has_invitation = true;
-        let _ = handler.state_tx.send(state.clone());
+        if !openvtc_core::join::invitation_matches_community(&vic, &vtc_did) {
+            state.join.info(
+                "Loaded invitation is for a different community — \
+                 looking for one that matches…",
+            );
+        } else if openvtc_core::join::invitation_is_expired(&vic, Utc::now()) {
+            state
+                .join
+                .info("Loaded invitation has expired — looking for a valid one…");
+        } else {
+            presentable = Some(vic);
+        }
     }
+    if presentable.is_none() {
+        presentable = load_invitation_from_vault(admin_vta, &vtc_did).await;
+    }
+    state.invitation_credential = presentable;
+    state.join.has_invitation = state.invitation_credential.is_some();
+    state.join.presented_invitation = state.invitation_credential.as_ref().map(|vic| {
+        PresentedInvitation {
+            id: openvtc_core::join::invitation_id(vic)
+                .unwrap_or_default()
+                .to_string(),
+            subject: openvtc_core::join::invitation_subject(vic).map(str::to_string),
+        }
+    });
 
-    // Present the holder VP. When the applicant loaded an invitation credential
-    // (VIC) at startup (`--invitation`), it rides in the VP's
-    // `verifiableCredential` array; the VTC verifies it and auto-admits on a
-    // valid, trusted, unconsumed invitation (no manual approval).
+    // Present the holder VP. When a matching, unexpired invitation (VIC) is
+    // resolved it rides in the VP's `verifiableCredential` array; the VTC
+    // verifies it and auto-admits on a valid, trusted, unconsumed invitation (no
+    // manual approval). With no presentable invitation the join is an open
+    // request the community reviews and approves manually.
     if state.invitation_credential.is_some() {
         state
             .join
             .info("Presenting your invitation credential to the community…");
-        let _ = handler.state_tx.send(state.clone());
+    } else {
+        state.join.info(
+            "No valid invitation for this community — \
+             submitting as an open request (awaiting approval).",
+        );
     }
+    let _ = handler.state_tx.send(state.clone());
     // Subject-linkage (#1b): when the presenting DID differs from the VIC
     // subject, prove the subject authorized this presenter (signed with the
     // subject persona's key). On the join-as-subject path (#1a) this is `None`.

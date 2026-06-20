@@ -24,6 +24,18 @@ pub enum JoinPage {
     Progress,
 }
 
+/// Summary of the invitation credential (VIC) actually presented with a join,
+/// shown on the success page so the operator can tell *whether* and *which*
+/// invitation was used (vs. an open request awaiting manual approval). `None` on
+/// the join state means no VIC was presented.
+#[derive(Clone, Debug)]
+pub struct PresentedInvitation {
+    /// The VIC's top-level `id` (its consumption / linkage handle).
+    pub id: String,
+    /// The persona DID the VIC is bound to (`credentialSubject.id`), if present.
+    pub subject: Option<String>,
+}
+
 /// One selectable existing persona on the identity-choice page (R-B-3).
 #[derive(Clone, Debug)]
 pub struct PersonaOption {
@@ -73,6 +85,12 @@ pub struct JoinState {
     /// survives `reset`, which is called once at open) so the entry page can show
     /// the operator that their invitation will be used.
     pub has_invitation: bool,
+    /// The invitation actually presented to the community, resolved at submit
+    /// time (community-matched + unexpired). `Some` drives the success page's
+    /// "Invitation: Presented" detail; `None` reads as an open request. Distinct
+    /// from [`has_invitation`](Self::has_invitation), which reflects what was
+    /// *loaded* on the entry page before community matching.
+    pub presented_invitation: Option<PresentedInvitation>,
     /// True when the operator explicitly cleared a loaded VIC on the entry page,
     /// so the status text reads "joining without an invitation" rather than the
     /// generic "no VIC" tip. Distinguishes a deliberate clear from never having

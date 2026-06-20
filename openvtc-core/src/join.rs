@@ -15,7 +15,7 @@ use affinidi_tdk::{
     didcomm::Message,
     messaging::{ATM, profiles::ATMProfile},
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 use vta_sdk::protocols::join_requests::{
@@ -202,6 +202,42 @@ pub fn invitation_id(vic: &Value) -> Option<&str> {
     vic.get("id").and_then(Value::as_str)
 }
 
+/// The DID that issued a VIC. For an `InvitationCredential` the issuer **is** the
+/// community's VTC DID (the VTC signs it with its own issuer key, so
+/// `issuer = signer.issuer_did()`), which is what a presentable invitation must
+/// match against the community being joined. Accepts both the string issuer form
+/// and the object form (`{ "id": "did:…" }`).
+pub fn invitation_issuer(vic: &Value) -> Option<&str> {
+    match vic.get("issuer")? {
+        Value::String(s) => Some(s.as_str()),
+        Value::Object(_) => vic.pointer("/issuer/id").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Whether a VIC is bound to the community identified by `vtc_did` — i.e. the VIC
+/// was issued by that VTC. A held/loaded VIC issued by a *different* community
+/// must not be presented: the VTC would reject the mismatched binding, so it is
+/// no better than presenting nothing (and worse, it looks like a failed
+/// invitation rather than an open request).
+pub fn invitation_matches_community(vic: &Value, vtc_did: &str) -> bool {
+    invitation_issuer(vic) == Some(vtc_did)
+}
+
+/// Whether a VIC's declared validity window has elapsed as of `now`. A VIC with
+/// no `validUntil` is treated as non-expiring here (the VTC re-checks validity at
+/// submit). A malformed `validUntil` is treated as expired (fail closed) so a
+/// broken credential is never presented.
+pub fn invitation_is_expired(vic: &Value, now: DateTime<Utc>) -> bool {
+    match vic.get("validUntil").and_then(Value::as_str) {
+        None => false,
+        Some(s) => match DateTime::parse_from_rfc3339(s) {
+            Ok(t) => t.with_timezone(&Utc) <= now,
+            Err(_) => true,
+        },
+    }
+}
+
 /// Whether a JSON value is an InvitationCredential (its `type` array carries
 /// the `InvitationCredential` tag). Used to validate a pasted/loaded VIC
 /// before stashing it (join flow) or storing it in the vault (VIC manager).
@@ -297,6 +333,53 @@ mod tests {
         );
         assert_eq!(invitation_id(&vic), Some("urn:uuid:vic-1"));
         assert_eq!(invitation_subject(&json!({})), None);
+    }
+
+    #[test]
+    fn issuer_extractor_handles_string_and_object_forms() {
+        // String issuer (the form the VTC emits).
+        assert_eq!(
+            invitation_issuer(&sample_vic()),
+            Some("did:webvh:example.com:community")
+        );
+        // Object issuer (`{ "id": … }`).
+        let obj = json!({ "issuer": { "id": "did:webvh:example.com:community" } });
+        assert_eq!(
+            invitation_issuer(&obj),
+            Some("did:webvh:example.com:community")
+        );
+        // Missing / wrong-typed issuer.
+        assert_eq!(invitation_issuer(&json!({})), None);
+        assert_eq!(invitation_issuer(&json!({ "issuer": 42 })), None);
+    }
+
+    #[test]
+    fn community_match_keys_on_the_issuer() {
+        let vic = sample_vic();
+        assert!(invitation_matches_community(
+            &vic,
+            "did:webvh:example.com:community"
+        ));
+        assert!(!invitation_matches_community(
+            &vic,
+            "did:webvh:example.com:other-community"
+        ));
+    }
+
+    #[test]
+    fn expiry_uses_valid_until_and_fails_closed() {
+        let now = "2026-06-21T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        // No validUntil → never expired.
+        assert!(!invitation_is_expired(&sample_vic(), now));
+        // Future window → not expired.
+        let future = json!({ "validUntil": "2027-01-01T00:00:00Z" });
+        assert!(!invitation_is_expired(&future, now));
+        // Past window → expired.
+        let past = json!({ "validUntil": "2025-01-01T00:00:00Z" });
+        assert!(invitation_is_expired(&past, now));
+        // Malformed → treated as expired (fail closed).
+        let bad = json!({ "validUntil": "not-a-date" });
+        assert!(invitation_is_expired(&bad, now));
     }
 
     #[test]
