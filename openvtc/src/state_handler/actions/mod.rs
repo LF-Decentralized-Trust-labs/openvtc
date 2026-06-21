@@ -249,6 +249,14 @@ pub enum Action {
     /// Dismiss the reuse linkage warning without choosing.
     JoinReuseCancel,
 
+    /// Move the invitation-choice highlight: `0` = use the invitation, `1` =
+    /// join without it.
+    JoinInvitationSelect(usize),
+
+    /// Commit the highlighted invitation choice and proceed to identity
+    /// selection (or mint).
+    JoinInvitationChoose,
+
     /// Cancel the join flow and return to the main page.
     JoinCancel,
 

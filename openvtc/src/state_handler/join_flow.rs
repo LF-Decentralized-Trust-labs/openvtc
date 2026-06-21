@@ -163,51 +163,35 @@ impl StateHandler {
                                 let _ = self.state_tx.send(state.clone());
                                 continue;
                             }
-                            // #1a / #1b: a loaded invitation bound to one of our
-                            // personas. Show the identity choice with that persona
-                            // pre-selected — pressing Enter joins as the invited
-                            // identity (#1a, presenter == VIC subject, no linkage);
-                            // choosing a different / fresh identity builds a
-                            // subject-linkage proof so the invited persona
-                            // authorizes the presented one (#1b).
-                            if let Some(pid) = invitation_subject_persona(config, state) {
-                                let options = build_persona_options(config);
-                                let idx = options.iter().position(|o| o.id == pid).unwrap_or(0);
+                            // When an invitation is available for THIS community —
+                            // a loaded VIC that matches, or one held in the vault —
+                            // let the operator choose whether to present it or join
+                            // as an open request (default: present it). Shown only
+                            // when one actually exists; otherwise there's nothing to
+                            // choose and we go straight to identity selection.
+                            if invitation_available_for(state, admin_vta, &vtc_did).await {
                                 state.join.pending_vtc = Some(vtc_did);
-                                state.join.persona_options = options;
-                                state.join.identity_selected = idx;
-                                state.join.reuse_confirm = None;
-                                state.join.page = JoinPage::IdentityChoice;
+                                state.join.invitation_use_selected = 0; // default: use it
+                                state.join.present_invitation = true;
+                                state.join.page = JoinPage::InvitationChoice;
                                 let _ = self.state_tx.send(state.clone());
                                 continue;
                             }
-                            // R-B-3 / D1: with existing personas, let the user choose
-                            // to reuse one or mint a fresh identity; with none (the
-                            // first join), there's nothing to reuse — mint directly.
-                            let options = build_persona_options(config);
-                            if options.is_empty() {
-                                if let Some(interrupted) = self
-                                    .launch_join_sequence(
-                                        JoinIdentityChoice::Mint,
-                                        vtc_did,
-                                        interrupt_rx,
-                                        state,
-                                        tdk,
-                                        config,
-                                        admin_vta,
-                                        profile,
-                                    )
-                                    .await
-                                {
-                                    return Ok(JoinExit::Exit(interrupted));
-                                }
-                            } else {
-                                state.join.pending_vtc = Some(vtc_did);
-                                state.join.persona_options = options;
-                                state.join.identity_selected = 0;
-                                state.join.reuse_confirm = None;
-                                state.join.page = JoinPage::IdentityChoice;
-                                let _ = self.state_tx.send(state.clone());
+                            // No invitation available — nothing to present.
+                            state.join.present_invitation = false;
+                            if let Some(interrupted) = self
+                                .proceed_after_invitation_choice(
+                                    vtc_did,
+                                    interrupt_rx,
+                                    state,
+                                    tdk,
+                                    config,
+                                    admin_vta,
+                                    profile,
+                                )
+                                .await
+                            {
+                                return Ok(JoinExit::Exit(interrupted));
                             }
                         }
                         Action::JoinIdentitySelect(i) => {
@@ -273,6 +257,32 @@ impl StateHandler {
                             state.join.reuse_confirm = None;
                             let _ = self.state_tx.send(state.clone());
                         }
+                        Action::JoinInvitationSelect(i) => {
+                            // Two rows: 0 = use the invitation, 1 = join without it.
+                            state.join.invitation_use_selected = i.min(1);
+                            let _ = self.state_tx.send(state.clone());
+                        }
+                        Action::JoinInvitationChoose => {
+                            let Some(vtc_did) = state.join.pending_vtc.clone() else {
+                                continue;
+                            };
+                            state.join.present_invitation =
+                                state.join.invitation_use_selected == 0;
+                            if let Some(interrupted) = self
+                                .proceed_after_invitation_choice(
+                                    vtc_did,
+                                    interrupt_rx,
+                                    state,
+                                    tdk,
+                                    config,
+                                    admin_vta,
+                                    profile,
+                                )
+                                .await
+                            {
+                                return Ok(JoinExit::Exit(interrupted));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -282,6 +292,64 @@ impl StateHandler {
             }
             let _ = self.state_tx.send(state.clone());
         }
+    }
+
+    /// Route from the invitation choice (or directly when no invitation is
+    /// available) to identity selection. When we'll present a loaded VIC bound to
+    /// one of our personas, pre-select that persona (#1a/#1b); otherwise offer the
+    /// persona list, or mint directly on a first join. Returns `Some(interrupted)`
+    /// only when a direct mint launched and was interrupted mid-sequence.
+    #[allow(clippy::too_many_arguments)]
+    async fn proceed_after_invitation_choice(
+        &self,
+        vtc_did: String,
+        interrupt_rx: &mut broadcast::Receiver<Interrupted>,
+        state: &mut State,
+        tdk: &TDK,
+        config: &mut Config,
+        admin_vta: Option<&VtaClient>,
+        profile: &str,
+    ) -> Option<Interrupted> {
+        // #1a/#1b: a loaded invitation bound to one of our personas — pre-select
+        // it so Enter joins as the invited identity (no linkage), and a different
+        // choice builds the subject-linkage proof. Only when we'll present it.
+        if state.join.present_invitation
+            && let Some(pid) = invitation_subject_persona(config, state)
+        {
+            let options = build_persona_options(config);
+            let idx = options.iter().position(|o| o.id == pid).unwrap_or(0);
+            state.join.pending_vtc = Some(vtc_did);
+            state.join.persona_options = options;
+            state.join.identity_selected = idx;
+            state.join.reuse_confirm = None;
+            state.join.page = JoinPage::IdentityChoice;
+            let _ = self.state_tx.send(state.clone());
+            return None;
+        }
+        // R-B-3 / D1: with existing personas, let the user choose to reuse one or
+        // mint a fresh identity; with none (the first join), mint directly.
+        let options = build_persona_options(config);
+        if options.is_empty() {
+            return self
+                .launch_join_sequence(
+                    JoinIdentityChoice::Mint,
+                    vtc_did,
+                    interrupt_rx,
+                    state,
+                    tdk,
+                    config,
+                    admin_vta,
+                    profile,
+                )
+                .await;
+        }
+        state.join.pending_vtc = Some(vtc_did);
+        state.join.persona_options = options;
+        state.join.identity_selected = 0;
+        state.join.reuse_confirm = None;
+        state.join.page = JoinPage::IdentityChoice;
+        let _ = self.state_tx.send(state.clone());
+        None
     }
 
     /// Move to the progress page and run [`run_join_sequence`] for the chosen
@@ -422,6 +490,30 @@ fn invitation_subject_persona(config: &Config, state: &State) -> Option<PersonaI
     let vic = state.invitation_credential.as_ref()?;
     let subject = openvtc_core::join::invitation_subject(vic)?;
     config.account.persona_id_for_did(subject)
+}
+
+/// Whether an invitation for `vtc_did` is available to present — a loaded VIC
+/// that matches this community and is currently usable, or a community-matched,
+/// valid VIC held in the vault. Drives the invitation-choice step, which is shown
+/// only when one actually exists. Best-effort: with no admin VTA only a loaded
+/// VIC counts. The vault check fetches the candidate body; the join sequence
+/// re-resolves it independently, so this stays a pure availability probe.
+async fn invitation_available_for(
+    state: &State,
+    admin_vta: Option<&VtaClient>,
+    vtc_did: &str,
+) -> bool {
+    if let Some(vic) = state.invitation_credential.as_ref()
+        && openvtc_core::join::invitation_matches_community(vic, vtc_did)
+        && !openvtc_core::join::invitation_is_expired(vic, Utc::now())
+        && openvtc_core::join::validate_invitation_credential(vic).is_ok()
+    {
+        return true;
+    }
+    match admin_vta {
+        Some(vta) => load_invitation_from_vault(vta, vtc_did).await.is_some(),
+        None => false,
+    }
 }
 
 /// #2: load a *presentable* invitation the VTA already holds for the community
@@ -796,25 +888,39 @@ async fn run_join_sequence(
     // best-effort — the join proceeds regardless.
     let loaded = state.invitation_credential.take();
     let mut presentable: Option<serde_json::Value> = None;
-    if let Some(vic) = loaded {
-        if let Err(e) = admin_vta.cred_vault_receive(vic.clone(), None).await {
+    if state.join.present_invitation {
+        // The operator chose to present an invitation (or one was available and
+        // they accepted the default). Resolve the one to present.
+        if let Some(vic) = loaded {
+            if let Err(e) = admin_vta.cred_vault_receive(vic.clone(), None).await {
+                debug!(error = %e, "storing invitation in the VTA vault failed (continuing)");
+            }
+            if !openvtc_core::join::invitation_matches_community(&vic, &vtc_did) {
+                state.join.info(
+                    "Loaded invitation is for a different community — \
+                     looking for one that matches…",
+                );
+            } else if openvtc_core::join::invitation_is_expired(&vic, Utc::now()) {
+                state
+                    .join
+                    .info("Loaded invitation has expired — looking for a valid one…");
+            } else {
+                presentable = Some(vic);
+            }
+        }
+        if presentable.is_none() {
+            presentable = load_invitation_from_vault(admin_vta, &vtc_did).await;
+        }
+    } else if let Some(vic) = loaded {
+        // The operator chose to join *without* an invitation. Still store a
+        // loaded VIC in the vault (its durable home) but present nothing — this
+        // is what honours the choice over the vault fallback above.
+        if let Err(e) = admin_vta.cred_vault_receive(vic, None).await {
             debug!(error = %e, "storing invitation in the VTA vault failed (continuing)");
         }
-        if !openvtc_core::join::invitation_matches_community(&vic, &vtc_did) {
-            state.join.info(
-                "Loaded invitation is for a different community — \
-                 looking for one that matches…",
-            );
-        } else if openvtc_core::join::invitation_is_expired(&vic, Utc::now()) {
-            state
-                .join
-                .info("Loaded invitation has expired — looking for a valid one…");
-        } else {
-            presentable = Some(vic);
-        }
-    }
-    if presentable.is_none() {
-        presentable = load_invitation_from_vault(admin_vta, &vtc_did).await;
+        state
+            .join
+            .info("Joining without an invitation — submitting an open request (awaiting approval).");
     }
     // Completeness gate before presenting: a VIC resolved from the vault may
     // predate the ingest-time validation (or have lost fields in storage). An
@@ -851,12 +957,15 @@ async fn run_join_sequence(
         state
             .join
             .info("Presenting your invitation credential to the community…");
-    } else {
+    } else if state.join.present_invitation {
+        // Wanted to present one, but none resolved to a usable VIC.
         state.join.info(
             "No valid invitation for this community — \
              submitting as an open request (awaiting approval).",
         );
     }
+    // (When the operator chose to join without an invitation, the note was
+    // already surfaced above where the VIC was suppressed.)
     let _ = handler.state_tx.send(state.clone());
     // Subject-linkage (#1b): when the presenting DID differs from the VIC
     // subject, prove the subject authorized this presenter (signed with the

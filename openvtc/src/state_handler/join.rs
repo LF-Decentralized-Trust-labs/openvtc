@@ -17,6 +17,10 @@ pub enum JoinPage {
     /// Operator enters the community (VTC) DID.
     #[default]
     EnterDid,
+    /// Choose whether to present an available invitation (VIC) for this
+    /// community, or join as an open request. Shown only when a VIC is actually
+    /// available (loaded-and-matching or held in the vault); skipped otherwise.
+    InvitationChoice,
     /// Choose the identity to present (R-B-3 / D1): reuse an existing persona or
     /// mint a fresh one. Skipped when the account has no personas yet.
     IdentityChoice,
@@ -96,6 +100,15 @@ pub struct JoinState {
     /// generic "no VIC" tip. Distinguishes a deliberate clear from never having
     /// had one; re-pasting a VIC (`JoinPasteVic`) flips it back to `false`.
     pub vic_cleared: bool,
+    /// Highlighted row on the [`InvitationChoice`](JoinPage::InvitationChoice)
+    /// page: `0` = "use the invitation" (default), `1` = "join without it".
+    pub invitation_use_selected: usize,
+    /// The committed invitation decision, read by the join sequence. `true`
+    /// presents an available VIC (loaded-matching or vault); `false` suppresses
+    /// it and submits an open request — overriding the vault fallback, so the
+    /// choice is honoured. Set from [`invitation_use_selected`](Self::invitation_use_selected)
+    /// on the invitation-choice page, or directly when no VIC is available.
+    pub present_invitation: bool,
 }
 
 impl JoinState {
