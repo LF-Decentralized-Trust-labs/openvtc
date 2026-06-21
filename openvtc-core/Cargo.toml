@@ -53,6 +53,7 @@ sysinfo.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+trust-tasks-rs.workspace = true
 url.workspace = true
 uuid.workspace = true
 x25519-dalek.workspace = true

@@ -17,6 +17,7 @@ use affinidi_tdk::{
 };
 use chrono::{DateTime, Utc};
 use serde_json::Value;
+use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
@@ -45,13 +46,7 @@ pub async fn submit_join_request(
     mediator_did: &str,
     vp: Value,
 ) -> Result<Uuid, OpenVTCError> {
-    let body = JoinRequestSubmitBody {
-        vp,
-        registry_consent: false,
-        extensions: Value::Null,
-    };
-    let body = serde_json::to_value(&body)
-        .map_err(|e| OpenVTCError::Config(format!("join submit body serialize: {e}")))?;
+    let body = build_join_submit_document(persona_did, vtc_did, vp)?;
 
     let msg_id = Uuid::new_v4();
     let now = Utc::now().timestamp().max(0) as u64;
@@ -67,6 +62,37 @@ pub async fn submit_join_request(
 
     crate::pack_and_send(atm, profile, &msg, persona_did, vtc_did, mediator_did).await?;
     Ok(msg_id)
+}
+
+/// Build the DIDComm body for a join-request submit: a Trust Task *document*
+/// (`trust_tasks_rs::TrustTask`) wrapping the [`JoinRequestSubmitBody`] payload.
+///
+/// The VTC deserializes the message body as `TrustTask<Value>` and rejects a
+/// `malformedRequest` ("missing field `id`") when handed the bare payload, so the
+/// payload must ride as the document's `payload` field. The document carries the
+/// required `id` (a fresh `urn:uuid`) and `type`, plus the audience-binding
+/// `issuer` (the applicant persona) and `recipient` (the VTC). No `proof` is
+/// attached — over DIDComm the authcrypt sender authenticates the applicant (the
+/// VTC reads it from the envelope), matching the SDK's documented DIDComm shape.
+fn build_join_submit_document(
+    persona_did: &str,
+    vtc_did: &str,
+    vp: Value,
+) -> Result<Value, OpenVTCError> {
+    let payload = JoinRequestSubmitBody {
+        vp,
+        registry_consent: false,
+        extensions: Value::Null,
+    };
+    let type_uri = JOIN_REQUEST_SUBMIT_TYPE
+        .parse()
+        .map_err(|e| OpenVTCError::Config(format!("join submit type URI parse: {e}")))?;
+    let mut doc = TrustTask::new(format!("urn:uuid:{}", Uuid::new_v4()), type_uri, payload);
+    doc.issuer = Some(persona_did.to_string());
+    doc.recipient = Some(vtc_did.to_string());
+    doc.issued_at = Some(Utc::now());
+    serde_json::to_value(&doc)
+        .map_err(|e| OpenVTCError::Config(format!("join submit document serialize: {e}")))
 }
 
 /// Send a member self-removal (`MEMBER_SELF_REMOVE`) to a VTC over DIDComm to
@@ -333,6 +359,40 @@ mod tests {
         );
         assert_eq!(invitation_id(&vic), Some("urn:uuid:vic-1"));
         assert_eq!(invitation_subject(&json!({})), None);
+    }
+
+    #[test]
+    fn join_submit_body_is_a_trust_task_document_the_vtc_can_parse() {
+        use trust_tasks_rs::TrustTask;
+
+        let vp = build_join_vp("did:webvh:example.com:alice", Some(&sample_vic()), None);
+        let body = build_join_submit_document(
+            "did:webvh:example.com:alice",
+            "did:webvh:example.com:community",
+            vp,
+        )
+        .expect("build document");
+
+        // The exact deserialization the VTC performs — this is what was failing
+        // with "missing field `id`" when we sent the bare payload.
+        let doc: TrustTask<serde_json::Value> =
+            serde_json::from_value(body.clone()).expect("body parses as a TrustTask document");
+
+        assert!(doc.id.starts_with("urn:uuid:"), "document carries an id");
+        assert_eq!(
+            doc.type_uri.to_string(),
+            JOIN_REQUEST_SUBMIT_TYPE,
+            "type URI is the submit type"
+        );
+        assert_eq!(doc.issuer.as_deref(), Some("did:webvh:example.com:alice"));
+        assert_eq!(
+            doc.recipient.as_deref(),
+            Some("did:webvh:example.com:community")
+        );
+        assert!(doc.proof.is_none(), "DIDComm submit is unsigned (authcrypt)");
+        // The submit body rides as the document payload, VIC and all.
+        assert_eq!(doc.payload["vp"]["holder"], "did:webvh:example.com:alice");
+        assert!(doc.payload["vp"]["verifiableCredential"].is_array());
     }
 
     #[test]
