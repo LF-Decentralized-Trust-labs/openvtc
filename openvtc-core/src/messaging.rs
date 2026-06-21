@@ -205,6 +205,8 @@ pub fn handle_join_submit_receipt(
         record.status = CommunityStatus::Pending {
             request_id: body.request_id,
         };
+        // The receipt is the VTC's acknowledgement that the submit arrived.
+        record.mark_acknowledged(chrono::Utc::now());
         info!(
             vtc = %from_did,
             vtc_request_id = %body.request_id,
@@ -307,13 +309,18 @@ pub fn handle_join_status_response(
         }
         "deferred" => {
             // "More info required" — stays Pending (still raises actions-required);
-            // evaluating `needs` / presenting the DCQL is deferred to D4.
+            // evaluating `needs` / presenting the DCQL is deferred to D4. The VTC
+            // responded, so the submit was acknowledged (not dropped).
+            let changed = record.mark_acknowledged(chrono::Utc::now());
             info!(
                 vtc = %from_did,
                 needs = ?body.needs,
                 "join deferred — more information required (handling deferred to D4)"
             );
-            StatusOutcome::NONE
+            StatusOutcome {
+                changed,
+                inactivated: false,
+            }
         }
         other => {
             debug!(vtc = %from_did, status = %other, "status-response: no transition");
@@ -381,20 +388,32 @@ pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &
             }
         }
         VerdictEffect::Refer => {
+            // The VTC responded — submit acknowledged — but the decision is
+            // deferred to human review; stays Pending.
+            let changed = record.mark_acknowledged(chrono::Utc::now());
             info!(
                 vtc = %from_did,
                 queue = body.verdict.with.queue.as_deref().unwrap_or(""),
                 "join referred for human review — stays Pending"
             );
-            StatusOutcome::NONE
+            StatusOutcome {
+                changed,
+                inactivated: false,
+            }
         }
         VerdictEffect::RequestMore => {
+            // The VTC responded — submit acknowledged — but needs more evidence;
+            // stays Pending.
+            let changed = record.mark_acknowledged(chrono::Utc::now());
             info!(
                 vtc = %from_did,
                 needs = ?body.verdict.with.needs,
                 "join needs more evidence — stays Pending"
             );
-            StatusOutcome::NONE
+            StatusOutcome {
+                changed,
+                inactivated: false,
+            }
         }
     }
 }
@@ -547,14 +566,19 @@ pub fn handle_join_trust_task_error(
     } else {
         // Not a policy denial — a malformed / unsupported / internal / transient
         // failure. Surface it, but keep the join recoverable (stays Pending) so a
-        // corrected retry can still succeed.
+        // corrected retry can still succeed. The VTC did respond, so the submit
+        // was acknowledged (not silently dropped).
+        let changed = record.mark_acknowledged(chrono::Utc::now());
         warn!(
             vtc = %from_did,
             code = %code,
             detail = %detail,
             "join submit failed (trust-task-error) — left Pending (recoverable)"
         );
-        StatusOutcome::NONE
+        StatusOutcome {
+            changed,
+            inactivated: false,
+        }
     }
 }
 
@@ -1068,10 +1092,14 @@ mod tests {
         let out =
             handle_join_status_response(&mut acct, &status_response(vtc, rid, "deferred"), vtc);
         assert!(
-            !out.changed,
-            "more-info handling is a D4 stub — stays Pending"
+            out.changed,
+            "deferred is an acknowledgement — stamps receipt_at, needs persisting"
         );
         assert!(!out.inactivated);
+        assert!(
+            acct.communities.get(vtc).unwrap().receipt_at.is_some(),
+            "the VTC responded — acknowledged"
+        );
         assert!(matches!(
             acct.communities.get(vtc).unwrap().status,
             CommunityStatus::Pending { .. }
@@ -1145,11 +1173,10 @@ mod tests {
             &verdict(&rid.to_string(), vtc, "request_more", with),
             vtc,
         );
-        assert!(!out.changed);
-        assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
-            CommunityStatus::Pending { .. }
-        ));
+        assert!(out.changed, "request_more acknowledges — stamps receipt_at");
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(matches!(rec.status, CommunityStatus::Pending { .. }));
+        assert!(rec.receipt_at.is_some(), "the VTC responded — acknowledged");
     }
 
     #[test]
@@ -1229,14 +1256,19 @@ mod tests {
             &trust_task_error(&rid.to_string(), vtc, "malformedRequest", "missing field `id`"),
             vtc,
         );
-        assert!(!out.changed, "a recoverable error makes no terminal change");
-        assert!(!out.inactivated);
         assert!(
-            matches!(
-                acct.communities.get(vtc).unwrap().status,
-                CommunityStatus::Pending { .. }
-            ),
+            out.changed,
+            "the VTC responded — stamps receipt_at, needs persisting"
+        );
+        assert!(!out.inactivated, "recoverable — no terminal transition");
+        let rec = acct.communities.get(vtc).unwrap();
+        assert!(
+            matches!(rec.status, CommunityStatus::Pending { .. }),
             "stays Pending so a corrected retry can succeed"
+        );
+        assert!(
+            rec.receipt_at.is_some(),
+            "a trust-task-error is still an acknowledgement the submit arrived"
         );
     }
 

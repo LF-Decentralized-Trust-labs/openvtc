@@ -184,6 +184,7 @@ mod tests {
             acknowledged: false,
             member_since: None,
             requested_at: None,
+            receipt_at: None,
             relationships: Default::default(),
             tasks: Default::default(),
             vrcs_issued: Default::default(),

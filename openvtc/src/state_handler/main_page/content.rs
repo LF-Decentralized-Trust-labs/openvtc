@@ -180,6 +180,10 @@ pub struct CommunitySummary {
     /// Whether the membership is `Pending` — the only state whose join can be
     /// cancelled (withdrawn).
     pub is_pending: bool,
+    /// Whether this is a `Pending` join the VTC hasn't acknowledged within the
+    /// grace window — the submit may have been dropped rather than healthily
+    /// awaiting a decision. Drives a warning hint on the row (D16).
+    pub pending_unacknowledged: bool,
     /// Whether this community is archived (R-C-8); only shown when "show archived"
     /// is on, with a marker.
     pub archived: bool,

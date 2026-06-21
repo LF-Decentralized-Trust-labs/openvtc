@@ -205,6 +205,14 @@ pub struct CommunityRecord {
     pub member_since: Option<DateTime<Utc>>,
     /// When the join request was submitted — anchors the 7-day timeout (D16).
     pub requested_at: Option<DateTime<Utc>>,
+    /// When the VTC first acknowledged the join (any correlated response: verdict
+    /// refer/request_more, status deferred, recoverable trust-task-error, or the
+    /// legacy submit-receipt). `Some` means the submit reached the VTC and is
+    /// awaiting a decision; `None` while still `Pending` past the grace window
+    /// means the submit may have been dropped (size limit / unhandled type) —
+    /// surfaced in the UI so it isn't mistaken for a healthy wait (D16).
+    #[serde(default)]
+    pub receipt_at: Option<DateTime<Utc>>,
     /// DIDComm relationships scoped to this community.
     #[serde(default)]
     pub relationships: Relationships,
@@ -258,6 +266,8 @@ struct CommunityRecordShadow {
     acknowledged: bool,
     member_since: Option<DateTime<Utc>>,
     requested_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    receipt_at: Option<DateTime<Utc>>,
     #[serde(default)]
     relationships: Relationships,
     #[serde(default)]
@@ -313,6 +323,7 @@ impl From<CommunityRecordShadow> for CommunityRecord {
             acknowledged: shadow.acknowledged,
             member_since: shadow.member_since,
             requested_at: shadow.requested_at,
+            receipt_at: shadow.receipt_at,
             relationships: shadow.relationships,
             tasks: shadow.tasks,
             vrcs_issued: shadow.vrcs_issued,
@@ -325,6 +336,13 @@ impl From<CommunityRecordShadow> for CommunityRecord {
 /// Client-side timeout for an unanswered `Pending` join (D16 / R-B-7): a join
 /// request with no decision after this many days transitions to `Expired`.
 pub const PENDING_TIMEOUT_DAYS: i64 = 7;
+
+/// Grace period before a `Pending` join with no VTC acknowledgement
+/// ([`CommunityRecord::receipt_at`] still `None`) is flagged as possibly-dropped.
+/// A verdict/receipt normally returns within seconds; 2 minutes absorbs a slow
+/// but healthy round-trip while surfacing a dropped submit (size limit / unhandled
+/// type) far earlier than the 7-day [`PENDING_TIMEOUT_DAYS`].
+pub const PENDING_ACK_GRACE_SECS: i64 = 120;
 
 impl CommunityRecord {
     /// Build a fresh `Pending` join record (State-B join request, R-B-*).
@@ -352,6 +370,7 @@ impl CommunityRecord {
             acknowledged: false,
             member_since: None,
             requested_at: Some(now),
+            receipt_at: None,
             relationships: Relationships::default(),
             tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
@@ -463,6 +482,33 @@ impl CommunityRecord {
             return true;
         }
         false
+    }
+
+    /// Record that the VTC has acknowledged this join — i.e. *some* correlated
+    /// response arrived (verdict refer/request_more, status deferred, a
+    /// recoverable trust-task-error, or the legacy submit-receipt). Stamps
+    /// [`receipt_at`](Self::receipt_at) once with `now`; subsequent calls are
+    /// no-ops (the first contact is what matters). Returns `true` if it set the
+    /// timestamp (the caller should persist). Only meaningful while `Pending`.
+    pub fn mark_acknowledged(&mut self, now: DateTime<Utc>) -> bool {
+        if self.receipt_at.is_none() {
+            self.receipt_at = Some(now);
+            return true;
+        }
+        false
+    }
+
+    /// Whether this is a `Pending` join the VTC has not acknowledged within
+    /// [`PENDING_ACK_GRACE_SECS`] of submission — the signal that the submit may
+    /// have been dropped (size limit / unhandled type) rather than healthily
+    /// awaiting a decision. False once any response has set `receipt_at`, for
+    /// non-`Pending` states, or while still inside the grace window.
+    pub fn pending_unacknowledged(&self, now: DateTime<Utc>) -> bool {
+        matches!(self.status, CommunityStatus::Pending { .. })
+            && self.receipt_at.is_none()
+            && self
+                .requested_at
+                .is_some_and(|r| now - r >= TimeDelta::seconds(PENDING_ACK_GRACE_SECS))
     }
 }
 
@@ -688,6 +734,7 @@ mod tests {
             acknowledged: false,
             member_since: None,
             requested_at: None,
+            receipt_at: None,
             relationships: Relationships::default(),
             tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
@@ -1082,6 +1129,48 @@ mod tests {
         let mut no_ts = community("v", pid, pending());
         no_ts.requested_at = None;
         assert!(!no_ts.expire_if_stale(now));
+    }
+
+    #[test]
+    fn mark_acknowledged_stamps_once() {
+        let pid = PersonaId::new();
+        let now = Utc::now();
+        let mut c = community("v", pid, pending());
+        assert!(c.receipt_at.is_none());
+        // First contact stamps; returns true (caller persists).
+        assert!(c.mark_acknowledged(now));
+        assert_eq!(c.receipt_at, Some(now));
+        // A later contact is a no-op — first contact is what matters.
+        assert!(!c.mark_acknowledged(now + TimeDelta::seconds(10)));
+        assert_eq!(c.receipt_at, Some(now));
+    }
+
+    #[test]
+    fn pending_unacknowledged_flags_only_unacked_pending_past_grace() {
+        let pid = PersonaId::new();
+        let now = Utc::now();
+        let grace = TimeDelta::seconds(PENDING_ACK_GRACE_SECS);
+
+        // Pending, no receipt, within grace: not yet flagged.
+        let mut fresh = community("v", pid, pending());
+        fresh.requested_at = Some(now - grace + TimeDelta::seconds(1));
+        assert!(!fresh.pending_unacknowledged(now));
+
+        // Pending, no receipt, past grace: flagged (possibly dropped).
+        let mut stuck = community("v", pid, pending());
+        stuck.requested_at = Some(now - grace);
+        assert!(stuck.pending_unacknowledged(now));
+
+        // Pending but acknowledged: never flagged, however old.
+        let mut acked = community("v", pid, pending());
+        acked.requested_at = Some(now - TimeDelta::days(1));
+        acked.mark_acknowledged(now - TimeDelta::days(1));
+        assert!(!acked.pending_unacknowledged(now));
+
+        // Non-Pending is never flagged.
+        let mut active = community("v", pid, CommunityStatus::Active);
+        active.requested_at = Some(now - TimeDelta::days(1));
+        assert!(!active.pending_unacknowledged(now));
     }
 
     #[test]

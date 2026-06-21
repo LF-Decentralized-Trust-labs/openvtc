@@ -103,6 +103,18 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         };
         lines.push(Line::from(Span::styled(detail, detail_style)));
 
+        // A Pending join the VTC hasn't acknowledged within the grace window: the
+        // submit may have been dropped (size limit / unhandled type) rather than
+        // healthily awaiting a decision. Surface it so a stuck join is visible
+        // long before the 7-day Expired (D16).
+        if c.pending_unacknowledged {
+            lines.push(Line::from(Span::styled(
+                "    ⚠ no response from the community yet — the request may not have been received"
+                    .to_string(),
+                Style::new().fg(COLOR_ORANGE),
+            )));
+        }
+
         // Expanded troubleshooting detail for the selected community: which
         // persona this community actually uses (full DID), the VTC, the
         // sub-context, the in-flight request id, and which credentials are held.

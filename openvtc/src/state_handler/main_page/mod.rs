@@ -418,6 +418,7 @@ impl MainPageState {
         // archived excluded, with the actions-required count for the badge.
         let mut community_items = Vec::new();
         let show_archived = self.content_panel.communities.show_archived;
+        let now = chrono::Utc::now();
         for c in config.account.communities_for_display(show_archived) {
             let persona = config.account.personas.get(&c.persona_ref);
             let persona_label = persona
@@ -448,6 +449,7 @@ impl MainPageState {
                     c.status,
                     openvtc_core::config::account::CommunityStatus::Pending { .. }
                 ),
+                pending_unacknowledged: c.pending_unacknowledged(now),
                 archived: c.archived,
                 needs_attention: c.needs_attention(),
                 persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
