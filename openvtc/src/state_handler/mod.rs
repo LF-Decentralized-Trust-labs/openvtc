@@ -2504,6 +2504,33 @@ async fn register_joined_session(
             ));
         }
         RegisterOutcome::Created => {
+            // SessionManager had no session for this persona, but the DIDComm
+            // service may already hold a listener for it — a persona reused across
+            // communities can already be live via the relationship path, or a
+            // listener SessionManager isn't tracking may linger. `add_listener`
+            // errors on a duplicate id ("Listener already exists"), so reuse the
+            // existing listener rather than failing the join's live session (D1).
+            if let Some(existing) = service
+                .list_listeners()
+                .await
+                .into_iter()
+                .find(|l| l.id == lid)
+            {
+                if existing.state == affinidi_messaging_didcomm_service::ListenerState::Running {
+                    session_manager.mark_connected(&lid);
+                    state
+                        .main_page
+                        .log("New community attached to the persona's existing live session.");
+                } else {
+                    // The listener exists but isn't Running (Stopped/Failed): leave
+                    // the session Connecting (as `register` set it) and let the
+                    // restart policy / next launch bring it back — don't re-add it.
+                    state.main_page.log(
+                        "New community attached to the persona's existing session (reconnecting…).",
+                    );
+                }
+                return;
+            }
             match didcomm::persona_listener_config_for(config, tdk, joined.persona_id).await {
                 Some(cfg) => {
                     if let Err(e) = service.add_listener(cfg).await {
