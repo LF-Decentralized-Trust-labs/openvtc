@@ -1,14 +1,15 @@
 //! Join flow — invitation choice.
 //!
-//! Shown only when an invitation credential (VIC) is actually available for the
-//! community being joined (a loaded VIC that matches, or one held in the vault).
-//! The operator chooses whether to present it — auto-joining on a valid, trusted
-//! invitation — or to join as an open request the community approves manually.
-//! Mirrors the other join pages' component shape; the default highlight is "use
-//! it", so pressing Enter preserves the auto-join behaviour.
+//! Reached after the operator picks an identity that holds one or more valid
+//! invitations (VICs) for the community being joined. Each invitation is listed
+//! with its details (Issued / Expires); the operator presents one — auto-joining
+//! on a valid, trusted invitation — or chooses the trailing "join without it" row
+//! to send an open request the community approves manually. The default highlight
+//! is the first invitation, so Enter preserves the auto-join behaviour.
 
 use crate::colors::{
-    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
+    COLOR_TEXT_DEFAULT,
 };
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -30,12 +31,26 @@ use crate::{
 #[derive(Clone, Debug, Default)]
 pub struct InvitationChoice;
 
+/// Trim an RFC 3339 timestamp to its date for compact display; empty stays as a
+/// dash. Falls back to the full string if it is shorter than a date.
+fn short_date(ts: &str) -> String {
+    if ts.is_empty() {
+        "—".to_string()
+    } else if ts.len() >= 10 {
+        ts[..10].to_string()
+    } else {
+        ts.to_string()
+    }
+}
+
 impl InvitationChoice {
     pub fn handle_key_event(state: &mut JoinFlow, key: KeyEvent) {
         if state.props.state.processing {
             return;
         }
         let selected = state.props.state.invitation_use_selected;
+        // The "join without it" row sits one past the invitations.
+        let without_row = state.props.state.invitation_options.len();
         match key.code {
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
@@ -48,7 +63,7 @@ impl InvitationChoice {
             KeyCode::Down => {
                 let _ = state
                     .action_tx
-                    .send(Action::JoinInvitationSelect((selected + 1).min(1)));
+                    .send(Action::JoinInvitationSelect((selected + 1).min(without_row)));
             }
             KeyCode::Enter => {
                 let _ = state.action_tx.send(Action::JoinInvitationChoose);
@@ -67,31 +82,21 @@ impl InvitationChoice {
             Block::bordered()
                 .fg(COLOR_BORDER)
                 .padding(Padding::proportional(1))
-                .title(" Use your invitation for this community? "),
+                .title(" Use an invitation for this community? "),
             middle,
         );
         let inner = middle.inner(Margin::new(3, 2));
 
         let mut lines = vec![
             Line::styled(
-                "An invitation for this community is available.",
+                "Choose an invitation to present, or join without one:",
                 Style::new().fg(COLOR_BORDER).bold(),
             ),
             Line::default(),
         ];
 
-        // Two rows: 0 = use it (auto-join), 1 = join without it (open request).
-        let rows = [
-            (
-                "Use it — auto-join with your invitation",
-                "The community admits you automatically on a valid, trusted invitation.",
-            ),
-            (
-                "Join without it — send an open request",
-                "Submit a request the community reviews and approves manually.",
-            ),
-        ];
-        for (i, (title, detail)) in rows.iter().enumerate() {
+        // One selectable row per available invitation, with its details.
+        for (i, vic) in state.invitation_options.iter().enumerate() {
             let is_sel = i == state.invitation_use_selected;
             let marker = if is_sel { "▸ " } else { "  " };
             let style = if is_sel {
@@ -99,18 +104,38 @@ impl InvitationChoice {
             } else {
                 Style::new().fg(COLOR_TEXT_DEFAULT)
             };
-            lines.push(Line::from(Span::styled(format!("{marker}{title}"), style)));
+            lines.push(Line::from(Span::styled(
+                format!("{marker}Invitation {}", vic.id),
+                style,
+            )));
             lines.push(Line::styled(
-                format!("    {detail}"),
+                format!(
+                    "    Issued {}  ·  Expires {}",
+                    short_date(&vic.valid_from),
+                    short_date(&vic.valid_until),
+                ),
                 Style::new().fg(COLOR_DARK_GRAY),
             ));
         }
 
-        lines.push(Line::default());
+        // Trailing "join without it" row.
+        let without_row = state.invitation_options.len();
+        let without_sel = state.invitation_use_selected >= without_row;
+        let marker = if without_sel { "▸ " } else { "  " };
+        let style = if without_sel {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_SOFT_PURPLE)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}Join without it — send an open request"),
+            style,
+        )));
         lines.push(Line::styled(
-            "You can still choose which identity to present on the next step.",
-            Style::new().fg(COLOR_SOFT_PURPLE),
+            "    The community reviews and approves the request manually.",
+            Style::new().fg(COLOR_DARK_GRAY),
         ));
+
         lines.push(Line::default());
         lines.push(Line::from(vec![
             Span::styled("[↑/↓]", Style::new().fg(COLOR_BORDER).bold()),
@@ -124,7 +149,7 @@ impl InvitationChoice {
         frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 
         let bottom_line = Line::from(vec![
-            Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled("[F10]", Style::new().fg(COLOR_ORANGE).bold()),
             Span::styled(" to quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
         ]);
         frame.render_widget(
@@ -140,17 +165,28 @@ mod tests {
     //! `PartialEq` nor `Debug`, so assertions pattern-match the variant.
     use super::*;
     use crate::state_handler::{
-        join::{JoinPage, JoinState},
+        join::{AvailableVic, JoinPage, JoinState},
         state::State,
     };
     use crate::ui::component::Component;
     use crossterm::event::KeyModifiers;
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
+    fn vic(id: &str) -> AvailableVic {
+        AvailableVic {
+            id: id.to_string(),
+            subject: Some("did:webvh:alice".to_string()),
+            valid_from: "2026-06-01T00:00:00Z".to_string(),
+            valid_until: "2026-12-01T00:00:00Z".to_string(),
+            body: serde_json::json!({ "id": id }),
+        }
+    }
+
     fn flow_with(mutate: impl FnOnce(&mut JoinState)) -> (JoinFlow, UnboundedReceiver<Action>) {
         let (tx, rx) = unbounded_channel();
         let mut state = State::default();
         state.join.page = JoinPage::InvitationChoice;
+        state.join.invitation_options = vec![vic("urn:uuid:one")];
         mutate(&mut state.join);
         (JoinFlow::new(&state, tx), rx)
     }
@@ -160,7 +196,8 @@ mod tests {
     }
 
     #[test]
-    fn down_moves_to_join_without_it() {
+    fn down_moves_toward_join_without_it() {
+        // One invitation (row 0) + the "without" row (row 1).
         let (mut flow, mut rx) = flow_with(|_| {});
         InvitationChoice::handle_key_event(&mut flow, press(KeyCode::Down));
         match rx.try_recv() {
@@ -170,12 +207,13 @@ mod tests {
     }
 
     #[test]
-    fn up_clamps_at_use_it() {
-        let (mut flow, mut rx) = flow_with(|js| js.invitation_use_selected = 0);
-        InvitationChoice::handle_key_event(&mut flow, press(KeyCode::Up));
+    fn down_clamps_at_the_without_row() {
+        let (mut flow, mut rx) = flow_with(|js| js.invitation_use_selected = 1);
+        InvitationChoice::handle_key_event(&mut flow, press(KeyCode::Down));
         match rx.try_recv() {
-            Ok(Action::JoinInvitationSelect(0)) => {}
-            _ => panic!("expected JoinInvitationSelect(0)"),
+            // len == 1, so the max row index is 1 (the "without" row).
+            Ok(Action::JoinInvitationSelect(1)) => {}
+            _ => panic!("expected JoinInvitationSelect(1)"),
         }
     }
 

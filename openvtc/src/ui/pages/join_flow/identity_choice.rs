@@ -161,8 +161,13 @@ impl IdentityChoice {
             } else {
                 Style::new().fg(COLOR_TEXT_DEFAULT)
             };
+            let badge = match opt.valid_vic_count {
+                0 => String::new(),
+                1 => "  (1 invitation)".to_string(),
+                n => format!("  ({n} invitations)"),
+            };
             lines.push(Line::from(Span::styled(
-                format!("{marker}{}", opt.label),
+                format!("{marker}{}{badge}", opt.label),
                 style,
             )));
             let detail = if opt.linked_communities.is_empty() {
@@ -247,12 +252,14 @@ mod tests {
                 label: "alice".to_string(),
                 did: "did:webvh:a".to_string(),
                 linked_communities: Vec::new(),
+                valid_vic_count: 0,
             },
             PersonaOption {
                 id: PersonaId::new(),
                 label: "bob".to_string(),
                 did: "did:webvh:b".to_string(),
                 linked_communities: Vec::new(),
+                valid_vic_count: 0,
             },
         ];
         mutate(&mut state.join);

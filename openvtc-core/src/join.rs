@@ -236,6 +236,18 @@ pub fn invitation_id(vic: &Value) -> Option<&str> {
     vic.get("id").and_then(Value::as_str)
 }
 
+/// A VIC's validity-window start (`validFrom`), RFC 3339, if declared. Shown as
+/// the "Issued" detail when the operator chooses an invitation to present.
+pub fn invitation_valid_from(vic: &Value) -> Option<&str> {
+    vic.get("validFrom").and_then(Value::as_str)
+}
+
+/// A VIC's validity-window end (`validUntil`), RFC 3339, if declared. Shown as
+/// the "Expires" detail.
+pub fn invitation_valid_until(vic: &Value) -> Option<&str> {
+    vic.get("validUntil").and_then(Value::as_str)
+}
+
 /// The DID that issued a VIC. For an `InvitationCredential` the issuer **is** the
 /// community's VTC DID (the VTC signs it with its own issuer key, so
 /// `issuer = signer.issuer_did()`), which is what a presentable invitation must

@@ -8,6 +8,7 @@
 //! `State.setup`; this struct only tracks the join-specific surface.
 
 use openvtc_core::config::account::{CommunityRecord, PersonaId};
+use serde_json::Value;
 
 use crate::state_handler::setup_sequence::{Completion, MessageType};
 
@@ -52,6 +53,27 @@ pub struct PersonaOption {
     /// Display names of communities this persona is *already* presented to —
     /// drives the cross-community linkage warning (D1).
     pub linked_communities: Vec<String>,
+    /// Count of valid invitations (VICs) for the community being joined that are
+    /// bound to this persona — shown as a badge so the operator can pick the
+    /// identity that holds a usable invitation.
+    pub valid_vic_count: usize,
+}
+
+/// A valid invitation (VIC) available to present for the community being joined,
+/// with the fields shown on the invitation-choice step and the body to present.
+#[derive(Clone, Debug)]
+pub struct AvailableVic {
+    /// The VIC's top-level `id`.
+    pub id: String,
+    /// The persona DID it is bound to (`credentialSubject.id`), if present —
+    /// used to group invitations under each persona.
+    pub subject: Option<String>,
+    /// Validity-window start (`validFrom`, RFC 3339), shown as "Issued".
+    pub valid_from: String,
+    /// Validity-window end (`validUntil`, RFC 3339), shown as "Expires".
+    pub valid_until: String,
+    /// The signed VIC body, presented verbatim when this one is chosen.
+    pub body: Value,
 }
 
 /// Transient state for the join flow.
@@ -100,14 +122,25 @@ pub struct JoinState {
     /// generic "no VIC" tip. Distinguishes a deliberate clear from never having
     /// had one; re-pasting a VIC (`JoinPasteVic`) flips it back to `false`.
     pub vic_cleared: bool,
-    /// Highlighted row on the [`InvitationChoice`](JoinPage::InvitationChoice)
-    /// page: `0` = "use the invitation" (default), `1` = "join without it".
+    /// All valid invitations (VICs) for the community being joined, across
+    /// personas — collected once after the VTC DID is entered and used to badge
+    /// each persona with its count on the identity step.
+    pub available_vics: Vec<AvailableVic>,
+    /// The chosen persona's invitations, listed on the
+    /// [`InvitationChoice`](JoinPage::InvitationChoice) page (a subset of
+    /// [`available_vics`](Self::available_vics) bound to that persona).
+    pub invitation_options: Vec<AvailableVic>,
+    /// Which persona the invitation step is choosing for — the reuse target the
+    /// join launches with once the invitation choice is made.
+    pub invitation_for_persona: Option<PersonaId>,
+    /// Highlighted row on the invitation-choice page: `0..invitation_options.len()`
+    /// selects a specific invitation to present; `invitation_options.len()` is the
+    /// trailing "join without it" row.
     pub invitation_use_selected: usize,
     /// The committed invitation decision, read by the join sequence. `true`
-    /// presents an available VIC (loaded-matching or vault); `false` suppresses
-    /// it and submits an open request — overriding the vault fallback, so the
-    /// choice is honoured. Set from [`invitation_use_selected`](Self::invitation_use_selected)
-    /// on the invitation-choice page, or directly when no VIC is available.
+    /// presents the chosen VIC (set into `State.invitation_credential`); `false`
+    /// submits an open request. Set when the invitation choice is made, or
+    /// directly (false) on paths with no available invitation.
     pub present_invitation: bool,
 }
 
@@ -150,6 +183,7 @@ mod tests {
             label: "p".to_string(),
             did: "did:webvh:x".to_string(),
             linked_communities: Vec::new(),
+            valid_vic_count: 0,
         }
     }
 
