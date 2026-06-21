@@ -17,8 +17,8 @@ use dtg_credentials::DTGCredential;
 use openvtc_core::messaging::{
     SeenMessages, check_message_age, check_task_capacity, create_finalize_message,
     handle_credential_issue, handle_join_problem_report, handle_join_status_response,
-    handle_join_submit_receipt, handle_join_verdict, require_thid, validate_did, verify_vrc_proof,
-    vet_vrc_issued,
+    handle_join_submit_receipt, handle_join_trust_task_error, handle_join_verdict,
+    is_trust_task_error_type, require_thid, validate_did, verify_vrc_proof, vet_vrc_issued,
 };
 use openvtc_core::{
     MessageType,
@@ -170,6 +170,19 @@ pub async fn process_inbound_message(
     // is no longer silently dropped into a stuck `Pending`.
     if message.typ == PROBLEM_REPORT_TYPE {
         let outcome = handle_join_problem_report(&mut config.account, message, &from_did);
+        if outcome.inactivated {
+            inactivated.push(from_did.to_string());
+        }
+        return Ok(outcome.changed);
+    }
+
+    // VTC trust-task-error: the framework failure document for a Trust Task join
+    // ceremony (malformed / denied / internal), threaded on our submit id. Trust
+    // Tasks signal failures with these documents, NOT DIDComm problem-reports —
+    // without this branch a failed ceremony was an unknown type, silently dropped
+    // into a stuck `Pending`. Matched by type prefix (version-agnostic).
+    if is_trust_task_error_type(&message.typ) {
+        let outcome = handle_join_trust_task_error(&mut config.account, message, &from_did);
         if outcome.inactivated {
             inactivated.push(from_did.to_string());
         }
