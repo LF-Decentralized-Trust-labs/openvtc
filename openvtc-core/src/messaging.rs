@@ -452,6 +452,112 @@ pub fn handle_join_problem_report(
     }
 }
 
+/// Type-URI prefix of a framework `trust-task-error` document, version-agnostic
+/// (`…/trust-task-error/0.1`, `/0.2`, …). Trust Task ceremony *failures* arrive
+/// as these documents — never DIDComm problem-reports — so the dispatcher routes
+/// any inbound message whose type starts with this prefix to
+/// [`handle_join_trust_task_error`].
+pub const TRUST_TASK_ERROR_TYPE_PREFIX: &str = "https://trusttasks.org/spec/trust-task-error/";
+
+/// Whether `typ` is a framework `trust-task-error` document type (any version).
+pub fn is_trust_task_error_type(typ: &str) -> bool {
+    typ.starts_with(TRUST_TASK_ERROR_TYPE_PREFIX)
+}
+
+/// Whether a `trust-task-error` `code` is a definitive authorization denial of
+/// the join (→ terminal `Rejected`) rather than a recoverable client / transient
+/// failure (→ stays `Pending`). Denials won't succeed on a plain retry; the user
+/// must act (different invitation, different identity, request access).
+fn is_join_denial_code(code: &str) -> bool {
+    matches!(code, "permissionDenied" | "forbidden" | "identityMismatch")
+}
+
+/// Handle a framework `trust-task-error` document threaded to our join submit —
+/// the Trust Task ceremony failure path (malformed request, denied, internal, …)
+/// that replaces the DIDComm problem-report for Trust Tasks. Without this, a
+/// failed ceremony was an unknown message type and silently dropped, leaving the
+/// membership stuck `Pending` forever.
+///
+/// Correlate by `thid` = our submit message id (the placeholder on the `Pending`
+/// record), then branch on the error `code`:
+///
+/// - A definitive authorization denial (`permissionDenied` / `forbidden` /
+///   `identityMismatch`) → `Rejected` (terminal; inactivates the session so the
+///   loop deregisters it). Mirrors the `forbidden` branch of
+///   [`handle_join_problem_report`].
+/// - Any other code (malformed / unsupported / internal / unavailable / …) is a
+///   client or transient failure, not a policy decision: surface the detail and
+///   leave the record `Pending` so a corrected retry can still succeed.
+pub fn handle_join_trust_task_error(
+    account: &mut Account,
+    message: &Message,
+    from_did: &str,
+) -> StatusOutcome {
+    let Some(thid) = message.thid.as_deref() else {
+        warn!("join trust-task-error without thid — cannot correlate; ignoring");
+        return StatusOutcome::NONE;
+    };
+    let Ok(placeholder) = Uuid::parse_str(thid) else {
+        warn!(thid = %thid, "join trust-task-error thid is not a uuid — ignoring");
+        return StatusOutcome::NONE;
+    };
+    // Read the failure detail straight from the document body rather than parsing
+    // a typed `TrustTask<ErrorPayload>`: the typed payload has required members
+    // (e.g. `retryable`) that vary across framework versions, and a strict parse
+    // would silently drop a failure we specifically want to surface. The
+    // dispatcher already gated on the trust-task-error type; `from_did` + `thid`
+    // are the anti-spoof / correlation gates below.
+    let code = message
+        .body
+        .pointer("/payload/code")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let detail = message
+        .body
+        .pointer("/payload/message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let Some(record) = account.communities.get_mut(from_did) else {
+        warn!(vtc = %from_did, code = %code, "trust-task-error from an unknown community — ignoring");
+        return StatusOutcome::NONE;
+    };
+    let matches = matches!(
+        &record.status,
+        CommunityStatus::Pending { request_id } if *request_id == placeholder
+    );
+    if !matches {
+        warn!(vtc = %from_did, code = %code, "trust-task-error did not match a pending request id — ignoring");
+        return StatusOutcome::NONE;
+    }
+
+    if is_join_denial_code(&code) {
+        record.reject();
+        info!(
+            vtc = %from_did,
+            code = %code,
+            detail = %detail,
+            "join denied by VTC (trust-task-error) — now Rejected"
+        );
+        StatusOutcome {
+            changed: true,
+            inactivated: true,
+        }
+    } else {
+        // Not a policy denial — a malformed / unsupported / internal / transient
+        // failure. Surface it, but keep the join recoverable (stays Pending) so a
+        // corrected retry can still succeed.
+        warn!(
+            vtc = %from_did,
+            code = %code,
+            detail = %detail,
+            "join submit failed (trust-task-error) — left Pending (recoverable)"
+        );
+        StatusOutcome::NONE
+    }
+}
+
 /// Handle a VTC `credential-exchange/issue`: store the issued credential on the
 /// matching community and, for the membership credential (VMC), flip the
 /// membership to `Active`. The issuing VTC is the authcrypt sender; the
@@ -1054,6 +1160,93 @@ mod tests {
         let out = handle_join_verdict(
             &mut acct,
             &verdict(&Uuid::new_v4().to_string(), vtc, "deny", serde_json::json!({})),
+            vtc,
+        );
+        assert!(!out.changed);
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    /// A framework `trust-task-error/0.2` document threaded on `thid`, carrying
+    /// `code` (+ optional message) — the shape the VTC sends on a join failure.
+    fn trust_task_error(thid: &str, from: &str, code: &str, message: &str) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            format!("{}0.2", TRUST_TASK_ERROR_TYPE_PREFIX),
+            serde_json::json!({
+                "id": format!("urn:uuid:{}", Uuid::new_v4()),
+                "type": format!("{}0.2", TRUST_TASK_ERROR_TYPE_PREFIX),
+                "payload": { "code": code, "message": message },
+            }),
+        )
+        .from(from.to_string())
+        .thid(thid.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn trust_task_error_type_matches_any_version() {
+        assert!(is_trust_task_error_type(
+            "https://trusttasks.org/spec/trust-task-error/0.1"
+        ));
+        assert!(is_trust_task_error_type(
+            "https://trusttasks.org/spec/trust-task-error/0.2"
+        ));
+        assert!(!is_trust_task_error_type(
+            "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0"
+        ));
+    }
+
+    #[test]
+    fn trust_task_error_denial_rejects_and_inactivates() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_trust_task_error(
+            &mut acct,
+            &trust_task_error(&rid.to_string(), vtc, "permissionDenied", "not allowed"),
+            vtc,
+        );
+        assert!(out.changed);
+        assert!(out.inactivated, "a denial deregisters the session");
+        assert!(matches!(
+            acct.communities.get(vtc).unwrap().status,
+            CommunityStatus::Rejected
+        ));
+    }
+
+    #[test]
+    fn trust_task_error_malformed_stays_pending_recoverable() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_trust_task_error(
+            &mut acct,
+            &trust_task_error(&rid.to_string(), vtc, "malformedRequest", "missing field `id`"),
+            vtc,
+        );
+        assert!(!out.changed, "a recoverable error makes no terminal change");
+        assert!(!out.inactivated);
+        assert!(
+            matches!(
+                acct.communities.get(vtc).unwrap().status,
+                CommunityStatus::Pending { .. }
+            ),
+            "stays Pending so a corrected retry can succeed"
+        );
+    }
+
+    #[test]
+    fn trust_task_error_with_mismatched_thid_is_ignored() {
+        let vtc = "did:webvh:example:vtc";
+        let mut acct = pending_account(vtc, Uuid::new_v4());
+        let out = handle_join_trust_task_error(
+            &mut acct,
+            &trust_task_error(&Uuid::new_v4().to_string(), vtc, "permissionDenied", ""),
             vtc,
         );
         assert!(!out.changed);
