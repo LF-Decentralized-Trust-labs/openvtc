@@ -510,11 +510,7 @@ impl StateHandler {
         // the first event re-syncs (the per-path syncs above run with no
         // selection set yet).
         state.reconcile_selected_community(&config.account);
-        let initial_active = state
-            .selected_community
-            .as_ref()
-            .and_then(|vtc| config.account.community(vtc))
-            .map(|c| c.persona_ref);
+        let initial_active = state.selected_community.as_ref().map(|(_, persona)| *persona);
         config.set_active_persona(initial_active);
         state.main_page.sync_from_config(&config);
 
@@ -708,11 +704,10 @@ impl StateHandler {
                         // connection is torn down with the community, not left
                         // dangling.
                         if let Some((vtc, pid)) = target {
-                            let removed = session_manager.deregister(&vtc);
+                            let removed = session_manager.deregister(pid, &vtc);
                             let still_live = config
                                 .account
-                                .communities
-                                .values()
+                                .memberships()
                                 .any(|c| c.persona_ref == pid && c.is_live());
                             if !still_live
                                 && let Some(did) =
@@ -735,7 +730,7 @@ impl StateHandler {
                         }
                         // Drop the global messaging status only when NO persona
                         // has a live community left.
-                        if !config.account.communities.values().any(|c| c.is_live()) {
+                        if !config.account.memberships().any(|c| c.is_live()) {
                             state.connection.status = state::MediatorStatus::NoActiveCommunity;
                             state.connection.messaging_active = false;
                         }
@@ -751,7 +746,7 @@ impl StateHandler {
                             .filter(|c| c.status.is_active())
                             .map(|c| (c.vtc_did.clone(), c.persona_ref));
                         if let Some((vtc, persona)) = target {
-                            state.selected_community = Some(vtc);
+                            state.selected_community = Some((vtc, persona));
                             config.set_active_persona(Some(persona));
                             // Refilter the community-scoped panels immediately so
                             // the switch is reflected this frame.
@@ -762,13 +757,13 @@ impl StateHandler {
                         // R-C-4: flip the star on the community at display index
                         // `i`, persist (coalesced), then keep the highlight on it
                         // as the list re-sorts (favourites float to the top).
-                        let vtc = config
+                        let target = config
                             .account
                             .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
-                            .map(|c| c.vtc_did.clone());
-                        if let Some(vtc) = vtc {
-                            if let Some(c) = config.account.community_mut(&vtc) {
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona)) = target {
+                            if let Some(c) = config.account.membership_mut(&vtc, persona) {
                                 c.toggle_favourite();
                             }
                             save.mark_dirty();
@@ -777,7 +772,7 @@ impl StateHandler {
                                 .account
                                 .communities_for_display(state.main_page.content_panel.communities.show_archived)
                                 .iter()
-                                .position(|c| c.vtc_did == vtc)
+                                .position(|c| c.vtc_did == vtc && c.persona_ref == persona)
                             {
                                 state.main_page.content_panel.communities.selected_index =
                                     new_idx;
@@ -787,13 +782,13 @@ impl StateHandler {
                     Action::AcknowledgeCommunity(i) => {
                         // R-S-2: clear the actions-required badge on a terminal
                         // outcome (Rejected / Expired) the user has now seen.
-                        let vtc = config
+                        let target = config
                             .account
                             .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
-                            .map(|c| c.vtc_did.clone());
-                        if let Some(vtc) = vtc
-                            && let Some(c) = config.account.community_mut(&vtc)
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona)) = target
+                            && let Some(c) = config.account.membership_mut(&vtc, persona)
                         {
                             c.acknowledge();
                             save.mark_dirty();
@@ -833,7 +828,9 @@ impl StateHandler {
                             };
                             match send {
                                 Ok(_) => {
-                                    if let Some(c) = config.account.community_mut(&vtc) {
+                                    if let Some(c) =
+                                        config.account.membership_mut(&vtc, persona_id)
+                                    {
                                         c.leave();
                                     }
                                     save.mark_dirty();
@@ -843,6 +840,7 @@ impl StateHandler {
                                         &config,
                                         &mut state,
                                         &vtc,
+                                        persona_id,
                                     )
                                     .await;
                                     state.main_page.sync_from_config(&config);
@@ -876,8 +874,8 @@ impl StateHandler {
                                 c.status,
                                 openvtc_core::config::account::CommunityStatus::Pending { .. }
                             ))
-                            .map(|c| c.vtc_did.clone());
-                        if let Some(vtc) = target {
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona)) = target {
                             // Best-effort VTC notification. The applicant-side
                             // withdraw DIDComm message does not exist in vta-sdk
                             // yet (only the `withdrawn` *status* the VTC reports),
@@ -891,7 +889,7 @@ impl StateHandler {
                             );
                             if config
                                 .account
-                                .community_mut(&vtc)
+                                .membership_mut(&vtc, persona)
                                 .is_some_and(|c| c.withdraw())
                             {
                                 save.mark_dirty();
@@ -901,6 +899,7 @@ impl StateHandler {
                                     &config,
                                     &mut state,
                                     &vtc,
+                                    persona,
                                 )
                                 .await;
                                 state.main_page.sync_from_config(&config);
@@ -916,13 +915,13 @@ impl StateHandler {
                     Action::ArchiveCommunity(i) => {
                         // R-C-8: archive an inactive community (hide it, retain the
                         // record). Guarded inactive-only by `archive_community`.
-                        let vtc = config
+                        let target = config
                             .account
                             .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .get(i)
-                            .map(|c| c.vtc_did.clone());
-                        if let Some(vtc) = vtc {
-                            match config.account.archive_community(&vtc) {
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona)) = target {
+                            match config.account.archive_membership(&vtc, persona) {
                                 Ok(()) => {
                                     save.mark_dirty();
                                     state.main_page.sync_from_config(&config);
@@ -960,13 +959,24 @@ impl StateHandler {
                             .communities_for_display(state.main_page.content_panel.communities.show_archived)
                             .into_iter()
                             .filter(|c| c.status.is_active())
-                            .map(|c| main_page::content::SwitcherItem {
-                                vtc_did: c.vtc_did.clone(),
-                                display_name: c
-                                    .display_name
-                                    .clone()
-                                    .unwrap_or_else(|| main_page::shorten_did(&c.vtc_did, 40)),
-                                is_current: Some(&c.vtc_did) == current.as_ref(),
+                            .map(|c| {
+                                let persona_label = config
+                                    .account
+                                    .personas
+                                    .get(&c.persona_ref)
+                                    .and_then(|p| p.label.clone())
+                                    .unwrap_or_default();
+                                main_page::content::SwitcherItem {
+                                    vtc_did: c.vtc_did.clone(),
+                                    persona_ref: c.persona_ref,
+                                    display_name: c
+                                        .display_name
+                                        .clone()
+                                        .unwrap_or_else(|| main_page::shorten_did(&c.vtc_did, 40)),
+                                    persona_label,
+                                    is_current: current.as_ref()
+                                        == Some(&(c.vtc_did.clone(), c.persona_ref)),
+                                }
                             })
                             .collect();
                         // Don't pop an empty overlay when there's nothing to switch.
@@ -984,19 +994,19 @@ impl StateHandler {
                         // Switch the working context to the highlighted Active
                         // community, then close the overlay (R-C-6 / R-C-7).
                         let target = state.main_page.switcher.as_ref().and_then(|sw| {
-                            sw.items.get(sw.selected).map(|it| it.vtc_did.clone())
+                            sw.items
+                                .get(sw.selected)
+                                .map(|it| (it.vtc_did.clone(), it.persona_ref))
                         });
-                        if let Some(vtc) = target {
-                            let persona = config
+                        if let Some((vtc, persona)) = target
+                            && config
                                 .account
-                                .community(&vtc)
-                                .filter(|c| c.status.is_active())
-                                .map(|c| c.persona_ref);
-                            if let Some(persona) = persona {
-                                state.selected_community = Some(vtc);
-                                config.set_active_persona(Some(persona));
-                                state.main_page.sync_from_config(&config);
-                            }
+                                .membership(&vtc, persona)
+                                .is_some_and(|c| c.status.is_active())
+                        {
+                            state.selected_community = Some((vtc, persona));
+                            config.set_active_persona(Some(persona));
+                            state.main_page.sync_from_config(&config);
                         }
                         state.main_page.switcher = None;
                     },
@@ -1352,13 +1362,14 @@ impl StateHandler {
                                     // status (e.g. a rejection) — tear down its
                                     // live session so a dead community stops
                                     // holding a mediator connection.
-                                    for vtc in &inactivated {
+                                    for (vtc, persona) in &inactivated {
                                         deregister_inactive_community(
                                             &mut session_manager,
                                             &didcomm_service,
                                             &config,
                                             &mut state,
                                             vtc,
+                                            *persona,
                                         )
                                         .await;
                                     }
@@ -1572,13 +1583,14 @@ impl StateHandler {
                     let expired = config.account.expire_stale_pending(chrono::Utc::now());
                     if !expired.is_empty() {
                         save.mark_dirty();
-                        for vtc in &expired {
+                        for (vtc, persona) in &expired {
                             deregister_inactive_community(
                                 &mut session_manager,
                                 &didcomm_service,
                                 &config,
                                 &mut state,
                                 vtc,
+                                *persona,
                             )
                             .await;
                         }
@@ -1640,11 +1652,7 @@ impl StateHandler {
             // the default shifted), refilter the community-scoped panels so the UI
             // reflects the new context this frame.
             state.reconcile_selected_community(&config.account);
-            let active_persona = state
-                .selected_community
-                .as_ref()
-                .and_then(|vtc| config.account.community(vtc))
-                .map(|c| c.persona_ref);
+            let active_persona = state.selected_community.as_ref().map(|(_, persona)| *persona);
             if active_persona != config.active_persona {
                 config.set_active_persona(active_persona);
                 state.main_page.sync_from_config(&config);
@@ -1924,21 +1932,21 @@ impl StateHandler {
         save: &mut save_coalesce::SaveScheduler,
         index: usize,
     ) {
-        let Some(vtc) = config
+        let Some((vtc, persona)) = config
             .account
             .communities_for_display(state.main_page.content_panel.communities.show_archived)
             .get(index)
-            .map(|c| c.vtc_did.clone())
+            .map(|c| (c.vtc_did.clone(), c.persona_ref))
         else {
             return;
         };
         // The confirmation is now resolved.
         state.main_page.content_panel.communities.confirm_delete = None;
         // Delete is inactive-only (R-C-8): an Active/Pending community must be
-        // left first (the `d` key is gated to inactive rows, and `delete_community`
+        // left first (the `d` key is gated to inactive rows, and `delete_membership`
         // re-checks). We no longer silently `leave()` here — that conflated leave
         // with delete and skipped the protocol self-removal.
-        match config.account.delete_community(&vtc) {
+        match config.account.delete_membership(&vtc, persona) {
             Ok(_) => {
                 // R11: coalesced save (was an inline `config.save`). The
                 // Exit/shutdown force-flush guarantees the deletion is persisted
@@ -1994,8 +2002,7 @@ impl StateHandler {
         // Guard: refuse to delete an identity any community still presents.
         let bound = config
             .account
-            .communities
-            .values()
+            .memberships()
             .filter(|c| c.persona_ref == persona_id)
             .count();
         if bound > 0 {
@@ -2445,17 +2452,14 @@ async fn deregister_inactive_community(
     config: &Config,
     state: &mut State,
     vtc: &openvtc_core::config::account::VtcDid,
+    pid: openvtc_core::config::account::PersonaId,
 ) {
-    // The persona that served this (now-inactive but retained) community.
-    let Some(pid) = config.account.community(vtc).map(|c| c.persona_ref) else {
-        session_manager.deregister(vtc);
-        return;
-    };
-    let removed = session_manager.deregister(vtc);
+    let removed = session_manager.deregister(pid, vtc);
+    // The persona's listener stays up while it still serves any live membership
+    // (it may belong to several communities, or this same VTC as another state).
     let still_live = config
         .account
-        .communities
-        .values()
+        .memberships()
         .any(|c| c.persona_ref == pid && c.is_live());
     if !still_live && let Some(did) = config.identities.get(&pid).map(|id| id.did.clone()) {
         // Prefer the listener id the manager recorded; fall back to deriving it.
@@ -2470,7 +2474,7 @@ async fn deregister_inactive_community(
             .log("Community inactive — persona listener stopped.");
     }
     // Drop the global messaging indicator when no persona has a live community.
-    if !config.account.communities.values().any(|c| c.is_live()) {
+    if !config.account.memberships().any(|c| c.is_live()) {
         state.connection.status = state::MediatorStatus::NoActiveCommunity;
         state.connection.messaging_active = false;
     }
@@ -2546,7 +2550,7 @@ async fn register_joined_session(
                 None => {
                     // The join just wrote this identity, so this is unexpected — but
                     // never leave a registered session with no listener behind it.
-                    session_manager.deregister(&joined.vtc_did);
+                    session_manager.deregister(joined.persona_id, &joined.vtc_did);
                     state.main_page.log(
                         "Joined, but its identity could not be resolved to start a live session.",
                     );
@@ -2787,7 +2791,9 @@ mod tests {
 
         let item = |n: &str| SwitcherItem {
             vtc_did: format!("did:example:{n}"),
+            persona_ref: openvtc_core::config::account::PersonaId::new(),
             display_name: n.to_string(),
+            persona_label: String::new(),
             is_current: false,
         };
         let mut state = State::default();

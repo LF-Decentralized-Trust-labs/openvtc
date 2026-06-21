@@ -286,8 +286,7 @@ impl Config {
                 // is identifiable (not a generic "Persona") — matches the runtime
                 // listener label (`Config::persona_profile_label`).
                 let profile_label = account
-                    .communities
-                    .values()
+                    .memberships()
                     .find(|c| c.persona_ref == *persona_id)
                     .map(|c| {
                         c.display_name.clone().unwrap_or_else(|| {

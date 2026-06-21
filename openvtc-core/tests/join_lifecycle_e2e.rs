@@ -104,17 +104,14 @@ async fn connect_persona_and_vtc(
 /// `vtc_did`, awaiting the VTC's decision on `request_id`.
 fn pending_account(vtc_did: &str, request_id: Uuid) -> Account {
     let mut account = Account::default();
-    account.communities.insert(
+    account.add_membership(CommunityRecord::new_pending(
         vtc_did.to_string(),
-        CommunityRecord::new_pending(
-            vtc_did.to_string(),
-            Some("Integration Test Community".to_string()),
-            "openvtc/integration-test".to_string(),
-            PersonaId::new(),
-            request_id,
-            Utc::now(),
-        ),
-    );
+        Some("Integration Test Community".to_string()),
+        "openvtc/integration-test".to_string(),
+        PersonaId::new(),
+        request_id,
+        Utc::now(),
+    ));
     account
 }
 
@@ -230,9 +227,12 @@ async fn join_submit_and_approval_activates() {
 
     let outcome = handle_join_status_response(&mut account, &delivered, &vtc_did);
     assert!(outcome.changed, "approval transitions the record");
-    assert!(!outcome.inactivated, "approval keeps the live session");
+    assert!(
+        outcome.inactivated.is_none(),
+        "approval keeps the live session"
+    );
 
-    let record = account.communities.get(&vtc_did).expect("community");
+    let record = account.memberships().next().expect("community");
     assert!(record.status.is_active(), "Pending -> Active on approval");
     assert!(
         record.member_since.is_some(),
@@ -270,11 +270,11 @@ async fn join_submit_and_rejection_inactivates() {
     let outcome = handle_join_status_response(&mut account, &delivered, &vtc_did);
     assert!(outcome.changed, "rejection transitions the record");
     assert!(
-        outcome.inactivated,
+        outcome.inactivated.is_some(),
         "rejection must deregister the live session (R-S-3)"
     );
 
-    let record = account.communities.get(&vtc_did).expect("community");
+    let record = account.memberships().next().expect("community");
     assert!(matches!(record.status, CommunityStatus::Rejected));
     assert!(
         record.needs_attention(),
@@ -297,8 +297,8 @@ async fn member_self_remove_round_trip() {
     // An already-Active membership the persona now leaves.
     let mut account = pending_account(&vtc_did, Uuid::new_v4());
     account
-        .communities
-        .get_mut(&vtc_did)
+        .memberships_mut()
+        .next()
         .expect("community")
         .activate(Utc::now());
 
@@ -330,7 +330,7 @@ async fn member_self_remove_round_trip() {
     assert_eq!(parsed.disposition.as_deref(), Some("tombstone"));
 
     // On send success the local membership becomes read-only `Left` (R-L-1).
-    let record = account.communities.get_mut(&vtc_did).expect("community");
+    let record = account.memberships_mut().next().expect("community");
     record.leave();
     assert!(matches!(record.status, CommunityStatus::Left));
     assert!(

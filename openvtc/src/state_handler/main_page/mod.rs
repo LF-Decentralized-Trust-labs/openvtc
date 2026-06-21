@@ -387,10 +387,7 @@ impl MainPageState {
             .map(|p| content::ManagedDid {
                 did: p.did.clone(),
                 label: p.label.clone().unwrap_or_default(),
-                bound_communities: config
-                    .account
-                    .communities
-                    .values()
+                bound_communities: config.account.memberships()
                     .filter(|c| c.persona_ref == p.persona_id)
                     .count(),
                 is_active: p.did.as_str() == persona_did,
@@ -539,7 +536,7 @@ fn collect_vrcs(
 /// `alias` carries "<community> — Membership/Role" and `remote_p_did` the VTC.
 fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
     let mut result = Vec::new();
-    for c in config.account.communities.values() {
+    for c in config.account.memberships() {
         let community = c
             .display_name
             .clone()
@@ -718,10 +715,7 @@ impl From<&Config> for MainMenuConfigState {
         // bar once the user is actually in a community (an Active membership). A
         // State-A account or a still-Pending join shows no persona name/DID up
         // there — the persona belongs to a community context, not the chrome.
-        let in_community = config
-            .account
-            .communities
-            .values()
+        let in_community = config.account.memberships()
             .any(|c| c.status.is_active());
         // The working community (R-C-7a): the Active community whose persona is
         // the active one. `active_persona` is kept in lockstep with the selected

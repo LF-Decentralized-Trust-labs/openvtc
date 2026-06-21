@@ -533,19 +533,106 @@ pub struct Account {
     /// Account personas, keyed by stable id.
     #[serde(default)]
     pub personas: HashMap<PersonaId, PersonaRecord>,
-    /// Community memberships, keyed by VTC DID.
-    #[serde(default)]
-    pub communities: HashMap<VtcDid, CommunityRecord>,
+    /// Community memberships, grouped by VTC DID. A community may hold more than
+    /// one membership, each presenting a **different** persona — the
+    /// `(vtc_did, persona_ref)` pair is unique. Backward compatible:
+    /// [`de_communities`] folds the legacy one-record-per-VTC shape (and a bare
+    /// record) into the grouped form on load.
+    #[serde(default, deserialize_with = "de_communities")]
+    pub communities: HashMap<VtcDid, Vec<CommunityRecord>>,
+}
+
+/// Deserialize [`Account::communities`] tolerantly: each VTC's value may be a
+/// list of memberships (the current shape) or a single record (legacy configs
+/// written before multi-membership). Both fold into `Vec<CommunityRecord>`.
+fn de_communities<'de, D>(d: D) -> Result<HashMap<VtcDid, Vec<CommunityRecord>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        // Try the list shape first; a legacy object value fails the seq parse
+        // and falls through to the single-record variant.
+        Many(Vec<CommunityRecord>),
+        One(Box<CommunityRecord>),
+    }
+    let raw: HashMap<VtcDid, OneOrMany> = HashMap::deserialize(d)?;
+    Ok(raw
+        .into_iter()
+        .map(|(k, v)| {
+            let list = match v {
+                OneOrMany::Many(list) => list,
+                OneOrMany::One(rec) => vec![*rec],
+            };
+            (k, list)
+        })
+        .collect())
 }
 
 impl Account {
-    /// Resolve the persona presented to a given community, following
-    /// `persona_ref`. Returns `None` if the community is unknown or its
-    /// `persona_ref` dangles (a referential-integrity violation; see
-    /// [`Self::dangling_refs`]).
-    pub fn persona_for(&self, vtc: &VtcDid) -> Option<&PersonaRecord> {
-        let community = self.communities.get(vtc)?;
-        self.personas.get(&community.persona_ref)
+    /// Every membership across all communities (flattened). A community may
+    /// contribute more than one — one per presented persona.
+    pub fn memberships(&self) -> impl Iterator<Item = &CommunityRecord> {
+        self.communities.values().flatten()
+    }
+
+    /// Mutable iterator over every membership.
+    pub fn memberships_mut(&mut self) -> impl Iterator<Item = &mut CommunityRecord> {
+        self.communities.values_mut().flatten()
+    }
+
+    /// The memberships held with one community (empty if none).
+    pub fn memberships_for(&self, vtc: &str) -> &[CommunityRecord] {
+        self.communities.get(vtc).map(Vec::as_slice).unwrap_or(&[])
+    }
+
+    /// A specific membership: community `vtc` presented as `persona`. The
+    /// `(vtc, persona)` pair is unique, so this resolves at most one.
+    pub fn membership(&self, vtc: &str, persona: PersonaId) -> Option<&CommunityRecord> {
+        self.memberships_for(vtc)
+            .iter()
+            .find(|c| c.persona_ref == persona)
+    }
+
+    /// Mutable [`Self::membership`] — for applying a lifecycle transition.
+    pub fn membership_mut(&mut self, vtc: &str, persona: PersonaId) -> Option<&mut CommunityRecord> {
+        self.communities
+            .get_mut(vtc)?
+            .iter_mut()
+            .find(|c| c.persona_ref == persona)
+    }
+
+    /// The pending membership of community `vtc` awaiting the join reply with
+    /// `request_id` — the disambiguator when several personas have joined the
+    /// same community (each Pending submit carries a unique id). Resolves at most
+    /// one membership.
+    pub fn membership_by_pending_request(
+        &mut self,
+        vtc: &str,
+        request_id: Uuid,
+    ) -> Option<&mut CommunityRecord> {
+        self.communities.get_mut(vtc)?.iter_mut().find(
+            |c| matches!(&c.status, CommunityStatus::Pending { request_id: r } if *r == request_id),
+        )
+    }
+
+    /// Add a new membership. Callers gate on [`Self::has_live_membership`] first
+    /// (R-B-9): a community may hold many memberships, but not two for the same
+    /// persona.
+    pub fn add_membership(&mut self, record: CommunityRecord) {
+        self.communities
+            .entry(record.vtc_did.clone())
+            .or_default()
+            .push(record);
+    }
+
+    /// Whether a *live* (Active/Pending) membership already exists for
+    /// `(vtc, persona)`. Join idempotency is per-persona: a live membership as
+    /// *this* persona blocks a duplicate, but the same community may still be
+    /// joined as a different persona.
+    pub fn has_live_membership(&self, vtc: &str, persona: PersonaId) -> bool {
+        self.membership(vtc, persona).is_some_and(|c| c.is_live())
     }
 
     /// The id of the account persona whose `did` equals `did`, if any. Maps an
@@ -558,13 +645,19 @@ impl Account {
             .map(|(id, _)| *id)
     }
 
-    /// True if any community references this persona.
+    /// Resolve the persona presented for a specific membership.
+    pub fn membership_persona(&self, vtc: &str, persona: PersonaId) -> Option<&PersonaRecord> {
+        self.membership(vtc, persona)
+            .and_then(|c| self.personas.get(&c.persona_ref))
+    }
+
+    /// True if any membership references this persona.
     pub fn persona_referenced(&self, id: &PersonaId) -> bool {
-        self.communities.values().any(|c| &c.persona_ref == id)
+        self.memberships().any(|c| &c.persona_ref == id)
     }
 
     /// Whether a persona may be deleted (R-P-1): it must exist and not be
-    /// referenced by any community.
+    /// referenced by any membership.
     pub fn can_delete_persona(&self, id: &PersonaId) -> bool {
         self.personas.contains_key(id) && !self.persona_referenced(id)
     }
@@ -574,106 +667,91 @@ impl Account {
     pub fn dangling_refs(&self) -> Vec<(&VtcDid, &PersonaId)> {
         self.communities
             .iter()
+            .flat_map(|(vtc, list)| list.iter().map(move |c| (vtc, c)))
             .filter(|(_, c)| !self.personas.contains_key(&c.persona_ref))
             .map(|(vtc, c)| (vtc, &c.persona_ref))
             .collect()
     }
 
-    /// Iterator over communities in the `Active` (live) state.
+    /// Iterator over memberships in the `Active` (live) state.
     pub fn active_communities(&self) -> impl Iterator<Item = &CommunityRecord> {
-        self.communities.values().filter(|c| c.status.is_active())
-    }
-
-    /// A membership by VTC DID.
-    pub fn community(&self, vtc: &VtcDid) -> Option<&CommunityRecord> {
-        self.communities.get(vtc)
-    }
-
-    /// A mutable membership by VTC DID — for applying a lifecycle transition.
-    pub fn community_mut(&mut self, vtc: &VtcDid) -> Option<&mut CommunityRecord> {
-        self.communities.get_mut(vtc)
-    }
-
-    /// A *live* membership (Active or Pending) for this VTC, if any.
-    ///
-    /// State B uses this for join idempotency (R-B-9): a live membership is
-    /// surfaced to the user instead of submitting a duplicate, while an inactive
-    /// one (`Left`/`Rejected`/`Removed`/`Expired`) may be re-joined.
-    pub fn live_community(&self, vtc: &VtcDid) -> Option<&CommunityRecord> {
-        self.communities.get(vtc).filter(|c| c.is_live())
+        self.memberships().filter(|c| c.status.is_active())
     }
 
     /// Sweep all `Pending` memberships, expiring any past the client timeout
-    /// (R-B-7 / D16). Returns the VTC DIDs that transitioned to `Expired` so the
-    /// caller can persist and raise the actions-required indicator (R-S-2).
-    pub fn expire_stale_pending(&mut self, now: DateTime<Utc>) -> Vec<VtcDid> {
+    /// (R-B-7 / D16). Returns the `(vtc, persona)` of each membership that
+    /// transitioned to `Expired` so the caller can persist and raise the
+    /// actions-required indicator (R-S-2).
+    pub fn expire_stale_pending(&mut self, now: DateTime<Utc>) -> Vec<(VtcDid, PersonaId)> {
         let mut expired = Vec::new();
-        for (vtc, community) in self.communities.iter_mut() {
+        for community in self.memberships_mut() {
             if community.expire_if_stale(now) {
-                expired.push(vtc.clone());
+                expired.push((community.vtc_did.clone(), community.persona_ref));
             }
         }
         expired
     }
 
-    /// Number of communities currently raising the actions-required indicator
-    /// (R-C-3): see [`CommunityRecord::needs_attention`]. Archived communities
-    /// are excluded — archiving hides a membership from the default list, so it
-    /// no longer nags.
+    /// Number of memberships currently raising the actions-required indicator
+    /// (R-C-3): see [`CommunityRecord::needs_attention`]. Archived memberships
+    /// are excluded — archiving hides one from the default list, so it no longer
+    /// nags.
     pub fn actions_required_count(&self) -> usize {
-        self.communities
-            .values()
+        self.memberships()
             .filter(|c| !c.archived && c.needs_attention())
             .count()
     }
 
-    /// Communities for the overview page in display order (R-C-4): favourites
-    /// first, then by display name (case-insensitive; unnamed last), then VTC
-    /// DID as a stable tiebreak. Archived communities are excluded unless
-    /// `include_archived` (R-C-8).
+    /// Memberships for the overview page in display order (R-C-4): grouped by
+    /// community (display name, case-insensitive, unnamed last; then VTC DID),
+    /// favourites first within the list, then by presented persona for a stable
+    /// order. Archived memberships are excluded unless `include_archived` (R-C-8).
     pub fn communities_for_display(&self, include_archived: bool) -> Vec<&CommunityRecord> {
         let mut list: Vec<&CommunityRecord> = self
-            .communities
-            .values()
+            .memberships()
             .filter(|c| include_archived || !c.archived)
             .collect();
         list.sort_by(|a, b| {
             // Favourites first.
             b.favourite
                 .cmp(&a.favourite)
-                // Then by display name, case-insensitive; the unnamed sort last.
+                // Then group by display name, case-insensitive; unnamed last.
                 .then_with(|| match (&a.display_name, &b.display_name) {
                     (Some(an), Some(bn)) => an.to_lowercase().cmp(&bn.to_lowercase()),
                     (Some(_), None) => std::cmp::Ordering::Less,
                     (None, Some(_)) => std::cmp::Ordering::Greater,
                     (None, None) => std::cmp::Ordering::Equal,
                 })
-                // Finally the VTC DID for a stable, deterministic order.
+                // Then the VTC DID, then the persona, for a stable order that
+                // keeps a community's memberships adjacent (for grouped display).
                 .then_with(|| a.vtc_did.cmp(&b.vtc_did))
+                .then_with(|| a.persona_ref.cmp(&b.persona_ref))
         });
         list
     }
 
-    /// The community to use as the default working context (D10 / R-C-6/7) when
-    /// the user hasn't explicitly selected one: the first **Active** community in
-    /// display order (favourites first, then by name, then VTC DID). Returns
-    /// `None` when there is no active community (the "no active community" state).
-    /// Deterministic so the working context is stable across launches.
-    pub fn default_working_community(&self) -> Option<VtcDid> {
+    /// The membership to use as the default working context (D10 / R-C-6/7) when
+    /// the user hasn't explicitly selected one: the first **Active** membership
+    /// in display order. Returns `None` when there is none. Deterministic so the
+    /// working context is stable across launches.
+    pub fn default_working_membership(&self) -> Option<(VtcDid, PersonaId)> {
         self.communities_for_display(false)
             .into_iter()
             .find(|c| c.status.is_active())
-            .map(|c| c.vtc_did.clone())
+            .map(|c| (c.vtc_did.clone(), c.persona_ref))
     }
 
-    /// Archive an inactive community (R-C-8): retain its data but hide it from
-    /// the default list. Errors if the community is unknown or still
+    /// Archive an inactive membership (R-C-8): retain its data but hide it from
+    /// the default list. Errors if the membership is unknown or still
     /// active/pending (it must be left first).
-    pub fn archive_community(&mut self, vtc: &VtcDid) -> Result<(), OpenVTCError> {
+    pub fn archive_membership(
+        &mut self,
+        vtc: &str,
+        persona: PersonaId,
+    ) -> Result<(), OpenVTCError> {
         let community = self
-            .communities
-            .get_mut(vtc)
-            .ok_or_else(|| OpenVTCError::Config(format!("Unknown community: {vtc}")))?;
+            .membership_mut(vtc, persona)
+            .ok_or_else(|| OpenVTCError::Config(format!("Unknown membership: {vtc}")))?;
         if !community.can_archive_or_delete() {
             return Err(OpenVTCError::Config(format!(
                 "Cannot archive an active/pending community ({vtc}); leave it first"
@@ -683,21 +761,33 @@ impl Account {
         Ok(())
     }
 
-    /// Delete an inactive community's local record (R-C-8), returning the removed
-    /// record. Errors if the community is unknown or still active/pending. The
-    /// presented persona is retained even if now unreferenced (R-P-2); explicit
-    /// persona deletion is a separate action.
-    pub fn delete_community(&mut self, vtc: &VtcDid) -> Result<CommunityRecord, OpenVTCError> {
-        match self.communities.get(vtc) {
-            None => Err(OpenVTCError::Config(format!("Unknown community: {vtc}"))),
-            Some(c) if !c.can_archive_or_delete() => Err(OpenVTCError::Config(format!(
+    /// Delete an inactive membership's local record (R-C-8), returning the removed
+    /// record. Errors if it is unknown or still active/pending. The presented
+    /// persona is retained even if now unreferenced (R-P-2).
+    pub fn delete_membership(
+        &mut self,
+        vtc: &str,
+        persona: PersonaId,
+    ) -> Result<CommunityRecord, OpenVTCError> {
+        let list = self
+            .communities
+            .get_mut(vtc)
+            .ok_or_else(|| OpenVTCError::Config(format!("Unknown membership: {vtc}")))?;
+        let idx = list
+            .iter()
+            .position(|c| c.persona_ref == persona)
+            .ok_or_else(|| OpenVTCError::Config(format!("Unknown membership: {vtc}")))?;
+        if !list[idx].can_archive_or_delete() {
+            return Err(OpenVTCError::Config(format!(
                 "Cannot delete an active/pending community ({vtc}); leave it first"
-            ))),
-            Some(_) => Ok(self
-                .communities
-                .remove(vtc)
-                .expect("presence checked above")),
+            )));
         }
+        let removed = list.remove(idx);
+        // Drop the community's bucket once its last membership is gone.
+        if list.is_empty() {
+            self.communities.remove(vtc);
+        }
+        Ok(removed)
     }
 }
 
@@ -759,31 +849,26 @@ mod tests {
     fn default_working_community_prefers_favourite_active_and_skips_inactive() {
         let p = persona("p");
         let mut acct = Account::default();
+        let vtc = |a: &Account| a.default_working_membership().map(|(v, _)| v);
         // No communities → no working context.
-        assert_eq!(acct.default_working_community(), None);
+        assert_eq!(vtc(&acct), None);
 
         // An inactive (Left) community is never the working context.
         let left = community("did:web:left", p.persona_id, CommunityStatus::Left);
-        acct.communities.insert(left.vtc_did.clone(), left);
-        assert_eq!(acct.default_working_community(), None);
+        acct.add_membership(left);
+        assert_eq!(vtc(&acct), None);
 
         // A plain active community becomes the default.
         let act = community("did:web:active", p.persona_id, CommunityStatus::Active);
-        acct.communities.insert(act.vtc_did.clone(), act);
-        assert_eq!(
-            acct.default_working_community().as_deref(),
-            Some("did:web:active")
-        );
+        acct.add_membership(act);
+        assert_eq!(vtc(&acct).as_deref(), Some("did:web:active"));
 
         // A favourited active community wins (sorts first in display order).
         let mut fav = community("did:web:fav", p.persona_id, CommunityStatus::Active);
         fav.favourite = true;
-        acct.communities.insert(fav.vtc_did.clone(), fav);
+        acct.add_membership(fav);
         acct.personas.insert(p.persona_id, p);
-        assert_eq!(
-            acct.default_working_community().as_deref(),
-            Some("did:web:fav")
-        );
+        assert_eq!(vtc(&acct).as_deref(), Some("did:web:fav"));
     }
 
     #[test]
@@ -900,10 +985,12 @@ mod tests {
         assert!(!rec.favourite && !rec.archived && !rec.acknowledged);
 
         // Idempotency (R-B-9): a pending join is a live membership, so a re-join
-        // attempt finds it via `live_community`.
+        // attempt as the same persona finds it.
         let mut acct = Account::default();
-        acct.communities.insert(rec.vtc_did.clone(), rec.clone());
-        assert!(acct.live_community(&rec.vtc_did).is_some());
+        let pref = rec.persona_ref;
+        let vtc = rec.vtc_did.clone();
+        acct.add_membership(rec.clone());
+        assert!(acct.has_live_membership(&vtc, pref));
     }
 
     #[test]
@@ -941,14 +1028,11 @@ mod tests {
         let p = persona("alice");
         let pid = p.persona_id;
         acct.personas.insert(pid, p);
-        acct.communities.insert(
-            "vtc:a".into(),
-            community("vtc:a", pid, CommunityStatus::Active),
-        );
+        acct.add_membership(community("vtc:a", pid, CommunityStatus::Active));
 
-        let resolved = acct.persona_for(&"vtc:a".to_string()).expect("resolves");
+        let resolved = acct.membership_persona("vtc:a", pid).expect("resolves");
         assert_eq!(resolved.persona_id, pid);
-        assert!(acct.persona_for(&"vtc:missing".to_string()).is_none());
+        assert!(acct.membership_persona("vtc:missing", pid).is_none());
         assert!(acct.dangling_refs().is_empty());
     }
 
@@ -963,10 +1047,7 @@ mod tests {
         assert!(acct.can_delete_persona(&pid));
 
         // Now referenced by an active community: not deletable (R-P-1).
-        acct.communities.insert(
-            "vtc:b".into(),
-            community("vtc:b", pid, CommunityStatus::Active),
-        );
+        acct.add_membership(community("vtc:b", pid, CommunityStatus::Active));
         assert!(acct.persona_referenced(&pid));
         assert!(!acct.can_delete_persona(&pid));
 
@@ -980,20 +1061,15 @@ mod tests {
         let p = persona("carol");
         let pid = p.persona_id;
         acct.personas.insert(pid, p);
-        acct.communities
-            .insert("a".into(), community("a", pid, CommunityStatus::Active));
-        acct.communities
-            .insert("b".into(), community("b", pid, CommunityStatus::Left));
-        acct.communities.insert(
-            "c".into(),
-            community(
-                "c",
-                pid,
-                CommunityStatus::Pending {
-                    request_id: Uuid::new_v4(),
-                },
-            ),
-        );
+        acct.add_membership(community("a", pid, CommunityStatus::Active));
+        acct.add_membership(community("b", pid, CommunityStatus::Left));
+        acct.add_membership(community(
+            "c",
+            pid,
+            CommunityStatus::Pending {
+                request_id: Uuid::new_v4(),
+            },
+        ));
         assert_eq!(acct.active_communities().count(), 1);
     }
 
@@ -1009,10 +1085,11 @@ mod tests {
         let pid = p.persona_id;
         let req = Uuid::new_v4();
         acct.personas.insert(pid, p);
-        acct.communities.insert(
-            "vtc:x".into(),
-            community("vtc:x", pid, CommunityStatus::Pending { request_id: req }),
-        );
+        acct.add_membership(community(
+            "vtc:x",
+            pid,
+            CommunityStatus::Pending { request_id: req },
+        ));
 
         let json = serde_json::to_string(&acct).expect("serialize");
         let back: Account = serde_json::from_str(&json).expect("deserialize");
@@ -1022,7 +1099,7 @@ mod tests {
         assert_eq!(back.personas.len(), 1);
         let bp = back.personas.get(&pid).expect("persona survives");
         assert_eq!(bp.did, "did:webvh:example.com:dave");
-        let bc = back.communities.get("vtc:x").expect("community survives");
+        let bc = back.membership("vtc:x", pid).expect("community survives");
         assert_eq!(bc.persona_ref, pid);
         assert_eq!(bc.status, CommunityStatus::Pending { request_id: req });
     }
@@ -1177,22 +1254,17 @@ mod tests {
     fn live_community_filters_inactive() {
         let mut acct = Account::default();
         let pid = PersonaId::new();
-        acct.communities.insert(
-            "active".into(),
-            community("active", pid, CommunityStatus::Active),
-        );
-        acct.communities
-            .insert("left".into(), community("left", pid, CommunityStatus::Left));
-        acct.communities
-            .insert("pend".into(), community("pend", pid, pending()));
+        acct.add_membership(community("active", pid, CommunityStatus::Active));
+        acct.add_membership(community("left", pid, CommunityStatus::Left));
+        acct.add_membership(community("pend", pid, pending()));
 
-        assert!(acct.live_community(&"active".to_string()).is_some());
-        assert!(acct.live_community(&"pend".to_string()).is_some());
+        assert!(acct.has_live_membership("active", pid));
+        assert!(acct.has_live_membership("pend", pid));
         assert!(
-            acct.live_community(&"left".to_string()).is_none(),
+            !acct.has_live_membership("left", pid),
             "Left is not a live membership"
         );
-        assert!(acct.live_community(&"missing".to_string()).is_none());
+        assert!(!acct.has_live_membership("missing", pid));
     }
 
     #[test]
@@ -1234,7 +1306,7 @@ mod tests {
         archived.archived = true;
 
         for c in [zebra, acme, fav, archived] {
-            acct.communities.insert(c.vtc_did.clone(), c);
+            acct.add_membership(c);
         }
 
         // Default: archived excluded; favourite first, then name (ci).
@@ -1258,25 +1330,21 @@ mod tests {
     fn archive_and_delete_respect_guards() {
         let mut acct = Account::default();
         let pid = PersonaId::new();
-        acct.communities.insert(
-            "active".into(),
-            community("active", pid, CommunityStatus::Active),
-        );
-        acct.communities
-            .insert("left".into(), community("left", pid, CommunityStatus::Left));
+        acct.add_membership(community("active", pid, CommunityStatus::Active));
+        acct.add_membership(community("left", pid, CommunityStatus::Left));
 
         // Active cannot be archived or deleted.
-        assert!(acct.archive_community(&"active".to_string()).is_err());
-        assert!(acct.delete_community(&"active".to_string()).is_err());
+        assert!(acct.archive_membership("active", pid).is_err());
+        assert!(acct.delete_membership("active", pid).is_err());
         // Unknown errors too.
-        assert!(acct.archive_community(&"missing".to_string()).is_err());
+        assert!(acct.archive_membership("missing", pid).is_err());
 
         // Inactive archives, then deletes.
-        acct.archive_community(&"left".to_string()).unwrap();
-        assert!(acct.communities["left"].archived);
-        let removed = acct.delete_community(&"left".to_string()).unwrap();
+        acct.archive_membership("left", pid).unwrap();
+        assert!(acct.membership("left", pid).unwrap().archived);
+        let removed = acct.delete_membership("left", pid).unwrap();
         assert_eq!(removed.vtc_did, "left");
-        assert!(!acct.communities.contains_key("left"));
+        assert!(acct.membership("left", pid).is_none());
     }
 
     #[test]
@@ -1287,25 +1355,28 @@ mod tests {
 
         let mut stale = community("stale", pid, pending());
         stale.requested_at = Some(now - TimeDelta::days(10));
-        acct.communities.insert("stale".into(), stale);
+        acct.add_membership(stale);
 
         let mut fresh = community("fresh", pid, pending());
         fresh.requested_at = Some(now - TimeDelta::days(1));
-        acct.communities.insert("fresh".into(), fresh);
+        acct.add_membership(fresh);
 
-        acct.communities.insert(
-            "active".into(),
-            community("active", pid, CommunityStatus::Active),
-        );
+        acct.add_membership(community("active", pid, CommunityStatus::Active));
 
         let expired = acct.expire_stale_pending(now);
-        assert_eq!(expired, vec!["stale".to_string()]);
-        assert_eq!(acct.communities["stale"].status, CommunityStatus::Expired);
+        assert_eq!(expired, vec![("stale".to_string(), pid)]);
+        assert_eq!(
+            acct.membership("stale", pid).unwrap().status,
+            CommunityStatus::Expired
+        );
         assert!(matches!(
-            acct.communities["fresh"].status,
+            acct.membership("fresh", pid).unwrap().status,
             CommunityStatus::Pending { .. }
         ));
-        assert_eq!(acct.communities["active"].status, CommunityStatus::Active);
+        assert_eq!(
+            acct.membership("active", pid).unwrap().status,
+            CommunityStatus::Active
+        );
     }
 
     #[test]
@@ -1352,33 +1423,80 @@ mod tests {
     fn actions_required_count_excludes_acknowledged_and_archived() {
         let mut acct = Account::default();
         let pid = PersonaId::new();
-        acct.communities
-            .insert("pending".into(), community("pending", pid, pending()));
-        acct.communities.insert(
-            "active".into(),
-            community("active", pid, CommunityStatus::Active),
-        );
-
-        // Unacknowledged Rejected → counts.
-        let mut rejected = community("rejected", pid, CommunityStatus::Rejected);
+        acct.add_membership(community("pending", pid, pending()));
+        acct.add_membership(community("active", pid, CommunityStatus::Active));
 
         // Acknowledged Removed → does not count.
         let mut acked = community("acked", pid, CommunityStatus::Removed);
         acked.acknowledge();
-        acct.communities.insert("acked".into(), acked);
+        acct.add_membership(acked);
 
         // Archived (unacknowledged) Expired → hidden, so does not count.
         let mut archived = community("archived", pid, CommunityStatus::Expired);
         archived.archived = true;
-        acct.communities.insert("archived".into(), archived);
+        acct.add_membership(archived);
 
-        acct.communities.insert("rejected".into(), rejected.clone());
+        // Unacknowledged Rejected → counts.
+        acct.add_membership(community("rejected", pid, CommunityStatus::Rejected));
         // pending + rejected.
         assert_eq!(acct.actions_required_count(), 2);
 
         // Acknowledging the rejection drops the count to just the pending.
-        rejected.acknowledge();
-        acct.communities.insert("rejected".into(), rejected);
+        acct.membership_mut("rejected", pid).unwrap().acknowledge();
         assert_eq!(acct.actions_required_count(), 1);
+    }
+
+    #[test]
+    fn multiple_memberships_per_community_keyed_by_persona() {
+        let mut acct = Account::default();
+        let alice = PersonaId::new();
+        let bob = PersonaId::new();
+        let vtc = "did:web:acme";
+        // The same community joined as two different personas — both coexist.
+        acct.add_membership(community(vtc, alice, CommunityStatus::Active));
+        acct.add_membership(community(vtc, bob, pending()));
+        assert_eq!(acct.memberships_for(vtc).len(), 2);
+        assert_eq!(acct.memberships().count(), 2);
+
+        // Per-persona resolution + idempotency: a live membership blocks only the
+        // same persona, never another.
+        assert!(acct.membership(vtc, alice).is_some());
+        assert!(acct.membership(vtc, bob).is_some());
+        assert!(acct.has_live_membership(vtc, alice));
+        assert!(acct.has_live_membership(vtc, bob));
+        assert!(!acct.has_live_membership(vtc, PersonaId::new()));
+
+        // Deleting one membership leaves the other (and the community bucket).
+        acct.membership_mut(vtc, alice).unwrap().leave();
+        acct.delete_membership(vtc, alice).unwrap();
+        assert!(acct.membership(vtc, alice).is_none());
+        assert!(acct.membership(vtc, bob).is_some());
+    }
+
+    #[test]
+    fn legacy_single_record_config_loads_into_grouped_form() {
+        // Pre-multi-membership configs stored ONE CommunityRecord per VTC DID —
+        // the value was the record object, not a list. It must still load.
+        let pid = PersonaId::new();
+        let rec = community("did:web:acme", pid, CommunityStatus::Active);
+        let legacy = serde_json::json!({
+            "vta_did": "",
+            "vta_url": "",
+            "top_context_id": "",
+            "communities": { "did:web:acme": rec },
+        });
+        let acct: Account = serde_json::from_value(legacy).expect("legacy config loads");
+        assert_eq!(acct.memberships().count(), 1);
+        assert!(acct.membership("did:web:acme", pid).is_some());
+
+        // And a new-format config (value is a list) round-trips through the same path.
+        let modern = serde_json::json!({
+            "vta_did": "",
+            "vta_url": "",
+            "top_context_id": "",
+            "communities": { "did:web:acme": [community("did:web:acme", pid, CommunityStatus::Active)] },
+        });
+        let acct: Account = serde_json::from_value(modern).expect("modern config loads");
+        assert_eq!(acct.memberships().count(), 1);
     }
 }

@@ -149,11 +149,17 @@ pub enum CreatePersonaPhase {
 /// One entry in the community switcher overlay.
 #[derive(Clone, Debug)]
 pub struct SwitcherItem {
-    /// The community's VTC DID — the switch target.
+    /// The community's VTC DID — half of the switch target.
     pub vtc_did: openvtc_core::config::account::VtcDid,
+    /// The presented persona — the other half of the target, since a community
+    /// may hold more than one membership.
+    pub persona_ref: openvtc_core::config::account::PersonaId,
     /// Display name (resolved name, or the shortened VTC DID when unnamed).
     pub display_name: String,
-    /// Whether this is the current working community.
+    /// The presented persona's label, shown to disambiguate multiple memberships
+    /// of the same community.
+    pub persona_label: String,
+    /// Whether this is the current working membership.
     pub is_current: bool,
 }
 

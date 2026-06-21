@@ -137,18 +137,15 @@ impl SessionManager {
         RegisterOutcome::Created
     }
 
-    /// Deregister `vtc` from its persona's session.
+    /// Deregister `vtc` from `persona`'s session.
     ///
-    /// Removes `vtc` from whichever session serves it. If that session now serves
-    /// no communities, it is removed and returned so the caller can tear down its
+    /// Removes `vtc` from that persona's session. If the session now serves no
+    /// communities, it is removed and returned so the caller can tear down its
     /// listener; otherwise (the persona still serves other communities) `None` is
-    /// returned and the shared connection stays up. Isolation: only the affected
-    /// session is touched.
-    pub fn deregister(&mut self, vtc: &str) -> Option<Session> {
-        let persona = self
-            .sessions
-            .iter()
-            .find_map(|(pid, s)| s.communities.iter().any(|c| c == vtc).then_some(*pid))?;
+    /// returned and the shared connection stays up. Taking the persona explicitly
+    /// is required for multi-membership: two personas may both serve the same VTC,
+    /// so the VTC alone no longer identifies the session.
+    pub fn deregister(&mut self, persona: PersonaId, vtc: &str) -> Option<Session> {
         let session = self.sessions.get_mut(&persona)?;
         session.communities.remove(vtc);
         if session.communities.is_empty() {
@@ -310,18 +307,18 @@ mod tests {
         mgr.mark_connected("lid-a");
 
         // Leaving the first community keeps the session up (still serves vtc-2).
-        assert!(mgr.deregister("vtc-1").is_none());
+        assert!(mgr.deregister(a, "vtc-1").is_none());
         assert_eq!(mgr.session_count(), 1);
         assert!(mgr.sessions[&a].status.is_connected());
 
         // Leaving the last one tears the session down — returned for listener
         // teardown by the caller.
-        let removed = mgr.deregister("vtc-2").expect("session removed");
+        let removed = mgr.deregister(a, "vtc-2").expect("session removed");
         assert_eq!(removed.listener_id, "lid-a");
         assert_eq!(mgr.session_count(), 0);
         assert!(!mgr.any_connected());
 
         // Deregistering something unknown is a harmless no-op.
-        assert!(mgr.deregister("vtc-unknown").is_none());
+        assert!(mgr.deregister(a, "vtc-unknown").is_none());
     }
 }

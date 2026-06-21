@@ -61,10 +61,16 @@ impl<'a> IdentityRegistry<'a> {
         Self { account }
     }
 
-    /// Resolve a community to its identity (community + presented persona).
-    /// Returns `None` if the community is unknown or its `persona_ref` dangles.
-    pub fn get(&self, vtc: &VtcDid) -> Option<IdentityRef<'a>> {
-        let community = self.account.communities.get(vtc)?;
+    /// Resolve a specific membership (community `vtc` presented as `persona`) to
+    /// its identity. Returns `None` if there is no such membership or its
+    /// `persona_ref` dangles.
+    pub fn get(&self, vtc: &str, persona: PersonaId) -> Option<IdentityRef<'a>> {
+        let community = self
+            .account
+            .communities
+            .get(vtc)?
+            .iter()
+            .find(|c| c.persona_ref == persona)?;
         let persona = self.account.personas.get(&community.persona_ref)?;
         Some(IdentityRef { community, persona })
     }
@@ -72,15 +78,19 @@ impl<'a> IdentityRegistry<'a> {
     /// Iterator over all resolvable memberships (skips any with a dangling
     /// `persona_ref`, which [`Account::dangling_refs`] reports separately).
     pub fn all(&self) -> impl Iterator<Item = IdentityRef<'a>> {
-        self.account.communities.values().filter_map(move |c| {
-            self.account
-                .personas
-                .get(&c.persona_ref)
-                .map(|persona| IdentityRef {
-                    community: c,
-                    persona,
-                })
-        })
+        self.account
+            .communities
+            .values()
+            .flatten()
+            .filter_map(move |c| {
+                self.account
+                    .personas
+                    .get(&c.persona_ref)
+                    .map(|persona| IdentityRef {
+                        community: c,
+                        persona,
+                    })
+            })
     }
 
     /// Memberships in the `Active` (live) state.
@@ -97,7 +107,7 @@ impl<'a> IdentityRegistry<'a> {
     /// [`CommunityStatus::requires_live_session`]: crate::config::account::CommunityStatus::requires_live_session
     pub fn sessions(&self) -> HashMap<PersonaId, Vec<&'a VtcDid>> {
         let mut map: HashMap<PersonaId, Vec<&'a VtcDid>> = HashMap::new();
-        for c in self.account.communities.values() {
+        for c in self.account.communities.values().flatten() {
             if c.status.requires_live_session()
                 && self.account.personas.contains_key(&c.persona_ref)
             {
@@ -199,11 +209,10 @@ mod tests {
         let p = persona();
         let pid = p.persona_id;
         acct.personas.insert(pid, p);
-        acct.communities
-            .insert("a".into(), community("a", pid, CommunityStatus::Active));
+        acct.add_membership(community("a", pid, CommunityStatus::Active));
 
         let reg = IdentityRegistry::new(&acct);
-        let id = reg.get(&"a".to_string()).expect("resolves");
+        let id = reg.get("a", pid).expect("resolves");
         assert_eq!(id.session_key(), pid);
         assert_eq!(id.persona_did(), "did:webvh:example:p");
         assert_eq!(id.mediator_did(), Some("did:webvh:mediator"));
@@ -216,10 +225,8 @@ mod tests {
         let pid = p.persona_id;
         acct.personas.insert(pid, p);
         // Two Active communities present the SAME persona.
-        acct.communities
-            .insert("a".into(), community("a", pid, CommunityStatus::Active));
-        acct.communities
-            .insert("b".into(), community("b", pid, CommunityStatus::Active));
+        acct.add_membership(community("a", pid, CommunityStatus::Active));
+        acct.add_membership(community("b", pid, CommunityStatus::Active));
 
         let reg = IdentityRegistry::new(&acct);
         let sessions = reg.sessions();
@@ -237,18 +244,14 @@ mod tests {
         acct.personas.insert(id1, p1);
         acct.personas.insert(id2, p2);
         // p1 → Pending (needs session); p2 → Left (does not).
-        acct.communities.insert(
-            "pending".into(),
-            community(
-                "pending",
-                id1,
-                CommunityStatus::Pending {
-                    request_id: Uuid::new_v4(),
-                },
-            ),
-        );
-        acct.communities
-            .insert("left".into(), community("left", id2, CommunityStatus::Left));
+        acct.add_membership(community(
+            "pending",
+            id1,
+            CommunityStatus::Pending {
+                request_id: Uuid::new_v4(),
+            },
+        ));
+        acct.add_membership(community("left", id2, CommunityStatus::Left));
 
         let reg = IdentityRegistry::new(&acct);
         let keys = reg.active_session_keys();
@@ -261,12 +264,10 @@ mod tests {
     fn dangling_ref_is_skipped() {
         let mut acct = Account::default();
         // Community references a persona that doesn't exist.
-        acct.communities.insert(
-            "x".into(),
-            community("x", PersonaId::new(), CommunityStatus::Active),
-        );
+        let ghost = PersonaId::new();
+        acct.add_membership(community("x", ghost, CommunityStatus::Active));
         let reg = IdentityRegistry::new(&acct);
-        assert!(reg.get(&"x".to_string()).is_none());
+        assert!(reg.get("x", ghost).is_none());
         assert_eq!(reg.all().count(), 0);
         assert!(reg.sessions().is_empty());
     }

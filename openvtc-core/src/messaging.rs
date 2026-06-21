@@ -20,7 +20,7 @@ use vta_sdk::protocols::join_requests::{
 };
 
 use crate::config::Config;
-use crate::config::account::{Account, CommunityStatus};
+use crate::config::account::{Account, CommunityStatus, PersonaId};
 use crate::relationships::{RelationshipState, Relationships};
 use crate::tasks::{TaskType, Tasks};
 
@@ -191,52 +191,46 @@ pub fn handle_join_submit_receipt(
         }
     };
 
-    let Some(record) = account.communities.get_mut(from_did) else {
-        warn!(vtc = %from_did, "join submit-receipt from an unknown community — ignoring");
-        return false;
-    };
-    // Copy the current placeholder out (Uuid: Copy) so the immutable match
-    // borrow ends before we re-assign `status`.
-    let current = match &record.status {
-        CommunityStatus::Pending { request_id } => Some(*request_id),
-        _ => None,
-    };
-    if current == Some(placeholder) {
-        record.status = CommunityStatus::Pending {
-            request_id: body.request_id,
-        };
-        // The receipt is the VTC's acknowledgement that the submit arrived.
-        record.mark_acknowledged(chrono::Utc::now());
-        info!(
-            vtc = %from_did,
-            vtc_request_id = %body.request_id,
-            receipt_status = %body.status,
-            "reconciled join request id from VTC submit-receipt",
-        );
-        true
-    } else {
+    // Correlate to the specific pending membership (a community may now hold
+    // several, one per persona) by the placeholder = our submit id.
+    let Some(record) = account.membership_by_pending_request(from_did, placeholder) else {
         warn!(
             vtc = %from_did,
             thid,
             "join submit-receipt did not match a pending join with that id — ignoring",
         );
-        false
-    }
+        return false;
+    };
+    record.status = CommunityStatus::Pending {
+        request_id: body.request_id,
+    };
+    // The receipt is the VTC's acknowledgement that the submit arrived.
+    record.mark_acknowledged(chrono::Utc::now());
+    info!(
+        vtc = %from_did,
+        vtc_request_id = %body.request_id,
+        receipt_status = %body.status,
+        "reconciled join request id from VTC submit-receipt",
+    );
+    true
 }
 
 /// Outcome of applying a VTC `join-requests/status-response` to a community.
 pub struct StatusOutcome {
     /// The community record changed and the config needs saving.
     pub changed: bool,
-    /// The community transitioned to an inactive (read-only) status, so the
-    /// runtime must deregister its live session (R-S-3 / D15).
-    pub inactivated: bool,
+    /// When the membership transitioned to an inactive (read-only) status, the
+    /// persona whose session for this community must be deregistered (R-S-3 /
+    /// D15) — `None` when nothing inactivated. Carrying the persona (not just a
+    /// bool) is required for multi-membership: the VTC alone no longer identifies
+    /// which session to tear down.
+    pub inactivated: Option<PersonaId>,
 }
 
 impl StatusOutcome {
     const NONE: StatusOutcome = StatusOutcome {
         changed: false,
-        inactivated: false,
+        inactivated: None,
     };
 }
 
@@ -265,19 +259,13 @@ pub fn handle_join_status_response(
             return StatusOutcome::NONE;
         }
     };
-    let Some(record) = account.communities.get_mut(from_did) else {
-        warn!(vtc = %from_did, "status-response from an unknown community — ignoring");
-        return StatusOutcome::NONE;
-    };
-    // Correlate: only resolve a Pending record whose request id matches the reply.
-    let matches = matches!(
-        &record.status,
-        CommunityStatus::Pending { request_id } if *request_id == body.request_id
-    );
-    if !matches {
+    // Correlate to the specific pending membership by the authoritative
+    // request id (a community may hold several memberships).
+    let Some(record) = account.membership_by_pending_request(from_did, body.request_id) else {
         warn!(vtc = %from_did, "status-response did not match a pending request id — ignoring");
         return StatusOutcome::NONE;
-    }
+    };
+    let persona = record.persona_ref;
 
     match body.status.as_str() {
         "approved" => {
@@ -285,7 +273,7 @@ pub fn handle_join_status_response(
             info!(vtc = %from_did, "join approved by VTC — now Active");
             StatusOutcome {
                 changed: true,
-                inactivated: false,
+                inactivated: None,
             }
         }
         "rejected" => {
@@ -293,7 +281,7 @@ pub fn handle_join_status_response(
             info!(vtc = %from_did, "join rejected by VTC");
             StatusOutcome {
                 changed: true,
-                inactivated: true,
+                inactivated: Some(persona),
             }
         }
         "withdrawn" => {
@@ -304,7 +292,7 @@ pub fn handle_join_status_response(
             info!(vtc = %from_did, "join withdrawn — reconciled to Withdrawn");
             StatusOutcome {
                 changed,
-                inactivated: changed,
+                inactivated: changed.then_some(persona),
             }
         }
         "deferred" => {
@@ -319,7 +307,7 @@ pub fn handle_join_status_response(
             );
             StatusOutcome {
                 changed,
-                inactivated: false,
+                inactivated: None,
             }
         }
         other => {
@@ -352,18 +340,11 @@ pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &
             return StatusOutcome::NONE;
         }
     };
-    let Some(record) = account.communities.get_mut(from_did) else {
-        warn!(vtc = %from_did, "verdict from an unknown community — ignoring");
-        return StatusOutcome::NONE;
-    };
-    let matches = matches!(
-        &record.status,
-        CommunityStatus::Pending { request_id } if *request_id == placeholder
-    );
-    if !matches {
+    let Some(record) = account.membership_by_pending_request(from_did, placeholder) else {
         warn!(vtc = %from_did, "verdict did not match a pending request id — ignoring");
         return StatusOutcome::NONE;
-    }
+    };
+    let persona = record.persona_ref;
 
     match body.verdict.effect {
         VerdictEffect::Allow => {
@@ -371,7 +352,7 @@ pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &
             info!(vtc = %from_did, "join allowed by VTC — now Active");
             StatusOutcome {
                 changed: true,
-                inactivated: false,
+                inactivated: None,
             }
         }
         VerdictEffect::Deny => {
@@ -384,7 +365,7 @@ pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &
             );
             StatusOutcome {
                 changed: true,
-                inactivated: true,
+                inactivated: Some(persona),
             }
         }
         VerdictEffect::Refer => {
@@ -398,7 +379,7 @@ pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &
             );
             StatusOutcome {
                 changed,
-                inactivated: false,
+                inactivated: None,
             }
         }
         VerdictEffect::RequestMore => {
@@ -412,7 +393,7 @@ pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &
             );
             StatusOutcome {
                 changed,
-                inactivated: false,
+                inactivated: None,
             }
         }
     }
@@ -439,18 +420,11 @@ pub fn handle_join_problem_report(
         return StatusOutcome::NONE;
     };
     let (code, comment) = vta_sdk::protocols::extract_problem_report(&message.body);
-    let Some(record) = account.communities.get_mut(from_did) else {
-        warn!(vtc = %from_did, code = %code, "problem-report from an unknown community — ignoring");
-        return StatusOutcome::NONE;
-    };
-    let matches = matches!(
-        &record.status,
-        CommunityStatus::Pending { request_id } if *request_id == placeholder
-    );
-    if !matches {
+    let Some(record) = account.membership_by_pending_request(from_did, placeholder) else {
         warn!(vtc = %from_did, code = %code, "problem-report did not match a pending request id — ignoring");
         return StatusOutcome::NONE;
-    }
+    };
+    let persona = record.persona_ref;
 
     if code == codes::FORBIDDEN {
         record.reject();
@@ -461,7 +435,7 @@ pub fn handle_join_problem_report(
         );
         StatusOutcome {
             changed: true,
-            inactivated: true,
+            inactivated: Some(persona),
         }
     } else {
         // bad-request / internal / other: the submit didn't admit, but it's not a
@@ -538,18 +512,10 @@ pub fn handle_join_trust_task_error(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let Some(record) = account.communities.get_mut(from_did) else {
-        warn!(vtc = %from_did, code = %code, "trust-task-error from an unknown community — ignoring");
-        return StatusOutcome::NONE;
-    };
-    let matches = matches!(
-        &record.status,
-        CommunityStatus::Pending { request_id } if *request_id == placeholder
-    );
-    if !matches {
+    let Some(record) = account.membership_by_pending_request(from_did, placeholder) else {
         warn!(vtc = %from_did, code = %code, "trust-task-error did not match a pending request id — ignoring");
         return StatusOutcome::NONE;
-    }
+    };
 
     if is_join_denial_code(&code) {
         record.reject();
@@ -561,7 +527,7 @@ pub fn handle_join_trust_task_error(
         );
         StatusOutcome {
             changed: true,
-            inactivated: true,
+            inactivated: Some(record.persona_ref),
         }
     } else {
         // Not a policy denial — a malformed / unsupported / internal / transient
@@ -577,7 +543,7 @@ pub fn handle_join_trust_task_error(
         );
         StatusOutcome {
             changed,
-            inactivated: false,
+            inactivated: None,
         }
     }
 }
@@ -600,18 +566,9 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         return false;
     };
 
-    // Resolve the target community (the sender is the issuing VTC) + its persona.
-    let Some(record) = account.communities.get(from_did) else {
-        warn!(vtc = %from_did, "credential-issue from an unknown community — ignoring");
-        return false;
-    };
-    let persona_ref = record.persona_ref;
-    let Some(persona_did) = account.personas.get(&persona_ref).map(|p| p.did.clone()) else {
-        warn!(vtc = %from_did, "community persona missing — ignoring credential");
-        return false;
-    };
-
-    // Anti-misdelivery: issuer must be this community's VTC, subject our persona.
+    // Anti-misdelivery: issuer must be this community's VTC. The credential's
+    // subject (a persona DID) also selects WHICH membership it is for — a
+    // community may now hold several, one per persona.
     let issuer = credential.get("issuer").and_then(|i| match i {
         Value::String(s) => Some(s.as_str()),
         Value::Object(o) => o.get("id").and_then(Value::as_str),
@@ -621,14 +578,20 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         warn!(vtc = %from_did, ?issuer, "issued credential's issuer is not the community VTC — ignoring");
         return false;
     }
-    let subject = credential
+    let Some(subject) = credential
         .get("credentialSubject")
         .and_then(|s| s.get("id"))
-        .and_then(Value::as_str);
-    if subject != Some(persona_did.as_str()) {
+        .and_then(Value::as_str)
+    else {
+        warn!(vtc = %from_did, "issued credential has no subject — ignoring");
+        return false;
+    };
+    // The subject must be one of our personas, and that persona must hold a
+    // membership with this community.
+    let Some(persona_id) = account.persona_id_for_did(subject) else {
         warn!(vtc = %from_did, "issued credential subject is not our persona — ignoring");
         return false;
-    }
+    };
 
     // Classify the credential against the typed registry — the one place that
     // knows credential kinds, so a new kind is handled here without edits.
@@ -637,10 +600,10 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         return false;
     };
 
-    let record = account
-        .communities
-        .get_mut(from_did)
-        .expect("community present (checked above)");
+    let Some(record) = account.membership_mut(from_did, persona_id) else {
+        warn!(vtc = %from_did, "credential-issue for a community we don't hold a matching membership with — ignoring");
+        return false;
+    };
     record.credentials.insert(kind, credential);
     if kind.activates_membership() && !record.status.is_active() {
         record.activate(chrono::Utc::now());
@@ -933,19 +896,23 @@ mod tests {
         JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
     };
 
+    /// The (single) membership a test set up for `vtc`.
+    fn only<'a>(acct: &'a Account, vtc: &str) -> &'a CommunityRecord {
+        acct.memberships()
+            .find(|c| c.vtc_did == vtc)
+            .expect("membership present")
+    }
+
     fn pending_account(vtc: &str, placeholder: Uuid) -> Account {
         let mut acct = Account::default();
-        acct.communities.insert(
+        acct.add_membership(CommunityRecord::new_pending(
             vtc.to_string(),
-            CommunityRecord::new_pending(
-                vtc.to_string(),
-                None,
-                "openvtc/x".to_string(),
-                PersonaId::new(),
-                placeholder,
-                Utc::now(),
-            ),
-        );
+            None,
+            "openvtc/x".to_string(),
+            PersonaId::new(),
+            placeholder,
+            Utc::now(),
+        ));
         acct
     }
 
@@ -970,7 +937,7 @@ mod tests {
         let m = receipt(&placeholder.to_string(), vtc, real, "pending");
         assert!(handle_join_submit_receipt(&mut acct, &m, vtc));
 
-        match &acct.communities.get(vtc).unwrap().status {
+        match &only(&acct, vtc).status {
             CommunityStatus::Pending { request_id } => assert_eq!(*request_id, real),
             other => panic!("expected Pending, got {other:?}"),
         }
@@ -990,7 +957,7 @@ mod tests {
             "pending",
         );
         assert!(!handle_join_submit_receipt(&mut acct, &m, "did:webvh:evil"));
-        match &acct.communities.get(vtc).unwrap().status {
+        match &only(&acct, vtc).status {
             CommunityStatus::Pending { request_id } => assert_eq!(*request_id, placeholder),
             other => panic!("expected unchanged Pending, got {other:?}"),
         }
@@ -1005,7 +972,7 @@ mod tests {
         // thid does not match the stored placeholder.
         let m = receipt(&Uuid::new_v4().to_string(), vtc, Uuid::new_v4(), "pending");
         assert!(!handle_join_submit_receipt(&mut acct, &m, vtc));
-        match &acct.communities.get(vtc).unwrap().status {
+        match &only(&acct, vtc).status {
             CommunityStatus::Pending { request_id } => assert_eq!(*request_id, placeholder),
             other => panic!("expected unchanged Pending, got {other:?}"),
         }
@@ -1032,8 +999,8 @@ mod tests {
         let out =
             handle_join_status_response(&mut acct, &status_response(vtc, rid, "approved"), vtc);
         assert!(out.changed);
-        assert!(!out.inactivated, "approval keeps the live session");
-        let rec = acct.communities.get(vtc).unwrap();
+        assert!(out.inactivated.is_none(), "approval keeps the live session");
+        let rec = only(&acct, vtc);
         assert!(rec.status.is_active());
         assert!(
             rec.member_since.is_some(),
@@ -1051,10 +1018,10 @@ mod tests {
             handle_join_status_response(&mut acct, &status_response(vtc, rid, "rejected"), vtc);
         assert!(out.changed);
         assert!(
-            out.inactivated,
+            out.inactivated.is_some(),
             "a rejection must deregister the session (R-S-3)"
         );
-        let rec = acct.communities.get(vtc).unwrap();
+        let rec = only(&acct, vtc);
         assert!(matches!(rec.status, CommunityStatus::Rejected));
         assert!(
             rec.needs_attention(),
@@ -1072,10 +1039,10 @@ mod tests {
             handle_join_status_response(&mut acct, &status_response(vtc, rid, "withdrawn"), vtc);
         assert!(out.changed);
         assert!(
-            out.inactivated,
+            out.inactivated.is_some(),
             "a withdrawal must deregister the session (R-S-3)"
         );
-        let rec = acct.communities.get(vtc).unwrap();
+        let rec = only(&acct, vtc);
         assert!(matches!(rec.status, CommunityStatus::Withdrawn));
         assert!(
             !rec.needs_attention(),
@@ -1095,13 +1062,13 @@ mod tests {
             out.changed,
             "deferred is an acknowledgement — stamps receipt_at, needs persisting"
         );
-        assert!(!out.inactivated);
+        assert!(out.inactivated.is_none());
         assert!(
-            acct.communities.get(vtc).unwrap().receipt_at.is_some(),
+            only(&acct, vtc).receipt_at.is_some(),
             "the VTC responded — acknowledged"
         );
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Pending { .. }
         ));
     }
@@ -1134,9 +1101,9 @@ mod tests {
             vtc,
         );
         assert!(out.changed);
-        assert!(!out.inactivated);
+        assert!(out.inactivated.is_none());
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Active
         ));
     }
@@ -1154,9 +1121,9 @@ mod tests {
             vtc,
         );
         assert!(out.changed);
-        assert!(out.inactivated, "a deny deregisters the session");
+        assert!(out.inactivated.is_some(), "a deny deregisters the session");
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Rejected
         ));
     }
@@ -1174,7 +1141,7 @@ mod tests {
             vtc,
         );
         assert!(out.changed, "request_more acknowledges — stamps receipt_at");
-        let rec = acct.communities.get(vtc).unwrap();
+        let rec = only(&acct, vtc);
         assert!(matches!(rec.status, CommunityStatus::Pending { .. }));
         assert!(rec.receipt_at.is_some(), "the VTC responded — acknowledged");
     }
@@ -1191,9 +1158,53 @@ mod tests {
         );
         assert!(!out.changed);
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Pending { .. }
         ));
+    }
+
+    #[test]
+    fn reply_routes_to_the_matching_membership_only() {
+        // Two personas joined the SAME community; each Pending submit has its own
+        // request id. A verdict threaded on one must transition only that one.
+        let vtc = "did:webvh:example:vtc";
+        let (rid_a, rid_b) = (Uuid::new_v4(), Uuid::new_v4());
+        let (pa, pb) = (PersonaId::new(), PersonaId::new());
+        let mut acct = Account::default();
+        acct.add_membership(CommunityRecord::new_pending(
+            vtc.into(),
+            None,
+            "openvtc/x".into(),
+            pa,
+            rid_a,
+            Utc::now(),
+        ));
+        acct.add_membership(CommunityRecord::new_pending(
+            vtc.into(),
+            None,
+            "openvtc/x".into(),
+            pb,
+            rid_b,
+            Utc::now(),
+        ));
+
+        let out = handle_join_verdict(
+            &mut acct,
+            &verdict(&rid_a.to_string(), vtc, "allow", serde_json::json!({})),
+            vtc,
+        );
+        assert!(out.changed);
+        assert!(
+            acct.membership(vtc, pa).unwrap().status.is_active(),
+            "the membership whose request id matched is activated"
+        );
+        assert!(
+            matches!(
+                acct.membership(vtc, pb).unwrap().status,
+                CommunityStatus::Pending { .. }
+            ),
+            "the other persona's membership is untouched"
+        );
     }
 
     /// A framework `trust-task-error/0.2` document threaded on `thid`, carrying
@@ -1238,9 +1249,9 @@ mod tests {
             vtc,
         );
         assert!(out.changed);
-        assert!(out.inactivated, "a denial deregisters the session");
+        assert!(out.inactivated.is_some(), "a denial deregisters the session");
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Rejected
         ));
     }
@@ -1260,8 +1271,8 @@ mod tests {
             out.changed,
             "the VTC responded — stamps receipt_at, needs persisting"
         );
-        assert!(!out.inactivated, "recoverable — no terminal transition");
-        let rec = acct.communities.get(vtc).unwrap();
+        assert!(out.inactivated.is_none(), "recoverable — no terminal transition");
+        let rec = only(&acct, vtc);
         assert!(
             matches!(rec.status, CommunityStatus::Pending { .. }),
             "stays Pending so a corrected retry can succeed"
@@ -1283,7 +1294,7 @@ mod tests {
         );
         assert!(!out.changed);
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Pending { .. }
         ));
     }
@@ -1311,9 +1322,9 @@ mod tests {
             vtc,
         );
         assert!(out.changed);
-        assert!(out.inactivated);
+        assert!(out.inactivated.is_some());
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Rejected
         ));
     }
@@ -1331,7 +1342,7 @@ mod tests {
         );
         assert!(!out.changed, "a client/transient error must not mark Rejected");
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Pending { .. }
         ));
     }
@@ -1348,9 +1359,9 @@ mod tests {
             vtc,
         );
         assert!(!out.changed);
-        assert!(!out.inactivated);
+        assert!(out.inactivated.is_none());
         assert!(matches!(
-            acct.communities.get(vtc).unwrap().status,
+            only(&acct, vtc).status,
             CommunityStatus::Pending { .. }
         ));
     }
@@ -1384,17 +1395,14 @@ mod tests {
                 label: None,
             },
         );
-        acct.communities.insert(
+        acct.add_membership(CommunityRecord::new_pending(
             vtc.to_string(),
-            CommunityRecord::new_pending(
-                vtc.to_string(),
-                None,
-                "openvtc/x".to_string(),
-                pid,
-                Uuid::new_v4(),
-                Utc::now(),
-            ),
-        );
+            None,
+            "openvtc/x".to_string(),
+            pid,
+            Uuid::new_v4(),
+            Utc::now(),
+        ));
         acct
     }
 
@@ -1432,7 +1440,7 @@ mod tests {
         );
         assert!(handle_credential_issue(&mut acct, &m, vtc));
 
-        let rec = acct.communities.get(vtc).unwrap();
+        let rec = only(&acct, vtc);
         assert!(rec.status.is_active());
         assert!(
             rec.credentials
@@ -1456,7 +1464,7 @@ mod tests {
         );
         assert!(handle_credential_issue(&mut acct, &m, vtc));
 
-        let rec = acct.communities.get(vtc).unwrap();
+        let rec = only(&acct, vtc);
         assert!(
             !rec.status.is_active(),
             "role VEC must not activate on its own"
@@ -1483,7 +1491,7 @@ mod tests {
                 handle_credential_issue(&mut acct, &m, vtc),
                 "kind {kind:?} should be accepted",
             );
-            let rec = acct.communities.get(vtc).unwrap();
+            let rec = only(&acct, vtc);
             assert!(
                 rec.credentials.contains_key(kind),
                 "kind {kind:?} should be stored under its registry key",
@@ -1512,7 +1520,7 @@ mod tests {
             ),
         );
         assert!(!handle_credential_issue(&mut acct, &m, vtc));
-        assert!(!acct.communities.get(vtc).unwrap().status.is_active());
+        assert!(!only(&acct, vtc).status.is_active());
     }
 
     #[test]
@@ -1531,7 +1539,7 @@ mod tests {
             ),
         );
         assert!(!handle_credential_issue(&mut acct, &m, vtc));
-        assert!(!acct.communities.get(vtc).unwrap().status.is_active());
+        assert!(!only(&acct, vtc).status.is_active());
     }
 
     #[test]

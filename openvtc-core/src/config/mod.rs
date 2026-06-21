@@ -426,8 +426,7 @@ impl Config {
     /// listener per persona so each is named after its community.
     pub fn persona_profile_label_for(&self, persona_id: account::PersonaId) -> String {
         self.account
-            .communities
-            .values()
+            .memberships()
             .find(|c| c.persona_ref == persona_id)
             .map(|c| {
                 c.display_name.clone().unwrap_or_else(|| {

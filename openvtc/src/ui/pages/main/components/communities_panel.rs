@@ -65,31 +65,44 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
 
     for (i, c) in state.items.iter().enumerate() {
         let is_selected = i == state.selected_index;
-        let prefix = if is_selected { "▸ " } else { "  " };
-        let name_style = if is_selected {
+        // A community may hold several memberships (one per persona). Rows are
+        // grouped: the community name is shown once as a header, then each
+        // membership is a selectable sub-row labelled by its presented persona.
+        let new_group = i == 0 || state.items[i - 1].vtc_did != c.vtc_did;
+        if new_group {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", c.display_name),
+                Style::new().fg(COLOR_TEXT_DEFAULT).bold(),
+            )));
+        }
+
+        let row_style = if is_selected {
             Style::new().fg(COLOR_SUCCESS).bold()
         } else if c.is_inactive {
-            // Inactive communities are read-only (D14) — dimmed in the list.
+            // Inactive memberships are read-only (D14) — dimmed in the list.
             Style::new().fg(COLOR_DARK_GRAY)
         } else {
             Style::new().fg(COLOR_TEXT_DEFAULT)
         };
-
-        let star = if c.favourite { "★ " } else { "  " };
+        let prefix = if is_selected { "    ▸ " } else { "      " };
+        let star = if c.favourite { "★ " } else { "" };
         let attention = if c.needs_attention { " ●" } else { "" };
+        let persona = if c.persona_label.is_empty() {
+            c.persona_did.clone()
+        } else {
+            c.persona_label.clone()
+        };
 
+        // Membership sub-row: the presented persona is the selectable label.
         lines.push(Line::from(vec![
-            Span::styled(prefix, name_style),
+            Span::styled(prefix, row_style),
             Span::styled(star, Style::new().fg(COLOR_ORANGE)),
-            Span::styled(c.display_name.clone(), name_style),
+            Span::styled(format!("as {persona}"), row_style),
             Span::styled(attention, Style::new().fg(COLOR_ORANGE)),
         ]));
 
-        // Secondary line: status · persona · member-since.
-        let mut detail = format!("    {}", c.status_label);
-        if !c.persona_label.is_empty() {
-            detail.push_str(&format!("  ·  as {}", c.persona_label));
-        }
+        // Secondary line: status · member-since.
+        let mut detail = format!("        {}", c.status_label);
         if !c.member_since.is_empty() {
             detail.push_str(&format!("  ·  since {}", c.member_since));
         }

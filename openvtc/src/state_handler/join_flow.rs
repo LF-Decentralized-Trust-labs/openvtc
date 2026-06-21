@@ -152,17 +152,10 @@ impl StateHandler {
                             let Some(vtc_did) = validate_join_input(&vtc_did) else {
                                 continue;
                             };
-                            // Idempotency (R-B-9): refuse a duplicate live/pending
-                            // membership before bothering the user with an identity
-                            // choice.
-                            if is_duplicate_membership(config, &vtc_did) {
-                                state.join.page = JoinPage::Progress;
-                                state.join.fail(
-                                    "Already a member of (or have a pending request for) this community.",
-                                );
-                                let _ = self.state_tx.send(state.clone());
-                                continue;
-                            }
+                            // Idempotency is now per-persona (R-B-9): a community may
+                            // be joined as more than one persona, so the duplicate
+                            // check happens once the identity is chosen (in the
+                            // sequence) rather than at the community level here.
                             // Identity first: collect the invitations available for
                             // this community so each persona can be badged with its
                             // usable-invitation count, then let the operator pick the
@@ -432,8 +425,7 @@ fn build_persona_options(config: &Config, vics: &[AvailableVic]) -> Vec<PersonaO
         .map(|p| {
             let mut linked_communities: Vec<String> = config
                 .account
-                .communities
-                .values()
+                .memberships()
                 .filter(|c| c.persona_ref == p.persona_id)
                 .map(|c| {
                     c.display_name
@@ -618,15 +610,13 @@ async fn build_linkage_proof(
 /// Idempotency decision (R-B-9): is there already a *live* (Active/Pending)
 /// membership for this VTC?
 ///
-/// Pure decision peeled out of step 1 of [`run_join_sequence`]; a `true` result
-/// surfaces the "already a member" failure instead of submitting a duplicate.
-/// Delegates to [`Account::live_community`] so the live/inactive policy stays in
-/// one place.
-fn is_duplicate_membership(config: &Config, vtc_did: &str) -> bool {
-    config
-        .account
-        .live_community(&vtc_did.to_string())
-        .is_some()
+/// Whether a *live* (Active/Pending) membership already exists for this community
+/// **as this persona** — the per-persona join idempotency gate (R-B-9). A
+/// community may be joined more than once, but not twice as the same persona, so
+/// the check is keyed on `(vtc, persona)` and only blocks the reuse path (a
+/// freshly minted persona can never collide).
+fn is_duplicate_membership(config: &Config, vtc_did: &str, persona: PersonaId) -> bool {
+    config.account.has_live_membership(vtc_did, persona)
 }
 
 /// Build the `Pending` [`CommunityRecord`] recorded on a successful submit.
@@ -703,6 +693,14 @@ async fn run_join_sequence(
     let (persona_id, persona_did) = match choice {
         JoinIdentityChoice::Reuse(persona_id) => match config.identities.get(&persona_id) {
             Some(ident) => {
+                // Per-persona idempotency (R-B-9): block a second live membership
+                // as the *same* persona, while still allowing other personas.
+                if is_duplicate_membership(config, &vtc_did, persona_id) {
+                    state.join.fail(
+                        "Already a member of (or have a pending request for) this community as this persona.",
+                    );
+                    return;
+                }
                 let did = ident.persona_did().to_string();
                 state.join.info(format!("Reusing persona {did}…"));
                 let _ = handler.state_tx.send(state.clone());
@@ -835,11 +833,7 @@ async fn run_join_sequence(
     // 6. Derive the per-community sub-context id (D9, collision-safe).
     let sub_context_id =
         match build_sub_context_id(&top_context_id, display_name.as_deref(), &vtc_did, |id| {
-            config
-                .account
-                .communities
-                .values()
-                .any(|c| c.sub_context_id == id)
+            config.account.memberships().any(|c| c.sub_context_id == id)
         }) {
             Ok(id) => id,
             Err(e) => {
@@ -1045,7 +1039,7 @@ async fn run_join_sequence(
         request_id,
         Utc::now(),
     );
-    config.account.communities.insert(vtc_did, record.clone());
+    config.account.add_membership(record.clone());
     if let Err(e) = save_config(config, profile) {
         state
             .join
@@ -1205,6 +1199,7 @@ mod tests {
             (Some(CommunityStatus::Expired), false),
         ];
         let vtc = "did:vtc:known";
+        let persona = PersonaId::new();
         for (status, expected) in cases {
             let mut config = test_config();
             if let Some(status) = status {
@@ -1212,22 +1207,27 @@ mod tests {
                     vtc.to_string(),
                     None,
                     "ctx/slug".to_string(),
-                    PersonaId::new(),
+                    persona,
                     uuid::Uuid::new_v4(),
                     chrono::Utc::now(),
                 );
                 rec.status = status.clone();
-                config.account.communities.insert(vtc.to_string(), rec);
+                config.account.add_membership(rec);
             }
             assert_eq!(
-                is_duplicate_membership(&config, vtc),
+                is_duplicate_membership(&config, vtc, persona),
                 *expected,
                 "is_duplicate_membership for status {status:?}"
             );
             // An unrelated DID is never a duplicate regardless of registered state.
             assert!(
-                !is_duplicate_membership(&config, "did:vtc:other"),
+                !is_duplicate_membership(&config, "did:vtc:other", persona),
                 "unknown DID is not a duplicate (status {status:?})"
+            );
+            // The same community as a *different* persona is not a duplicate.
+            assert!(
+                !is_duplicate_membership(&config, vtc, PersonaId::new()),
+                "different persona is not a duplicate (status {status:?})"
             );
         }
     }

@@ -2116,13 +2116,20 @@ impl MainPage {
             .map(|(i, item)| {
                 let marker = if i == switcher.selected { "▸ " } else { "  " };
                 let current = if item.is_current { "  (active)" } else { "" };
+                // Disambiguate multiple memberships of the same community by the
+                // presented persona.
+                let persona = if item.persona_label.is_empty() {
+                    String::new()
+                } else {
+                    format!("  as {}", item.persona_label)
+                };
                 let style = if i == switcher.selected {
                     Style::new().fg(COLOR_SUCCESS).bold()
                 } else {
                     Style::new().fg(COLOR_TEXT_DEFAULT)
                 };
                 Line::from(Span::styled(
-                    format!("{marker}{}{current}", item.display_name),
+                    format!("{marker}{}{persona}{current}", item.display_name),
                     style,
                 ))
             })
@@ -2423,7 +2430,9 @@ mod key_handler_tests {
     fn switcher_item(name: &str, is_current: bool) -> SwitcherItem {
         SwitcherItem {
             vtc_did: format!("did:example:{name}"),
+            persona_ref: openvtc_core::config::account::PersonaId::new(),
             display_name: name.to_string(),
+            persona_label: String::new(),
             is_current,
         }
     }

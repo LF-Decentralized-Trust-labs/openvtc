@@ -24,7 +24,14 @@ pub struct State {
     ///
     /// Runtime-only (not persisted): re-defaulted from the account on each launch
     /// via [`State::reconcile_selected_community`].
-    pub selected_community: Option<openvtc_core::config::account::VtcDid>,
+    ///
+    /// A *membership* reference — the community DID plus the presented persona —
+    /// since a community may hold more than one membership (one per persona). The
+    /// persona half is the working persona that scopes the panels.
+    pub selected_community: Option<(
+        openvtc_core::config::account::VtcDid,
+        openvtc_core::config::account::PersonaId,
+    )>,
 
     /// Rotating-tip index for the startup loading screen, advanced as startup
     /// steps stream so the tip changes during the load/connect.
@@ -70,15 +77,15 @@ impl State {
         &mut self,
         account: &openvtc_core::config::account::Account,
     ) {
-        if let Some(selected) = &self.selected_community
+        if let Some((vtc, persona)) = &self.selected_community
             && !account
-                .community(selected)
+                .membership(vtc, *persona)
                 .is_some_and(|c| c.status.is_active())
         {
             self.selected_community = None;
         }
         if self.selected_community.is_none() {
-            self.selected_community = account.default_working_community();
+            self.selected_community = account.default_working_membership();
         }
     }
 }
@@ -299,19 +306,22 @@ mod tests {
             now,
         );
         active.activate(now);
-        account.communities.insert(active.vtc_did.clone(), active);
+        account.add_membership(active);
 
         let mut state = State::default();
         assert_eq!(state.selected_community, None);
 
         // With one active community and no selection, reconcile defaults to it.
         state.reconcile_selected_community(&account);
-        assert_eq!(state.selected_community.as_deref(), Some("did:web:vtc-a"));
+        assert_eq!(
+            state.selected_community,
+            Some(("did:web:vtc-a".to_string(), pid))
+        );
 
         // Once it leaves (no longer active), the stale selection is dropped and
         // there is nothing to default to → no active community.
         account
-            .community_mut(&"did:web:vtc-a".to_string())
+            .membership_mut("did:web:vtc-a", pid)
             .unwrap()
             .leave();
         state.reconcile_selected_community(&account);

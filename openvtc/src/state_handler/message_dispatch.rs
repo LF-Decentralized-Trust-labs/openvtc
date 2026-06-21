@@ -54,7 +54,7 @@ pub async fn process_inbound_message(
     service: &DIDCommService,
     seen: &mut SeenMessages,
     message: &Message,
-    inactivated: &mut Vec<VtcDid>,
+    inactivated: &mut Vec<(VtcDid, openvtc_core::config::account::PersonaId)>,
 ) -> Result<bool, anyhow::Error> {
     // Drop messages outside the replay / freshness window before doing
     // any state-mutating work. Saves us from acting on stale captures
@@ -157,8 +157,8 @@ pub async fn process_inbound_message(
     // rejection inactivates the community so the loop deregisters the session.
     if message.typ == JOIN_REQUEST_SUBMIT_RESPONSE_TYPE {
         let outcome = handle_join_verdict(&mut config.account, message, &from_did);
-        if outcome.inactivated {
-            inactivated.push(from_did.to_string());
+        if let Some(persona) = outcome.inactivated {
+            inactivated.push((from_did.to_string(), persona));
         }
         return Ok(outcome.changed);
     }
@@ -170,8 +170,8 @@ pub async fn process_inbound_message(
     // is no longer silently dropped into a stuck `Pending`.
     if message.typ == PROBLEM_REPORT_TYPE {
         let outcome = handle_join_problem_report(&mut config.account, message, &from_did);
-        if outcome.inactivated {
-            inactivated.push(from_did.to_string());
+        if let Some(persona) = outcome.inactivated {
+            inactivated.push((from_did.to_string(), persona));
         }
         return Ok(outcome.changed);
     }
@@ -183,8 +183,8 @@ pub async fn process_inbound_message(
     // into a stuck `Pending`. Matched by type prefix (version-agnostic).
     if is_trust_task_error_type(&message.typ) {
         let outcome = handle_join_trust_task_error(&mut config.account, message, &from_did);
-        if outcome.inactivated {
-            inactivated.push(from_did.to_string());
+        if let Some(persona) = outcome.inactivated {
+            inactivated.push((from_did.to_string(), persona));
         }
         return Ok(outcome.changed);
     }
@@ -195,8 +195,8 @@ pub async fn process_inbound_message(
     // VTC DID up so the loop deregisters the session (R-S-3).
     if message.typ == JOIN_REQUEST_STATUS_RESPONSE_TYPE {
         let outcome = handle_join_status_response(&mut config.account, message, &from_did);
-        if outcome.inactivated {
-            inactivated.push(from_did.to_string());
+        if let Some(persona) = outcome.inactivated {
+            inactivated.push((from_did.to_string(), persona));
         }
         return Ok(outcome.changed);
     }
