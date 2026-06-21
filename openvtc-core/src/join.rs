@@ -144,12 +144,20 @@ pub async fn submit_self_remove(
 /// `invitation` is the signed VIC as received out-of-band (a Data-Integrity VC,
 /// object form with its own `proof`). When `None`, the VP carries no
 /// credentials and the join falls to the community's other evidence / review.
+///
+/// The envelope carries the W3C VC Data Model 2.0 base `@context` (required: the
+/// first value MUST be `https://www.w3.org/ns/credentials/v2`) and the
+/// `VerifiablePresentation` `type`, so the artifact is a well-formed VP. It is
+/// *unsecured* by a VP-level proof on purpose — over DIDComm the authcrypt sender
+/// is the holder authentication — so it is a "presentation" the transport makes
+/// verifiable, not a self-secured one.
 pub fn build_join_vp(
     holder_did: &str,
     invitation: Option<&Value>,
     linkage: Option<&SubjectLinkage>,
 ) -> Value {
     let mut vp = serde_json::json!({
+        "@context": ["https://www.w3.org/ns/credentials/v2"],
         "type": "VerifiablePresentation",
         "holder": holder_did,
     });
@@ -278,6 +286,76 @@ pub fn is_invitation_credential(value: &Value) -> bool {
         })
 }
 
+/// Validate that `vic` is a **complete, presentable** Invitation Credential, not
+/// a summary/display projection. Returns a human-readable error naming every
+/// missing/malformed field so a holder who pasted the wrong artifact (e.g. the
+/// operator-UI summary instead of the signed credential the VTC issued for
+/// out-of-band delivery) finds out *at ingest*, rather than silently submitting
+/// an open request the VTC refers to a moderator.
+///
+/// The required set is the intersection of:
+/// - **W3C VC Data Model 2.0** mandatory properties: `@context` (ordered set
+///   whose first value is `https://www.w3.org/ns/credentials/v2`), `type`
+///   (here ⊇ `VerifiableCredential` + `InvitationCredential`), `issuer`,
+///   `credentialSubject` (with an `id`), and a securing `proof`.
+/// - the **VIC profile** the receiving VTC enforces: a top-level `id` (the
+///   single-use consumption handle — W3C makes `id` optional, the VIC profile
+///   does not), `validUntil` (the invite's expiry), and `credentialStatus`
+///   (issuance burns a revocation slot, so a VIC always carries one).
+///
+/// `proof` / `credentialStatus` are not *re-verified* here (that is the VTC's
+/// job at submit) — their mere presence is what distinguishes a real signed VIC
+/// from a stripped copy.
+pub fn validate_invitation_credential(vic: &Value) -> Result<(), String> {
+    let mut missing: Vec<&str> = Vec::new();
+
+    // @context — present, an array, first element the v2 base URL.
+    match vic.get("@context").and_then(Value::as_array) {
+        Some(ctx)
+            if ctx.first().and_then(Value::as_str) == Some("https://www.w3.org/ns/credentials/v2") => {}
+        _ => missing.push("@context (must be an array whose first item is \"https://www.w3.org/ns/credentials/v2\")"),
+    }
+    if !is_invitation_credential(vic) {
+        missing
+            .push("type (array containing \"VerifiableCredential\" and \"InvitationCredential\")");
+    } else if !vic
+        .get("type")
+        .and_then(Value::as_array)
+        .is_some_and(|t| t.iter().any(|v| v.as_str() == Some("VerifiableCredential")))
+    {
+        missing.push("type entry \"VerifiableCredential\"");
+    }
+    if invitation_issuer(vic).is_none() {
+        missing.push("issuer (a DID string or an object with an `id`)");
+    }
+    if invitation_subject(vic).is_none() {
+        missing.push("credentialSubject.id");
+    }
+    if invitation_id(vic).is_none() {
+        missing.push("id (top-level, the single-use consumption handle)");
+    }
+    if vic.get("validUntil").and_then(Value::as_str).is_none() {
+        missing.push("validUntil (RFC3339 expiry)");
+    }
+    if vic.get("credentialStatus").is_none() {
+        missing.push("credentialStatus (revocation handle)");
+    }
+    if vic.get("proof").is_none() {
+        missing.push("proof (the issuer's Data-Integrity signature)");
+    }
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "not a complete Invitation Credential — missing or malformed: {}. \
+             Paste the full signed credential the community issued (the copy/QR \
+             payload), not a summary view.",
+            missing.join("; ")
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,6 +429,57 @@ mod tests {
     }
 
     #[test]
+    fn vp_carries_the_w3c_base_context() {
+        // W3C VC Data Model 2.0: a VP MUST carry `@context` whose first value is
+        // the v2 base URL.
+        let vp = build_join_vp("did:webvh:example.com:alice", None, None);
+        assert_eq!(
+            vp["@context"][0], "https://www.w3.org/ns/credentials/v2",
+            "VP @context must lead with the W3C v2 base context"
+        );
+    }
+
+    /// A complete, presentable VIC — every field `validate_invitation_credential`
+    /// requires. Distinct from [`sample_vic`], which is intentionally minimal.
+    fn complete_vic() -> Value {
+        json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "id": "urn:uuid:vic-1",
+            "type": ["VerifiableCredential", "InvitationCredential"],
+            "issuer": "did:webvh:example.com:community",
+            "credentialSubject": { "id": "did:webvh:example.com:alice" },
+            "validUntil": "2099-01-01T00:00:00Z",
+            "credentialStatus": { "type": "BitstringStatusListEntry" },
+            "proof": { "type": "DataIntegrityProof" }
+        })
+    }
+
+    #[test]
+    fn validate_accepts_a_complete_vic() {
+        assert!(validate_invitation_credential(&complete_vic()).is_ok());
+        // Object-form issuer is accepted too.
+        let mut v = complete_vic();
+        v["issuer"] = json!({ "id": "did:webvh:example.com:community" });
+        assert!(validate_invitation_credential(&v).is_ok());
+    }
+
+    #[test]
+    fn validate_names_every_missing_field_on_a_stripped_vic() {
+        // The exact shape that silently fell through to moderator review: a
+        // summary missing id / proof / validUntil / credentialStatus / @context.
+        let stripped = json!({
+            "type": ["VerifiableCredential", "DTGCredential", "InvitationCredential"],
+            "issuer": "did:webvh:example.com:community",
+            "credentialSubject": { "id": "did:webvh:example.com:alice" },
+            "validFrom": "2026-06-20T23:11:53Z"
+        });
+        let err = validate_invitation_credential(&stripped).expect_err("incomplete");
+        for needle in ["@context", "id", "validUntil", "credentialStatus", "proof"] {
+            assert!(err.contains(needle), "error should name `{needle}`: {err}");
+        }
+    }
+
+    #[test]
     fn subject_and_id_extractors() {
         let vic = sample_vic();
         assert_eq!(
@@ -389,7 +518,10 @@ mod tests {
             doc.recipient.as_deref(),
             Some("did:webvh:example.com:community")
         );
-        assert!(doc.proof.is_none(), "DIDComm submit is unsigned (authcrypt)");
+        assert!(
+            doc.proof.is_none(),
+            "DIDComm submit is unsigned (authcrypt)"
+        );
         // The submit body rides as the document payload, VIC and all.
         assert_eq!(doc.payload["vp"]["holder"], "did:webvh:example.com:alice");
         assert!(doc.payload["vp"]["verifiableCredential"].is_array());

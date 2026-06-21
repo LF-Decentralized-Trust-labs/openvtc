@@ -37,15 +37,14 @@ pub(crate) async fn list_vics(
     Ok(creds.iter().map(VicSummary::from_descriptor).collect())
 }
 
-/// Import a pasted VIC into the vault: validate it is an InvitationCredential,
-/// then store it via `cred_vault_receive`. The vault keys it under the VC's own
-/// `id`.
+/// Import a pasted VIC into the vault: validate it is a *complete* Invitation
+/// Credential, then store it via `cred_vault_receive`. The vault keys it under
+/// the VC's own `id` — so a stripped copy with no top-level `id` could never be
+/// retrieved for presentation anyway; rejecting it here gives a clear reason.
 pub(crate) async fn add_vic(admin_vta: &VtaClient, json: &str) -> Result<()> {
     let vic: serde_json::Value =
         serde_json::from_str(json.trim()).map_err(|e| anyhow::anyhow!("not valid JSON: {e}"))?;
-    if !openvtc_core::join::is_invitation_credential(&vic) {
-        anyhow::bail!("not an invitation credential (missing the `InvitationCredential` type tag)");
-    }
+    openvtc_core::join::validate_invitation_credential(&vic).map_err(|e| anyhow::anyhow!(e))?;
     admin_vta.cred_vault_receive(vic, None).await?;
     Ok(())
 }

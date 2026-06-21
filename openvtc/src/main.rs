@@ -114,6 +114,10 @@ async fn main() -> Result<()> {
                 .map_err(|e| anyhow::anyhow!("failed to read invitation file `{path}`: {e}"))?;
             let vic: serde_json::Value = serde_json::from_str(&raw)
                 .map_err(|e| anyhow::anyhow!("invitation file `{path}` is not valid JSON: {e}"))?;
+            // Fail fast on a stripped/summary VIC rather than silently presenting
+            // an unusable credential the VTC refers to a moderator.
+            openvtc_core::join::validate_invitation_credential(&vic)
+                .map_err(|e| anyhow::anyhow!("invitation file `{path}`: {e}"))?;
             Some(vic)
         }
         None => None,

@@ -115,19 +115,25 @@ impl StateHandler {
                             // VIC and stash it so the join presents it (mirrors the
                             // `--invitation <file>` launch flag).
                             match serde_json::from_str::<serde_json::Value>(&text) {
-                                Ok(vic)
-                                    if openvtc_core::join::is_invitation_credential(&vic) =>
-                                {
-                                    state.invitation_credential = Some(vic);
-                                    state.join.has_invitation = true;
-                                    state.join.vic_cleared = false;
-                                    state.join.messages.clear();
-                                }
-                                _ => {
-                                    state.join.messages.push(MessageType::Error(
-                                        "Pasted text is not a valid invitation credential."
-                                            .to_string(),
-                                    ));
+                                Ok(vic) => match openvtc_core::join::validate_invitation_credential(
+                                    &vic,
+                                ) {
+                                    Ok(()) => {
+                                        state.invitation_credential = Some(vic);
+                                        state.join.has_invitation = true;
+                                        state.join.vic_cleared = false;
+                                        state.join.messages.clear();
+                                    }
+                                    Err(why) => {
+                                        state.join.messages.push(MessageType::Error(format!(
+                                            "Pasted invitation is not usable: {why}"
+                                        )));
+                                    }
+                                },
+                                Err(e) => {
+                                    state.join.messages.push(MessageType::Error(format!(
+                                        "Pasted text is not valid JSON: {e}"
+                                    )));
                                 }
                             }
                             let _ = self.state_tx.send(state.clone());
@@ -810,16 +816,31 @@ async fn run_join_sequence(
     if presentable.is_none() {
         presentable = load_invitation_from_vault(admin_vta, &vtc_did).await;
     }
+    // Completeness gate before presenting: a VIC resolved from the vault may
+    // predate the ingest-time validation (or have lost fields in storage). An
+    // incomplete VIC is unusable — the VTC can't extract it and silently refers
+    // the join to a moderator — so drop it here and fall to an open request with
+    // a clear reason, rather than presenting junk.
+    if let Some(vic) = &presentable
+        && let Err(why) = openvtc_core::join::validate_invitation_credential(vic)
+    {
+        state.join.info(format!(
+            "Resolved invitation is incomplete ({why}) — submitting as an open request instead."
+        ));
+        presentable = None;
+    }
     state.invitation_credential = presentable;
     state.join.has_invitation = state.invitation_credential.is_some();
-    state.join.presented_invitation = state.invitation_credential.as_ref().map(|vic| {
-        PresentedInvitation {
-            id: openvtc_core::join::invitation_id(vic)
-                .unwrap_or_default()
-                .to_string(),
-            subject: openvtc_core::join::invitation_subject(vic).map(str::to_string),
-        }
-    });
+    state.join.presented_invitation =
+        state
+            .invitation_credential
+            .as_ref()
+            .map(|vic| PresentedInvitation {
+                id: openvtc_core::join::invitation_id(vic)
+                    .unwrap_or_default()
+                    .to_string(),
+                subject: openvtc_core::join::invitation_subject(vic).map(str::to_string),
+            });
 
     // Present the holder VP. When a matching, unexpired invitation (VIC) is
     // resolved it rides in the VP's `verifiableCredential` array; the VTC
