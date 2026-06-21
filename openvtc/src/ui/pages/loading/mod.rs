@@ -245,14 +245,19 @@ impl ComponentRender<()> for LoadingScreen {
             .flex(Flex::Center)
             .areas(area);
 
+        // +2: one line for the version under the logo, one as a spacer.
         let [banner_area, body_area, footer_area] =
-            Layout::vertical([Length(BANNER.len() as u16 + 1), Min(0), Length(1)]).areas(col);
+            Layout::vertical([Length(BANNER.len() as u16 + 2), Min(0), Length(1)]).areas(col);
 
-        // Banner.
-        let banner: Vec<Line> = BANNER
+        // Banner, with the build version under the logo.
+        let mut banner: Vec<Line> = BANNER
             .iter()
             .map(|l| Line::styled(*l, Style::new().fg(COLOR_SOFT_PURPLE).bold()))
             .collect();
+        banner.push(Line::styled(
+            format!("v{}", env!("CARGO_PKG_VERSION")),
+            Style::new().fg(COLOR_DARK_GRAY),
+        ));
         frame.render_widget(Paragraph::new(banner).centered(), banner_area);
 
         let mut lines: Vec<Line> = Vec::new();
