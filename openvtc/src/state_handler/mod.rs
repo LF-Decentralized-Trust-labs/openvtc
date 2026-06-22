@@ -861,6 +861,96 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::IssueMemberVmc(i) => {
+                        // Issue this membership's reciprocal VMC (member -> community)
+                        // and send it to the VTC over DIDComm (members/vmc/1.0). The
+                        // VMC's issuer is the membership's persona, its subject is the
+                        // community VTC DID; it's signed with that persona's key.
+                        use openvtc_core::errors::OpenVTCError;
+                        let target = config
+                            .account
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
+                            .get(i)
+                            .filter(|c| c.status.is_active())
+                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
+                        if let Some((vtc, persona_id)) = target {
+                            let member_did = config
+                                .identities
+                                .get(&persona_id)
+                                .map(|id| id.persona_did().to_string());
+                            let send: Result<(), OpenVTCError> = match (member_did, tdk.atm.as_ref()) {
+                                (Some(member_did), Some(atm)) => {
+                                    let mut vmc = dtg_credentials::DTGCredential::new_vmc(
+                                        member_did.clone(),
+                                        vtc.clone(),
+                                        chrono::Utc::now(),
+                                        None,
+                                        false,
+                                    );
+                                    match config.get_persona_keys_for(persona_id, &tdk).await {
+                                        Ok(keys) => match vmc.sign(&keys.signing.secret, None).await {
+                                            Ok(_) => {
+                                                let vc = serde_json::to_value(&vmc).map_err(|e| {
+                                                    OpenVTCError::Config(format!(
+                                                        "serialize member VMC: {e}"
+                                                    ))
+                                                });
+                                                let routing = config.identities.get(&persona_id).map(
+                                                    |id| {
+                                                        (
+                                                            id.profile().clone(),
+                                                            id.mediator_did.clone().unwrap_or_default(),
+                                                        )
+                                                    },
+                                                );
+                                                match (vc, routing) {
+                                                    (Ok(vc), Some((profile, mediator))) => {
+                                                        openvtc_core::members::submit_member_vmc(
+                                                            atm,
+                                                            &profile,
+                                                            &member_did,
+                                                            &vtc,
+                                                            &mediator,
+                                                            vc,
+                                                        )
+                                                        .await
+                                                        .map(|_| ())
+                                                    }
+                                                    (Err(e), _) => Err(e),
+                                                    (_, None) => Err(OpenVTCError::Config(
+                                                        "Persona runtime identity unavailable.".into(),
+                                                    )),
+                                                }
+                                            }
+                                            Err(e) => Err(OpenVTCError::Config(format!(
+                                                "sign member VMC: {e}"
+                                            ))),
+                                        },
+                                        Err(e) => Err(e),
+                                    }
+                                }
+                                _ => Err(OpenVTCError::Config(
+                                    "Messaging/identity unavailable — cannot issue the membership credential."
+                                        .into(),
+                                )),
+                            };
+                            match send {
+                                Ok(()) => {
+                                    state.main_page.content_panel.communities.status_message = Some(
+                                        "Membership credential issued and sent to the community."
+                                            .to_string(),
+                                    );
+                                }
+                                Err(e) => {
+                                    state
+                                        .main_page
+                                        .log_error("Issue membership credential failed", &e);
+                                    state.main_page.content_panel.communities.status_message =
+                                        Some(format!("Couldn't issue the membership credential: {e}"));
+                                }
+                            }
+                        }
+                    },
                     Action::WithdrawJoin(i) => {
                         // Cancel a Pending join: best-effort notify the VTC, set
                         // the record `Withdrawn`, and tear down its now-dead

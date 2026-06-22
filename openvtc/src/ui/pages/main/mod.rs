@@ -596,6 +596,12 @@ impl MainPage {
                 let _ = self.action_tx.send(Action::CommunityConfirmLeave(selected));
                 true
             }
+            KeyCode::Char('m') if sel_active => {
+                // Issue this membership's reciprocal VMC back to the community and
+                // send it to the VTC (members/vmc/1.0). Active-only.
+                let _ = self.action_tx.send(Action::IssueMemberVmc(selected));
+                true
+            }
             // Cancel is pending-only: a Pending join can be withdrawn (arming on
             // any other state would only fail downstream, so it's gated).
             KeyCode::Char('c') if sel_pending => {
@@ -2546,6 +2552,13 @@ mod key_handler_tests {
         match rx.try_recv() {
             Ok(Action::CommunityConfirmLeave(0)) => {}
             _ => panic!("expected CommunityConfirmLeave(0)"),
+        }
+        // Active row: `m` issues this membership's reciprocal VMC to the community.
+        let (mut page, mut rx) = active();
+        page.handle_key_event(press(KeyCode::Char('m')));
+        match rx.try_recv() {
+            Ok(Action::IssueMemberVmc(0)) => {}
+            _ => panic!("expected IssueMemberVmc(0)"),
         }
         // Active row: `c` (cancel pending join) does nothing.
         let (mut page, mut rx) = active();

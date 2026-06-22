@@ -92,6 +92,43 @@ impl Config {
         })
     }
 
+    /// Like [`Self::get_persona_keys`] but for a *specific* persona, not the active
+    /// one — needed when an action targets a membership whose persona is not the
+    /// current working identity (e.g. issuing a member VMC from a community row).
+    pub async fn get_persona_keys_for(
+        &self,
+        persona_id: crate::config::account::PersonaId,
+        tdk: &TDK,
+    ) -> Result<PersonaDIDKeys, OpenVTCError> {
+        let doc = self
+            .identities
+            .get(&persona_id)
+            .ok_or_else(|| OpenVTCError::Config("Unknown persona identity".to_string()))?
+            .document();
+        let signing = resolve_key_from_document(
+            &doc.assertion_method,
+            "assertion methods",
+            tdk,
+            &self.key_info,
+        )
+        .await?;
+        let authentication = resolve_key_from_document(
+            &doc.authentication,
+            "authentication methods",
+            tdk,
+            &self.key_info,
+        )
+        .await?;
+        let decryption =
+            resolve_key_from_document(&doc.key_agreement, "key agreements", tdk, &self.key_info)
+                .await?;
+        Ok(PersonaDIDKeys {
+            signing,
+            authentication,
+            decryption,
+        })
+    }
+
     /// Build a subject-linkage proof (#1b) authorizing `presenter_did` to redeem
     /// the invitation `vic_id` that is bound to `subject_did` — one of *our*
     /// personas. Signs `TAG‖vic_id‖presenter` with that persona's signing key

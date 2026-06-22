@@ -2497,7 +2497,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "vta-sdk 0.18.1",
+ "vta-sdk 0.18.2",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -5463,7 +5463,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.18.1",
+ "vta-sdk 0.18.2",
  "windows-native-keyring-store",
  "x25519-dalek",
  "zeroize",
@@ -5514,7 +5514,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.18.1",
+ "vta-sdk 0.18.2",
  "vta-service",
  "x25519-dalek",
  "zeroize",
@@ -8928,7 +8928,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "thiserror 2.0.18",
- "vta-sdk 0.18.1",
+ "vta-sdk 0.18.2",
  "vti-common",
  "x25519-dalek",
 ]
@@ -8965,9 +8965,9 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.18.1"
+version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "37c4f9cca1d6a6721a4ef53aab46337f6b8555fa4303c8ebe47f6b93974089bb"
+checksum = "4d3a736a39a3d285dc729b7fb347c95d3567697c4f74b72c178c3c54460d4cfe"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9072,7 +9072,7 @@ dependencies = [
  "utoipa-axum",
  "uuid",
  "vta-cli-common",
- "vta-sdk 0.18.1",
+ "vta-sdk 0.18.2",
  "vti-common",
  "vti-secrets",
  "vti-webauthn",
@@ -9116,7 +9116,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.18.1",
+ "vta-sdk 0.18.2",
  "webauthn-rs",
  "zeroize",
 ]

@@ -35,6 +35,7 @@ use vta_sdk::protocols::join_requests::{
     JOIN_REQUEST_STATUS_RESPONSE_TYPE, JOIN_REQUEST_SUBMIT_RECEIPT_TYPE,
     JOIN_REQUEST_SUBMIT_RESPONSE_TYPE,
 };
+use vta_sdk::protocols::members::{MEMBER_REQUEST_VMC_TYPE, MEMBER_VMC_RESPONSE_TYPE};
 
 /// Maximum allowed message body size in bytes (1 MB).
 const MAX_MESSAGE_BODY_SIZE: usize = 1_048_576;
@@ -199,6 +200,24 @@ pub async fn process_inbound_message(
             inactivated.push((from_did.to_string(), persona));
         }
         return Ok(outcome.changed);
+    }
+
+    // VTC member-VMC receipt (`members/vmc/1.0#response`): the VTC acknowledging
+    // the reciprocal VMC we sent. Informational — log and move on.
+    if message.typ == MEMBER_VMC_RESPONSE_TYPE {
+        info!(vtc = %from_did, "VTC acknowledged our membership credential (member VMC receipt)");
+        return Ok(false);
+    }
+
+    // VTC → member: "please issue + send your VMC" (`members/request-vmc/1.0`).
+    // Surfaced so it isn't dropped as unknown; the member answers with the
+    // `m` action on the community (auto-answer is a follow-up).
+    if message.typ == MEMBER_REQUEST_VMC_TYPE {
+        info!(
+            vtc = %from_did,
+            "community requested our membership credential — issue it from the community row ('m')"
+        );
+        return Ok(false);
     }
 
     let msg_type = match MessageType::try_from(message) {
