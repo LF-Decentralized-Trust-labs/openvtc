@@ -43,6 +43,40 @@ const MAX_MESSAGE_BODY_SIZE: usize = 1_048_576;
 /// Maximum number of relationships allowed before rejecting new requests.
 const MAX_RELATIONSHIPS: usize = 5_000;
 
+/// Build, sign, and send the reciprocal member VMC for `(vtc_did, persona_id)` —
+/// resolving that persona's runtime identity (DID / profile / mediator) and
+/// signing key from `config`. Shared by the manual "issue VMC" action and the
+/// auto-answer to a VTC `members/request-vmc/1.0`. Returns the DIDComm message id.
+pub(crate) async fn issue_member_vmc_for(
+    config: &Config,
+    tdk: &TDK,
+    vtc_did: &str,
+    persona_id: openvtc_core::config::account::PersonaId,
+) -> Result<uuid::Uuid, openvtc_core::errors::OpenVTCError> {
+    use openvtc_core::errors::OpenVTCError;
+    let id = config
+        .identities
+        .get(&persona_id)
+        .ok_or_else(|| OpenVTCError::Config("persona identity unavailable".into()))?;
+    let member_did = id.persona_did().to_string();
+    let profile = id.profile().clone();
+    let mediator = id.mediator_did.clone().unwrap_or_default();
+    let atm = tdk
+        .atm
+        .as_ref()
+        .ok_or_else(|| OpenVTCError::Config("messaging (ATM) unavailable".into()))?;
+    let keys = config.get_persona_keys_for(persona_id, tdk).await?;
+    openvtc_core::members::issue_and_send_member_vmc(
+        atm,
+        &profile,
+        &keys.signing.secret,
+        &member_did,
+        vtc_did,
+        &mediator,
+    )
+    .await
+}
+
 /// Process an inbound DIDComm message.
 ///
 /// Auto-processes messages that don't need human input (pong, accept, finalize, reject).
@@ -210,13 +244,35 @@ pub async fn process_inbound_message(
     }
 
     // VTC → member: "please issue + send your VMC" (`members/request-vmc/1.0`).
-    // Surfaced so it isn't dropped as unknown; the member answers with the
-    // `m` action on the community (auto-answer is a follow-up).
+    // Auto-answer: the sender is the community VTC and the recipient is one of our
+    // personas; if we hold an Active membership there, issue + send our reciprocal
+    // VMC straight back. Best-effort — a failure is logged, not surfaced as a stuck
+    // state (the admin can re-request, or the member can issue manually with `m`).
     if message.typ == MEMBER_REQUEST_VMC_TYPE {
-        info!(
-            vtc = %from_did,
-            "community requested our membership credential — issue it from the community row ('m')"
-        );
+        match recipient_persona {
+            Some(persona_id)
+                if config
+                    .account
+                    .membership(&from_did, persona_id)
+                    .is_some_and(|c| c.status.is_active()) =>
+            {
+                match issue_member_vmc_for(config, tdk, &from_did, persona_id).await {
+                    Ok(_) => info!(
+                        vtc = %from_did,
+                        "auto-issued our membership credential in response to the VTC's request"
+                    ),
+                    Err(e) => warn!(
+                        vtc = %from_did,
+                        error = %e,
+                        "failed to auto-issue our membership credential on request"
+                    ),
+                }
+            }
+            _ => warn!(
+                vtc = %from_did,
+                "members/request-vmc with no matching Active membership — ignoring"
+            ),
+        }
         return Ok(false);
     }
 

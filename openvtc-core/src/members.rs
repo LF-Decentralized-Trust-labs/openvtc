@@ -16,13 +16,47 @@ use std::sync::Arc;
 use affinidi_tdk::{
     didcomm::Message,
     messaging::{ATM, profiles::ATMProfile},
+    secrets_resolver::secrets::Secret,
 };
 use chrono::Utc;
+use dtg_credentials::DTGCredential;
 use serde_json::Value;
 use uuid::Uuid;
 use vta_sdk::protocols::members::{MEMBER_VMC_TYPE, MemberVmcBody};
 
 use crate::errors::OpenVTCError;
+
+/// Build + sign the reciprocal member VMC and send it to the community's VTC
+/// (`members/vmc/1.0`), end to end. The VMC's `issuer` is the member persona
+/// (`member_did`) and its `credentialSubject.id` is the community (`vtc_did`) —
+/// the direction the VTC verifies. `signing_secret` is the member persona's
+/// signing key (its `id` is the persona's assertionMethod VM, which becomes the
+/// proof's `verificationMethod`). Used by both the manual "issue VMC" action and
+/// the auto-answer to a VTC `members/request-vmc/1.0`.
+///
+/// Returns the DIDComm message id (the receipt's thread root).
+pub async fn issue_and_send_member_vmc(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    signing_secret: &Secret,
+    member_did: &str,
+    vtc_did: &str,
+    mediator_did: &str,
+) -> Result<Uuid, OpenVTCError> {
+    let mut vmc = DTGCredential::new_vmc(
+        member_did.to_string(),
+        vtc_did.to_string(),
+        Utc::now(),
+        None,
+        false,
+    );
+    vmc.sign(signing_secret, None)
+        .await
+        .map_err(|e| OpenVTCError::Config(format!("sign member VMC: {e}")))?;
+    let vc = serde_json::to_value(&vmc)
+        .map_err(|e| OpenVTCError::Config(format!("serialize member VMC: {e}")))?;
+    submit_member_vmc(atm, profile, member_did, vtc_did, mediator_did, vc).await
+}
 
 /// Send a member-issued VMC to the community's VTC over DIDComm
 /// (`members/vmc/1.0`). `vc` is the **signed** membership credential — `issuer`
