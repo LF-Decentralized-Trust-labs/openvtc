@@ -77,7 +77,7 @@ impl Config {
 
         report_progress(&on_progress, "Local configuration", "Decrypting secrets");
 
-        let sc = SecuredConfig::load(
+        let mut sc = SecuredConfig::load(
             profile,
             #[cfg(feature = "openpgp-card")]
             token_user_pin,
@@ -148,7 +148,7 @@ impl Config {
         };
 
         // Unencrypt the private config data, with migration from legacy seed
-        let (private_cfg, needs_migration) = if let Some(private_cfg_str) = &public_config.private {
+        let (mut private_cfg, needs_migration) = if let Some(private_cfg_str) = &public_config.private {
             match ProtectedConfig::load(&encryption_seed, private_cfg_str) {
                 Ok(cfg) => (cfg, false),
                 Err(_) => {
@@ -396,6 +396,29 @@ impl Config {
                     .iter()
                     .map(|(_, did, _, _)| did.to_string())
                     .collect();
+
+                // Repair relationship (R-DID) `key_info` entries that older
+                // builds persisted under pre-`did:peer`-mint placeholder ids,
+                // BEFORE registering profiles below (which key off the canonical
+                // `{r_did}#key-N` ids). Offline + idempotent; like the
+                // seed-derivation migration above, the rewritten `key_info` is
+                // persisted on the next save rather than forced here.
+                let repair = private_cfg
+                    .relationships
+                    .repair_key_info_ids(tdk, &our_p_dids, &mut sc.key_info, &key_backend)
+                    .await;
+                if repair.changed() {
+                    info!(
+                        repaired = repair.repaired,
+                        unrecoverable = repair.unrecoverable.len(),
+                        "repaired relationship key ids; config will be rewritten on next save"
+                    );
+                    for r_did in &repair.unrecoverable {
+                        warn!(r_did = %r_did,
+                            "relationship has unrecoverable keys and must be re-established");
+                    }
+                }
+
                 private_cfg
                     .relationships
                     .generate_profiles(
@@ -531,6 +554,7 @@ mod tests {
                 created: chrono::Utc::now(),
                 state: RelationshipState::Established,
                 our_persona: None,
+                needs_reestablishment: false,
             },
         );
 

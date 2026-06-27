@@ -1587,6 +1587,7 @@ mod tests {
             created: Utc::now(),
             state,
             our_persona: None,
+            needs_reestablishment: false,
         }
     }
 

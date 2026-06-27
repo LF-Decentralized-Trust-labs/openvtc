@@ -88,7 +88,7 @@ fn render_list(state: &RelationshipsState) -> Vec<Line<'static>> {
                 .unwrap_or(&rel.remote_p_did)
                 .to_string();
 
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(prefix, style),
                 Span::styled(display_name, style),
                 Span::styled("  ", Style::default()),
@@ -102,7 +102,18 @@ fn render_list(state: &RelationshipsState) -> Vec<Line<'static>> {
                 ),
                 Span::styled("  ", Style::default()),
                 Span::styled(rel.created.clone(), Style::new().fg(COLOR_DARK_GRAY)),
-            ]));
+            ];
+            // Surface relationships whose R-DID keys were lost and could not be
+            // recovered at load: they can no longer send or receive and must be
+            // re-established. (See `Relationship::needs_reestablishment`.)
+            if rel.needs_reestablishment {
+                spans.push(Span::styled("  ", Style::default()));
+                spans.push(Span::styled(
+                    "⚠ needs re-establishment",
+                    Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
 
         lines.push(Line::from(""));

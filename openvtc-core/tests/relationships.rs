@@ -18,6 +18,7 @@ fn make_relationship(
         created: chrono::Utc::now(),
         state,
         our_persona: None,
+        needs_reestablishment: false,
     }
 }
 

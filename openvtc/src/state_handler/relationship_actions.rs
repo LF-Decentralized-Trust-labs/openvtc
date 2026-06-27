@@ -149,7 +149,14 @@ impl RDidPlan {
         remote_p_did: &str,
     ) -> Result<CreatedRDid> {
         let mediator = self.mediator().to_string();
-        let (mut v_secret, mut e_secret, key_info) = match self {
+        // Mint the keys and capture each one's *source material* (BIP32 path or
+        // VTA key id) in verification-then-encryption order. Note we do NOT record
+        // the secret ids yet: a freshly generated `Secret` carries a placeholder id
+        // (`generate_ed25519` → a random base64 string, `generate_x25519` →
+        // `"x25519"`), and `generate_did_peer_from_secrets` below rewrites those
+        // ids to the did:peer verification-method ids. `key_info` must be built
+        // from the *rewritten* ids — see the comment on that step.
+        let (mut v_secret, mut e_secret, v_source, e_source) = match self {
             RDidPlan::Bip32 {
                 root,
                 v_path,
@@ -167,38 +174,30 @@ impl RDidPlan {
                 // stack; ed25519-dalek-bip32 does not Zeroize, a known limitation.
                 drop(v_key);
                 drop(e_key);
-                let key_info = vec![
-                    (
-                        v_secret.id.clone(),
-                        KeySourceMaterial::Derived { path: v_path },
-                    ),
-                    (
-                        e_secret.id.clone(),
-                        KeySourceMaterial::Derived { path: e_path },
-                    ),
-                ];
-                (v_secret, e_secret, key_info)
+                (
+                    v_secret,
+                    e_secret,
+                    KeySourceMaterial::Derived { path: v_path },
+                    KeySourceMaterial::Derived { path: e_path },
+                )
             }
             RDidPlan::Vta { admin_vta, .. } => {
                 let (v_secret, e_secret, sign_key_id, enc_key_id) =
                     create_relationship_keys(&admin_vta).await?;
-                let key_info = vec![
-                    (
-                        v_secret.id.clone(),
-                        KeySourceMaterial::VtaManaged {
-                            key_id: sign_key_id,
-                        },
-                    ),
-                    (
-                        e_secret.id.clone(),
-                        KeySourceMaterial::VtaManaged { key_id: enc_key_id },
-                    ),
-                ];
-                (v_secret, e_secret, key_info)
+                (
+                    v_secret,
+                    e_secret,
+                    KeySourceMaterial::VtaManaged {
+                        key_id: sign_key_id,
+                    },
+                    KeySourceMaterial::VtaManaged { key_id: enc_key_id },
+                )
             }
         };
 
-        // Build the did:peer from the secrets.
+        // Build the did:peer from the secrets. This REWRITES each secret's `id` to
+        // the did:peer verification-method id (`{did}#key-1` for verification,
+        // `{did}#key-2` for the key-agreement key).
         let mut keys = vec![
             (PeerKeyRole::Verification, &mut v_secret),
             (PeerKeyRole::Encryption, &mut e_secret),
@@ -207,25 +206,33 @@ impl RDidPlan {
             .map_err(|e| anyhow::anyhow!("Failed to create relationship DID: {e}"))?;
         drop(keys);
 
-        // Pair each secret id with its config-level metadata (verification first,
-        // encryption second — same order the old inline path inserted them).
-        let key_info: Vec<(String, KeyInfoConfig)> = key_info
-            .into_iter()
-            .zip([
-                KeyTypes::RelationshipVerification,
-                KeyTypes::RelationshipEncryption,
-            ])
-            .map(|((id, path), purpose)| {
-                (
-                    id,
-                    KeyInfoConfig {
-                        path,
-                        create_time: Utc::now(),
-                        purpose,
-                    },
-                )
-            })
-            .collect();
+        // Record `key_info` under the FINAL did:peer-relative secret ids (set by
+        // the call above), pairing each with its source material. This MUST run
+        // after the did:peer mint: the reload path (`Relationships::
+        // generate_profiles`) only re-registers a stored secret when its id
+        // `starts_with` the R-DID, and packs DIDComm as the R-DID using the
+        // `#key-1`/`#key-2` verification-method ids. Persisting the pre-mint
+        // placeholder ids (the historical bug) left the reloaded R-DID with no
+        // usable key-agreement secret, so mediator authentication looped forever
+        // ("sender has no usable key agreement key").
+        let key_info: Vec<(String, KeyInfoConfig)> = vec![
+            (
+                v_secret.id.clone(),
+                KeyInfoConfig {
+                    path: v_source,
+                    create_time: Utc::now(),
+                    purpose: KeyTypes::RelationshipVerification,
+                },
+            ),
+            (
+                e_secret.id.clone(),
+                KeyInfoConfig {
+                    path: e_source,
+                    create_time: Utc::now(),
+                    purpose: KeyTypes::RelationshipEncryption,
+                },
+            ),
+        ];
 
         // Register the new R-DID listener from the just-minted secrets (the old
         // inline path did this right after key creation; failure is non-fatal).
@@ -1168,6 +1175,7 @@ async fn prepare_submit(
             // Tag the relationship with the working community's persona (D10) so
             // it scopes to the right community on the main page (R-C-6).
             our_persona: config.active_persona,
+            needs_reestablishment: false,
         },
     );
 
@@ -1572,6 +1580,7 @@ mod tests {
             created: Utc::now(),
             state: RelationshipState::Established,
             our_persona: config.active_persona,
+            needs_reestablishment: false,
         };
         config.private.relationships.relationships.insert(key, rel);
     }
@@ -1675,6 +1684,7 @@ mod tests {
                 created: Utc::now(),
                 state: RelationshipState::RequestSent,
                 our_persona: None,
+                needs_reestablishment: false,
             },
         );
     }

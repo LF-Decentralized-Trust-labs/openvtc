@@ -2453,6 +2453,7 @@ mod key_handler_tests {
             created: String::new(),
             vrcs_issued: Vec::new(),
             vrcs_received: Vec::new(),
+            needs_reestablishment: false,
         }
     }
 

@@ -290,6 +290,7 @@ impl MainPageState {
                     created: rel.created.format("%Y-%m-%d %H:%M").to_string(),
                     vrcs_issued,
                     vrcs_received,
+                    needs_reestablishment: rel.needs_reestablishment,
                 }
             })
             .collect();

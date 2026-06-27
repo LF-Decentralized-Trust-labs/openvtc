@@ -424,6 +424,7 @@ impl InboxOutcome {
                                 // persona (`task.our_persona`) always equals the
                                 // active persona — tag and signing persona agree.
                                 our_persona: config.active_persona,
+                                needs_reestablishment: false,
                             },
                         );
                         config.private.tasks.remove(&task_id);

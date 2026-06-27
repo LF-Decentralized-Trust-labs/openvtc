@@ -578,6 +578,11 @@ pub struct RelationshipSummary {
     pub vrcs_issued: Vec<RelationshipVrc>,
     /// VRCs we received from this party
     pub vrcs_received: Vec<RelationshipVrc>,
+    /// Whether this relationship's R-DID keys were lost and could not be
+    /// recovered at load (see `Relationship::needs_reestablishment`). When set,
+    /// the list shows a "needs re-establishment" badge: the relationship can no
+    /// longer send or receive and must be re-created.
+    pub needs_reestablishment: bool,
 }
 
 /// VRC info for display in the relationship detail view.
