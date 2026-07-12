@@ -25,4 +25,3 @@ RUN \
 COPY --from=builder /build/target/debug/openvtc /openvtc
 WORKDIR /data
 ENTRYPOINT ["/openvtc"]
-# CMD ["--config", "/data/config.toml"]
