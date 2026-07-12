@@ -404,6 +404,10 @@ git commit -m "signed with my DID"
 
 See the [did-git-sign README](./did-git-sign/README.md) for full documentation.
 
+## Containerization
+
+Details on containerization, development, and use inside of Docker can be found in the [DOCKER.md](./docker/DOCKER.md) file.
+
 ## Additional Resources
 
 Additional resources to learn more about the Open Verifiable Trust Community (OpenVTC) Tool.
