@@ -10,4 +10,5 @@ pub mod config;
 pub mod init;
 pub mod policy;
 pub mod sign;
+pub mod verify_trust;
 pub mod vta;

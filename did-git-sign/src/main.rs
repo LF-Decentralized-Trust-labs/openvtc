@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use dialoguer::{Select, theme::ColorfulTheme};
-use did_git_sign::{config, init, sign, vta};
+use did_git_sign::{config, init, sign, verify_trust, vta};
 use ed25519_dalek::SigningKey;
 use std::path::PathBuf;
 
@@ -205,6 +205,51 @@ enum Commands {
         #[arg(long)]
         did_key_id: Option<String>,
     },
+
+    /// Verify a commit range's SSH signatures against the signers' DID
+    /// documents and check each signer DID against the VTC Trust Registry.
+    /// Exits 0 only when every commit in the range is signed by a
+    /// registry-authorized DID. Designed for CI (GitHub PR checks).
+    VerifyTrust {
+        /// Commit range in `git rev-list` syntax, e.g. `origin/main..HEAD`.
+        #[arg(long)]
+        range: String,
+
+        /// Signer index file (one DID per line, `#` comments). Relative
+        /// paths resolve against --repo-dir.
+        #[arg(long, default_value = ".did-signers")]
+        signers_file: PathBuf,
+
+        /// Base URL of the Trust Registry (queries POST to
+        /// `<url>/trust-tasks`).
+        #[arg(long)]
+        registry_url: String,
+
+        /// DID of the Trust Registry (the recipient of every query).
+        #[arg(long)]
+        registry_did: String,
+
+        /// DID of the authority the trust tuple is evaluated under.
+        #[arg(long)]
+        authority: String,
+
+        /// TRQP action of the trust tuple.
+        #[arg(long, default_value = "git.commit.sign")]
+        action: String,
+
+        /// TRQP resource of the trust tuple (e.g. the `org/repo` slug).
+        /// Defaults to $GITHUB_REPOSITORY when unset.
+        #[arg(long)]
+        resource: Option<String>,
+
+        /// Repository to verify. Defaults to the current directory.
+        #[arg(long)]
+        repo_dir: Option<PathBuf>,
+
+        /// Emit a machine-readable JSON report on stdout.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -278,6 +323,38 @@ async fn main() -> Result<()> {
             local,
             did_key_id,
         }) => cmd_uninstall(global, local, did_key_id),
+        Some(Commands::VerifyTrust {
+            range,
+            signers_file,
+            registry_url,
+            registry_did,
+            authority,
+            action,
+            resource,
+            repo_dir,
+            json,
+        }) => {
+            let resource = resource
+                .or_else(|| std::env::var("GITHUB_REPOSITORY").ok())
+                .context("--resource is required (or set GITHUB_REPOSITORY)")?;
+            let repo_dir = match repo_dir {
+                Some(dir) => dir,
+                None => std::env::current_dir().context("cannot determine current directory")?,
+            };
+            let code = verify_trust::handle_verify_trust(verify_trust::VerifyTrustArgs {
+                repo_dir,
+                range,
+                signers_file,
+                registry_url,
+                registry_did,
+                authority_did: authority,
+                action,
+                resource,
+                json,
+            })
+            .await?;
+            std::process::exit(code);
+        }
         None => {
             // `sign_file` is only legitimate when `-Y sign` is set (git signing
             // invocation), which is handled in the early-return block above. If
