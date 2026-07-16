@@ -2270,7 +2270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.118",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -2479,6 +2479,7 @@ dependencies = [
 name = "did-git-sign"
 version = "0.1.0"
 dependencies = [
+ "affinidi-tdk 0.8.3",
  "anyhow",
  "apple-native-keyring-store",
  "base64 0.22.1",
@@ -2490,6 +2491,7 @@ dependencies = [
  "hex",
  "keyring-core",
  "linux-keyutils-keyring-store",
+ "multibase",
  "serde",
  "serde_json",
  "serial_test",
@@ -2500,6 +2502,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "trql-client",
  "vta-sdk 0.18.14",
  "windows-native-keyring-store",
  "zeroize",
@@ -5792,7 +5795,7 @@ dependencies = [
  "aes-gcm",
  "aes-kw",
  "argon2",
- "base64 0.22.1",
+ "base64 0.21.7",
  "bitfields",
  "block-padding",
  "blowfish",
@@ -8595,6 +8598,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "trql-client"
+version = "0.7.0"
+source = "git+https://github.com/affinidi/affinidi-trust-registry-rs.git?branch=feat%2Ftrql-client#1eb572b1d05afbe9040ab55448aaccba0673132a"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+ "trust-tasks-rs",
+]
+
+[[package]]
 name = "trust-tasks-https"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8632,9 +8650,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.12"
+version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ccbddb304248cc6cb1e2e6385bd2f7042df71c805d9e128d6cb40125322a9274"
+checksum = "2998e4384fc850bfd61ed6dc648a05d8d940d6b304a102eeabaf7c129cbdf16a"
 dependencies = [
  "async-trait",
  "chrono",

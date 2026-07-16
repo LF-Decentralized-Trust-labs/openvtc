@@ -194,7 +194,7 @@ pub async fn handle_sign(
 ///   reserved (empty string)
 ///   hash_algorithm (string)
 ///   signature (SSH wire format)
-fn create_ssh_signature(
+pub fn create_ssh_signature(
     signing_key: &SigningKey,
     verifying_key: &ed25519_dalek::VerifyingKey,
     namespace: &str,
@@ -237,7 +237,10 @@ fn create_ssh_signature(
     let b64 = base64_encode(&sshsig_blob);
     let mut armored = String::new();
     armored.push_str("-----BEGIN SSH SIGNATURE-----\n");
-    for chunk in b64.as_bytes().chunks(76) {
+    // OpenSSH wraps sshsig base64 at 70 columns (sshbuf_dtob64). Match it
+    // exactly: RustCrypto's ssh-encoding PEM parser rejects other widths, so
+    // any deviation makes our signatures unreadable to non-OpenSSH verifiers.
+    for chunk in b64.as_bytes().chunks(70) {
         armored.push_str(std::str::from_utf8(chunk).expect("base64 output is always valid UTF-8"));
         armored.push('\n');
     }
@@ -434,23 +437,24 @@ mod tests {
     }
 
     #[test]
-    fn test_signature_blob_line_length_at_most_76() {
+    fn test_signature_blob_wraps_at_70_like_openssh() {
         let seed = [1u8; 32];
         let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
         let armored =
             create_ssh_signature(&signing_key, &verifying_key, "git", b"check line wrap").unwrap();
 
-        for line in armored.lines() {
-            if line.starts_with("-----") {
-                continue;
-            }
-            assert!(
-                line.len() <= 76,
-                "base64 line too long: {} chars",
-                line.len()
-            );
+        let body: Vec<&str> = armored
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .collect();
+        // Every full line is exactly 70 columns (only the last may be
+        // shorter) — the width ssh-keygen emits and strict PEM parsers
+        // (RustCrypto ssh-encoding) require.
+        for line in &body[..body.len() - 1] {
+            assert_eq!(line.len(), 70, "base64 line is {} chars", line.len());
         }
+        assert!(body[body.len() - 1].len() <= 70);
     }
 
     #[test]

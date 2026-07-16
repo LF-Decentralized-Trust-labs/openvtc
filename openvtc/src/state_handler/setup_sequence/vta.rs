@@ -326,7 +326,7 @@ pub async fn create_did_via_server(
     let mut sign_secret = vta_sdk::did_key::secret_from_key_response(&sign_secret_resp)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     // Set the secret ID to the DID verification method ID
-    sign_secret.id = format!("{}#key-0", &did);
+    sign_secret.id = format!("{}#key-0", did);
 
     let signing = KeyInfo {
         secret: sign_secret.clone(),
@@ -356,7 +356,7 @@ pub async fn create_did_via_server(
 
     let mut ka_secret = vta_sdk::did_key::secret_from_key_response(&ka_secret_resp)
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
-    ka_secret.id = format!("{}#key-1", &did);
+    ka_secret.id = format!("{}#key-1", did);
 
     let decryption = KeyInfo {
         secret: ka_secret,

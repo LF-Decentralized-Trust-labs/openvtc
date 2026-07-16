@@ -19,6 +19,12 @@ path = "src/main.rs"
 
 [dependencies]
 vta-sdk = { workspace = true, features = ["client", "session"] }
+# verify-trust: DID resolution for signer keys + Trust Registry queries.
+affinidi-tdk = { workspace = true }
+multibase = { workspace = true }
+# Pinned to the feat/trql-client branch until affinidi-trust-registry-rs
+# PR #94 merges and the crate is published to crates.io.
+trql-client = { git = "https://github.com/affinidi/affinidi-trust-registry-rs.git", branch = "feat/trql-client" }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true, features = ["derive"] }
