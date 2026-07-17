@@ -116,9 +116,9 @@ fn repo_with_signed_commit(repo: &Path, key: &SigningKey) -> (String, String) {
 
 // --- stub registry ------------------------------------------------------------
 
-/// Serve the `/trust-tasks` contract: answer every authorization query for
-/// `authorized_did` with `authorized: true`, everyone else `false`.
-async fn stub_registry(authorized_did: String) -> String {
+/// Serve the `/trust-tasks` contract: `authorized: true` exactly for the
+/// given `(entity, resource)` grants.
+async fn stub_registry_with(grants: Vec<(String, String)>) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -126,7 +126,7 @@ async fn stub_registry(authorized_did: String) -> String {
             let Ok((mut socket, _)) = listener.accept().await else {
                 break;
             };
-            let authorized_did = authorized_did.clone();
+            let grants = grants.clone();
             tokio::spawn(async move {
                 let mut buf = Vec::new();
                 let mut chunk = [0u8; 4096];
@@ -159,6 +159,8 @@ async fn stub_registry(authorized_did: String) -> String {
                 }
                 let request: Value = serde_json::from_slice(&buf[header_end..]).unwrap();
                 let entity = request["payload"]["entity_id"].as_str().unwrap_or_default();
+                let resource = request["payload"]["resource"].as_str().unwrap_or_default();
+                let granted = grants.iter().any(|(e, r)| e == entity && r == resource);
                 let response = json!({
                     "id": "urn:uuid:stub-reply",
                     "threadId": request["id"],
@@ -168,7 +170,7 @@ async fn stub_registry(authorized_did: String) -> String {
                         "authority_id": request["payload"]["authority_id"],
                         "action": request["payload"]["action"],
                         "resource": request["payload"]["resource"],
-                        "authorized": entity == authorized_did,
+                        "authorized": granted,
                         "time_evaluated": "2026-07-16T00:00:00Z",
                     }
                 });
@@ -185,6 +187,11 @@ async fn stub_registry(authorized_did: String) -> String {
     format!("http://{addr}")
 }
 
+/// Convenience: one repo-scoped grant for `authorized_did`.
+async fn stub_registry(authorized_did: String) -> String {
+    stub_registry_with(vec![(authorized_did, "example/repo".to_string())]).await
+}
+
 fn args_for(repo: &Path, range: String, registry_url: String) -> VerifyTrustArgs {
     VerifyTrustArgs {
         repo_dir: repo.to_path_buf(),
@@ -196,6 +203,7 @@ fn args_for(repo: &Path, range: String, registry_url: String) -> VerifyTrustArgs
         authority_did: "did:example:authority".into(),
         action: "git.commit.sign".into(),
         resource: "example/repo".into(),
+        fallback_resource: None,
         json: false,
     }
 }
@@ -221,7 +229,8 @@ async fn signed_and_authorized_commit_passes() {
     assert_eq!(
         report.commits[0].status,
         CommitStatus::Trusted {
-            signer_did: SIGNER.to_string()
+            signer_did: SIGNER.to_string(),
+            resource: "example/repo".to_string()
         }
     );
     assert!(report.ok);
@@ -453,4 +462,117 @@ mod pgp_platform {
             CommitStatus::PgpRejected { .. }
         ));
     }
+}
+
+// --- org-fallback grants -------------------------------------------------------
+
+#[tokio::test]
+async fn org_grant_authorizes_via_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = SigningKey::from_bytes(&[9u8; 32]);
+    let (base, signed) = repo_with_signed_commit(dir.path(), &key);
+    // Grant exists only at org scope.
+    let registry = stub_registry_with(vec![(SIGNER.to_string(), "example".to_string())]).await;
+
+    let keys = HashMap::from([(key.verifying_key().to_bytes(), SIGNER.to_string())]);
+    let mut args = args_for(dir.path(), format!("{base}..{signed}"), registry);
+    args.fallback_resource = Some("example".to_string());
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
+        .await
+        .unwrap();
+
+    assert!(report.ok);
+    assert_eq!(
+        report.commits[0].status,
+        CommitStatus::Trusted {
+            signer_did: SIGNER.to_string(),
+            resource: "example".to_string()
+        }
+    );
+}
+
+#[tokio::test]
+async fn org_grant_is_ignored_without_fallback_configured() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = SigningKey::from_bytes(&[9u8; 32]);
+    let (base, signed) = repo_with_signed_commit(dir.path(), &key);
+    let registry = stub_registry_with(vec![(SIGNER.to_string(), "example".to_string())]).await;
+
+    let keys = HashMap::from([(key.verifying_key().to_bytes(), SIGNER.to_string())]);
+    let args = args_for(dir.path(), format!("{base}..{signed}"), registry);
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
+        .await
+        .unwrap();
+
+    assert!(
+        !report.ok,
+        "no fallback configured: org grant must not apply"
+    );
+    assert!(matches!(
+        report.commits[0].status,
+        CommitStatus::Unauthorized { .. }
+    ));
+}
+
+#[tokio::test]
+async fn repo_grant_wins_before_fallback_is_queried() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = SigningKey::from_bytes(&[9u8; 32]);
+    let (base, signed) = repo_with_signed_commit(dir.path(), &key);
+    let registry = stub_registry_with(vec![
+        (SIGNER.to_string(), "example/repo".to_string()),
+        (SIGNER.to_string(), "example".to_string()),
+    ])
+    .await;
+
+    let keys = HashMap::from([(key.verifying_key().to_bytes(), SIGNER.to_string())]);
+    let mut args = args_for(dir.path(), format!("{base}..{signed}"), registry);
+    args.fallback_resource = Some("example".to_string());
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        report.commits[0].status,
+        CommitStatus::Trusted {
+            signer_did: SIGNER.to_string(),
+            resource: "example/repo".to_string()
+        },
+        "the repo-scoped grant is reported, not the fallback"
+    );
+}
+
+#[tokio::test]
+async fn denied_at_both_scopes_is_unauthorized() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = SigningKey::from_bytes(&[9u8; 32]);
+    let (base, signed) = repo_with_signed_commit(dir.path(), &key);
+    let registry = stub_registry_with(vec![]).await;
+
+    let keys = HashMap::from([(key.verifying_key().to_bytes(), SIGNER.to_string())]);
+    let mut args = args_for(dir.path(), format!("{base}..{signed}"), registry);
+    args.fallback_resource = Some("example".to_string());
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
+        .await
+        .unwrap();
+
+    assert!(!report.ok);
+    assert!(matches!(
+        report.commits[0].status,
+        CommitStatus::Unauthorized { .. }
+    ));
+}
+
+// --- committed platform keyring --------------------------------------------------
+
+#[test]
+fn committed_web_flow_keyring_parses() {
+    // Drift tripwire: the keyring committed for the dogfood workflow must
+    // stay parseable by the exemption verifier.
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../.github/trusted-platform-keys.asc"
+    );
+    let text = std::fs::read_to_string(path).expect("committed keyring readable");
+    did_git_sign::pgp_exempt::ExemptKeyring::from_armored(&text).expect("keyring parses");
 }

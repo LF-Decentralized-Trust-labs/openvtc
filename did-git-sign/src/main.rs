@@ -242,6 +242,13 @@ enum Commands {
         #[arg(long)]
         resource: Option<String>,
 
+        /// Broader resource to also accept a grant under when the primary
+        /// resource does not authorize (e.g. the org for org-wide grants).
+        /// Grant semantics are OR — a repo-level record cannot veto an
+        /// org-level grant. Omitted: only the primary resource is queried.
+        #[arg(long)]
+        fallback_resource: Option<String>,
+
         /// Armored PGP keyring of exempt platform keys (e.g. GitHub's
         /// web-flow key, https://github.com/web-flow.gpg) committed to the
         /// repo. PGP-signed commits (web-UI merges, Dependabot) pass only if
@@ -339,6 +346,7 @@ async fn main() -> Result<()> {
             authority,
             action,
             resource,
+            fallback_resource,
             exempt_keyring,
             repo_dir,
             json,
@@ -359,6 +367,7 @@ async fn main() -> Result<()> {
                 authority_did: authority,
                 action,
                 resource,
+                fallback_resource,
                 exempt_keyring,
                 json,
             })
