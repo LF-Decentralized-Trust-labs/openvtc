@@ -5491,6 +5491,7 @@ dependencies = [
  "multibase",
  "openpgp-card",
  "openpgp-card-rpgp",
+ "openssl-sys",
  "pgp",
  "rand 0.8.6",
  "reqwest 0.13.4",
