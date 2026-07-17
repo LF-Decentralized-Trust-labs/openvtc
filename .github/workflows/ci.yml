@@ -47,6 +47,21 @@ jobs:
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libpcsclite-dev libdbus-1-dev
+      - name: Locate OpenSSL (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        # openssl-sys (via openvtc-core's vta-service dev-dependency →
+        # webauthn-rs) needs an OpenSSL install it can find. The hosted
+        # images ship one; fall back to choco if the path ever moves.
+        run: |
+          $candidates = @("C:\Program Files\OpenSSL", "C:\Program Files\OpenSSL-Win64")
+          $dir = $candidates | Where-Object { Test-Path "$_\include\openssl" } | Select-Object -First 1
+          if (-not $dir) {
+            choco install openssl -y --no-progress
+            $dir = $candidates | Where-Object { Test-Path "$_\include\openssl" } | Select-Object -First 1
+          }
+          if (-not $dir) { Write-Error "no OpenSSL installation found"; exit 1 }
+          echo "OPENSSL_DIR=$dir" >> $env:GITHUB_ENV
       - name: Test with default features (Linux/macOS)
         if: runner.os != 'Windows'
         run: cargo test --workspace
@@ -62,7 +77,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+        # libpcsclite-dev: the pcsc build script runs even with default
+        # features off (dev-dependency chain), and needs the system lib.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev libpcsclite-dev pkgconf
       - run: cargo test --workspace --no-default-features
       # Guard the structure-aware fuzzing seam (issue #124): the cargo-fuzz
       # harnesses build openvtc-core with `--no-default-features --features
