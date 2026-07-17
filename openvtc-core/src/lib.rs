@@ -273,7 +273,7 @@ impl TryFrom<&Message> for MessageType {
 ///
 /// This is the single registry that drives credential storage
 /// ([`CommunityRecord::credentials`](crate::config::account::CommunityRecord::credentials)),
-/// dispatch ([`messaging::handle_credential_issue`](crate::messaging::handle_credential_issue))
+/// dispatch ([`messaging::handle_credential_issue`])
 /// and the "My Credentials" UI. Adding a credential kind means adding a variant
 /// here plus its match arms below — the dispatch and UI code iterate
 /// [`ALL`](Self::ALL) and match on [`vc_type`](Self::vc_type), so they pick the

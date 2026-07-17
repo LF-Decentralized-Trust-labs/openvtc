@@ -59,7 +59,7 @@ pub fn update_org_did(config: &mut Config, did: &str) {
 /// Set a passphrase to encrypt the config in the keyring.
 ///
 /// R12: the Argon2id unlock-key derivation (~0.5–1 s of pure CPU) runs on a
-/// `spawn_blocking` thread via [`derive_passphrase_key_blocking`] so it does
+/// `spawn_blocking` thread via `derive_passphrase_key_blocking` so it does
 /// not peg the async event-loop / render task. The passphrase bytes are owned
 /// by the blocking closure and zeroized there; the derived key is the only
 /// thing returned. The subsequent `save_config` does not run Argon2 (it

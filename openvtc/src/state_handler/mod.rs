@@ -510,7 +510,10 @@ impl StateHandler {
         // the first event re-syncs (the per-path syncs above run with no
         // selection set yet).
         state.reconcile_selected_community(&config.account);
-        let initial_active = state.selected_community.as_ref().map(|(_, persona)| *persona);
+        let initial_active = state
+            .selected_community
+            .as_ref()
+            .map(|(_, persona)| *persona);
         config.set_active_persona(initial_active);
         state.main_page.sync_from_config(&config);
 
@@ -1681,7 +1684,10 @@ impl StateHandler {
             // the default shifted), refilter the community-scoped panels so the UI
             // reflects the new context this frame.
             state.reconcile_selected_community(&config.account);
-            let active_persona = state.selected_community.as_ref().map(|(_, persona)| *persona);
+            let active_persona = state
+                .selected_community
+                .as_ref()
+                .map(|(_, persona)| *persona);
             if active_persona != config.active_persona {
                 config.set_active_persona(active_persona);
                 state.main_page.sync_from_config(&config);
@@ -1836,25 +1842,21 @@ impl StateHandler {
         match vic::list_vics(admin_vta, include_inactive).await {
             Ok(list) => {
                 let vta = &mut state.main_page.content_panel.vta;
-                vta.vic_selected_index = vta
-                    .vic_selected_index
-                    .min(list.len().saturating_sub(1));
+                vta.vic_selected_index = vta.vic_selected_index.min(list.len().saturating_sub(1));
                 vta.vics = list.into();
             }
             Err(e) => {
-                state.main_page.log_error("Listing invitation credentials failed", &e);
+                state
+                    .main_page
+                    .log_error("Listing invitation credentials failed", &e);
             }
         }
         let _ = self.state_tx.send(state.clone());
     }
 
     /// Validate + store the pasted VIC from the add-VIC overlay, then refresh the
-    /// list. Mirrors [`run_create_persona`]'s phase handling.
-    async fn run_add_vic(
-        &self,
-        state: &mut State,
-        admin_vta: Option<&vta_sdk::client::VtaClient>,
-    ) {
+    /// list. Mirrors `run_create_persona`'s phase handling.
+    async fn run_add_vic(&self, state: &mut State, admin_vta: Option<&vta_sdk::client::VtaClient>) {
         use crate::state_handler::main_page::content::AddVicPhase;
 
         let json = match state.main_page.add_vic.as_ref() {
@@ -1899,7 +1901,9 @@ impl StateHandler {
                     o.phase = AddVicPhase::Failed;
                     o.messages.push(format!("Failed: {e}"));
                 }
-                state.main_page.log_error("Storing the invitation credential failed", &e);
+                state
+                    .main_page
+                    .log_error("Storing the invitation credential failed", &e);
             }
         }
         let _ = self.state_tx.send(state.clone());

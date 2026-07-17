@@ -150,7 +150,7 @@ pub fn child_path(parent: &str, segment: &str) -> Result<String, OpenVTCError> {
 ///
 /// Lowercases the name, keeps `[a-z0-9]`, collapses every run of other
 /// characters (including spaces, punctuation, and `-`) to a single `-`, trims
-/// leading/trailing `-`, and caps the result at [`MAX_SLUG_LEN`] characters.
+/// leading/trailing `-`, and caps the result at `MAX_SLUG_LEN` characters.
 /// Returns an empty string when nothing usable remains (e.g. a name with no
 /// ASCII alphanumerics) — callers fall back to [`fallback_token`].
 pub fn slugify(name: &str) -> String {
@@ -218,7 +218,7 @@ pub fn fallback_token(vtc_did: &str) -> Result<String, OpenVTCError> {
 /// guaranteed to satisfy the mirrored `vti-common` rules — each segment a valid
 /// identifier, the whole path within [`MAX_CONTEXT_DEPTH`] — exactly what the
 /// VTA re-validates server-side. The slug is `[a-z0-9-]` capped at
-/// [`MAX_SLUG_LEN`] and the collision suffix adds only `[0-9-]`, so a usable
+/// `MAX_SLUG_LEN` and the collision suffix adds only `[0-9-]`, so a usable
 /// slug always passes segment validation; the only construction failures are an
 /// invalid/over-deep `top_context_id` or an unusable fallback DID.
 ///

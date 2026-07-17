@@ -171,7 +171,7 @@ impl LoadingScreen {
     /// Column the timing annotation starts at, so times line up neatly.
     const TIME_COL: usize = 34;
 
-    /// A right-aligned `(time)` annotation, padded so it lands in [`TIME_COL`].
+    /// A right-aligned `(time)` annotation, padded so it lands in `TIME_COL`.
     /// `prefix_len` is the visible width already consumed on the line.
     fn time_span(
         duration: Option<std::time::Duration>,

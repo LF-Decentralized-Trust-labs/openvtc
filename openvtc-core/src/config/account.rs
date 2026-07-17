@@ -238,7 +238,7 @@ pub struct CommunityRecord {
     ///
     /// Persisted as a JSON object keyed by [`CredentialKind::config_key`].
     /// Configs written before R19 used flat `membership_credential` /
-    /// `role_credential` fields; [`CommunityRecordShadow`] folds those in on
+    /// `role_credential` fields; `CommunityRecordShadow` folds those in on
     /// load so older configs keep working.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub credentials: BTreeMap<CredentialKind, serde_json::Value>,
@@ -536,7 +536,7 @@ pub struct Account {
     /// Community memberships, grouped by VTC DID. A community may hold more than
     /// one membership, each presenting a **different** persona — the
     /// `(vtc_did, persona_ref)` pair is unique. Backward compatible:
-    /// [`de_communities`] folds the legacy one-record-per-VTC shape (and a bare
+    /// `de_communities` folds the legacy one-record-per-VTC shape (and a bare
     /// record) into the grouped form on load.
     #[serde(default, deserialize_with = "de_communities")]
     pub communities: HashMap<VtcDid, Vec<CommunityRecord>>,
@@ -596,7 +596,11 @@ impl Account {
     }
 
     /// Mutable [`Self::membership`] — for applying a lifecycle transition.
-    pub fn membership_mut(&mut self, vtc: &str, persona: PersonaId) -> Option<&mut CommunityRecord> {
+    pub fn membership_mut(
+        &mut self,
+        vtc: &str,
+        persona: PersonaId,
+    ) -> Option<&mut CommunityRecord> {
         self.communities
             .get_mut(vtc)?
             .iter_mut()
