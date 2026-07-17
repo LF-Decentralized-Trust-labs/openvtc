@@ -37,6 +37,19 @@ ignore = [
     # advisory. Will fall off when the upstream chains migrate to
     # rustls-pki-types/rustls-types.
     "RUSTSEC-2025-0134",
+    # RUSTSEC-2026-0194 / RUSTSEC-2026-0195: quick-xml DoS vectors
+    # (quadratic duplicate-attribute check; unbounded namespace
+    # allocation) fixed in 0.41. Pulled only via the Linux clipboard
+    # stack (arboard → wl-clipboard-rs → wayland-scanner), which pins
+    # quick-xml 0.39 and parses local Wayland protocol XML at build
+    # time — never attacker-supplied input. Re-check when wayland-scanner
+    # moves to quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+    # RUSTSEC-2024-0436: paste is unmaintained. Build-time proc-macro
+    # pulled transitively via vta-service/vti-common (utoipa-axum). No
+    # runtime code; falls off when utoipa migrates off paste.
+    "RUSTSEC-2024-0436",
 ]
 
 [licenses]
@@ -94,3 +107,7 @@ skip-tree = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# trql-client rides a rev-pinned git dependency until the trust-registry
+# release pipeline can publish >= 0.8 to crates.io (the published 0.7.0
+# predates the crate's library and must not be used).
+allow-git = ["https://github.com/affinidi/affinidi-trust-registry-rs"]

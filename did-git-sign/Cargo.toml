@@ -29,7 +29,7 @@ pgp = { workspace = true }
 # PR #94 (the real client). Do NOT switch to crates.io "0.7" — that version
 # predates the client and is a bin-only stub with no library target. Swap to
 # the crates.io release once the registry publishes >= 0.8.
-trql-client = { git = "https://github.com/affinidi/affinidi-trust-registry-rs.git", rev = "c04134df9cb934e14e391fdf511b0e3bfca5f4cc" }
+trql-client = { git = "https://github.com/affinidi/affinidi-trust-registry-rs.git", rev = "c04134df9cb934e14e391fdf511b0e3bfca5f4cc", version = "0.7.0" }
 clap = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 serde = { workspace = true, features = ["derive"] }
