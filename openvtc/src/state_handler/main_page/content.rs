@@ -66,6 +66,76 @@ pub struct ContentPanelState {
     pub logs: LogsState,
     /// Communities overview panel state
     pub communities: CommunitiesState,
+    /// Per-community capabilities view (opened from Communities with `c`).
+    pub capabilities: CapabilitiesState,
+}
+
+// ****************************************************************************
+// Capabilities State
+// ****************************************************************************
+
+/// Load phase of the capabilities view. The reply arrives asynchronously
+/// over DIDComm; `Loading` carries the send instant so the loop's sweep can
+/// fail the query closed after the reply window.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CapabilitiesPhase {
+    Loading,
+    Loaded,
+    Failed(String),
+}
+
+/// The capabilities view for one selected community. `None` in
+/// [`CapabilitiesState::view`] means the Communities panel renders normally.
+#[derive(Clone, Debug)]
+pub struct CapabilitiesView {
+    /// Community (VTC) whose capabilities are shown.
+    pub vtc_did: String,
+    /// Persona the queries are sent as.
+    pub persona: openvtc_core::config::account::PersonaId,
+    /// Display name for the header.
+    pub community_name: String,
+    pub phase: CapabilitiesPhase,
+    pub items: Vec<openvtc_core::capabilities::CapabilitySummary>,
+    pub selected: usize,
+    /// Detail view open for the selected capability.
+    pub detail: bool,
+    /// When `Some(index)`, an enable/disable of that capability awaits
+    /// `y`/`⏎` confirmation.
+    pub confirm_toggle: Option<usize>,
+    /// threadId of the in-flight request (list or toggle).
+    pub pending_thid: Option<String>,
+    /// When the in-flight request was sent (reply-timeout sweep).
+    pub sent_at: Option<std::time::Instant>,
+    /// Transient status message.
+    pub status_message: Option<String>,
+}
+
+impl CapabilitiesView {
+    pub fn new(
+        vtc_did: String,
+        persona: openvtc_core::config::account::PersonaId,
+        community_name: String,
+    ) -> Self {
+        Self {
+            vtc_did,
+            persona,
+            community_name,
+            phase: CapabilitiesPhase::Loading,
+            items: Vec::new(),
+            selected: 0,
+            detail: false,
+            confirm_toggle: None,
+            pending_thid: None,
+            sent_at: None,
+            status_message: None,
+        }
+    }
+}
+
+/// Wrapper so `ContentPanelState` stays `Default`-derivable.
+#[derive(Clone, Debug, Default)]
+pub struct CapabilitiesState {
+    pub view: Option<CapabilitiesView>,
 }
 
 // ****************************************************************************

@@ -261,6 +261,24 @@ pub enum Action {
     /// send it to the community's VTC over DIDComm (`members/vmc/1.0`). Indexed
     /// into the Communities display list.
     IssueMemberVmc(usize),
+    /// Open the capabilities view for the community at display index `usize`
+    /// and fire the `governance/capability/list` query.
+    CapabilitiesOpen(usize),
+    /// Re-fire the list query for the open capabilities view.
+    CapabilitiesRefresh,
+    /// Close the capabilities view (back to the Communities list).
+    CapabilitiesClose,
+    /// Move the capabilities selection up / down.
+    CapabilitiesUp,
+    CapabilitiesDown,
+    /// Toggle the manifest detail view for the selected capability.
+    CapabilitiesDetail,
+    /// Arm enable/disable confirmation for the selected capability.
+    CapabilitiesToggleArm,
+    /// Cancel an armed enable/disable confirmation.
+    CapabilitiesToggleCancel,
+    /// Commit the armed enable/disable (signs and sends the governance write).
+    CapabilitiesToggleCommit,
 
     /// Cancel the join flow and return to the main page.
     JoinCancel,

@@ -65,7 +65,13 @@ impl ContentPanelState {
         };
 
         let panel: Option<Box<dyn Panel>> = match menu.selected_menu {
-            MainMenu::Communities => Some(Box::new(CommunitiesPanel)),
+            MainMenu::Communities => {
+                if self.capabilities.view.is_some() {
+                    Some(Box::new(super::capabilities_panel::CapabilitiesPanel))
+                } else {
+                    Some(Box::new(CommunitiesPanel))
+                }
+            }
             MainMenu::Inbox => Some(Box::new(InboxPanel)),
             MainMenu::Relationships => Some(Box::new(RelationshipsPanel)),
             MainMenu::Credentials => Some(Box::new(CredentialsPanel)),
