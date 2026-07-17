@@ -972,6 +972,10 @@ mod tests {
     /// that every expected flag and value appears in that file.
     #[test]
     #[serial_test::serial]
+    // The mock ssh-keygen is a POSIX shell script, which Windows cannot
+    // execute (os error 193). The behavior under test — argv forwarding —
+    // is platform-independent, so non-Windows coverage suffices.
+    #[cfg(not(windows))]
     fn delegate_forwards_all_flags_to_ssh_keygen() {
         // Copy the mock script into a private temp dir and operate on the COPY —
         // never mutate the shared, checked-in fixture. Previously this test
