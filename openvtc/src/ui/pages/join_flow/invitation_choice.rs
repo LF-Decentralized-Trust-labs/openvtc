@@ -61,9 +61,9 @@ impl InvitationChoice {
                     .send(Action::JoinInvitationSelect(selected.saturating_sub(1)));
             }
             KeyCode::Down => {
-                let _ = state
-                    .action_tx
-                    .send(Action::JoinInvitationSelect((selected + 1).min(without_row)));
+                let _ = state.action_tx.send(Action::JoinInvitationSelect(
+                    (selected + 1).min(without_row),
+                ));
             }
             KeyCode::Enter => {
                 let _ = state.action_tx.send(Action::JoinInvitationChoose);

@@ -24,4 +24,16 @@ ignore = [
     # rustls-pemfile: unmaintained (both 1.x via reqwest 0.11 and 2.x via
     # tonic). No security impact identified; purely a maintenance advisory.
     "RUSTSEC-2025-0134",
+
+    # quick-xml DoS vectors, fixed in 0.41. Pulled only via the Linux
+    # clipboard stack (arboard → wl-clipboard-rs → wayland-scanner), which
+    # pins quick-xml 0.39 and parses local Wayland protocol XML at build
+    # time — never attacker-supplied input. Re-check when wayland-scanner
+    # moves to quick-xml >= 0.41.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
+
+    # paste: unmaintained build-time proc-macro via vta-service/vti-common
+    # (utoipa-axum). No runtime code.
+    "RUSTSEC-2024-0436",
 ]

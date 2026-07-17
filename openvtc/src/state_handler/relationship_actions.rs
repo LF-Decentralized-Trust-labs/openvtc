@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use crate::state_handler::setup_sequence::vta;
 use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{
     TDK,
@@ -23,7 +24,6 @@ use openvtc_core::{
     relationships::{RelationshipRequestBody, RelationshipState},
     tasks::TaskType,
 };
-use crate::state_handler::setup_sequence::vta;
 use serde_json::json;
 use tracing::info;
 use uuid::Uuid;

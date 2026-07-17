@@ -324,7 +324,11 @@ pub fn handle_join_status_response(
 /// the verdict effect: `allow` → Active, `deny` → Rejected; `refer` /
 /// `request_more` leave the record Pending (logged — they still raise the
 /// actions-required indicator). Mirrors [`handle_join_status_response`].
-pub fn handle_join_verdict(account: &mut Account, message: &Message, from_did: &str) -> StatusOutcome {
+pub fn handle_join_verdict(
+    account: &mut Account,
+    message: &Message,
+    from_did: &str,
+) -> StatusOutcome {
     let Some(thid) = message.thid.as_deref() else {
         warn!("join verdict without thid — cannot correlate; ignoring");
         return StatusOutcome::NONE;
@@ -1102,10 +1106,7 @@ mod tests {
         );
         assert!(out.changed);
         assert!(out.inactivated.is_none());
-        assert!(matches!(
-            only(&acct, vtc).status,
-            CommunityStatus::Active
-        ));
+        assert!(matches!(only(&acct, vtc).status, CommunityStatus::Active));
     }
 
     #[test]
@@ -1122,10 +1123,7 @@ mod tests {
         );
         assert!(out.changed);
         assert!(out.inactivated.is_some(), "a deny deregisters the session");
-        assert!(matches!(
-            only(&acct, vtc).status,
-            CommunityStatus::Rejected
-        ));
+        assert!(matches!(only(&acct, vtc).status, CommunityStatus::Rejected));
     }
 
     #[test]
@@ -1153,7 +1151,12 @@ mod tests {
         // thid is a *different* uuid than the pending placeholder.
         let out = handle_join_verdict(
             &mut acct,
-            &verdict(&Uuid::new_v4().to_string(), vtc, "deny", serde_json::json!({})),
+            &verdict(
+                &Uuid::new_v4().to_string(),
+                vtc,
+                "deny",
+                serde_json::json!({}),
+            ),
             vtc,
         );
         assert!(!out.changed);
@@ -1249,11 +1252,11 @@ mod tests {
             vtc,
         );
         assert!(out.changed);
-        assert!(out.inactivated.is_some(), "a denial deregisters the session");
-        assert!(matches!(
-            only(&acct, vtc).status,
-            CommunityStatus::Rejected
-        ));
+        assert!(
+            out.inactivated.is_some(),
+            "a denial deregisters the session"
+        );
+        assert!(matches!(only(&acct, vtc).status, CommunityStatus::Rejected));
     }
 
     #[test]
@@ -1264,14 +1267,22 @@ mod tests {
 
         let out = handle_join_trust_task_error(
             &mut acct,
-            &trust_task_error(&rid.to_string(), vtc, "malformedRequest", "missing field `id`"),
+            &trust_task_error(
+                &rid.to_string(),
+                vtc,
+                "malformedRequest",
+                "missing field `id`",
+            ),
             vtc,
         );
         assert!(
             out.changed,
             "the VTC responded — stamps receipt_at, needs persisting"
         );
-        assert!(out.inactivated.is_none(), "recoverable — no terminal transition");
+        assert!(
+            out.inactivated.is_none(),
+            "recoverable — no terminal transition"
+        );
         let rec = only(&acct, vtc);
         assert!(
             matches!(rec.status, CommunityStatus::Pending { .. }),
@@ -1318,15 +1329,17 @@ mod tests {
 
         let out = handle_join_problem_report(
             &mut acct,
-            &problem_report(&rid.to_string(), vtc, "e.p.msg.forbidden", "invitation rejected"),
+            &problem_report(
+                &rid.to_string(),
+                vtc,
+                "e.p.msg.forbidden",
+                "invitation rejected",
+            ),
             vtc,
         );
         assert!(out.changed);
         assert!(out.inactivated.is_some());
-        assert!(matches!(
-            only(&acct, vtc).status,
-            CommunityStatus::Rejected
-        ));
+        assert!(matches!(only(&acct, vtc).status, CommunityStatus::Rejected));
     }
 
     #[test]
@@ -1340,7 +1353,10 @@ mod tests {
             &problem_report(&rid.to_string(), vtc, "e.p.msg.bad-request", "malformed"),
             vtc,
         );
-        assert!(!out.changed, "a client/transient error must not mark Rejected");
+        assert!(
+            !out.changed,
+            "a client/transient error must not mark Rejected"
+        );
         assert!(matches!(
             only(&acct, vtc).status,
             CommunityStatus::Pending { .. }

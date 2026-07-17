@@ -492,8 +492,7 @@ impl MainPage {
                 }
                 // d: soft-delete (not already deleted).
                 KeyCode::Char('d') | KeyCode::Delete
-                    if vic_selected < vic_count
-                        && vic_lifecycle != Some(VicLifecycle::Deleted) =>
+                    if vic_selected < vic_count && vic_lifecycle != Some(VicLifecycle::Deleted) =>
                 {
                     let _ = self.action_tx.send(Action::VicConfirmDelete(vic_selected));
                     true
@@ -2902,8 +2901,10 @@ mod key_handler_tests {
     #[test]
     fn vta_vic_delete_confirm_cycle() {
         // `d` on an active VIC arms the soft-delete confirmation.
-        let (mut page, mut rx) =
-            page_for(MainMenu::Vta, vta_vics(vec![vic("urn:vic:1", VicLifecycle::Active)]));
+        let (mut page, mut rx) = page_for(
+            MainMenu::Vta,
+            vta_vics(vec![vic("urn:vic:1", VicLifecycle::Active)]),
+        );
         page.handle_key_event(press(KeyCode::Char('d')));
         match rx.try_recv() {
             Ok(Action::VicConfirmDelete(0)) => {}

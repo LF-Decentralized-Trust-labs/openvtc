@@ -8,6 +8,7 @@
 
 pub mod config;
 pub mod init;
+pub mod pgp_exempt;
 pub mod policy;
 pub mod sign;
 pub mod verify_trust;

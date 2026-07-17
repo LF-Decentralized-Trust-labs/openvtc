@@ -315,7 +315,7 @@ pub struct Config {
     /// Runtime-resolved identities (resolved DID document + ATM profile),
     /// keyed by persona id. Not persisted — rebuilt at load from `account`.
     ///
-    /// Holds one entry per persona — load resolves an [`IdentityContext`] for
+    /// Holds one entry per persona — load resolves an `IdentityContext` for
     /// every persona in the account, and a DIDComm listener is started for each.
     /// [`Config::active_identity`] still surfaces the first as the "active" one
     /// for user-initiated outbound actions; explicit persona *selection* lands in

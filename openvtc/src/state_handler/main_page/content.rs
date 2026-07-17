@@ -309,7 +309,11 @@ impl VicSummary {
             issuer: s("issuerDid"),
             status: {
                 let st = s("status");
-                if st.is_empty() { "unknown".to_string() } else { st }
+                if st.is_empty() {
+                    "unknown".to_string()
+                } else {
+                    st
+                }
             },
             lifecycle: VicLifecycle::from_wire(d.get("lifecycle").and_then(|v| v.as_str())),
             valid_until: s("validUntil"),

@@ -96,3 +96,10 @@ uuid = { workspace = true }
 [[bench]]
 name = "crypto"
 harness = false
+
+# The vta-service dev-dependency drags webauthn-rs -> openssl-sys into every
+# `cargo test` build. Hosted Windows runners ship no MSVC-linkable OpenSSL,
+# so build the vendored copy there; feature unification applies it to the
+# whole graph. Linux/macOS keep linking the system library.
+[target.'cfg(windows)'.dev-dependencies]
+openssl-sys = { version = "0.9", features = ["vendored"] }

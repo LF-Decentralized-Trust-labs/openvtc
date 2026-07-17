@@ -148,33 +148,34 @@ impl Config {
         };
 
         // Unencrypt the private config data, with migration from legacy seed
-        let (mut private_cfg, needs_migration) = if let Some(private_cfg_str) = &public_config.private {
-            match ProtectedConfig::load(&encryption_seed, private_cfg_str) {
-                Ok(cfg) => (cfg, false),
-                Err(_) => {
-                    // Try legacy seed (pre-0.1.4 used verifying key instead of signing key)
-                    if let KeyBackend::Bip32 { root, .. } = &key_backend {
-                        let legacy_seed = ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?;
-                        match ProtectedConfig::load(&legacy_seed, private_cfg_str) {
-                            Ok(cfg) => {
-                                warn!(
-                                    "Config was encrypted with legacy seed — will be \
+        let (mut private_cfg, needs_migration) =
+            if let Some(private_cfg_str) = &public_config.private {
+                match ProtectedConfig::load(&encryption_seed, private_cfg_str) {
+                    Ok(cfg) => (cfg, false),
+                    Err(_) => {
+                        // Try legacy seed (pre-0.1.4 used verifying key instead of signing key)
+                        if let KeyBackend::Bip32 { root, .. } = &key_backend {
+                            let legacy_seed = ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?;
+                            match ProtectedConfig::load(&legacy_seed, private_cfg_str) {
+                                Ok(cfg) => {
+                                    warn!(
+                                        "Config was encrypted with legacy seed — will be \
                                          re-encrypted with the new seed on next save"
-                                );
-                                (cfg, true)
+                                    );
+                                    (cfg, true)
+                                }
+                                Err(e) => return Err(e),
                             }
-                            Err(e) => return Err(e),
+                        } else {
+                            return Err(OpenVTCError::Decrypt(
+                                "Failed to decrypt protected config".to_string(),
+                            ));
                         }
-                    } else {
-                        return Err(OpenVTCError::Decrypt(
-                            "Failed to decrypt protected config".to_string(),
-                        ));
                     }
                 }
-            }
-        } else {
-            (ProtectedConfig::default(), false)
-        };
+            } else {
+                (ProtectedConfig::default(), false)
+            };
 
         // If migrating from legacy seed, flag for re-encryption on next save
         if needs_migration {

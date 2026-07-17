@@ -190,6 +190,7 @@ fn args_for(repo: &Path, range: String, registry_url: String) -> VerifyTrustArgs
         repo_dir: repo.to_path_buf(),
         range,
         signers_file: ".did-signers".into(),
+        exempt_keyring: None,
         registry_url,
         registry_did: "did:example:registry".into(),
         authority_did: "did:example:authority".into(),
@@ -212,7 +213,7 @@ async fn signed_and_authorized_commit_passes() {
 
     let keys = HashMap::from([(key.verifying_key().to_bytes(), SIGNER.to_string())]);
     let args = args_for(dir.path(), format!("{base}..{signed}"), registry);
-    let report = verify_with_keys(&args, &keys, BTreeMap::new())
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
         .await
         .unwrap();
 
@@ -236,7 +237,7 @@ async fn signed_but_unauthorized_commit_fails() {
 
     let keys = HashMap::from([(key.verifying_key().to_bytes(), SIGNER.to_string())]);
     let args = args_for(dir.path(), format!("{base}..{signed}"), registry);
-    let report = verify_with_keys(&args, &keys, BTreeMap::new())
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
         .await
         .unwrap();
 
@@ -265,7 +266,7 @@ async fn unsigned_commit_fails_without_touching_the_registry() {
 
     // Deliberately unreachable registry: no signed commits means no queries.
     let args = args_for(repo, format!("{base}..{head}"), "http://127.0.0.1:1".into());
-    let report = verify_with_keys(&args, &HashMap::new(), BTreeMap::new())
+    let report = verify_with_keys(&args, &HashMap::new(), None, BTreeMap::new())
         .await
         .unwrap();
 
@@ -285,7 +286,7 @@ async fn unreachable_registry_fails_closed() {
         format!("{base}..{signed}"),
         "http://127.0.0.1:1".into(),
     );
-    let report = verify_with_keys(&args, &keys, BTreeMap::new())
+    let report = verify_with_keys(&args, &keys, None, BTreeMap::new())
         .await
         .unwrap();
 
@@ -297,4 +298,159 @@ async fn unreachable_registry_fails_closed() {
         report.commits[0].status,
         CommitStatus::RegistryUnavailable { .. }
     ));
+}
+
+// --- PGP platform-commit exemption ------------------------------------------
+
+mod pgp_platform {
+    use super::*;
+    use did_git_sign::pgp_exempt::ExemptKeyring;
+    use pgp::composed::{
+        ArmorOptions, DetachedSignature, KeyType, SecretKeyParamsBuilder, SignedPublicKey,
+        SignedSecretKey,
+    };
+    use pgp::crypto::hash::HashAlgorithm;
+    use pgp::types::Password;
+    use rand::SeedableRng;
+    use rand::rngs::StdRng;
+
+    fn platform_key() -> SignedSecretKey {
+        let mut rng = StdRng::seed_from_u64(7);
+        SecretKeyParamsBuilder::default()
+            .key_type(KeyType::Ed25519)
+            .can_sign(true)
+            .primary_user_id("GitHub <noreply@github.com>".to_string())
+            .build()
+            .unwrap()
+            .generate(&mut rng)
+            .unwrap()
+    }
+
+    /// Rewrite `sha` as a PGP-signed commit (the shape GitHub's web-flow key
+    /// produces for web-UI merge and Dependabot commits).
+    fn pgp_sign_commit(repo: &Path, sha: &str, key: &SignedSecretKey) -> String {
+        let payload = {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(["cat-file", "commit", sha])
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            out.stdout
+        };
+        let mut rng = StdRng::seed_from_u64(11);
+        let armored = DetachedSignature::sign_binary_data(
+            &mut rng,
+            &key.primary_key,
+            &Password::empty(),
+            HashAlgorithm::Sha256,
+            &payload[..],
+        )
+        .unwrap()
+        .to_armored_string(ArmorOptions::default())
+        .unwrap();
+
+        let text = String::from_utf8(payload).unwrap();
+        let (headers, body) = text.split_once("\n\n").unwrap();
+        let mut sig_header = String::from("gpgsig ");
+        let mut lines = armored.trim_end().split('\n');
+        sig_header.push_str(lines.next().unwrap());
+        for line in lines {
+            sig_header.push_str("\n ");
+            sig_header.push_str(line);
+        }
+        let signed = format!("{headers}\n{sig_header}\n\n{body}");
+
+        let mut child = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["hash-object", "-t", "commit", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            use std::io::Write;
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(signed.as_bytes())
+                .unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).trim_end().to_string()
+    }
+
+    #[tokio::test]
+    async fn platform_signed_commit_is_exempt_with_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let did_key = SigningKey::from_bytes(&[9u8; 32]);
+        let (base, did_signed) = repo_with_signed_commit(repo, &did_key);
+
+        // A "web-UI merge" style commit on top, PGP-signed by the platform key.
+        std::fs::write(repo.join("a.txt"), "three\n").unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-q", "-m", "merge-style change"]);
+        let unsigned = git(repo, &["rev-parse", "HEAD"]);
+        let platform = platform_key();
+        let pgp_signed = pgp_sign_commit(repo, &unsigned, &platform);
+        git(repo, &["update-ref", "refs/heads/main", &pgp_signed]);
+
+        let keyring_armor = SignedPublicKey::from(platform.clone())
+            .to_armored_string(ArmorOptions::default())
+            .unwrap();
+        let keyring = ExemptKeyring::from_armored(&keyring_armor).unwrap();
+
+        let registry = stub_registry(SIGNER.to_string()).await;
+        let keys = HashMap::from([(did_key.verifying_key().to_bytes(), SIGNER.to_string())]);
+        let args = args_for(repo, format!("{base}..{pgp_signed}"), registry);
+        let report = verify_with_keys(&args, &keys, Some(&keyring), BTreeMap::new())
+            .await
+            .unwrap();
+
+        assert!(report.ok, "DID-signed + platform-exempt should both pass");
+        assert_eq!(report.commits.len(), 2);
+        assert!(report.commits[0].status.is_trusted(), "{did_signed}");
+        assert!(matches!(
+            report.commits[1].status,
+            CommitStatus::Exempt { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn platform_signed_commit_fails_without_keyring() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q", "-b", "main"]);
+        std::fs::write(repo.join("a.txt"), "one\n").unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-q", "-m", "base"]);
+        let base = git(repo, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("a.txt"), "two\n").unwrap();
+        git(repo, &["add", "a.txt"]);
+        git(repo, &["commit", "-q", "-m", "change"]);
+        let unsigned = git(repo, &["rev-parse", "HEAD"]);
+        let pgp_signed = pgp_sign_commit(repo, &unsigned, &platform_key());
+        git(repo, &["update-ref", "refs/heads/main", &pgp_signed]);
+
+        // No registry needed: the commit never reaches the registry pass.
+        let args = args_for(
+            repo,
+            format!("{base}..{pgp_signed}"),
+            "http://127.0.0.1:1".into(),
+        );
+        let report = verify_with_keys(&args, &HashMap::new(), None, BTreeMap::new())
+            .await
+            .unwrap();
+
+        assert!(!report.ok, "no keyring means no exemptions");
+        assert!(matches!(
+            report.commits[0].status,
+            CommitStatus::PgpRejected { .. }
+        ));
+    }
 }

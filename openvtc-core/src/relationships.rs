@@ -195,9 +195,11 @@ fn find_key_source(
                     .map(|s| s.get_public_bytes().to_vec()),
                 _ => None,
             },
-            KeySourceMaterial::Imported { seed } => Secret::from_multibase(seed.expose_secret(), None)
-                .ok()
-                .map(|s| s.get_public_bytes().to_vec()),
+            KeySourceMaterial::Imported { seed } => {
+                Secret::from_multibase(seed.expose_secret(), None)
+                    .ok()
+                    .map(|s| s.get_public_bytes().to_vec())
+            }
             // VTA-managed secrets aren't reconstructable offline; the (1) path
             // handles them via their multibase id.
             KeySourceMaterial::VtaManaged { .. } => None,

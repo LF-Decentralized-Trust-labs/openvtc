@@ -32,6 +32,8 @@ use serde::Serialize;
 use ssh_key::{SshSig, public::KeyData};
 use trql_client::{HttpsTransport, HttpsTransportConfig, TrqlClient, TrqlError, TrqpQuery};
 
+use crate::pgp_exempt::ExemptKeyring;
+
 /// The sshsig namespace git uses for commit and tag signatures.
 pub const GIT_SSHSIG_NAMESPACE: &str = "git";
 
@@ -57,6 +59,10 @@ pub struct VerifyTrustArgs {
     pub action: String,
     /// TRQP resource, e.g. the `org/repo` slug.
     pub resource: String,
+    /// Optional armored PGP keyring of exempt platform keys (e.g. GitHub's
+    /// web-flow key); relative paths resolve against `repo_dir`. Absent means
+    /// no exemptions: every PGP-signed commit fails.
+    pub exempt_keyring: Option<PathBuf>,
     /// Emit machine-readable JSON on stdout instead of human lines.
     pub json: bool,
 }
@@ -78,14 +84,25 @@ pub enum CommitStatus {
     /// Valid signature, but the registry could not be consulted. Fails the
     /// run (closed), distinctly from a denial.
     RegistryUnavailable { signer_did: String, error: String },
+    /// PGP-signed (a platform commit), but the signature verifies against no
+    /// key in the exempt keyring — or no keyring is configured.
+    PgpRejected { detail: String },
+    /// PGP-signed by a key in the committed exempt keyring (e.g. a GitHub
+    /// web-UI merge commit). Passes, reported distinctly from `Trusted`.
+    Exempt { fingerprint: String },
     /// Valid signature by a registry-authorized signer.
     Trusted { signer_did: String },
 }
 
 impl CommitStatus {
-    /// Only a `Trusted` commit passes.
+    /// Signed by a registry-authorized DID.
     pub fn is_trusted(&self) -> bool {
         matches!(self, Self::Trusted { .. })
+    }
+
+    /// Whether the commit passes the check: DID-trusted or keyring-exempt.
+    pub fn passes(&self) -> bool {
+        matches!(self, Self::Trusted { .. } | Self::Exempt { .. })
     }
 }
 
@@ -113,8 +130,9 @@ pub struct TrustReport {
 /// the range. Returns the process exit code (0 = every commit trusted).
 pub async fn handle_verify_trust(args: VerifyTrustArgs) -> Result<i32> {
     let signer_dids = load_signers(&args.repo_dir, &args.signers_file)?;
+    let exempt = load_exempt_keyring(&args)?;
     let (keys, unresolved) = resolve_signer_keys(&signer_dids).await?;
-    let report = verify_with_keys(&args, &keys, unresolved).await?;
+    let report = verify_with_keys(&args, &keys, exempt.as_ref(), unresolved).await?;
     print_report(&args, &report)?;
     Ok(if report.ok { 0 } else { 1 })
 }
@@ -124,6 +142,7 @@ pub async fn handle_verify_trust(args: VerifyTrustArgs) -> Result<i32> {
 pub async fn verify_with_keys(
     args: &VerifyTrustArgs,
     signer_keys: &HashMap<[u8; 32], String>,
+    exempt: Option<&ExemptKeyring>,
     unresolved_signers: BTreeMap<String, String>,
 ) -> Result<TrustReport> {
     let shas = list_commits(&args.repo_dir, &args.range)?;
@@ -133,7 +152,7 @@ pub async fn verify_with_keys(
     let mut signer_dids = BTreeSet::new();
     for sha in shas {
         let raw = read_commit_raw(&args.repo_dir, &sha)?;
-        let signature = check_commit_signature(&raw, signer_keys);
+        let signature = check_commit_signature(&raw, signer_keys, exempt);
         if let SignatureCheck::Valid { signer_did } = &signature {
             signer_dids.insert(signer_did.clone());
         }
@@ -152,7 +171,7 @@ pub async fn verify_with_keys(
         .collect();
 
     // An empty range passes vacuously (nothing new to verify).
-    let ok = commits.iter().all(|c| c.status.is_trusted());
+    let ok = commits.iter().all(|c| c.status.passes());
     Ok(TrustReport {
         ok,
         commits,
@@ -169,6 +188,8 @@ pub enum SignatureCheck {
     Malformed(String),
     UnknownKey { fingerprint: String },
     BadSignature { signer_did: String },
+    PgpRejected { detail: String },
+    Exempt { fingerprint: String },
     Valid { signer_did: String },
 }
 
@@ -176,12 +197,26 @@ pub enum SignatureCheck {
 pub fn check_commit_signature(
     raw: &[u8],
     signer_keys: &HashMap<[u8; 32], String>,
+    exempt: Option<&ExemptKeyring>,
 ) -> SignatureCheck {
     let (payload, pem) = match split_signed_commit(raw) {
         Ok(Some(parts)) => parts,
         Ok(None) => return SignatureCheck::Unsigned,
         Err(e) => return SignatureCheck::Malformed(e.to_string()),
     };
+    // Platform commits (GitHub web-UI merges, Dependabot) are PGP-signed;
+    // they pass only via the explicitly committed exempt keyring.
+    if pem.starts_with("-----BEGIN PGP SIGNATURE-----") {
+        let Some(keyring) = exempt else {
+            return SignatureCheck::PgpRejected {
+                detail: "PGP-signed commit, but no exempt keyring is configured".to_string(),
+            };
+        };
+        return match keyring.verify(&pem, &payload) {
+            Ok(fingerprint) => SignatureCheck::Exempt { fingerprint },
+            Err(detail) => SignatureCheck::PgpRejected { detail },
+        };
+    }
     let sig = match SshSig::from_pem(normalize_sshsig_armor(&pem).as_bytes()) {
         Ok(sig) => sig,
         Err(e) => return SignatureCheck::Malformed(format!("sshsig did not parse: {e}")),
@@ -269,6 +304,19 @@ pub fn split_signed_commit(raw: &[u8]) -> Result<Option<(Vec<u8>, String)>> {
     let mut pem = signature_lines.join("\n");
     pem.push('\n');
     Ok(Some((payload, pem)))
+}
+
+/// Load the exempt keyring named by the args, resolving relative to the repo.
+fn load_exempt_keyring(args: &VerifyTrustArgs) -> Result<Option<ExemptKeyring>> {
+    let Some(path) = &args.exempt_keyring else {
+        return Ok(None);
+    };
+    let path = if path.is_absolute() {
+        path.clone()
+    } else {
+        args.repo_dir.join(path)
+    };
+    Ok(Some(ExemptKeyring::load(&path)?))
 }
 
 // --- signer index & DID resolution -------------------------------------------
@@ -414,6 +462,8 @@ fn status_of(signature: SignatureCheck, decisions: &RegistryDecisions) -> Commit
         SignatureCheck::Malformed(detail) => CommitStatus::Malformed(detail),
         SignatureCheck::UnknownKey { fingerprint } => CommitStatus::UnknownKey { fingerprint },
         SignatureCheck::BadSignature { signer_did } => CommitStatus::BadSignature { signer_did },
+        SignatureCheck::PgpRejected { detail } => CommitStatus::PgpRejected { detail },
+        SignatureCheck::Exempt { fingerprint } => CommitStatus::Exempt { fingerprint },
         SignatureCheck::Valid { signer_did } => match decisions.get(&signer_did) {
             Some(Ok(true)) => CommitStatus::Trusted { signer_did },
             Some(Ok(false)) => CommitStatus::Unauthorized { signer_did },
@@ -484,6 +534,12 @@ fn print_report(args: &VerifyTrustArgs, report: &TrustReport) -> Result<()> {
             CommitStatus::Trusted { signer_did } => {
                 println!("TRUSTED      {short}  {signer_did}");
             }
+            CommitStatus::Exempt { fingerprint } => {
+                println!("EXEMPT       {short}  PGP-signed by exempt platform key {fingerprint}");
+            }
+            CommitStatus::PgpRejected { detail } => {
+                println!("PGP-REJECTED {short}  {detail}");
+            }
             CommitStatus::Unauthorized { signer_did } => {
                 println!("UNAUTHORIZED {short}  {signer_did} is not authorized by the registry");
             }
@@ -511,13 +567,9 @@ fn print_report(args: &VerifyTrustArgs, report: &TrustReport) -> Result<()> {
     for (did, reason) in &report.unresolved_signers {
         println!("WARNING      declared signer {did}: {reason}");
     }
-    let trusted = report
-        .commits
-        .iter()
-        .filter(|c| c.status.is_trusted())
-        .count();
+    let passing = report.commits.iter().filter(|c| c.status.passes()).count();
     println!(
-        "{}: {trusted}/{} commits trusted",
+        "{}: {passing}/{} commits pass",
         if report.ok { "PASS" } else { "FAIL" },
         report.commits.len()
     );
@@ -603,7 +655,7 @@ mod tests {
         let commit = sign_commit(&payload, &key);
         let keys = HashMap::from([(public, "did:example:signer".to_string())]);
 
-        let check = check_commit_signature(commit.as_bytes(), &keys);
+        let check = check_commit_signature(commit.as_bytes(), &keys, None);
         assert_eq!(
             check,
             SignatureCheck::Valid {
@@ -639,7 +691,7 @@ mod tests {
         let commit = signed_commit(&payload, &legacy);
         let keys = HashMap::from([(public, "did:example:signer".to_string())]);
         assert_eq!(
-            check_commit_signature(commit.as_bytes(), &keys),
+            check_commit_signature(commit.as_bytes(), &keys, None),
             SignatureCheck::Valid {
                 signer_did: "did:example:signer".to_string()
             }
@@ -652,7 +704,7 @@ mod tests {
         let (key, _) = test_key();
         let commit = sign_commit(&payload, &key);
 
-        let check = check_commit_signature(commit.as_bytes(), &HashMap::new());
+        let check = check_commit_signature(commit.as_bytes(), &HashMap::new(), None);
         assert!(matches!(check, SignatureCheck::UnknownKey { .. }));
     }
 
@@ -663,7 +715,7 @@ mod tests {
         let commit = sign_commit(&payload, &key).replace("a message", "b message");
         let keys = HashMap::from([(public, "did:example:signer".to_string())]);
 
-        let check = check_commit_signature(commit.as_bytes(), &keys);
+        let check = check_commit_signature(commit.as_bytes(), &keys, None);
         assert_eq!(
             check,
             SignatureCheck::BadSignature {
@@ -674,7 +726,7 @@ mod tests {
 
     #[test]
     fn unsigned_commit_is_unsigned() {
-        let check = check_commit_signature(unsigned_commit().as_bytes(), &HashMap::new());
+        let check = check_commit_signature(unsigned_commit().as_bytes(), &HashMap::new(), None);
         assert_eq!(check, SignatureCheck::Unsigned);
     }
 

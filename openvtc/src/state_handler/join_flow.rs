@@ -2,7 +2,7 @@
 //!
 //! [`StateHandler::join_flow`] is a nested `tokio::select!` loop modelled on
 //! [`setup_wizard`](crate::state_handler::setup_wizard): it owns the screen
-//! while [`ActivePage::Join`](crate::state_handler::state::ActivePage::Join) is
+//! while [`ActivePage::Join`] is
 //! active, processes the join actions, renders via `state_tx`, and returns to
 //! the main page when the user cancels or the sequence finishes.
 //!
@@ -547,7 +547,6 @@ fn validate_join_input(raw: &str) -> Option<String> {
     }
 }
 
-
 /// #2: load a *presentable* invitation the VTA already holds for the community
 /// being joined (`vtc_did`). Queries the credential vault for `purpose = invite`
 /// and selects an active, vault-valid (not expired / revoked) VIC whose issuer is
@@ -952,9 +951,9 @@ async fn run_join_sequence(
         if let Err(e) = admin_vta.cred_vault_receive(vic, None).await {
             debug!(error = %e, "storing invitation in the VTA vault failed (continuing)");
         }
-        state
-            .join
-            .info("Joining without an invitation — submitting an open request (awaiting approval).");
+        state.join.info(
+            "Joining without an invitation — submitting an open request (awaiting approval).",
+        );
     }
     // Completeness gate before presenting: a VIC resolved from the vault may
     // predate the ingest-time validation (or have lost fields in storage). An

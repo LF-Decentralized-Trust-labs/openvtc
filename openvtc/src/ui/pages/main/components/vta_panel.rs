@@ -256,7 +256,11 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
             header_style,
         ),
         Span::styled(
-            if focused { "   ◀ focus" } else { "   [Tab] focus" },
+            if focused {
+                "   ◀ focus"
+            } else {
+                "   [Tab] focus"
+            },
             Style::new().fg(COLOR_DARK_GRAY),
         ),
     ]));
@@ -311,14 +315,24 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
 
     lines.push(Line::from(""));
     if let Some(idx) = state.confirm_purge_vic {
-        let target = state.vics.get(idx).map(|v| v.id.as_str()).unwrap_or("this VIC");
+        let target = state
+            .vics
+            .get(idx)
+            .map(|v| v.id.as_str())
+            .unwrap_or("this VIC");
         lines.push(
-            Line::from(format!("Purge {target} permanently?   y: confirm    n: cancel"))
-                .fg(COLOR_ORANGE)
-                .bold(),
+            Line::from(format!(
+                "Purge {target} permanently?   y: confirm    n: cancel"
+            ))
+            .fg(COLOR_ORANGE)
+            .bold(),
         );
     } else if let Some(idx) = state.confirm_delete_vic {
-        let target = state.vics.get(idx).map(|v| v.id.as_str()).unwrap_or("this VIC");
+        let target = state
+            .vics
+            .get(idx)
+            .map(|v| v.id.as_str())
+            .unwrap_or("this VIC");
         lines.push(
             Line::from(format!("Delete {target}?   y: confirm    n: cancel"))
                 .fg(COLOR_ORANGE)

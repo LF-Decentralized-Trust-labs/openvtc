@@ -3,7 +3,7 @@
 //! Renders the `JoinState.messages` log plus the terminal outcome. On success
 //! it shows the created persona DID and the pending community, and prompts the
 //! operator to restart OpenVTC to activate the new community (hot-start is a
-//! deliberate follow-up). [ENTER] returns to the main page.
+//! deliberate follow-up). `Enter` returns to the main page.
 
 use crate::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
@@ -114,10 +114,7 @@ impl JoinProgress {
                     match &state.presented_invitation {
                         Some(vic) => {
                             lines.push(Line::from(vec![
-                                Span::styled(
-                                    "  Invitation:    ",
-                                    Style::new().fg(COLOR_SUCCESS),
-                                ),
+                                Span::styled("  Invitation:    ", Style::new().fg(COLOR_SUCCESS)),
                                 Span::styled(
                                     format!("Presented  ·  {}", vic.id),
                                     Style::new().fg(COLOR_SOFT_PURPLE),
@@ -138,10 +135,7 @@ impl JoinProgress {
                         }
                         None => {
                             lines.push(Line::from(vec![
-                                Span::styled(
-                                    "  Invitation:    ",
-                                    Style::new().fg(COLOR_SUCCESS),
-                                ),
+                                Span::styled("  Invitation:    ", Style::new().fg(COLOR_SUCCESS)),
                                 Span::styled(
                                     "None  ·  open request (awaiting approval)",
                                     Style::new().fg(COLOR_ORANGE),

@@ -1,0 +1,38 @@
+# Dogfood workflow for the commit-trust check. Dormant until the repository
+# variables are configured (Settings → Secrets and variables → Actions →
+# Variables):
+#
+#   TRUST_REGISTRY_URL   e.g. https://registry.example.com
+#   TRUST_REGISTRY_DID   DID of the registry
+#   TRUST_AUTHORITY_DID  DID of the authority governing this repo
+#
+# Also requires a committed `.did-signers` file (one DID per line) and,
+# for GitHub web-UI merge / Dependabot commits, a committed
+# `.github/trusted-platform-keys.asc` (GitHub's web-flow public key).
+name: verify-trust
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-trust:
+    name: commit signatures vs Trust Registry
+    if: vars.TRUST_REGISTRY_URL != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The verifier walks raw commit objects across base..head.
+          fetch-depth: 0
+
+      - uses: ./.github/actions/verify-trust
+        with:
+          registry-url: ${{ vars.TRUST_REGISTRY_URL }}
+          registry-did: ${{ vars.TRUST_REGISTRY_DID }}
+          authority: ${{ vars.TRUST_AUTHORITY_DID }}
+          exempt-keyring: .github/trusted-platform-keys.asc
+          # Dogfood: run the PR's own did-git-sign, not a published ref.
+          install-path: did-git-sign

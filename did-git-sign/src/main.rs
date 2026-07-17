@@ -242,6 +242,14 @@ enum Commands {
         #[arg(long)]
         resource: Option<String>,
 
+        /// Armored PGP keyring of exempt platform keys (e.g. GitHub's
+        /// web-flow key, https://github.com/web-flow.gpg) committed to the
+        /// repo. PGP-signed commits (web-UI merges, Dependabot) pass only if
+        /// their signature verifies against a key in this file. Omitted:
+        /// no exemptions.
+        #[arg(long)]
+        exempt_keyring: Option<PathBuf>,
+
         /// Repository to verify. Defaults to the current directory.
         #[arg(long)]
         repo_dir: Option<PathBuf>,
@@ -331,6 +339,7 @@ async fn main() -> Result<()> {
             authority,
             action,
             resource,
+            exempt_keyring,
             repo_dir,
             json,
         }) => {
@@ -350,6 +359,7 @@ async fn main() -> Result<()> {
                 authority_did: authority,
                 action,
                 resource,
+                exempt_keyring,
                 json,
             })
             .await?;
@@ -962,6 +972,10 @@ mod tests {
     /// that every expected flag and value appears in that file.
     #[test]
     #[serial_test::serial]
+    // The mock ssh-keygen is a POSIX shell script, which Windows cannot
+    // execute (os error 193). The behavior under test — argv forwarding —
+    // is platform-independent, so non-Windows coverage suffices.
+    #[cfg(not(windows))]
     fn delegate_forwards_all_flags_to_ssh_keygen() {
         // Copy the mock script into a private temp dir and operate on the COPY —
         // never mutate the shared, checked-in fixture. Previously this test
