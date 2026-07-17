@@ -665,6 +665,9 @@ impl StateHandler {
         // immediately, so a Pending that aged out while the app was closed expires
         // on launch; thereafter it sweeps hourly.
         let mut pending_expiry_tick = tokio::time::interval(std::time::Duration::from_secs(3600));
+        // Reply-window sweep for the capabilities view (cheap no-op when the
+        // view is closed or idle).
+        let mut capabilities_sweep = tokio::time::interval(std::time::Duration::from_secs(5));
 
         let result = loop {
             tokio::select! {
@@ -864,6 +867,111 @@ impl StateHandler {
                             }
                         }
                     },
+                    Action::CapabilitiesOpen(i) => {
+                        let target = config
+                            .account
+                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
+                            .get(i)
+                            .filter(|c| c.status.is_active())
+                            .map(|c| {
+                                (
+                                    c.vtc_did.clone(),
+                                    c.persona_ref,
+                                    c.display_name.clone().unwrap_or_else(|| c.vtc_did.clone()),
+                                )
+                            });
+                        if let Some((vtc, persona_id, name)) = target {
+                            let mut view = crate::state_handler::main_page::content::CapabilitiesView::new(
+                                vtc.clone(),
+                                persona_id,
+                                name,
+                            );
+                            match message_dispatch::capabilities_list_for(&config, &tdk, &vtc, persona_id).await {
+                                Ok(thid) => {
+                                    view.pending_thid = Some(thid);
+                                    view.sent_at = Some(std::time::Instant::now());
+                                }
+                                Err(e) => {
+                                    state.main_page.log_error("Capability query failed", &e);
+                                    view.phase =
+                                        crate::state_handler::main_page::content::CapabilitiesPhase::Failed(
+                                            format!("could not send the query: {e}"),
+                                        );
+                                }
+                            }
+                            state.main_page.content_panel.capabilities.view = Some(view);
+                        }
+                    }
+                    Action::CapabilitiesRefresh => {
+                        let target = state
+                            .main_page
+                            .content_panel
+                            .capabilities
+                            .view
+                            .as_ref()
+                            .map(|v| (v.vtc_did.clone(), v.persona));
+                        if let Some((vtc, persona_id)) = target
+                            && let Some(view) = state.main_page.content_panel.capabilities.view.as_mut()
+                        {
+                            view.phase = crate::state_handler::main_page::content::CapabilitiesPhase::Loading;
+                            view.status_message = None;
+                            match message_dispatch::capabilities_list_for(&config, &tdk, &vtc, persona_id).await {
+                                Ok(thid) => {
+                                    view.pending_thid = Some(thid);
+                                    view.sent_at = Some(std::time::Instant::now());
+                                }
+                                Err(e) => {
+                                    view.phase =
+                                        crate::state_handler::main_page::content::CapabilitiesPhase::Failed(
+                                            format!("could not send the query: {e}"),
+                                        );
+                                }
+                            }
+                        }
+                    }
+                    Action::CapabilitiesToggleCommit => {
+                        let target = state
+                            .main_page
+                            .content_panel
+                            .capabilities
+                            .view
+                            .as_ref()
+                            .and_then(|v| {
+                                let i = v.confirm_toggle?;
+                                let item = v.items.get(i)?;
+                                Some((
+                                    v.vtc_did.clone(),
+                                    v.persona,
+                                    item.slug.clone(),
+                                    item.version.clone(),
+                                    !item.enabled,
+                                ))
+                            });
+                        if let Some((vtc, persona_id, slug, version, enable)) = target
+                            && let Some(view) = state.main_page.content_panel.capabilities.view.as_mut()
+                        {
+                            view.confirm_toggle = None;
+                            match message_dispatch::capability_toggle_for(
+                                &config, &tdk, &vtc, persona_id, &slug, &version, enable,
+                            )
+                            .await
+                            {
+                                Ok(thid) => {
+                                    view.pending_thid = Some(thid);
+                                    view.sent_at = Some(std::time::Instant::now());
+                                    view.status_message = Some(format!(
+                                        "{} {slug}… awaiting the community's reply",
+                                        if enable { "enabling" } else { "disabling" }
+                                    ));
+                                }
+                                Err(e) => {
+                                    view.status_message =
+                                        Some(format!("couldn't send the change: {e}"));
+                                    tracing::error!("capability toggle failed: {e}");
+                                }
+                            }
+                        }
+                    }
                     Action::IssueMemberVmc(i) => {
                         // Issue this membership's reciprocal VMC (member -> community)
                         // and send it to the VTC over DIDComm (members/vmc/1.0).
@@ -1372,6 +1480,7 @@ impl StateHandler {
                             let msg_thid = message.thid.clone().unwrap_or_else(|| "none".into());
 
                             let mut inactivated = Vec::new();
+                            let mut capability_replies = Vec::new();
                             match message_dispatch::process_inbound_message(
                                 &mut config,
                                 &tdk,
@@ -1379,6 +1488,7 @@ impl StateHandler {
                                 &mut seen_messages,
                                 &message,
                                 &mut inactivated,
+                                &mut capability_replies,
                             )
                             .await
                             {
@@ -1437,6 +1547,7 @@ impl StateHandler {
                                     debug!("message dispatch error: {e}");
                                 }
                             }
+                            apply_capability_replies(&mut state, capability_replies);
                         }
                         didcomm::DIDCommEvent::TrustPingReceived { from, listener_id, message_id } => {
                             let sender = from.as_deref().unwrap_or("unknown");
@@ -1608,6 +1719,27 @@ impl StateHandler {
                 // loop stays responsive. At most one save is in flight; a mark
                 // that lands while a save runs is re-scheduled on completion.
                 // When nothing is scheduled the arm parks forever (no busy-wait).
+                _ = capabilities_sweep.tick() => {
+                    // R4.3: a capability query has a defined reply window. The
+                    // send was fire-and-forget; if no correlated reply arrived,
+                    // fail the view closed with a distinct, actionable message.
+                    if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut()
+                        && view.pending_thid.is_some()
+                        && view.sent_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_secs(30))
+                    {
+                        view.pending_thid = None;
+                        view.sent_at = None;
+                        if matches!(view.phase, crate::state_handler::main_page::content::CapabilitiesPhase::Loading) {
+                            view.phase = crate::state_handler::main_page::content::CapabilitiesPhase::Failed(
+                                "no reply within 30s — the community's governance host may be offline".to_string(),
+                            );
+                        } else {
+                            view.status_message = Some(
+                                "no reply to the change within 30s — refresh (r) to re-check".to_string(),
+                            );
+                        }
+                    }
+                }
                 _ = pending_expiry_tick.tick() => {
                     // R-B-7: expire Pending joins unanswered for 7 days, raising
                     // actions-required, and tear down each one's now-dead session
@@ -2315,6 +2447,68 @@ enum DegradedOutcome {
     Joined(DegradedJoinContext),
 }
 
+/// Apply correlated `governance/capability/*` replies to the open
+/// capabilities view. Uncorrelated replies (view closed, or thid from an
+/// older query) are dropped — the reply is stale by definition.
+fn apply_capability_replies(
+    state: &mut State,
+    replies: Vec<(String, openvtc_core::capabilities::CapabilityReply)>,
+) {
+    use crate::state_handler::main_page::content::CapabilitiesPhase;
+    use openvtc_core::capabilities::CapabilityReply;
+    if replies.is_empty() {
+        return;
+    }
+    let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() else {
+        return;
+    };
+    for (thid, reply) in replies {
+        if view.pending_thid.as_deref() != Some(thid.as_str()) {
+            continue;
+        }
+        view.pending_thid = None;
+        view.sent_at = None;
+        match reply {
+            CapabilityReply::Listing(items) => {
+                view.selected = view.selected.min(items.len().saturating_sub(1));
+                view.items = items;
+                view.phase = CapabilitiesPhase::Loaded;
+            }
+            CapabilityReply::Toggled {
+                capability,
+                enabled,
+            } => {
+                if let Some(item) = view.items.iter_mut().find(|i| i.slug == capability) {
+                    item.enabled = enabled;
+                }
+                view.status_message = Some(format!(
+                    "{capability} is now {}",
+                    if enabled { "enabled" } else { "disabled" }
+                ));
+                view.phase = CapabilitiesPhase::Loaded;
+            }
+            CapabilityReply::Rejected { code, message } => {
+                let detail = message.map(|m| format!(" — {m}")).unwrap_or_default();
+                match view.phase {
+                    CapabilitiesPhase::Loaded => {
+                        // A rejected toggle: keep the listing, surface the code.
+                        view.status_message =
+                            Some(format!("the community rejected the change: {code}{detail}"));
+                    }
+                    _ => {
+                        view.phase = CapabilitiesPhase::Failed(match code.as_str() {
+                            "unsupportedType" => {
+                                "this community does not offer capability management".to_string()
+                            }
+                            _ => format!("the community rejected the query: {code}{detail}"),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Apply a pure navigation action to `state`, shared by the runtime loop and the
 /// degraded loop so both modes route the same nav set from exactly one place.
 ///
@@ -2355,6 +2549,40 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
                 state.main_page.content_panel.selected = false;
             }
         },
+        Action::CapabilitiesClose => {
+            state.main_page.content_panel.capabilities.view = None;
+        }
+        Action::CapabilitiesUp => {
+            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+                view.selected = view.selected.saturating_sub(1);
+                view.confirm_toggle = None;
+            }
+        }
+        Action::CapabilitiesDown => {
+            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+                if view.selected + 1 < view.items.len() {
+                    view.selected += 1;
+                }
+                view.confirm_toggle = None;
+            }
+        }
+        Action::CapabilitiesDetail => {
+            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+                view.detail = !view.detail;
+            }
+        }
+        Action::CapabilitiesToggleArm => {
+            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut()
+                && !view.items.is_empty()
+            {
+                view.confirm_toggle = Some(view.selected);
+            }
+        }
+        Action::CapabilitiesToggleCancel => {
+            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+                view.confirm_toggle = None;
+            }
+        }
         Action::CommunitySelect(i) => {
             state.main_page.content_panel.communities.selected_index = *i;
         }

@@ -510,7 +510,53 @@ impl MainPage {
     /// Communities overview keys (R-A-5 Stage 4): `j` starts the join flow
     /// (incl. from the empty state), ↑/↓ move the selection, `d`/Del removes the
     /// selected community. Returns true if consumed.
+    /// Keys for the per-community capabilities view.
+    fn handle_capabilities_key(
+        &mut self,
+        key: KeyEvent,
+        view: &crate::state_handler::main_page::content::CapabilitiesView,
+    ) -> bool {
+        // Toggle confirmation pending: y/⏎ commits, anything else cancels.
+        if view.confirm_toggle.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::CapabilitiesToggleCommit);
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::CapabilitiesToggleCancel);
+                }
+            }
+            return true;
+        }
+        match key.code {
+            KeyCode::Esc => {
+                let _ = self.action_tx.send(Action::CapabilitiesClose);
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let _ = self.action_tx.send(Action::CapabilitiesUp);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let _ = self.action_tx.send(Action::CapabilitiesDown);
+            }
+            KeyCode::Enter => {
+                let _ = self.action_tx.send(Action::CapabilitiesDetail);
+            }
+            KeyCode::Char('r') => {
+                let _ = self.action_tx.send(Action::CapabilitiesRefresh);
+            }
+            KeyCode::Char('e') => {
+                let _ = self.action_tx.send(Action::CapabilitiesToggleArm);
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn handle_communities_key(&mut self, key: KeyEvent) -> bool {
+        // Capabilities view open: it owns the keys until closed (Esc).
+        if let Some(view) = self.props.main_page.content_panel.capabilities.view.clone() {
+            return self.handle_capabilities_key(key, &view);
+        }
         let comms = &self.props.main_page.content_panel.communities;
         let count = comms.items.len();
         let selected = comms.selected_index;
@@ -599,6 +645,11 @@ impl MainPage {
                 // Issue this membership's reciprocal VMC back to the community and
                 // send it to the VTC (members/vmc/1.0). Active-only.
                 let _ = self.action_tx.send(Action::IssueMemberVmc(selected));
+                true
+            }
+            KeyCode::Char('c') if sel_active => {
+                // Open the community's capabilities view (governance/capability/*).
+                let _ = self.action_tx.send(Action::CapabilitiesOpen(selected));
                 true
             }
             // Cancel is pending-only: a Pending join can be withdrawn (arming on
@@ -2560,13 +2611,15 @@ mod key_handler_tests {
             Ok(Action::IssueMemberVmc(0)) => {}
             _ => panic!("expected IssueMemberVmc(0)"),
         }
-        // Active row: `c` (cancel pending join) does nothing.
+        // Active row: `c` opens the community's capabilities view (the
+        // cancel-pending-join meaning of `c` is Pending-only; the two are
+        // disjoint by status).
         let (mut page, mut rx) = active();
         page.handle_key_event(press(KeyCode::Char('c')));
-        assert!(
-            rx.try_recv().is_err(),
-            "cancel is gated off for Active rows"
-        );
+        match rx.try_recv() {
+            Ok(Action::CapabilitiesOpen(0)) => {}
+            _ => panic!("expected CapabilitiesOpen(0) for Active rows"),
+        }
         let (mut page, mut rx) = active();
         page.handle_key_event(press(KeyCode::Char('d')));
         assert!(

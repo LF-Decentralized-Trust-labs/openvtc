@@ -207,7 +207,7 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         };
         lines.push(
             Line::from(format!(
-                "↑/↓ navigate   ⏎ open   f: ★   a: acknowledge   m: issue VMC   \
+                "↑/↓ navigate   ⏎ open   f: ★   a: acknowledge   m: issue VMC   c: capabilities   \
                  l: leave   c: cancel   x: archive   d: delete   j: join   {archived_hint}"
             ))
             .fg(COLOR_DARK_GRAY),
