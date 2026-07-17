@@ -31,6 +31,12 @@ inputs:
     description: TRQP resource of the trust tuple. Defaults to the org/repo slug.
     required: false
     default: ${{ github.repository }}
+  fallback-resource:
+    description: >-
+      Broader resource to also accept a grant under (org-wide grants).
+      Defaults to the org. Set to "" to require a repo-scoped grant.
+    required: false
+    default: ${{ github.repository_owner }}
   signers-file:
     description: Signer index committed to the repo (one DID per line).
     required: false
@@ -91,6 +97,7 @@ runs:
         RESOURCE: ${{ inputs.resource }}
         SIGNERS_FILE: ${{ inputs.signers-file }}
         EXEMPT_KEYRING: ${{ inputs.exempt-keyring }}
+        FALLBACK_RESOURCE: ${{ inputs.fallback-resource }}
       run: |
         set -euo pipefail
         RANGE="$RANGE_INPUT"
@@ -104,6 +111,9 @@ runs:
         EXTRA=()
         if [ -n "$EXEMPT_KEYRING" ]; then
           EXTRA+=(--exempt-keyring "$EXEMPT_KEYRING")
+        fi
+        if [ -n "$FALLBACK_RESOURCE" ]; then
+          EXTRA+=(--fallback-resource "$FALLBACK_RESOURCE")
         fi
         did-git-sign verify-trust \
           --range "$RANGE" \

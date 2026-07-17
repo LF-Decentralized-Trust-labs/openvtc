@@ -59,6 +59,12 @@ pub struct VerifyTrustArgs {
     pub action: String,
     /// TRQP resource, e.g. the `org/repo` slug.
     pub resource: String,
+    /// Broader resource to try when the primary one does not authorize
+    /// (e.g. the org for an org-wide grant). Grant semantics are
+    /// `resource OR fallback`: the registry's wire contract cannot
+    /// distinguish "no record" from an explicit `authorized: false`, so a
+    /// repo-level record cannot veto an org-level grant.
+    pub fallback_resource: Option<String>,
     /// Optional armored PGP keyring of exempt platform keys (e.g. GitHub's
     /// web-flow key); relative paths resolve against `repo_dir`. Absent means
     /// no exemptions: every PGP-signed commit fails.
@@ -90,8 +96,13 @@ pub enum CommitStatus {
     /// PGP-signed by a key in the committed exempt keyring (e.g. a GitHub
     /// web-UI merge commit). Passes, reported distinctly from `Trusted`.
     Exempt { fingerprint: String },
-    /// Valid signature by a registry-authorized signer.
-    Trusted { signer_did: String },
+    /// Valid signature by a registry-authorized signer. `resource` is the
+    /// tuple resource the grant was found under (the primary one or the
+    /// fallback).
+    Trusted {
+        signer_did: String,
+        resource: String,
+    },
 }
 
 impl CommitStatus {
@@ -420,8 +431,10 @@ pub fn ed25519_keys_from_doc(doc: &serde_json::Value) -> Vec<[u8; 32]> {
 
 // --- registry layer -----------------------------------------------------------
 
-/// Per-DID registry decision: authorized, denied, or unavailable-with-reason.
-type RegistryDecisions = BTreeMap<String, Result<bool, String>>;
+/// Per-DID registry decision: `Ok(Some(resource))` = authorized under that
+/// tuple resource, `Ok(None)` = denied everywhere queried, `Err` =
+/// registry unavailable.
+type RegistryDecisions = BTreeMap<String, Result<Option<String>, String>>;
 
 /// One TRQP authorization query per distinct signer DID.
 async fn query_registry(
@@ -434,23 +447,38 @@ async fn query_registry(
     }
     let transport = HttpsTransport::new(HttpsTransportConfig::new(&args.registry_url))?;
     let client = TrqlClient::new(Arc::new(transport), &args.registry_did);
+    // The primary resource, then the broader fallback if it did not grant.
+    let mut resources = vec![args.resource.clone()];
+    if let Some(fallback) = &args.fallback_resource
+        && fallback != &args.resource
+    {
+        resources.push(fallback.clone());
+    }
     for did in signer_dids {
-        let query = TrqpQuery::new(did, &args.authority_did, &args.action, &args.resource);
-        match client.authorization(query).await {
-            Ok(response) => {
-                decisions.insert(did.clone(), Ok(response.authorized));
-            }
-            Err(e @ TrqlError::Rejected { .. }) => {
-                // The registry answered and said no (e.g. unknown tuple
-                // rejected rather than answered false) — a denial, not an
-                // availability problem.
-                decisions.insert(did.clone(), Ok(false));
-                tracing::debug!("registry rejected the query for {did}: {e}");
-            }
-            Err(e) => {
-                decisions.insert(did.clone(), Err(e.to_string()));
+        let mut decision: Result<Option<String>, String> = Ok(None);
+        for resource in &resources {
+            let query = TrqpQuery::new(did, &args.authority_did, &args.action, resource);
+            match client.authorization(query).await {
+                Ok(response) if response.authorized => {
+                    decision = Ok(Some(resource.clone()));
+                    break;
+                }
+                Ok(_) => {}
+                Err(e @ TrqlError::Rejected { .. }) => {
+                    // The registry answered and said no (e.g. unknown tuple
+                    // rejected rather than answered false) — a denial, not
+                    // an availability problem; the fallback may still grant.
+                    tracing::debug!("registry rejected the query for {did}: {e}");
+                }
+                Err(e) => {
+                    // Fail closed: with any scope undeterminable, "denied"
+                    // cannot be distinguished from "unreachable".
+                    decision = Err(e.to_string());
+                    break;
+                }
             }
         }
+        decisions.insert(did.clone(), decision);
     }
     Ok(decisions)
 }
@@ -465,8 +493,11 @@ fn status_of(signature: SignatureCheck, decisions: &RegistryDecisions) -> Commit
         SignatureCheck::PgpRejected { detail } => CommitStatus::PgpRejected { detail },
         SignatureCheck::Exempt { fingerprint } => CommitStatus::Exempt { fingerprint },
         SignatureCheck::Valid { signer_did } => match decisions.get(&signer_did) {
-            Some(Ok(true)) => CommitStatus::Trusted { signer_did },
-            Some(Ok(false)) => CommitStatus::Unauthorized { signer_did },
+            Some(Ok(Some(resource))) => CommitStatus::Trusted {
+                signer_did,
+                resource: resource.clone(),
+            },
+            Some(Ok(None)) => CommitStatus::Unauthorized { signer_did },
             Some(Err(error)) => CommitStatus::RegistryUnavailable {
                 signer_did,
                 error: error.clone(),
@@ -531,8 +562,11 @@ fn print_report(args: &VerifyTrustArgs, report: &TrustReport) -> Result<()> {
     for commit in &report.commits {
         let short = &commit.sha[..commit.sha.len().min(12)];
         match &commit.status {
-            CommitStatus::Trusted { signer_did } => {
-                println!("TRUSTED      {short}  {signer_did}");
+            CommitStatus::Trusted {
+                signer_did,
+                resource,
+            } => {
+                println!("TRUSTED      {short}  {signer_did} (via {resource})");
             }
             CommitStatus::Exempt { fingerprint } => {
                 println!("EXEMPT       {short}  PGP-signed by exempt platform key {fingerprint}");
@@ -762,7 +796,7 @@ mod tests {
     fn statuses_compose_signature_and_registry_decisions() {
         let did = "did:example:signer".to_string();
         let mut decisions = RegistryDecisions::new();
-        decisions.insert(did.clone(), Ok(true));
+        decisions.insert(did.clone(), Ok(Some("example/repo".to_string())));
         assert!(
             status_of(
                 SignatureCheck::Valid {
@@ -773,7 +807,7 @@ mod tests {
             .is_trusted()
         );
 
-        decisions.insert(did.clone(), Ok(false));
+        decisions.insert(did.clone(), Ok(None));
         assert_eq!(
             status_of(
                 SignatureCheck::Valid {
