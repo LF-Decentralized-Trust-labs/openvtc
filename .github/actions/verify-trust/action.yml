@@ -1,0 +1,116 @@
+# Composite action wrapping `did-git-sign verify-trust`: verify every commit
+# in a PR against the signers' DID documents and the VTC Trust Registry.
+#
+# Requirements on the calling workflow:
+#   - actions/checkout with `fetch-depth: 0` (the verifier walks the full
+#     base..head range of raw commit objects).
+#   - A Rust toolchain on the runner (present on GitHub-hosted runners).
+#
+# The check fails closed: unsigned commits, unknown keys, invalid signatures,
+# registry-unauthorized signers, and an unreachable registry all fail.
+name: Verify Commit Trust
+description: >-
+  Verify PR commit signatures against signer DID documents and the
+  VTC Trust Registry (TRQP authorization per signer DID).
+
+inputs:
+  registry-url:
+    description: Base URL of the Trust Registry (queries POST to <url>/trust-tasks).
+    required: true
+  registry-did:
+    description: DID of the Trust Registry (recipient of every query document).
+    required: true
+  authority:
+    description: DID of the authority the trust tuple is evaluated under.
+    required: true
+  trqp-action:
+    description: TRQP action of the trust tuple.
+    required: false
+    default: git.commit.sign
+  resource:
+    description: TRQP resource of the trust tuple. Defaults to the org/repo slug.
+    required: false
+    default: ${{ github.repository }}
+  signers-file:
+    description: Signer index committed to the repo (one DID per line).
+    required: false
+    default: .did-signers
+  exempt-keyring:
+    description: >-
+      Optional armored PGP keyring committed to the repo (e.g. GitHub's
+      web-flow key) that exempts platform-signed commits (web-UI merges,
+      Dependabot). Empty means no exemptions.
+    required: false
+    default: ""
+  range:
+    description: >-
+      Commit range to verify (git rev-list syntax). Defaults to the pull
+      request's base..head.
+    required: false
+    default: ""
+  openvtc-ref:
+    description: Git ref of OpenVTC/openvtc to install did-git-sign from.
+    required: false
+    default: main
+  install-path:
+    description: >-
+      Install did-git-sign from a local path instead of the git ref —
+      set to "did-git-sign" when dogfooding inside the openvtc repo so the
+      PR's own code is what runs.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Install did-git-sign
+      shell: bash
+      env:
+        OPENVTC_REF: ${{ inputs.openvtc-ref }}
+        INSTALL_PATH: ${{ inputs.install-path }}
+      run: |
+        set -euo pipefail
+        if [ -n "$INSTALL_PATH" ]; then
+          cargo install --path "$INSTALL_PATH" --locked
+        else
+          cargo install did-git-sign \
+            --git https://github.com/OpenVTC/openvtc \
+            --branch "$OPENVTC_REF" --locked
+        fi
+
+    - name: Verify commit trust
+      shell: bash
+      env:
+        RANGE_INPUT: ${{ inputs.range }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        REGISTRY_URL: ${{ inputs.registry-url }}
+        REGISTRY_DID: ${{ inputs.registry-did }}
+        AUTHORITY: ${{ inputs.authority }}
+        TRQP_ACTION: ${{ inputs.trqp-action }}
+        RESOURCE: ${{ inputs.resource }}
+        SIGNERS_FILE: ${{ inputs.signers-file }}
+        EXEMPT_KEYRING: ${{ inputs.exempt-keyring }}
+      run: |
+        set -euo pipefail
+        RANGE="$RANGE_INPUT"
+        if [ -z "$RANGE" ]; then
+          if [ -z "$BASE_SHA" ] || [ -z "$HEAD_SHA" ]; then
+            echo "::error::no range given and not a pull_request event"
+            exit 1
+          fi
+          RANGE="$BASE_SHA..$HEAD_SHA"
+        fi
+        EXTRA=()
+        if [ -n "$EXEMPT_KEYRING" ]; then
+          EXTRA+=(--exempt-keyring "$EXEMPT_KEYRING")
+        fi
+        did-git-sign verify-trust \
+          --range "$RANGE" \
+          --registry-url "$REGISTRY_URL" \
+          --registry-did "$REGISTRY_DID" \
+          --authority "$AUTHORITY" \
+          --action "$TRQP_ACTION" \
+          --resource "$RESOURCE" \
+          --signers-file "$SIGNERS_FILE" \
+          "${EXTRA[@]}"

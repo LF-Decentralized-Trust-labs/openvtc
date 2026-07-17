@@ -2492,6 +2492,8 @@ dependencies = [
  "keyring-core",
  "linux-keyutils-keyring-store",
  "multibase",
+ "pgp",
+ "rand 0.8.6",
  "serde",
  "serde_json",
  "serial_test",

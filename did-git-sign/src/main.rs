@@ -242,6 +242,14 @@ enum Commands {
         #[arg(long)]
         resource: Option<String>,
 
+        /// Armored PGP keyring of exempt platform keys (e.g. GitHub's
+        /// web-flow key, https://github.com/web-flow.gpg) committed to the
+        /// repo. PGP-signed commits (web-UI merges, Dependabot) pass only if
+        /// their signature verifies against a key in this file. Omitted:
+        /// no exemptions.
+        #[arg(long)]
+        exempt_keyring: Option<PathBuf>,
+
         /// Repository to verify. Defaults to the current directory.
         #[arg(long)]
         repo_dir: Option<PathBuf>,
@@ -331,6 +339,7 @@ async fn main() -> Result<()> {
             authority,
             action,
             resource,
+            exempt_keyring,
             repo_dir,
             json,
         }) => {
@@ -350,6 +359,7 @@ async fn main() -> Result<()> {
                 authority_did: authority,
                 action,
                 resource,
+                exempt_keyring,
                 json,
             })
             .await?;

@@ -22,6 +22,9 @@ vta-sdk = { workspace = true, features = ["client", "session"] }
 # verify-trust: DID resolution for signer keys + Trust Registry queries.
 affinidi-tdk = { workspace = true }
 multibase = { workspace = true }
+# Pure-Rust verification of platform PGP signatures (GitHub web-flow merge
+# commits) against the committed exempt keyring — no gpg binary involved.
+pgp = { workspace = true }
 # Pinned to the affinidi-trust-registry-rs main-branch commit that merged
 # PR #94 (the real client). Do NOT switch to crates.io "0.7" — that version
 # predates the client and is a bin-only stub with no library target. Swap to
@@ -60,3 +63,4 @@ windows-native-keyring-store = { workspace = true }
 [dev-dependencies]
 tempfile = "3"
 serial_test = "3"
+rand = { workspace = true }
