@@ -2,7 +2,6 @@
 members = [
   "openvtc-core",
   "openvtc",
-  "did-git-sign",
 ]
 resolver = "3"
 

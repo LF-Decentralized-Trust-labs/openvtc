@@ -9,6 +9,10 @@
 # Also requires a committed `.did-signers` file (one DID per line) and,
 # for GitHub web-UI merge / Dependabot commits, a committed
 # `.github/trusted-platform-keys.asc` (GitHub's web-flow public key).
+#
+# The check itself now lives in OpenVTC/verifiable-git-infrastructure (VGI);
+# this workflow consumes its published Action, which downloads a prebuilt
+# `verify-trust` binary (no Rust toolchain on the runner).
 name: verify-trust
 
 on:
@@ -28,11 +32,13 @@ jobs:
           # The verifier walks raw commit objects across base..head.
           fetch-depth: 0
 
-      - uses: ./.github/actions/verify-trust
+      # Pin to a VGI release tag (e.g. @v0.1.0) once one is published.
+      - uses: OpenVTC/verifiable-git-infrastructure/.github/actions/verify-trust@main
         with:
+          range: origin/${{ github.base_ref }}..HEAD
           registry-url: ${{ vars.TRUST_REGISTRY_URL }}
           registry-did: ${{ vars.TRUST_REGISTRY_DID }}
           authority: ${{ vars.TRUST_AUTHORITY_DID }}
+          # Preserve the org-wide fallback the previous local action defaulted to.
+          fallback-resource: ${{ github.repository_owner }}
           exempt-keyring: .github/trusted-platform-keys.asc
-          # Dogfood: run the PR's own did-git-sign, not a published ref.
-          install-path: did-git-sign
