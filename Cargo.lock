@@ -2270,7 +2270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 1.0.109",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5506,6 +5506,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "trust-tasks-capability-client",
  "trust-tasks-rs",
  "url",
  "uuid",
@@ -5798,7 +5799,7 @@ dependencies = [
  "aes-gcm",
  "aes-kw",
  "argon2",
- "base64 0.21.7",
+ "base64 0.22.1",
  "bitfields",
  "block-padding",
  "blowfish",
@@ -8614,6 +8615,20 @@ dependencies = [
  "thiserror 2.0.18",
  "tracing",
  "trust-tasks-rs",
+]
+
+[[package]]
+name = "trust-tasks-capability-client"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cdd2a1c83c4b1b74d2bd335ff2e45cdcb1bf4e17eddbf24761dd4a471a79cf8"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "trust-tasks-rs",
+ "uuid",
 ]
 
 [[package]]

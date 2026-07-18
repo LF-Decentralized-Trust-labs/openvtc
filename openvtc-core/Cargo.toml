@@ -54,6 +54,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 trust-tasks-rs.workspace = true
+trust-tasks-capability-client.workspace = true
 url.workspace = true
 uuid.workspace = true
 x25519-dalek.workspace = true
