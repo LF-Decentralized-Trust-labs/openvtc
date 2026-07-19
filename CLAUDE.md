@@ -44,3 +44,22 @@ entry point that now delegates to the library.
 
 If the library appears to be missing a capability, prefer opening an issue
 or extending the library over reimplementing it locally.
+
+## Cross-service networking & integration discipline
+
+OpenVTC tooling drives the live VTA/VTC/webvh services over the network, so
+it inherits the ecosystem's integration rules. Read the doc set in
+`../design-docs/` before adding or changing any service call:
+
+- **`vti-stack-development-guide.md`** — binding rules; paste its pre-merge
+  checklist into PRs. Most relevant to a CLI/tooling repo: **R1.2** (every
+  outbound client has finite timeouts — a hung service must produce an error,
+  not a hung command), **R1.4** (polling loops are bounded and backed off),
+  **R6.4** (error text must let the operator tell network-unreachable from
+  auth-rejected from contract-mismatch — never one fixed hint for all
+  failures), and **R3.6** (verify endpoint paths/shapes against the current
+  services rather than assuming they haven't moved).
+- **`vti-networking-remediation-plan.md`** — the confirmed-defect backlog
+  across the ecosystem; check it before debugging an integration failure —
+  the cause may already be catalogued.
+- **`vti-architectural-direction.md`** — design-level rationale.
