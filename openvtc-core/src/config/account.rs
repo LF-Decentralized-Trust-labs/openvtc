@@ -816,6 +816,34 @@ mod tests {
         }
     }
 
+    /// `PersonaRecord.did_document` persists a whole DID Document into the
+    /// encrypted config. `affinidi-did-common` 0.4 added `alsoKnownAs` to that
+    /// struct (it is the field agent-name verification reads), so a config
+    /// written by a pre-0.4 build has no such key. It must still load — the
+    /// project tolerates format evolution via serde defaults, not migrations.
+    #[test]
+    fn persona_did_document_without_also_known_as_still_loads() {
+        let legacy = serde_json::json!({
+            "persona_id": PersonaId::new().0,
+            "did": "did:webvh:example.com:dave",
+            // A did-common 0.3-shaped document: no `alsoKnownAs` key at all.
+            "did_document": { "id": "did:webvh:example.com:dave" },
+            "key_refs": [],
+            "mediator_did": null,
+            "origin_context_id": "openvtc/dave",
+            "created_at": Utc::now(),
+            "label": "Dave",
+        });
+
+        let rec: PersonaRecord =
+            serde_json::from_value(legacy).expect("pre-0.4 persona config must still deserialize");
+        let doc = rec.did_document.expect("document should be present");
+        assert!(
+            doc.also_known_as.is_empty(),
+            "a document that claimed no names must load as claiming none, not fail"
+        );
+    }
+
     fn community(vtc: &str, persona_ref: PersonaId, status: CommunityStatus) -> CommunityRecord {
         CommunityRecord {
             vtc_did: vtc.to_string(),
