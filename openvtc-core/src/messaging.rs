@@ -1236,7 +1236,7 @@ mod tests {
             "https://trusttasks.org/spec/trust-task-error/0.2"
         ));
         assert!(!is_trust_task_error_type(
-            "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0"
+            "https://trusttasks.org/spec/vtc/join-requests/submit/0.1"
         ));
     }
 
