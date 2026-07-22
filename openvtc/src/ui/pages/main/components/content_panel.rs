@@ -214,6 +214,14 @@ fn render_status_help(
 
     let hint_style = Style::new().fg(COLOR_DARK_GRAY);
 
+    // Verified agent name, above the DID it belongs to.
+    if let Some(agent_name) = &settings.persona_agent_name {
+        lines.push(Line::from(vec![
+            Span::styled("  Agent name:   ", label_style),
+            Span::styled(agent_name.clone(), value_style),
+        ]));
+    }
+
     // Persona DID (full) with copy hotkey
     lines.push(Line::from(vec![
         Span::styled("  Persona DID:  ", label_style),

@@ -284,6 +284,9 @@ impl MainPageState {
                 RelationshipSummary {
                     remote_p_did: sanitize_display(remote_p_did, 256),
                     alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
+                    agent_name: config
+                        .agent_name_for(remote_p_did)
+                        .map(|n| sanitize_display(n, 256)),
                     state: rel.state.to_string(),
                     our_did: rel.our_did.to_string(),
                     remote_did: sanitize_display(&rel.remote_did, 256),
@@ -317,9 +320,15 @@ impl MainPageState {
         self.content_panel.settings.mediator_did = config.mediator_did().to_string();
         self.content_panel.settings.org_did = config.account.org_did.clone();
         self.content_panel.settings.persona_did = config.persona_did().to_string();
+        self.content_panel.settings.persona_agent_name = config
+            .agent_name_for(config.persona_did())
+            .map(str::to_owned);
         self.content_panel.settings.did_git_sign = detect_did_git_sign_info(config.persona_did());
         // Sync VTA info
         self.content_panel.vta.persona_did = config.persona_did().to_string();
+        self.content_panel.vta.persona_agent_name = config
+            .agent_name_for(config.persona_did())
+            .map(str::to_owned);
         self.content_panel.vta.mediator_did = config.mediator_did().to_string();
         match &config.key_backend {
             KeyBackend::Vta {
@@ -701,6 +710,9 @@ pub(crate) fn shorten_did(did: &str, max_width: usize) -> String {
 pub struct MainMenuConfigState {
     pub name: String,
     pub did: Arc<String>,
+    /// Verified agent name for the active persona DID, if cached — shown in the
+    /// header in place of the truncated DID.
+    pub agent_name: Option<String>,
     /// Display name of the working (active) community, shown top-left (R-C-7a).
     /// Empty when there is no active community.
     pub community: String,
@@ -740,17 +752,23 @@ impl From<&Config> for MainMenuConfigState {
                     })
             })
             .unwrap_or_default();
+        let did = if in_community {
+            config.persona_did_arc()
+        } else {
+            Arc::new(String::new())
+        };
         MainMenuConfigState {
             name: if in_community {
                 config.public.friendly_name.clone()
             } else {
                 String::new()
             },
-            did: if in_community {
-                config.persona_did_arc()
+            agent_name: if in_community {
+                config.agent_name_for(&did).map(str::to_owned)
             } else {
-                Arc::new(String::new())
+                None
             },
+            did,
             community,
         }
     }

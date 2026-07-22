@@ -62,6 +62,12 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
             ),
         ]));
     } else {
+        if let Some(agent_name) = &state.persona_agent_name {
+            lines.push(Line::from(vec![
+                Span::styled("  Agent name:    ", label_style),
+                Span::styled(agent_name.clone(), value_style),
+            ]));
+        }
         lines.push(Line::from(vec![
             Span::styled("  Persona DID:   ", label_style),
             Span::styled(state.persona_did.clone(), value_style),
