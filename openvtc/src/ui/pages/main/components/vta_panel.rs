@@ -228,8 +228,10 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
             );
         } else {
             lines.push(
-                Line::from("↑/↓ select   n: new persona   d: remove selected orphan")
-                    .fg(COLOR_DARK_GRAY),
+                Line::from(
+                    "↑/↓ select   n: new persona   g: agent names   d: remove selected orphan",
+                )
+                .fg(COLOR_DARK_GRAY),
             );
         }
     } else {

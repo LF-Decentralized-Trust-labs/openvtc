@@ -1,6 +1,6 @@
 use crate::colors::{
-    COLOR_BORDER, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-    COLOR_WARNING_ACCESSIBLE_RED,
+    COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
+    COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
 };
 use crate::{
     state_handler::{
@@ -120,6 +120,12 @@ impl Component for MainPage {
         // Create-persona overlay: while open it owns all input.
         if self.props.main_page.create_persona.is_some() {
             self.handle_create_persona_key(key);
+            return;
+        }
+
+        // Agent-name manager overlay: while open it owns all input.
+        if self.props.main_page.agent_names.is_some() {
+            self.handle_agent_name_manager_key(key);
             return;
         }
 
@@ -457,6 +463,13 @@ impl MainPage {
                     }
                     true
                 }
+                KeyCode::Char('g') if did_selected < did_count => {
+                    // Manage this persona's agent names (claim / park / remove).
+                    let _ = self
+                        .action_tx
+                        .send(Action::StartAgentNameManager(did_selected));
+                    true
+                }
                 _ => false,
             },
             VtaFocus::Vics => match key.code {
@@ -723,6 +736,47 @@ impl MainPage {
             CreatePersonaPhase::Failed => {
                 let _ = self.action_tx.send(Action::CreatePersonaClose);
             }
+        }
+    }
+
+    /// Agent-name manager overlay keys. `Ready` phase: Enter claims the typed
+    /// name, ↑/↓ move the row selection, Space parks/resumes the selected name,
+    /// `d`/Delete removes it, Esc closes, other keys edit the input. `Loading`
+    /// and `Working` swallow input (a mutation is in flight). Called only while
+    /// the overlay is open, where it owns all input.
+    fn handle_agent_name_manager_key(&mut self, key: KeyEvent) {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+        let Some(overlay) = self.props.main_page.agent_names.as_ref() else {
+            return;
+        };
+        match overlay.phase {
+            AgentNameManagerPhase::Ready => match key.code {
+                KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerClaim);
+                }
+                KeyCode::Esc => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerClose);
+                }
+                KeyCode::Up => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerSelect(false));
+                }
+                KeyCode::Down => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerSelect(true));
+                }
+                // Space parks/resumes; `d`/Delete removes — both act on the
+                // selected row and only when there is one.
+                KeyCode::Char(' ') if !overlay.names.is_empty() => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerToggle);
+                }
+                KeyCode::Char('d') | KeyCode::Delete if !overlay.names.is_empty() => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerRemove);
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerInput(key));
+                }
+            },
+            // A list load or mutation is in flight: lock input.
+            AgentNameManagerPhase::Loading | AgentNameManagerPhase::Working => {}
         }
     }
 
@@ -2130,6 +2184,10 @@ impl ComponentRender<()> for MainPage {
         if let Some(overlay) = self.props.main_page.add_vic.as_ref() {
             self.render_add_vic_overlay(frame, overlay);
         }
+        // Agent-name manager overlay floats over everything when open.
+        if let Some(overlay) = self.props.main_page.agent_names.as_ref() {
+            self.render_agent_name_manager_overlay(frame, overlay);
+        }
     }
 }
 
@@ -2299,6 +2357,124 @@ impl MainPage {
                 )));
             }
         }
+
+        frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+    }
+
+    /// Render the agent-name manager popup: the persona's registry (served and
+    /// parked names), a claim input, and the row actions. Mirrors the
+    /// create-persona overlay's centering.
+    fn render_agent_name_manager_overlay(
+        &self,
+        frame: &mut Frame,
+        overlay: &crate::state_handler::main_page::content::AgentNameManagerState,
+    ) {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+        use ratatui::{
+            layout::{Constraint, Flex},
+            style::Style,
+            widgets::{Block, Clear, Padding},
+        };
+
+        let area = frame.area();
+        let popup_width = 68u16.min(area.width.saturating_sub(4));
+        let popup_height = 16u16.min(area.height.saturating_sub(2)).max(9);
+
+        let [popup_area] = Layout::vertical([Constraint::Length(popup_height)])
+            .flex(Flex::Center)
+            .areas(area);
+        let [popup_area] = Layout::horizontal([Constraint::Length(popup_width)])
+            .flex(Flex::Center)
+            .areas(popup_area);
+
+        frame.render_widget(Clear, popup_area);
+
+        let title = if overlay.persona_label.is_empty() {
+            " Agent names ".to_string()
+        } else {
+            format!(" Agent names — {} ", overlay.persona_label)
+        };
+        let block = Block::bordered()
+            .title(title)
+            .title_style(Style::new().fg(COLOR_ORANGE).bold())
+            .border_style(Style::new().fg(COLOR_ORANGE))
+            .padding(Padding::uniform(1));
+
+        let mut lines: Vec<Line> = Vec::new();
+        match overlay.phase {
+            AgentNameManagerPhase::Loading => {
+                lines.push(Line::from(Span::styled(
+                    "Loading agent names…",
+                    Style::new().fg(COLOR_TEXT_DEFAULT),
+                )));
+            }
+            AgentNameManagerPhase::Ready | AgentNameManagerPhase::Working => {
+                if overlay.names.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "No agent names yet.",
+                        Style::new().fg(COLOR_DARK_GRAY),
+                    )));
+                } else {
+                    for (i, row) in overlay.names.iter().enumerate() {
+                        let marker = if i == overlay.selected { "▸ " } else { "  " };
+                        let host = if overlay.host.is_empty() {
+                            "@".to_string()
+                        } else {
+                            format!("{}/@", overlay.host)
+                        };
+                        let status = if row.enabled { "served" } else { "parked" };
+                        let status_style = if row.enabled {
+                            Style::new().fg(COLOR_SUCCESS)
+                        } else {
+                            Style::new().fg(COLOR_DARK_GRAY)
+                        };
+                        let name_style = if i == overlay.selected {
+                            Style::new().fg(COLOR_SUCCESS).bold()
+                        } else {
+                            Style::new().fg(COLOR_TEXT_DEFAULT)
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{marker}{host}{}", row.name), name_style),
+                            Span::styled(format!("   [{status}]"), status_style),
+                        ]));
+                    }
+                }
+                lines.push(Line::default());
+                // The claim input.
+                let prefix = if overlay.host.is_empty() {
+                    "@".to_string()
+                } else {
+                    format!("{}/@", overlay.host)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled("Claim: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                    Span::styled(
+                        format!("{prefix}{}", overlay.input.value()),
+                        Style::new().fg(COLOR_SOFT_PURPLE).bold(),
+                    ),
+                ]));
+            }
+        }
+
+        if let Some(msg) = &overlay.message {
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                msg.clone(),
+                Style::new().fg(COLOR_ORANGE),
+            )));
+        }
+
+        lines.push(Line::default());
+        let hint = match overlay.phase {
+            AgentNameManagerPhase::Working | AgentNameManagerPhase::Loading => "working…",
+            AgentNameManagerPhase::Ready => {
+                "⏎ claim   ↑/↓ select   space park/resume   d remove   esc close"
+            }
+        };
+        lines.push(Line::from(Span::styled(
+            hint,
+            Style::new().fg(COLOR_BORDER),
+        )));
 
         frame.render_widget(Paragraph::new(lines).block(block), popup_area);
     }
@@ -2828,6 +3004,96 @@ mod key_handler_tests {
             Ok(Action::StartCreatePersona) => {}
             _ => panic!("expected StartCreatePersona"),
         }
+    }
+
+    #[test]
+    fn vta_g_opens_agent_name_manager_for_selected_persona() {
+        use crate::state_handler::main_page::content::ManagedDid;
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.context_dids = vec![
+                ManagedDid {
+                    did: "did:webvh:example.com:alice".into(),
+                    label: "Alice".into(),
+                    bound_communities: 1,
+                    is_active: true,
+                },
+                ManagedDid {
+                    did: "did:webvh:example.com:bob".into(),
+                    label: "Bob".into(),
+                    bound_communities: 0,
+                    is_active: false,
+                },
+            ]
+            .into();
+            s.main_page.content_panel.vta.did_selected_index = 1;
+        });
+        page.handle_key_event(press(KeyCode::Char('g')));
+        match rx.try_recv() {
+            Ok(Action::StartAgentNameManager(1)) => {}
+            _ => panic!("expected StartAgentNameManager(1)"),
+        }
+    }
+
+    #[test]
+    fn agent_name_manager_ready_keys_map_to_actions() {
+        use crate::state_handler::main_page::content::{
+            AgentNameManagerPhase, AgentNameManagerState, AgentNameRow,
+        };
+        let open = || {
+            page_for(MainMenu::Vta, |s| {
+                s.main_page.agent_names = Some(AgentNameManagerState {
+                    persona_did: "did:webvh:example.com:alice".into(),
+                    phase: AgentNameManagerPhase::Ready,
+                    names: vec![AgentNameRow {
+                        name: "alice".into(),
+                        enabled: true,
+                    }],
+                    ..Default::default()
+                });
+            })
+        };
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Enter));
+        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerClaim)));
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Char(' ')));
+        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerToggle)));
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Char('d')));
+        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerRemove)));
+
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Esc));
+        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerClose)));
+
+        // A plain character edits the input rather than triggering an action.
+        let (mut page, mut rx) = open();
+        page.handle_key_event(press(KeyCode::Char('x')));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::AgentNameManagerInput(_))
+        ));
+    }
+
+    #[test]
+    fn agent_name_manager_working_swallows_input() {
+        use crate::state_handler::main_page::content::{
+            AgentNameManagerPhase, AgentNameManagerState,
+        };
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.agent_names = Some(AgentNameManagerState {
+                phase: AgentNameManagerPhase::Working,
+                ..Default::default()
+            });
+        });
+        page.handle_key_event(press(KeyCode::Enter));
+        assert!(
+            rx.try_recv().is_err(),
+            "input is locked while a mutation is in flight"
+        );
     }
 
     #[test]

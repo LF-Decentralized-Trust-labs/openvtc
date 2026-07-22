@@ -59,6 +59,7 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
 }
 
 pub mod actions;
+mod agent_name_manage;
 mod agent_name_refresh;
 mod background_dispatch;
 mod create_persona;
@@ -1257,6 +1258,37 @@ impl StateHandler {
                         )
                         .await;
                     },
+                    Action::StartAgentNameManager(index) => {
+                        self.run_agent_name_open(&mut state, admin_vta.as_ref(), index)
+                            .await;
+                    },
+                    Action::AgentNameManagerClaim => {
+                        self.run_agent_name_claim(
+                            &mut state,
+                            &mut config,
+                            &mut save,
+                            admin_vta.as_ref(),
+                        )
+                        .await;
+                    },
+                    Action::AgentNameManagerToggle => {
+                        self.run_agent_name_toggle(
+                            &mut state,
+                            &mut config,
+                            &mut save,
+                            admin_vta.as_ref(),
+                        )
+                        .await;
+                    },
+                    Action::AgentNameManagerRemove => {
+                        self.run_agent_name_remove(
+                            &mut state,
+                            &mut config,
+                            &mut save,
+                            admin_vta.as_ref(),
+                        )
+                        .await;
+                    },
                     Action::VicRefresh => {
                         self.refresh_vics(&mut state, admin_vta.as_ref()).await;
                     },
@@ -2003,6 +2035,308 @@ impl StateHandler {
         let _ = self.state_tx.send(state.clone());
     }
 
+    /// Open the agent-name manager for the persona at `index` in the VTA panel's
+    /// context-identity list, and load its registry. Runs inline (modal): the
+    /// overlay shows "Loading…" while the list task round-trips.
+    async fn run_agent_name_open(
+        &self,
+        state: &mut State,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+        index: usize,
+    ) {
+        use crate::state_handler::main_page::content::{
+            AgentNameManagerPhase, AgentNameManagerState,
+        };
+
+        let Some(persona) = state
+            .main_page
+            .content_panel
+            .vta
+            .context_dids
+            .get(index)
+            .cloned()
+        else {
+            return;
+        };
+        state.main_page.agent_names = Some(AgentNameManagerState {
+            persona_did: persona.did.clone(),
+            persona_label: persona.label.clone(),
+            host: agent_name_manage::derive_host(&persona.did).unwrap_or_default(),
+            phase: AgentNameManagerPhase::Loading,
+            ..Default::default()
+        });
+        let _ = self.state_tx.send(state.clone());
+
+        let Some(admin_vta) = admin_vta else {
+            self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                "VTA session unavailable — cannot manage agent names right now.",
+            );
+            return;
+        };
+        match agent_name_manage::list_names(admin_vta, &persona.did).await {
+            Ok(names) => self.apply_agent_name_list(state, names, AgentNameManagerPhase::Ready),
+            Err(e) => self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                format!("Could not load agent names: {e}"),
+            ),
+        }
+    }
+
+    /// Claim the name in the overlay's input (`set`), then refresh the registry.
+    async fn run_agent_name_claim(
+        &self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut save_coalesce::SaveScheduler,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+    ) {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+
+        let (persona_did, name) = match state.main_page.agent_names.as_ref() {
+            Some(o) if o.phase == AgentNameManagerPhase::Ready => {
+                (o.persona_did.clone(), o.input.value().trim().to_string())
+            }
+            _ => return,
+        };
+        if name.is_empty() {
+            self.set_agent_name_message(state, AgentNameManagerPhase::Ready, "Enter a name first.");
+            return;
+        }
+        let Some(admin_vta) =
+            self.begin_agent_name_work(state, admin_vta, &format!("Claiming @{name}…"))
+        else {
+            return;
+        };
+        // Fast-path rejection: a reserved or already-taken name fails the check
+        // before any publish, with a clearer reason than the set error. A check
+        // failure is non-fatal — fall through to `set`, which is authoritative
+        // (and closes the check→set race if someone claims it in between).
+        if let Ok(avail) = agent_name_manage::check_name(admin_vta, &persona_did, &name).await
+            && !avail.available
+        {
+            let why = if avail.reserved {
+                "a reserved name"
+            } else {
+                "already taken on this domain"
+            };
+            self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                format!("@{name} is {why} ({}).", avail.domain),
+            );
+            return;
+        }
+        match agent_name_manage::set_name(admin_vta, &persona_did, &name).await {
+            Ok(_) => {
+                if let Some(o) = state.main_page.agent_names.as_mut() {
+                    o.input.reset();
+                }
+                state.main_page.log(format!("Claimed agent name @{name}"));
+                self.refresh_agent_names(state, config, save, admin_vta, &persona_did)
+                    .await;
+            }
+            Err(e) => self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                format!("Could not claim @{name}: {e}"),
+            ),
+        }
+    }
+
+    /// Park (`disable`) or resume (`enable`) the selected name, then refresh.
+    async fn run_agent_name_toggle(
+        &self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut save_coalesce::SaveScheduler,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+    ) {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+
+        let (persona_did, name, enabled) = match self.selected_agent_name(state) {
+            Some(v) => v,
+            None => return,
+        };
+        let verb = if enabled { "Parking" } else { "Resuming" };
+        let Some(admin_vta) =
+            self.begin_agent_name_work(state, admin_vta, &format!("{verb} @{name}…"))
+        else {
+            return;
+        };
+        let result = if enabled {
+            agent_name_manage::disable_name(admin_vta, &persona_did, &name).await
+        } else {
+            agent_name_manage::enable_name(admin_vta, &persona_did, &name).await
+        };
+        match result {
+            Ok(_) => {
+                state.main_page.log(format!(
+                    "{} agent name @{name}",
+                    if enabled { "Parked" } else { "Resumed" }
+                ));
+                self.refresh_agent_names(state, config, save, admin_vta, &persona_did)
+                    .await;
+            }
+            Err(e) => self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                format!("Could not {} @{name}: {e}", verb.to_lowercase()),
+            ),
+        }
+    }
+
+    /// Remove (release) the selected name, then refresh.
+    async fn run_agent_name_remove(
+        &self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut save_coalesce::SaveScheduler,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+    ) {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+
+        let (persona_did, name, _enabled) = match self.selected_agent_name(state) {
+            Some(v) => v,
+            None => return,
+        };
+        let Some(admin_vta) =
+            self.begin_agent_name_work(state, admin_vta, &format!("Removing @{name}…"))
+        else {
+            return;
+        };
+        match agent_name_manage::remove_name(admin_vta, &persona_did, &name).await {
+            Ok(_) => {
+                state.main_page.log(format!("Removed agent name @{name}"));
+                self.refresh_agent_names(state, config, save, admin_vta, &persona_did)
+                    .await;
+            }
+            Err(e) => self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                format!("Could not remove @{name}: {e}"),
+            ),
+        }
+    }
+
+    /// Re-list the registry after a mutation and reconcile the persisted
+    /// name cache: the persona's displayed name becomes its first *enabled*
+    /// entry (or `None` when it has none), so the header/panels reflect the
+    /// change without waiting for the background sweep.
+    async fn refresh_agent_names(
+        &self,
+        state: &mut State,
+        config: &mut Config,
+        save: &mut save_coalesce::SaveScheduler,
+        admin_vta: &vta_sdk::client::VtaClient,
+        persona_did: &str,
+    ) {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+
+        let host = state
+            .main_page
+            .agent_names
+            .as_ref()
+            .map(|o| o.host.clone())
+            .unwrap_or_default();
+        match agent_name_manage::list_names(admin_vta, persona_did).await {
+            Ok(names) => {
+                // First served name → the persona's displayed name.
+                let cached = names
+                    .iter()
+                    .find(|n| n.enabled)
+                    .filter(|_| !host.is_empty())
+                    .map(|n| format!("{host}/@{}", n.name));
+                config.set_cached_agent_name(persona_did, cached, chrono::Utc::now());
+                save.mark_dirty();
+                state.main_page.sync_from_config(config);
+                self.apply_agent_name_list(state, names, AgentNameManagerPhase::Ready);
+            }
+            Err(e) => self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                format!("Applied, but could not reload the list: {e}"),
+            ),
+        }
+    }
+
+    /// Enter the `Working` phase with a status line, returning the VTA client, or
+    /// surface "VTA unavailable" and return `None`.
+    fn begin_agent_name_work<'a>(
+        &self,
+        state: &mut State,
+        admin_vta: Option<&'a vta_sdk::client::VtaClient>,
+        status: &str,
+    ) -> Option<&'a vta_sdk::client::VtaClient> {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+        let Some(admin_vta) = admin_vta else {
+            self.set_agent_name_message(
+                state,
+                AgentNameManagerPhase::Ready,
+                "VTA session unavailable — cannot manage agent names right now.",
+            );
+            return None;
+        };
+        if let Some(o) = state.main_page.agent_names.as_mut() {
+            o.phase = AgentNameManagerPhase::Working;
+            o.message = Some(status.to_string());
+        }
+        let _ = self.state_tx.send(state.clone());
+        Some(admin_vta)
+    }
+
+    /// The `(persona_did, name, enabled)` of the overlay's selected row, if the
+    /// overlay is open, `Ready`, and has a selection.
+    fn selected_agent_name(&self, state: &State) -> Option<(String, String, bool)> {
+        use crate::state_handler::main_page::content::AgentNameManagerPhase;
+        let o = state.main_page.agent_names.as_ref()?;
+        if o.phase != AgentNameManagerPhase::Ready {
+            return None;
+        }
+        let row = o.names.get(o.selected)?;
+        Some((o.persona_did.clone(), row.name.clone(), row.enabled))
+    }
+
+    /// Replace the overlay's rows and phase from a fresh registry listing,
+    /// clamping the selection into range.
+    fn apply_agent_name_list(
+        &self,
+        state: &mut State,
+        names: Vec<vta_sdk::protocols::did_management::agent_name::AgentNameEntry>,
+        phase: crate::state_handler::main_page::content::AgentNameManagerPhase,
+    ) {
+        use crate::state_handler::main_page::content::AgentNameRow;
+        if let Some(o) = state.main_page.agent_names.as_mut() {
+            o.names = names
+                .into_iter()
+                .map(|e| AgentNameRow {
+                    name: e.name,
+                    enabled: e.enabled,
+                })
+                .collect();
+            o.selected = o.selected.min(o.names.len().saturating_sub(1));
+            o.phase = phase;
+            o.message = None;
+        }
+        let _ = self.state_tx.send(state.clone());
+    }
+
+    /// Set the overlay's status line and phase (no-op if the overlay is closed).
+    fn set_agent_name_message(
+        &self,
+        state: &mut State,
+        phase: crate::state_handler::main_page::content::AgentNameManagerPhase,
+        message: impl Into<String>,
+    ) {
+        if let Some(o) = state.main_page.agent_names.as_mut() {
+            o.phase = phase;
+            o.message = Some(message.into());
+        }
+        let _ = self.state_tx.send(state.clone());
+    }
+
     /// (Re)load the VIC list from the VTA credential vault into the VTA panel,
     /// honouring the "show inactive" toggle. Best-effort: a query failure logs
     /// and leaves the previous list in place. Called when the operator focuses
@@ -2730,6 +3064,28 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         }
         Action::CreatePersonaClose => {
             state.main_page.create_persona = None;
+        }
+        Action::AgentNameManagerInput(key) => {
+            use tui_input::backend::crossterm::EventHandler;
+            if let Some(o) = state.main_page.agent_names.as_mut()
+                && o.phase == main_page::content::AgentNameManagerPhase::Ready
+            {
+                o.input.handle_event(&crossterm::event::Event::Key(*key));
+            }
+        }
+        Action::AgentNameManagerSelect(down) => {
+            if let Some(o) = state.main_page.agent_names.as_mut()
+                && !o.names.is_empty()
+            {
+                if *down {
+                    o.selected = (o.selected + 1).min(o.names.len() - 1);
+                } else {
+                    o.selected = o.selected.saturating_sub(1);
+                }
+            }
+        }
+        Action::AgentNameManagerClose => {
+            state.main_page.agent_names = None;
         }
         _ => return false,
     }

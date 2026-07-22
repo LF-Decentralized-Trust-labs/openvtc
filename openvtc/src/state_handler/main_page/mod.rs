@@ -73,6 +73,11 @@ pub struct MainPageState {
     /// [`create_persona`](Self::create_persona)) because it floats over the panel.
     pub add_vic: Option<content::AddVicState>,
 
+    /// "Manage agent names" overlay for a persona. `Some` while open; `None`
+    /// (default) when closed. Page-level (like [`create_persona`](Self::create_persona)),
+    /// reachable from the VTA panel's persona/context-identity lists.
+    pub agent_names: Option<content::AgentNameManagerState>,
+
     /// Activity log entries shown in the bottom panel (newest last).
     ///
     /// Entries are wrapped in `Arc` so cloning `MainPageState` (which happens

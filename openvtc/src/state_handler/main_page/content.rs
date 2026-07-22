@@ -202,6 +202,54 @@ pub struct CreatePersonaState {
     pub copied: bool,
 }
 
+/// "Manage agent names" overlay for a persona. `Some` while open; floats over
+/// the main page. Lists the persona's names (parked ones included), and claims /
+/// parks / resumes / removes them via the VTA's agent-name Trust Tasks. The
+/// registry is authoritative — it is (re)fetched after every mutation, so what
+/// the overlay shows is what the host actually holds.
+#[derive(Clone, Debug, Default)]
+pub struct AgentNameManagerState {
+    /// The persona whose names are being managed.
+    pub persona_did: String,
+    /// The persona's label, for the overlay title.
+    pub persona_label: String,
+    /// The persona's domain-derived host (`example.com`), so the overlay can
+    /// show the full name a local part will bind to. Empty if underivable.
+    pub host: String,
+    /// Current registry entries (name, enabled/parked, created-at). Empty until
+    /// the first list completes.
+    pub names: Vec<AgentNameRow>,
+    /// Selected row in [`names`](Self::names), for park/resume/remove.
+    pub selected: usize,
+    /// New-name input (local part), used to claim a name.
+    pub input: tui_input::Input,
+    /// What the overlay is doing right now (input locked while `Working`).
+    pub phase: AgentNameManagerPhase,
+    /// Transient status / error line.
+    pub message: Option<String>,
+}
+
+/// One agent-name registry row shown in the manager overlay.
+#[derive(Clone, Debug)]
+pub struct AgentNameRow {
+    /// Local part, without the `@`.
+    pub name: String,
+    /// Whether it currently resolves (`false` = parked, still reserved).
+    pub enabled: bool,
+}
+
+/// What the [`AgentNameManagerState`] overlay is doing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum AgentNameManagerPhase {
+    /// Fetching the registry (initial open or post-mutation refresh).
+    #[default]
+    Loading,
+    /// Idle — showing the list, accepting input and row actions.
+    Ready,
+    /// A mutation or check is running; input and actions are locked.
+    Working,
+}
+
 /// Step of the [`CreatePersonaState`] overlay.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CreatePersonaPhase {
