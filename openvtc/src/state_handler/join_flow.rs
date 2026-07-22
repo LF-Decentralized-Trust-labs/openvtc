@@ -673,14 +673,15 @@ async fn run_join_sequence(
         return;
     };
 
-    // 2. Resolve a display name for the community (best-effort).
-    let display_name = match tdk.did_resolver().resolve(&vtc_did).await {
-        Ok(resolved) => resolved_display_name(&resolved.doc),
-        Err(e) => {
-            debug!("VTC DID resolve failed (continuing without name): {e}");
-            None
-        }
-    };
+    // 2. Resolve the community's verified agent name for display (best-effort).
+    // A verified name (`example.com/@acme`) is the community's human-readable
+    // handle; `None` when it has no verifiable name, so the sub-context
+    // derivation falls back to the DID-derived token (D9). The lookup is also
+    // seeded into the persisted cache so the communities list shows it without
+    // waiting for the background sweep.
+    let display_name =
+        openvtc_core::agent_name::resolve_verified_name(tdk.did_resolver(), &vtc_did).await;
+    config.set_cached_agent_name(&vtc_did, display_name.clone(), chrono::Utc::now());
     state.join.display_name = display_name.clone();
 
     let top_context_id = config.account.top_context_id.clone();
@@ -1119,16 +1120,6 @@ where
         () = sequence => None,
         Ok(interrupted) = interrupt_rx.recv() => Some(interrupted),
     }
-}
-
-/// Best-effort display name from a resolved VTC DID document. Prefers a
-/// non-empty `name`-like service/alias if present; falls back to `None` so the
-/// sub-context derivation uses the DID-derived token (D9).
-fn resolved_display_name(_doc: &affinidi_tdk::did_common::Document) -> Option<String> {
-    // The DID-core document has no canonical human name field; community naming
-    // (whois/metadata) is a later enrichment. Returning `None` keeps the
-    // derivation deterministic (DID-token slug) until that lands.
-    None
 }
 
 #[cfg(test)]

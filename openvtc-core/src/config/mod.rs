@@ -436,6 +436,71 @@ impl Config {
             .unwrap_or_else(|| "Persona".to_string())
     }
 
+    /// The verified agent name cached for `did`, if one is known.
+    ///
+    /// Returns `Some` only for a positive lookup; a cached *negative* result
+    /// (the DID has no verifiable name) reads as `None`, same as an uncached
+    /// DID. Callers that need to distinguish the two consult
+    /// [`ProtectedConfig::agent_names`](crate::config::protected_config::ProtectedConfig)
+    /// directly.
+    #[must_use]
+    pub fn agent_name_for(&self, did: &str) -> Option<&str> {
+        self.private
+            .agent_names
+            .get(did)
+            .and_then(|c| c.name.as_deref())
+    }
+
+    /// Record a verified agent-name lookup (positive or negative) for `did`,
+    /// stamped `now`. Overwrites any prior entry.
+    pub fn set_cached_agent_name(
+        &mut self,
+        did: &str,
+        name: Option<String>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.private.agent_names.insert(
+            did.to_string(),
+            crate::agent_name::CachedAgentName {
+                name,
+                checked_at: now,
+            },
+        );
+    }
+
+    /// Every DID the UI displays that needs an agent-name lookup — those with no
+    /// cache entry or a stale one (`now` past [`AGENT_NAME_TTL`]).
+    ///
+    /// Covers persona DIDs, community VTC DIDs, relationship remote-persona DIDs
+    /// and contact DIDs. De-duplicated; the same DID appearing in several places
+    /// is resolved once. Fed to the background batch refresh.
+    ///
+    /// [`AGENT_NAME_TTL`]: crate::agent_name::AGENT_NAME_TTL
+    #[must_use]
+    pub fn agent_name_refresh_targets(&self, now: chrono::DateTime<chrono::Utc>) -> Vec<String> {
+        let mut dids: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for persona in self.account.personas.values() {
+            dids.insert(persona.did.clone());
+        }
+        for community in self.account.memberships() {
+            dids.insert(community.vtc_did.clone());
+        }
+        for rel in self.private.relationships.relationships.values() {
+            dids.insert(rel.remote_p_did.to_string());
+        }
+        for contact in self.private.contacts.contacts.keys() {
+            dids.insert(contact.to_string());
+        }
+        dids.into_iter()
+            .filter(|did| {
+                self.private
+                    .agent_names
+                    .get(did)
+                    .is_none_or(|cached| cached.is_stale(now))
+            })
+            .collect()
+    }
+
     /// Set the active persona's mediator DID, updating both the persisted
     /// `account` record and the runtime `IdentityContext` so subsequent reads
     /// (and the next save) see the new value. No-op if no identity is active.
@@ -751,6 +816,51 @@ mod tests {
             }),
             mediator_did: None,
         }
+    }
+
+    /// A persona DID with no cache entry is a refresh target; once a lookup is
+    /// recorded it drops out until it goes stale, and a positive lookup reads
+    /// back through `agent_name_for` while a negative one does not.
+    #[test]
+    fn agent_name_targets_and_cache_roundtrip() {
+        use crate::config::account::{PersonaId, PersonaRecord};
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let mut config = test_config(BTreeMap::new());
+        let pid = PersonaId::new();
+        let did = "did:webvh:example.com:alice".to_string();
+        config.account.personas.insert(
+            pid,
+            PersonaRecord {
+                persona_id: pid,
+                did: did.clone(),
+                did_document: None,
+                key_refs: vec![],
+                mediator_did: None,
+                origin_context_id: "openvtc/alice".into(),
+                created_at: now,
+                label: None,
+            },
+        );
+
+        // Uncached → a target.
+        assert_eq!(config.agent_name_refresh_targets(now), vec![did.clone()]);
+
+        // A positive lookup: no longer a target, readable via `agent_name_for`.
+        config.set_cached_agent_name(&did, Some("example.com/@alice".into()), now);
+        assert!(config.agent_name_refresh_targets(now).is_empty());
+        assert_eq!(config.agent_name_for(&did), Some("example.com/@alice"));
+
+        // A negative lookup on a second DID: still not a target, but no name.
+        let did2 = "did:webvh:example.com:bob".to_string();
+        config.set_cached_agent_name(&did2, None, now);
+        assert!(config.agent_name_for(&did2).is_none());
+        assert!(!config.agent_name_refresh_targets(now).contains(&did2));
+
+        // Once stale, the entry becomes a target again.
+        let later = now + crate::agent_name::AGENT_NAME_TTL;
+        assert!(config.agent_name_refresh_targets(later).contains(&did));
     }
 
     /// A State-A (account-bootstrap, R-A-5) config carries an account but no

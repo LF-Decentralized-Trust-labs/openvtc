@@ -25,6 +25,8 @@
 use affinidi_did_resolver_cache_sdk::{DIDCacheClient, errors::DIDCacheError};
 use affinidi_tdk::did_common::Document;
 use agent_names::AgentName;
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
 
 /// How many `alsoKnownAs` candidates we are willing to round-trip per document
 /// before giving up. A document that claims a name makes us do one network
@@ -32,6 +34,34 @@ use agent_names::AgentName;
 /// The first candidate that verifies wins, so a well-formed document (one or a
 /// few names) is unaffected.
 const MAX_CANDIDATES: usize = 4;
+
+/// How long a persisted lookup (positive **or** negative) is trusted before the
+/// background refresh re-verifies it. The resolver's own name cache is short
+/// (~5 min) and handles churn; this persisted layer only exists so names show
+/// instantly at launch without a network round-trip, so a day is ample.
+pub const AGENT_NAME_TTL: Duration = Duration::hours(24);
+
+/// A persisted DID → agent-name lookup. The value is deliberately an
+/// `Option`: a resolved-and-verified name, **or** `None` recording that the DID
+/// currently has no verifiable name — a negative result worth caching so the UI
+/// does not re-resolve a nameless DID on every render.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CachedAgentName {
+    /// The verified name (scheme-less, `example.com/@alice`), or `None` if the
+    /// DID has no verifiable name.
+    pub name: Option<String>,
+    /// When this was last verified, for staleness (`AGENT_NAME_TTL`).
+    pub checked_at: DateTime<Utc>,
+}
+
+impl CachedAgentName {
+    /// Whether this entry is older than [`AGENT_NAME_TTL`] as of `now` and
+    /// should be re-verified by the background refresh.
+    #[must_use]
+    pub fn is_stale(&self, now: DateTime<Utc>) -> bool {
+        now - self.checked_at >= AGENT_NAME_TTL
+    }
+}
 
 /// Cheap syntactic test — no network. A string containing the `/@` marker is
 /// treated as an agent name; everything else is a DID (or nonsense) for the
@@ -67,6 +97,17 @@ pub async fn verified_agent_name(
         resolver.resolve_any(&name).await.ok().map(|resp| resp.did)
     })
     .await
+}
+
+/// Resolve `did` to a verified agent name, fetching its document first.
+///
+/// The batch refresh has only DIDs to work from, not documents, so this wraps
+/// [`verified_agent_name`] with the leading `resolve(did)`. Both hops reuse the
+/// resolver's document cache. `None` if the DID does not resolve or has no
+/// verifiable name.
+pub async fn resolve_verified_name(resolver: &DIDCacheClient, did: &str) -> Option<String> {
+    let resp = resolver.resolve(did).await.ok()?;
+    verified_agent_name(resolver, did, &resp.doc).await
 }
 
 /// The verification decision, factored out so the spoof guard is testable
@@ -170,6 +211,19 @@ mod tests {
 
     fn name(s: &str) -> AgentName {
         AgentName::parse(s).expect("valid agent name in test")
+    }
+
+    #[test]
+    fn cache_entry_staleness_tracks_the_ttl() {
+        let checked_at = Utc::now();
+        let fresh = CachedAgentName {
+            name: Some("example.com/@alice".into()),
+            checked_at,
+        };
+        assert!(!fresh.is_stale(checked_at));
+        assert!(!fresh.is_stale(checked_at + Duration::hours(23)));
+        assert!(fresh.is_stale(checked_at + AGENT_NAME_TTL));
+        assert!(fresh.is_stale(checked_at + Duration::hours(25)));
     }
 
     /// The spoof case, and the single most important behaviour in this module:
