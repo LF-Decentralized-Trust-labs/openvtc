@@ -48,6 +48,7 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
 }
 
 pub mod actions;
+mod agent_name_refresh;
 mod background_dispatch;
 mod create_persona;
 mod credential_actions;
@@ -668,6 +669,13 @@ impl StateHandler {
         // Reply-window sweep for the capabilities view (cheap no-op when the
         // view is closed or idle).
         let mut capabilities_sweep = tokio::time::interval(std::time::Duration::from_secs(5));
+        // Agent-name refresh sweep. The first tick fires immediately so names
+        // resolve shortly after launch; thereafter it picks up newly-added DIDs
+        // (a fresh relationship/contact) and re-verifies stale entries every few
+        // minutes. Cheap when there is nothing to do — it only spawns a job when
+        // `agent_name_refresh_targets` finds uncached/stale DIDs, and the resolver
+        // caches keep repeat sweeps quiet.
+        let mut agent_name_tick = tokio::time::interval(std::time::Duration::from_secs(300));
 
         let result = loop {
             tokio::select! {
@@ -1765,6 +1773,28 @@ impl StateHandler {
                             if expired.len() == 1 { "" } else { "s" },
                         ));
                         let _ = self.state_tx.send(state.clone());
+                    }
+                },
+                _ = agent_name_tick.tick() => {
+                    // Collect DIDs whose agent name is uncached or stale and, if
+                    // any, resolve them in one background job (read-only I/O).
+                    // Results are folded into the persisted cache on the loop
+                    // thread by `apply_outcome`. The busy-guard drops the tick if
+                    // a prior sweep is still running, so ticks never pile up.
+                    let targets = config.agent_name_refresh_targets(chrono::Utc::now());
+                    if !targets.is_empty()
+                        && in_flight.try_begin(background_dispatch::DispatchDomain::AgentName)
+                    {
+                        let resolver = tdk.did_resolver().clone();
+                        background_dispatch::spawn_dispatch(
+                            dispatch_tx.clone(),
+                            background_dispatch::DispatchDomain::AgentName,
+                            async move {
+                                let results =
+                                    agent_name_refresh::resolve_batch(resolver, targets).await;
+                                background_dispatch::DispatchOutcome::AgentName(results)
+                            },
+                        );
                     }
                 },
                 _ = save.wait_deadline() => {

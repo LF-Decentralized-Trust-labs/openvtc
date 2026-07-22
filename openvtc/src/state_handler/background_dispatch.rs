@@ -66,6 +66,10 @@ pub(crate) enum DispatchDomain {
     Inbox,
     /// Context-DID deletion: `delete_did_webvh` at the VTA + listener teardown.
     Did,
+    /// Agent-name refresh: a batch DID→name verification sweep. One job resolves
+    /// many DIDs (the busy-guard is per-domain, so per-DID jobs would serialise),
+    /// each a network round-trip; read-only, off the loop.
+    AgentName,
 }
 
 impl DispatchDomain {
@@ -76,6 +80,7 @@ impl DispatchDomain {
             DispatchDomain::Relationship => "Relationship action",
             DispatchDomain::Inbox => "Inbox action",
             DispatchDomain::Did => "Identity deletion",
+            DispatchDomain::AgentName => "Agent name refresh",
         }
     }
 }
@@ -140,6 +145,10 @@ pub(crate) enum DispatchOutcome {
     /// A context-DID deletion finished (VTA delete + listener teardown done in
     /// the task; local cleanup + save applied here).
     Did(DidDeleteOutcome),
+    /// A batch agent-name refresh finished. Carries `(did, resolved_name)` for
+    /// each DID resolved — `resolved_name` is `None` for a DID with no
+    /// verifiable name (a cached negative). Applied on the loop thread.
+    AgentName(Vec<(String, Option<String>)>),
     /// A spawned dispatch job panicked (or was cancelled) and so never produced a
     /// real outcome. Synthesised by [`spawn_dispatch`] from the `JoinError` so the
     /// domain's busy-flag is still cleared (a panicking job that sent nothing would
@@ -156,6 +165,7 @@ impl DispatchOutcome {
             DispatchOutcome::Relationship(_) => DispatchDomain::Relationship,
             DispatchOutcome::Inbox(_) => DispatchDomain::Inbox,
             DispatchOutcome::Did(_) => DispatchDomain::Did,
+            DispatchOutcome::AgentName(_) => DispatchDomain::AgentName,
             DispatchOutcome::Panicked(domain) => *domain,
         }
     }
@@ -236,6 +246,37 @@ pub(crate) fn apply_outcome(
         DispatchOutcome::Relationship(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Inbox(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Did(outcome) => outcome.apply(state, config, save),
+        DispatchOutcome::AgentName(results) => {
+            // Fold each verified (or negatively-verified) lookup into the
+            // persisted cache on the loop thread — the single mutator.
+            //
+            // Two independent "did anything change?" tests, to avoid needless
+            // work: persist when a mapping is genuinely new or its name changed
+            // (a checked-at-only bump is not worth a save), and rebuild the UI
+            // only when a *displayed* name changed. A DID going from uncached to
+            // "no name" is worth persisting (so we don't re-resolve it every
+            // launch) but changes nothing on screen.
+            let now = chrono::Utc::now();
+            let mut cache_changed = false;
+            let mut display_changed = false;
+            for (did, name) in results {
+                let had_entry = config.private.agent_names.contains_key(&did);
+                let prior_name = config.agent_name_for(&did).map(str::to_owned);
+                if prior_name != name {
+                    display_changed = true;
+                }
+                if !had_entry || prior_name != name {
+                    cache_changed = true;
+                }
+                config.set_cached_agent_name(&did, name, now);
+            }
+            if cache_changed {
+                save.mark_dirty();
+            }
+            if display_changed {
+                state.main_page.sync_from_config(config);
+            }
+        }
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic
             // failure so the user isn't left staring at a stuck "in progress"; the
@@ -501,5 +542,71 @@ mod tests {
         // Releasing now would deliver the outcome, but the loop already exited;
         // the point is proven. Drop the sender to avoid an unused warning.
         let _ = release_tx;
+    }
+
+    /// Applying an agent-name batch outcome writes the verified names into the
+    /// config, frees the `AgentName` domain, marks the config dirty on a real
+    /// change, and leaves it clean when nothing changed.
+    #[test]
+    fn apply_agent_name_outcome_updates_cache_and_frees_domain() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
+        let mut in_flight = InFlight::default();
+        assert!(in_flight.try_begin(DispatchDomain::AgentName));
+
+        // A new positive lookup and a new negative lookup.
+        apply_outcome(
+            &mut state,
+            &mut config,
+            &mut save,
+            &mut in_flight,
+            DispatchOutcome::AgentName(vec![
+                (
+                    "did:webvh:example.com:alice".to_string(),
+                    Some("example.com/@alice".to_string()),
+                ),
+                ("did:webvh:example.com:nameless".to_string(), None),
+            ]),
+        );
+
+        assert!(
+            !in_flight.is_busy(DispatchDomain::AgentName),
+            "the batch's domain must be freed after apply"
+        );
+        assert_eq!(
+            config.agent_name_for("did:webvh:example.com:alice"),
+            Some("example.com/@alice")
+        );
+        assert!(
+            config
+                .agent_name_for("did:webvh:example.com:nameless")
+                .is_none()
+        );
+        assert!(
+            save.is_pending(),
+            "a new mapping must mark the config dirty"
+        );
+
+        // Re-applying the identical results changes nothing: no new dirty mark.
+        let mut save2 = crate::state_handler::save_coalesce::SaveScheduler::new("test");
+        assert!(in_flight.try_begin(DispatchDomain::AgentName));
+        apply_outcome(
+            &mut state,
+            &mut config,
+            &mut save2,
+            &mut in_flight,
+            DispatchOutcome::AgentName(vec![
+                (
+                    "did:webvh:example.com:alice".to_string(),
+                    Some("example.com/@alice".to_string()),
+                ),
+                ("did:webvh:example.com:nameless".to_string(), None),
+            ]),
+        );
+        assert!(
+            !save2.is_pending(),
+            "an unchanged sweep must not re-dirty the config"
+        );
     }
 }

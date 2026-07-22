@@ -13,6 +13,7 @@ use affinidi_tdk::{
 use serde::{Deserialize, Serialize};
 use std::{fmt, sync::Arc};
 
+pub mod agent_name;
 pub mod bip32;
 pub mod capabilities;
 pub mod config;

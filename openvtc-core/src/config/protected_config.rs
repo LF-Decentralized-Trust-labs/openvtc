@@ -5,6 +5,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use crate::{
+    agent_name::CachedAgentName,
     config::account::Account,
     config::secured_config::{unlock_code_decrypt, unlock_code_encrypt},
     errors::OpenVTCError,
@@ -233,6 +234,17 @@ pub struct ProtectedConfig {
     /// VRCs received
     /// key = remote P-DID
     pub vrcs_received: Vrcs,
+
+    /// Verified agent-name lookups, keyed by DID. Additive persisted cache so a
+    /// DID's human-memorable name (`example.com/@alice`) shows at launch without
+    /// a network round-trip; the background refresh re-verifies stale entries.
+    /// One map covers every DID the UI shows (personas, communities,
+    /// relationships, contacts). `#[serde(default)]` keeps older configs loading
+    /// without a schema bump. Keyed by a plain `String` DID — unlike the
+    /// contact/relationship maps, these keys are not shared with any object, so
+    /// there is nothing to `Arc`. See [`crate::agent_name`].
+    #[serde(default)]
+    pub agent_names: HashMap<String, CachedAgentName>,
 }
 
 /// Manual impl so freshly created configs are stamped with the current
@@ -247,6 +259,7 @@ impl Default for ProtectedConfig {
             tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
+            agent_names: HashMap::default(),
         }
     }
 }
@@ -372,6 +385,26 @@ mod tests {
         assert!(ProtectedConfig::parse(&bytes).is_ok());
         assert!(ProtectedConfig::parse(b"not json at all").is_err());
         assert!(ProtectedConfig::parse(&[]).is_err());
+    }
+
+    /// A config written before the `agent_names` field existed has no such key;
+    /// `#[serde(default)]` must load it as an empty map rather than failing, so
+    /// the feature stays additive with no schema bump.
+    #[test]
+    fn parse_tolerates_config_without_agent_names() {
+        // Derive an "old config" by serialising a current one and dropping the
+        // `agent_names` key, so the fixture tracks the real struct shape rather
+        // than a hand-written approximation of it.
+        let mut value = serde_json::to_value(ProtectedConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("agent_names")
+            .expect("current config serialises agent_names");
+        let bytes = serde_json::to_vec(&value).unwrap();
+
+        let parsed = ProtectedConfig::parse(&bytes).expect("legacy config must load");
+        assert!(parsed.agent_names.is_empty());
     }
 
     fn test_seed() -> SecretBox<Vec<u8>> {
