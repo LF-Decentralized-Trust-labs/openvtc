@@ -396,6 +396,30 @@ pub enum Action {
     /// Close the create-persona overlay.
     CreatePersonaClose,
 
+    // ── Agent-name manager (VTA panel, per persona) ─────────────────────────
+    /// Open the "manage agent names" overlay for the persona at the given index
+    /// in the VTA panel's context-identity list, and load its registry.
+    StartAgentNameManager(usize),
+
+    /// Forward a key event to the new-name input (editing keys only; Enter/Esc
+    /// and row actions are handled by the panel).
+    AgentNameManagerInput(crossterm::event::KeyEvent),
+
+    /// Move the selected row up (`false`) or down (`true`).
+    AgentNameManagerSelect(bool),
+
+    /// Claim the name in the input (`set`), then refresh the registry.
+    AgentNameManagerClaim,
+
+    /// Park (`disable`) or resume (`enable`) the selected name, then refresh.
+    AgentNameManagerToggle,
+
+    /// Remove (release) the selected name, then refresh.
+    AgentNameManagerRemove,
+
+    /// Close the agent-name manager overlay.
+    AgentNameManagerClose,
+
     // ── VIC manager (VTA panel, Invitation Credentials list) ────────────────
     /// (Re)load the VIC list from the vault (async). Sent when the operator
     /// focuses the VIC list so the panel is populated without polling.
