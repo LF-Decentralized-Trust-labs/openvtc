@@ -118,6 +118,28 @@ pub async fn reconnect_persona_listener_io(
     }
 }
 
+/// Catch-all pattern for OpenVTC protocol messages + VTC Trust-Task
+/// replies (e.g. `join-requests/submit-receipt`). The state handler
+/// dispatches by type and ignores any it doesn't handle.
+///
+/// **Both VTC prefixes are accepted.** The VTC's Trust Tasks are moving
+/// from the non-conformant `trusttasks.org/openvtc/vtc/…` authority to
+/// the canonical registry at `trusttasks.org/spec/vtc/…`. This pattern
+/// decides whether a message reaches the handler *at all*, so it must
+/// accept the new prefix **before** any VTC starts emitting it —
+/// otherwise migrated traffic is dropped here, silently, before dispatch
+/// ever sees it. Accepting both also lets a migrated and an unmigrated
+/// VTC be talked to during the rollout; the `openvtc/vtc/` arm can be
+/// retired once no supported VTC emits it.
+pub const OPENVTC_CATCH_ALL_PATTERN: &str = concat!(
+    r"https://linuxfoundation\.org/openvtc/.*",
+    r"|https://firstperson\.network/.*",
+    r"|https://trusttasks\.org/openvtc/vtc/.*",
+    r"|https://trusttasks\.org/spec/vtc/.*",
+    r"|https://trusttasks\.org/spec/credential-exchange/.*",
+    r"|https://didcomm\.org/report-problem/.*",
+);
+
 /// Build the DIDComm message router.
 ///
 /// Trust pings are handled automatically via the built-in handler.
@@ -211,10 +233,18 @@ pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyh
         // Catch-all for OpenVTC protocol messages + VTC Trust-Task replies
         // (e.g. join-requests/submit-receipt). The state handler dispatches
         // by type and ignores any it doesn't handle.
-        .route_regex(
-            "https://linuxfoundation\\.org/openvtc/.*|https://firstperson\\.network/.*|https://trusttasks\\.org/openvtc/vtc/.*|https://trusttasks\\.org/spec/credential-exchange/.*|https://didcomm\\.org/report-problem/.*",
-            openvtc_handler,
-        )?
+        //
+        // Both VTC prefixes are accepted. The VTC's Trust Tasks are moving
+        // from the non-conformant `trusttasks.org/openvtc/vtc/…` authority
+        // to the canonical registry at `trusttasks.org/spec/vtc/…`. This
+        // regex is what decides whether a message reaches the handler at
+        // all, so it has to accept the new prefix *before* any VTC starts
+        // emitting it — otherwise migrated traffic is dropped here, silently
+        // and before dispatch ever sees it. Accepting both also means a
+        // migrated VTC and an unmigrated one can both be talked to during
+        // the rollout. The `openvtc/vtc/` arm can be retired once no
+        // supported VTC emits it.
+        .route_regex(OPENVTC_CATCH_ALL_PATTERN, openvtc_handler)?
         // Message pickup status — silently drop
         .route(
             openvtc_core::protocol_urls::MESSAGEPICKUP_STATUS,
@@ -600,5 +630,71 @@ pub fn relationship_listener_config_from_secrets(
         restart_policy: default_listener_restart_policy(),
         auto_delete: true,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod catch_all_tests {
+    use super::OPENVTC_CATCH_ALL_PATTERN;
+    use regex::Regex;
+
+    fn matches(uri: &str) -> bool {
+        // `route_regex` anchors the whole type string, so mirror that
+        // here rather than testing a substring match that would pass
+        // for URIs the router would actually reject.
+        Regex::new(&format!("^(?:{OPENVTC_CATCH_ALL_PATTERN})$"))
+            .expect("catch-all pattern compiles")
+            .is_match(uri)
+    }
+
+    /// The migration target. Without this arm, a migrated VTC's replies
+    /// never reach the handler — dropped by the router, before dispatch.
+    #[test]
+    fn canonical_vtc_trust_tasks_are_routed() {
+        for uri in [
+            "https://trusttasks.org/spec/vtc/join-requests/submit/0.1",
+            "https://trusttasks.org/spec/vtc/join-requests/submit/0.1#response",
+            "https://trusttasks.org/spec/vtc/join-requests/status/0.1#response",
+            "https://trusttasks.org/spec/vtc/members/self-remove/0.1",
+        ] {
+            assert!(matches(uri), "{uri} must reach the OpenVTC handler");
+        }
+    }
+
+    /// The pre-migration prefix keeps working, so an unmigrated VTC is
+    /// still reachable during the rollout.
+    #[test]
+    fn legacy_vtc_trust_tasks_still_route() {
+        for uri in [
+            "https://trusttasks.org/openvtc/vtc/spec/join-requests/submit/1.0",
+            "https://trusttasks.org/openvtc/vtc/members/self-remove/1.0",
+        ] {
+            assert!(matches(uri), "{uri} must still reach the handler");
+        }
+    }
+
+    #[test]
+    fn the_other_arms_are_intact() {
+        for uri in [
+            "https://linuxfoundation.org/openvtc/anything",
+            "https://firstperson.network/protocols/x",
+            "https://trusttasks.org/spec/credential-exchange/offer/0.1",
+            "https://didcomm.org/report-problem/2.0/problem-report",
+        ] {
+            assert!(matches(uri), "{uri} must reach the handler");
+        }
+    }
+
+    /// The pattern is a routing gate, not a catch-everything: an
+    /// unrelated canonical task must not be swept in.
+    #[test]
+    fn unrelated_types_are_not_routed() {
+        for uri in [
+            "https://trusttasks.org/spec/acl/list/0.1",
+            "https://trusttasks.org/spec/policy/upsert/0.2",
+            "https://example.com/whatever",
+        ] {
+            assert!(!matches(uri), "{uri} must NOT be routed here");
+        }
     }
 }
