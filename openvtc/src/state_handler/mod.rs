@@ -2282,6 +2282,9 @@ impl StateHandler {
         if let Some(o) = state.main_page.agent_names.as_mut() {
             o.phase = AgentNameManagerPhase::Working;
             o.message = Some(status.to_string());
+            // The confirm (if any) has served its purpose — the mutation is now
+            // running; don't leave it armed over the refreshed list.
+            o.confirm_remove = None;
         }
         let _ = self.state_tx.send(state.clone());
         Some(admin_vta)
@@ -3084,6 +3087,21 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
                 }
             }
         }
+        Action::AgentNameManagerConfirmRemove => {
+            // Arm the confirm on the selected row (only when there is one and the
+            // overlay is idle). The network remove runs on `AgentNameManagerRemove`.
+            if let Some(o) = state.main_page.agent_names.as_mut()
+                && o.phase == main_page::content::AgentNameManagerPhase::Ready
+                && !o.names.is_empty()
+            {
+                o.confirm_remove = Some(o.selected);
+            }
+        }
+        Action::AgentNameManagerCancelRemove => {
+            if let Some(o) = state.main_page.agent_names.as_mut() {
+                o.confirm_remove = None;
+            }
+        }
         Action::AgentNameManagerClose => {
             state.main_page.agent_names = None;
         }
@@ -3287,6 +3305,52 @@ mod tests {
             }),
         );
         assert_eq!(resolve_did_to_display(&config, did), "Alice");
+    }
+
+    /// The remove-confirm arm/cancel transitions on the agent-name overlay:
+    /// `ConfirmRemove` arms the selected row (only when Ready and non-empty),
+    /// `CancelRemove` clears it.
+    #[test]
+    fn agent_name_remove_confirm_arms_and_cancels() {
+        use crate::state_handler::main_page::content::{
+            AgentNameManagerPhase, AgentNameManagerState, AgentNameRow,
+        };
+        let mut state = State::default();
+        state.main_page.agent_names = Some(AgentNameManagerState {
+            phase: AgentNameManagerPhase::Ready,
+            names: vec![
+                AgentNameRow {
+                    name: "alice".into(),
+                    enabled: true,
+                },
+                AgentNameRow {
+                    name: "alias".into(),
+                    enabled: false,
+                },
+            ],
+            selected: 1,
+            ..Default::default()
+        });
+
+        assert!(handle_nav_action(
+            &mut state,
+            &Action::AgentNameManagerConfirmRemove
+        ));
+        assert_eq!(
+            state.main_page.agent_names.as_ref().unwrap().confirm_remove,
+            Some(1),
+            "arms the selected row"
+        );
+
+        assert!(handle_nav_action(
+            &mut state,
+            &Action::AgentNameManagerCancelRemove
+        ));
+        assert_eq!(
+            state.main_page.agent_names.as_ref().unwrap().confirm_remove,
+            None,
+            "cancel clears the arm"
+        );
     }
 
     /// Drive `handle_nav_action` directly over a fresh `State`. Because the

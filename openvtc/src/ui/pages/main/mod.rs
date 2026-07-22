@@ -749,6 +749,19 @@ impl MainPage {
         let Some(overlay) = self.props.main_page.agent_names.as_ref() else {
             return;
         };
+        // A remove is armed: it owns all input — only y/Enter confirms (releasing
+        // the name, which anyone can then reclaim); anything else backs out.
+        if overlay.confirm_remove.is_some() {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Enter => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerRemove);
+                }
+                _ => {
+                    let _ = self.action_tx.send(Action::AgentNameManagerCancelRemove);
+                }
+            }
+            return;
+        }
         match overlay.phase {
             AgentNameManagerPhase::Ready => match key.code {
                 KeyCode::Enter => {
@@ -763,13 +776,13 @@ impl MainPage {
                 KeyCode::Down => {
                     let _ = self.action_tx.send(Action::AgentNameManagerSelect(true));
                 }
-                // Space parks/resumes; `d`/Delete removes — both act on the
-                // selected row and only when there is one.
+                // Space parks/resumes; `d`/Delete arms the remove confirm — both
+                // act on the selected row and only when there is one.
                 KeyCode::Char(' ') if !overlay.names.is_empty() => {
                     let _ = self.action_tx.send(Action::AgentNameManagerToggle);
                 }
                 KeyCode::Char('d') | KeyCode::Delete if !overlay.names.is_empty() => {
-                    let _ = self.action_tx.send(Action::AgentNameManagerRemove);
+                    let _ = self.action_tx.send(Action::AgentNameManagerConfirmRemove);
                 }
                 _ => {
                     let _ = self.action_tx.send(Action::AgentNameManagerInput(key));
@@ -2465,16 +2478,31 @@ impl MainPage {
         }
 
         lines.push(Line::default());
-        let hint = match overlay.phase {
-            AgentNameManagerPhase::Working | AgentNameManagerPhase::Loading => "working…",
-            AgentNameManagerPhase::Ready => {
-                "⏎ claim   ↑/↓ select   space park/resume   d remove   esc close"
-            }
-        };
-        lines.push(Line::from(Span::styled(
-            hint,
-            Style::new().fg(COLOR_BORDER),
-        )));
+        // An armed remove confirmation overrides the normal hint with a warning.
+        let armed = overlay
+            .confirm_remove
+            .and_then(|i| overlay.names.get(i))
+            .map(|row| row.name.as_str());
+        if let Some(name) = armed {
+            lines.push(
+                Line::from(format!(
+                    "Release @{name}? It becomes free for anyone to reclaim.   y: confirm    n: cancel"
+                ))
+                .fg(COLOR_ORANGE)
+                .bold(),
+            );
+        } else {
+            let hint = match overlay.phase {
+                AgentNameManagerPhase::Working | AgentNameManagerPhase::Loading => "working…",
+                AgentNameManagerPhase::Ready => {
+                    "⏎ claim   ↑/↓ select   space park/resume   d remove   esc close"
+                }
+            };
+            lines.push(Line::from(Span::styled(
+                hint,
+                Style::new().fg(COLOR_BORDER),
+            )));
+        }
 
         frame.render_widget(Paragraph::new(lines).block(block), popup_area);
     }
@@ -3061,9 +3089,13 @@ mod key_handler_tests {
         page.handle_key_event(press(KeyCode::Char(' ')));
         assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerToggle)));
 
+        // `d` arms the remove confirmation; it does not remove directly.
         let (mut page, mut rx) = open();
         page.handle_key_event(press(KeyCode::Char('d')));
-        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerRemove)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::AgentNameManagerConfirmRemove)
+        ));
 
         let (mut page, mut rx) = open();
         page.handle_key_event(press(KeyCode::Esc));
@@ -3075,6 +3107,51 @@ mod key_handler_tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(Action::AgentNameManagerInput(_))
+        ));
+    }
+
+    #[test]
+    fn agent_name_manager_remove_confirm_gate() {
+        use crate::state_handler::main_page::content::{
+            AgentNameManagerPhase, AgentNameManagerState, AgentNameRow,
+        };
+        // An armed remove: y/Enter confirms, anything else cancels — and no
+        // other Ready-phase key acts while it is armed.
+        let armed = || {
+            page_for(MainMenu::Vta, |s| {
+                s.main_page.agent_names = Some(AgentNameManagerState {
+                    phase: AgentNameManagerPhase::Ready,
+                    names: vec![AgentNameRow {
+                        name: "alice".into(),
+                        enabled: true,
+                    }],
+                    confirm_remove: Some(0),
+                    ..Default::default()
+                });
+            })
+        };
+
+        let (mut page, mut rx) = armed();
+        page.handle_key_event(press(KeyCode::Char('y')));
+        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerRemove)));
+
+        let (mut page, mut rx) = armed();
+        page.handle_key_event(press(KeyCode::Enter));
+        assert!(matches!(rx.try_recv(), Ok(Action::AgentNameManagerRemove)));
+
+        let (mut page, mut rx) = armed();
+        page.handle_key_event(press(KeyCode::Esc));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::AgentNameManagerCancelRemove)
+        ));
+
+        // A stray key while armed cancels rather than editing the input.
+        let (mut page, mut rx) = armed();
+        page.handle_key_event(press(KeyCode::Char('x')));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::AgentNameManagerCancelRemove)
         ));
     }
 
