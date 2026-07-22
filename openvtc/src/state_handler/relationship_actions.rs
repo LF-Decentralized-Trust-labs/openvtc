@@ -1101,6 +1101,19 @@ async fn prepare_submit(
     generate_r_did: bool,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
 ) -> Result<RelationshipJob> {
+    // Accept an agent name (`example.com/@bob`) in place of the DID. Resolve it
+    // up front so every downstream key (dedup, contact, the provisional record)
+    // is the DID, never the mutable name. A plain DID is left untouched — no
+    // extra round-trip — and validated by the `did:` check below.
+    let resolved_did;
+    let did = if openvtc_core::agent_name::looks_like_agent_name(did) {
+        resolved_did = openvtc_core::agent_name::resolve_identifier(tdk.did_resolver(), did)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        resolved_did.as_str()
+    } else {
+        did
+    };
     // Validate DID format.
     if !did.starts_with("did:") {
         anyhow::bail!("Invalid DID: must start with 'did:'");

@@ -452,6 +452,9 @@ fn render_form(
 
     lines.push(Line::from(""));
     lines.push(
+        Line::from("DID accepts an agent name too, e.g. example.com/@bob").fg(COLOR_DARK_GRAY),
+    );
+    lines.push(
         Line::from("Tab: next field  Space: toggle R-DID  Enter (on R-DID): submit  Esc: cancel")
             .fg(COLOR_DARK_GRAY),
     );

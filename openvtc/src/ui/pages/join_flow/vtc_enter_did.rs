@@ -89,7 +89,7 @@ impl VtcEnterDid {
                 ),
                 Line::default(),
                 Line::styled(
-                    "Enter the community's DID:",
+                    "Enter the community's DID or agent name:",
                     Style::new().fg(COLOR_BORDER).bold(),
                 ),
             ]),
@@ -106,9 +106,13 @@ impl VtcEnterDid {
         render_input(input, frame, input_col);
 
         let mut lines = vec![
-            Line::styled("Example:", Style::new().fg(COLOR_ORANGE).bold()),
+            Line::styled("Examples:", Style::new().fg(COLOR_ORANGE).bold()),
             Line::styled(
                 "  • did:webvh:QmRoot…:community.example.com",
+                Style::new().fg(COLOR_ORANGE).italic(),
+            ),
+            Line::styled(
+                "  • community.example.com/@acme",
                 Style::new().fg(COLOR_ORANGE).italic(),
             ),
             Line::default(),

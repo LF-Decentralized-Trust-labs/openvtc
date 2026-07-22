@@ -45,6 +45,37 @@ entry point that now delegates to the library.
 If the library appears to be missing a capability, prefer opening an issue
 or extending the library over reimplementing it locally.
 
+## Agent names (DID shortcuts)
+
+An **agent name** is a human-memorable shortcut that resolves to a DID —
+a URL whose path begins with `/@` (`example.com/@alice`). OpenVTC consumes
+them; `openvtc-core/src/agent_name.rs` is the single entry point.
+
+Rules, all enforced there:
+
+- **Always use the `agent-names` crate** for parsing, canonicalisation, and
+  `alsoKnownAs` matching — never hand-roll them. Canonicalisation is
+  unspecified by the spec, so two implementations that normalise differently
+  disagree about whether a name verifies. Same discipline as the `didwebvh-rs`
+  rule above.
+- **Never display an unverified name.** A name is shown only after a full
+  round-trip: it forward-resolves (`DIDCacheClient::resolve_any`, which does the
+  mandatory `alsoKnownAs` check) *and* lands back on the DID being labelled.
+  `agent_name::verified_agent_name` is the gate; an unverified claim renders as
+  the plain DID. Displaying a name straight from a document's `alsoKnownAs`
+  would turn the TUI into a phishing surface — anyone can claim
+  `bigbank.com/@support` in their own document.
+- **Never persist a name in place of a DID.** A name is a mutable web redirect;
+  storing one would let a redirect silently repoint a saved identity. On input,
+  `agent_name::resolve_identifier` turns a name into a DID and the DID is what
+  gets persisted.
+
+Resolution needs the resolver's `agent-names` feature, enabled via the direct
+`affinidi-did-resolver-cache-sdk` dependency in the root `Cargo.toml`. The
+management side (claiming / parking / resuming a name for your own persona) goes
+through the VTA's `did-management/agent-name` Trust Tasks — see
+`tasks/follow-ups.md`.
+
 ## Cross-service networking & integration discipline
 
 OpenVTC tooling drives the live VTA/VTC/webvh services over the network, so
