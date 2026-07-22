@@ -152,6 +152,30 @@ impl StateHandler {
                             let Some(vtc_did) = validate_join_input(&vtc_did) else {
                                 continue;
                             };
+                            // Accept an agent name (`example.com/@acme`) in place
+                            // of the VTC DID. Only resolve when the input actually
+                            // looks like a name, so pasting a DID keeps its
+                            // existing (no-extra-round-trip) path; the resolved
+                            // DID is what everything downstream persists.
+                            let vtc_did = if openvtc_core::agent_name::looks_like_agent_name(
+                                &vtc_did,
+                            ) {
+                                match openvtc_core::agent_name::resolve_identifier(
+                                    tdk.did_resolver(),
+                                    &vtc_did,
+                                )
+                                .await
+                                {
+                                    Ok(did) => did,
+                                    Err(e) => {
+                                        state.join.fail(e.to_string());
+                                        let _ = self.state_tx.send(state.clone());
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                vtc_did
+                            };
                             // Idempotency is now per-persona (R-B-9): a community may
                             // be joined as more than one persona, so the duplicate
                             // check happens once the identity is chosen (in the

@@ -75,6 +75,7 @@ the real work is decomposed into focused modules (declared at `mod.rs:50`):
 | `message_dispatch.rs` | Inbound DIDComm orchestration: `process_inbound_message` (async I/O only). |
 | `background_dispatch.rs` | Off-loop network dispatch plumbing (see §4). |
 | `save_coalesce.rs` | Coalesced, off-runtime `Config` persistence (see §4). |
+| `agent_name_refresh.rs` | Off-loop batch resolution of agent names (DID→name), applied via background-dispatch (see §4). |
 | `inbox_actions.rs`, `relationship_actions.rs`, `credential_actions.rs`, `settings_actions.rs` | Per-panel business logic — each exposes a `dispatch(...)` entry point the matching `Action` arm calls. |
 | `didcomm.rs` | `DIDCommService` integration: service start, listener config/ids, the `DIDCommEvent` enum, lifecycle logging. |
 | `main_page/` | Maps `Config` → display state (`sync_from_config`), menu/content models. |
@@ -116,6 +117,15 @@ single `spawn_blocking` save, with at most one in flight. Durability-critical
 points (Exit, passphrase/protection change) force-flush synchronously. The
 startup load uses the same shape: a spawned task streams progress back into the
 loading-screen `select!`.
+
+**Agent-name refresh** ([`agent_name_refresh.rs`](../../openvtc/src/state_handler/agent_name_refresh.rs)) —
+a concrete instance of the background-dispatch pattern. A 5-minute interval arm
+collects the DIDs whose agent name is uncached or stale
+(`Config::agent_name_refresh_targets`) and hands the whole list to **one**
+background job on the `DispatchDomain::AgentName` domain (one job, not one per
+DID: the busy-guard is per-domain). Inside the job the DIDs resolve with bounded
+concurrency (a sliding window of 4). The job does I/O only; `apply_outcome` folds
+the verified `(did, name)` results into `Config::agent_names` on the loop thread.
 
 ## 5. Recipes
 

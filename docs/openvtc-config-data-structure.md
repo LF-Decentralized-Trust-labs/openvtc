@@ -133,6 +133,16 @@ cryptographic key derived from the `m/1'/0'/0'` derivation path.
 | `tasks`         | `Tasks`         | Task management data.                         |
 | `vrcs_issued`   | `Vrcs`          | Verifiable relationship credentials issued.   |
 | `vrcs_received` | `Vrcs`          | Verifiable relationship credentials received. |
+| `agent_names`   | `HashMap<String, CachedAgentName>` | Verified agent-name lookups, keyed by DID (see below). |
+
+The **`agent_names`** map is an additive, `#[serde(default)]` cache of verified
+agent-name lookups (`example.com/@alice`) so a DID's human-memorable name shows
+at launch without a network round-trip. Each `CachedAgentName` holds the
+verified `name` (`None` records a DID with no verifiable name — a cached
+negative) and a `checked_at` timestamp; a background sweep re-verifies entries
+older than 24h. One map covers every displayed DID (personas, communities,
+relationships, contacts). Only verified names are stored — see
+`openvtc-core/src/agent_name.rs`.
 
 #### Protected Config Categories
 
