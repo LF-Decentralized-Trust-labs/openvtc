@@ -2050,9 +2050,14 @@ impl ComponentRender<()> for MainPage {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(self.props.main_page.config.name.to_string()).fg(COLOR_SUCCESS),
-                Line::from(
-                    truncate_did_centered(&self.props.main_page.config.did, 30).into_owned(),
-                )
+                Line::from(match &self.props.main_page.config.agent_name {
+                    // A verified agent name is short and human-readable — show it
+                    // whole in place of the truncated DID.
+                    Some(name) => name.clone(),
+                    None => {
+                        truncate_did_centered(&self.props.main_page.config.did, 30).into_owned()
+                    }
+                })
                 .fg(COLOR_TEXT_DEFAULT),
             ])
             .alignment(Alignment::Right),
@@ -2497,6 +2502,7 @@ mod key_handler_tests {
         RelationshipSummary {
             remote_p_did: remote_p_did.to_string(),
             alias: None,
+            agent_name: None,
             state: "Established".to_string(),
             our_did: "did:example:me".to_string(),
             remote_did: "did:example:them".to_string(),

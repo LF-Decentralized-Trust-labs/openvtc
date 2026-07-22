@@ -82,9 +82,11 @@ fn render_list(state: &RelationshipsState) -> Vec<Line<'static>> {
                 Style::new().fg(COLOR_TEXT_DEFAULT)
             };
 
+            // Precedence: user alias → verified agent name → the DID itself.
             let display_name = rel
                 .alias
                 .as_deref()
+                .or(rel.agent_name.as_deref())
                 .unwrap_or(&rel.remote_p_did)
                 .to_string();
 
@@ -142,6 +144,13 @@ fn render_detail(
         lines.push(Line::from(vec![
             Span::styled("Alias:        ", Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled(alias.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+    }
+    // The verified agent name, above the full DID it belongs to.
+    if let Some(agent_name) = &rel.agent_name {
+        lines.push(Line::from(vec![
+            Span::styled("Agent name:   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(agent_name.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
         ]));
     }
     lines.push(Line::from(vec![

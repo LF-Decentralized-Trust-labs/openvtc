@@ -25,15 +25,23 @@ pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
 
 /// Resolve a DID to a human-readable display name.
 ///
-/// Tries: contact alias by DID → R-DID relationship → persona contact alias → truncated DID.
+/// Precedence: **user alias → verified agent name → truncated DID.** The user's
+/// own alias wins — it is unspoofable by definition and an explicit labelling
+/// choice; a verified agent name (`example.com/@alice`, already round-tripped
+/// before caching) comes next; the truncated DID is the last resort. The same
+/// order applies when a remote R-DID resolves through to its persona DID.
 pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did: &str) -> String {
-    // Direct contact lookup
+    // 1. User alias on the DID directly.
     if let Some(contact) = config.private.contacts.find_contact(did)
         && let Some(alias) = &contact.alias
     {
         return alias.clone();
     }
-    // R-DID → persona DID → contact alias
+    // 2. Verified agent name for the DID.
+    if let Some(name) = config.agent_name_for(did) {
+        return name.to_string();
+    }
+    // 3. R-DID → persona DID → its alias / agent name / truncation.
     let did_arc = std::sync::Arc::new(did.to_string());
     if let Some(rel) = config.private.relationships.find_by_remote_did(&did_arc) {
         let p_did = rel.remote_p_did.to_string();
@@ -41,6 +49,9 @@ pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did:
             && let Some(alias) = &contact.alias
         {
             return alias.clone();
+        }
+        if let Some(name) = config.agent_name_for(&p_did) {
+            return name.to_string();
         }
         return log_did(&p_did).into_owned();
     }
@@ -225,6 +236,8 @@ impl StateHandler {
                     // working community name) populate from the full Config once
                     // load_step2 completes.
                     did: std::sync::Arc::new(String::new()),
+                    // The account isn't decrypted yet, so no name is available.
+                    agent_name: None,
                     community: String::new(),
                 };
                 state.connection.status = state::MediatorStatus::Initializing("Starting...".into());
@@ -2887,6 +2900,38 @@ fn build_trust_pong(
 mod tests {
     use super::*;
     use crate::state_handler::main_page::menu::MainMenu;
+
+    /// `resolve_did_to_display` precedence: a verified agent name is shown when
+    /// present, but a user alias overrides it, and an unknown DID falls back to
+    /// the truncated form.
+    #[test]
+    fn resolve_did_to_display_prefers_alias_then_agent_name() {
+        use crate::state_handler::dispatch_util::test_config;
+
+        let did = "did:webvh:example.com:alice";
+        let mut config = test_config();
+
+        // No alias, no cached name → truncated DID.
+        assert_eq!(
+            resolve_did_to_display(&config, did),
+            openvtc_core::display::truncate_did(did, 30)
+        );
+
+        // A verified agent name is now shown.
+        config.set_cached_agent_name(did, Some("example.com/@alice".into()), chrono::Utc::now());
+        assert_eq!(resolve_did_to_display(&config, did), "example.com/@alice");
+
+        // A user alias on the same DID overrides the agent name.
+        let key = std::sync::Arc::new(did.to_string());
+        config.private.contacts.contacts.insert(
+            key.clone(),
+            std::sync::Arc::new(openvtc_core::config::protected_config::Contact {
+                did: key,
+                alias: Some("Alice".to_string()),
+            }),
+        );
+        assert_eq!(resolve_did_to_display(&config, did), "Alice");
+    }
 
     /// Drive `handle_nav_action` directly over a fresh `State`. Because the
     /// reducer is the single code path both the runtime loop and the degraded

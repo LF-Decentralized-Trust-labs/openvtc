@@ -293,6 +293,9 @@ pub struct VtaState {
     pub context_name: Option<String>,
     /// Persona DID
     pub persona_did: String,
+    /// Verified agent name for the persona DID (`example.com/@me`), if cached —
+    /// shown above the DID in the panel.
+    pub persona_agent_name: Option<String>,
     /// Mediator DID
     pub mediator_did: String,
     /// VTA service URL
@@ -640,6 +643,10 @@ pub struct RelationshipSummary {
     pub remote_p_did: String,
     /// Contact alias (if set)
     pub alias: Option<String>,
+    /// Verified agent name for the remote persona DID (`example.com/@bob`), if
+    /// one is cached. Shown when there is no user alias; the DID is the last
+    /// resort. Populated in `sync_from_config` from the persisted cache.
+    pub agent_name: Option<String>,
     /// Human-readable state (e.g., "Established", "Request Sent")
     pub state: String,
     /// Our DID used in this relationship
@@ -783,6 +790,8 @@ pub struct SettingsState {
     pub org_did: String,
     /// Persona DID (read-only display)
     pub persona_did: String,
+    /// Verified agent name for the persona DID, if cached.
+    pub persona_agent_name: Option<String>,
     /// How the config is protected (Token/Encrypted/Plaintext)
     pub protection_type: String,
     /// Currently selected setting index
