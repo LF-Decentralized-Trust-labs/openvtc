@@ -75,6 +75,10 @@ allow = [
     # CDLA-Permissive-2.0: permissive Linux Foundation data license used
     # by webpki-roots / webpki-root-certs (transitive via rustls / reqwest).
     "CDLA-Permissive-2.0",
+    # MIT-0: MIT with the attribution clause dropped, so strictly more
+    # permissive than the MIT already allowed above. Used by borrow-or-share,
+    # transitive via trust-tasks-rs / vta-service -> jsonschema -> fluent-uri.
+    "MIT-0",
 ]
 confidence-threshold = 0.93
 exceptions = []
