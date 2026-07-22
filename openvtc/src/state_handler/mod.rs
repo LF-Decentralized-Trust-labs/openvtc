@@ -1122,11 +1122,17 @@ impl StateHandler {
                             .into_iter()
                             .filter(|c| c.status.is_active())
                             .map(|c| {
-                                let persona_label = config
-                                    .account
-                                    .personas
-                                    .get(&c.persona_ref)
+                                // Same precedence as the communities panel:
+                                // user label, then verified agent name, then
+                                // the truncated DID.
+                                let persona = config.account.personas.get(&c.persona_ref);
+                                let persona_label = persona
                                     .and_then(|p| p.label.clone())
+                                    .or_else(|| {
+                                        persona.and_then(|p| {
+                                            config.agent_name_for(&p.did).map(str::to_owned)
+                                        })
+                                    })
                                     .unwrap_or_default();
                                 main_page::content::SwitcherItem {
                                     vtc_did: c.vtc_did.clone(),
@@ -1134,6 +1140,9 @@ impl StateHandler {
                                     display_name: c
                                         .display_name
                                         .clone()
+                                        .or_else(|| {
+                                            config.agent_name_for(&c.vtc_did).map(str::to_owned)
+                                        })
                                         .unwrap_or_else(|| main_page::shorten_did(&c.vtc_did, 40)),
                                     persona_label,
                                     is_current: current.as_ref()

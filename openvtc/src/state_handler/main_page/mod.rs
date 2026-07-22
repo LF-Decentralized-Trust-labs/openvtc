@@ -435,8 +435,14 @@ impl MainPageState {
         let now = chrono::Utc::now();
         for c in config.account.communities_for_display(show_archived) {
             let persona = config.account.personas.get(&c.persona_ref);
+            // Precedence follows `resolve_did_to_display`: the user's own label
+            // wins (explicit, and unspoofable by definition), then a verified
+            // agent name, then the truncated DID. The name is read from the
+            // cache, which only ever holds round-tripped lookups — an
+            // unverified `alsoKnownAs` claim never reaches it.
             let persona_label = persona
                 .and_then(|p| p.label.clone())
+                .or_else(|| persona.and_then(|p| config.agent_name_for(&p.did).map(str::to_owned)))
                 .or_else(|| persona.map(|p| shorten_did(&p.did, 24)))
                 .unwrap_or_default();
             let request_id = match &c.status {
@@ -449,6 +455,7 @@ impl MainPageState {
                 display_name: c
                     .display_name
                     .clone()
+                    .or_else(|| config.agent_name_for(&c.vtc_did).map(str::to_owned))
                     .unwrap_or_else(|| shorten_did(&c.vtc_did, 40)),
                 status_label: community_status_label(&c.status),
                 persona_label,
@@ -800,6 +807,133 @@ impl MainPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- community row labelling (agent names) ---
+
+    /// Build a config holding one Active membership: persona `persona_did`
+    /// presented to community `vtc_did`. `persona_label` and `display_name` are
+    /// the explicitly-set names, either of which may be absent.
+    fn config_with_membership(
+        persona_did: &str,
+        persona_label: Option<&str>,
+        vtc_did: &str,
+        display_name: Option<&str>,
+    ) -> Config {
+        use openvtc_core::config::account::{CommunityRecord, CommunityStatus, PersonaRecord};
+
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        let persona_id = PersonaId::new();
+        config.account.personas.insert(
+            persona_id,
+            PersonaRecord {
+                persona_id,
+                did: persona_did.to_string(),
+                did_document: None,
+                key_refs: vec![],
+                mediator_did: None,
+                origin_context_id: String::new(),
+                created_at: chrono::Utc::now(),
+                label: persona_label.map(str::to_owned),
+            },
+        );
+        config.account.communities.insert(
+            vtc_did.to_string(),
+            vec![CommunityRecord {
+                vtc_did: vtc_did.to_string(),
+                display_name: display_name.map(str::to_owned),
+                sub_context_id: String::new(),
+                persona_ref: persona_id,
+                status: CommunityStatus::Active,
+                favourite: false,
+                archived: false,
+                acknowledged: true,
+                member_since: None,
+                requested_at: None,
+                receipt_at: None,
+                relationships: Default::default(),
+                tasks: Default::default(),
+                vrcs_issued: Default::default(),
+                vrcs_received: Default::default(),
+                credentials: std::collections::BTreeMap::new(),
+            }],
+        );
+        config
+    }
+
+    /// With no explicit label and no cached name, both halves of the row fall
+    /// back to a truncated DID — the pre-existing behaviour, which must not
+    /// change for an account that has no agent names.
+    #[test]
+    fn community_row_falls_back_to_truncated_dids() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let config = config_with_membership(persona_did, None, vtc_did, None);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.communities.items[0];
+
+        assert_eq!(row.persona_label, shorten_did(persona_did, 24));
+        assert_eq!(row.display_name, shorten_did(vtc_did, 40));
+    }
+
+    /// A verified agent name in the cache labels both the presented persona and
+    /// the community, in place of the truncated DID. This is the regression the
+    /// panel previously had: it never consulted the cache at all, so an enabled
+    /// name could not appear on the communities screen.
+    #[test]
+    fn community_row_prefers_a_verified_agent_name_over_a_truncated_did() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(persona_did, Some("example.com/@alice".into()), now);
+        config.set_cached_agent_name(vtc_did, Some("example.com/@acme".into()), now);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.communities.items[0];
+
+        assert_eq!(row.persona_label, "example.com/@alice");
+        assert_eq!(row.display_name, "example.com/@acme");
+    }
+
+    /// The user's own label still wins over an agent name — it is an explicit
+    /// labelling choice and unspoofable, matching `resolve_did_to_display`'s
+    /// documented precedence. Same for a community's resolved display name.
+    #[test]
+    fn community_row_keeps_explicit_labels_ahead_of_an_agent_name() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config =
+            config_with_membership(persona_did, Some("Work me"), vtc_did, Some("Acme Co"));
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(persona_did, Some("example.com/@alice".into()), now);
+        config.set_cached_agent_name(vtc_did, Some("example.com/@acme".into()), now);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.communities.items[0];
+
+        assert_eq!(row.persona_label, "Work me");
+        assert_eq!(row.display_name, "Acme Co");
+    }
+
+    /// A cached *negative* lookup (the DID has no verifiable name) must not
+    /// render as a name — the row falls back to the truncated DID.
+    #[test]
+    fn community_row_ignores_a_cached_negative_lookup() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+        config.set_cached_agent_name(persona_did, None, chrono::Utc::now());
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.communities.items[0];
+
+        assert_eq!(row.persona_label, shorten_did(persona_did, 24));
+    }
 
     // --- persona_in_scope (community-scoping filter, D10/R-C-6) ---
 
