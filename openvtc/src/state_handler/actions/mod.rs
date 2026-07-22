@@ -414,7 +414,14 @@ pub enum Action {
     /// Park (`disable`) or resume (`enable`) the selected name, then refresh.
     AgentNameManagerToggle,
 
-    /// Remove (release) the selected name, then refresh.
+    /// Arm the remove confirmation for the selected name (destructive).
+    AgentNameManagerConfirmRemove,
+
+    /// Cancel a pending remove confirmation.
+    AgentNameManagerCancelRemove,
+
+    /// Remove (release) the selected name, then refresh. Sent only after the
+    /// confirmation is armed and the operator presses `y`/Enter.
     AgentNameManagerRemove,
 
     /// Close the agent-name manager overlay.

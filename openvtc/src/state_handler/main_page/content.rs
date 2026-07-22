@@ -227,6 +227,10 @@ pub struct AgentNameManagerState {
     pub phase: AgentNameManagerPhase,
     /// Transient status / error line.
     pub message: Option<String>,
+    /// Armed remove confirmation: `Some(row)` while awaiting `y`/Enter to
+    /// release that name (a destructive op — the name becomes free for anyone to
+    /// reclaim). Any other key cancels. `None` when nothing is armed.
+    pub confirm_remove: Option<usize>,
 }
 
 /// One agent-name registry row shown in the manager overlay.
