@@ -28,6 +28,37 @@ support for rotating a persona's keys today.
 
 ## Small / unscheduled
 
+### [x] Agent names — claim / park / resume for a persona
+DONE. `openvtc/src/state_handler/agent_name_manage.rs` wraps the six VTA verbs
+(`set`/`remove`/`enable`/`disable`/`list`/`check`, published `vta-sdk` 0.19.17)
+over `VtaClient::dispatch_trust_task`; the VTA panel's DID list gains `g` to open
+a per-persona manager overlay (list served + parked names, claim with an
+availability pre-check, park/resume/remove). A successful mutation reconciles the
+persisted name cache (first served name → the persona's displayed name) so the
+header/panels update without waiting for the background sweep.
+The destructive `remove` is gated behind a local `y`/Enter confirm (#169).
+
+### [ ] Agent names — remaining display + input surfaces
+Consumer display covers relationships, communities, the header, VTA/settings
+persona lines, and every log message (`resolve_did_to_display`). Still on the
+raw-DID pattern, to migrate onto the same view-model + `display_identifier`
+approach: VRC issuer/subject (`credentials_panel.rs`), inbox message DIDs
+(`inbox_panel.rs`), and the persona/context DID lists (`ActiveDid`/`ManagedDid`
+in `vta_panel.rs`). Input support covers the join VTC-DID entry and the new
+relationship request; the setup-time entries (VTA DID, webvh import, custom
+mediator, org DID) still take a DID only — apply the same
+`looks_like_agent_name` + `resolve_identifier` pattern, threading a resolver
+into those setup handlers.
+
+### [x] Agent names — resolve → verify e2e
+DONE (#168). `openvtc-core/tests/agent_name_e2e.rs` drives the whole chain
+through a real `DIDCacheClient`: a wiremock host serves `/@name` → 302 → DID, the
+document is seeded to run the `alsoKnownAs` check, and the happy path + spoof
+(different-DID) + unclaimed + nameless + DID-passthrough cases are covered.
+**Remaining gap:** the DID→document hop is seeded (immutable `did:key`), so a
+live `did:webvh` resolve against a real agent-name-serving host is still only
+provable by running OpenVTC end to end.
+
 ### [ ] Outbound size guard on join submit
 A bridge file-size limit silently dropped a join submit once (root cause behind
 PR #137). A guard that fails loudly on an oversized outbound payload was
