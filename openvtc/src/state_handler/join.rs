@@ -39,6 +39,11 @@ pub struct PresentedInvitation {
     pub id: String,
     /// The persona DID the VIC is bound to (`credentialSubject.id`), if present.
     pub subject: Option<String>,
+    /// Verified agent name for [`subject`](Self::subject), if cached. The subject
+    /// is one of this account's own persona DIDs, which the agent-name sweep
+    /// already targets, so a name is often available. Sourced only from
+    /// `Config::agent_name_for`; `None` keeps the DID on screen.
+    pub subject_agent_name: Option<String>,
 }
 
 /// One selectable existing persona on the identity-choice page (R-B-3).

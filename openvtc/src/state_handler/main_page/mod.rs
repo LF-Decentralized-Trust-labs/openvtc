@@ -278,8 +278,14 @@ impl MainPageState {
                         m.values()
                             .map(|vrc| content::RelationshipVrc {
                                 issuer: shorten_did(vrc.issuer(), 40),
+                                issuer_agent_name: config
+                                    .agent_name_for(vrc.issuer())
+                                    .map(|n| sanitize_display(n, 256)),
                                 issuer_full: vrc.issuer().to_string(),
                                 subject: shorten_did(vrc.subject(), 40),
+                                subject_agent_name: config
+                                    .agent_name_for(vrc.subject())
+                                    .map(|n| sanitize_display(n, 256)),
                                 subject_full: vrc.subject().to_string(),
                                 valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                                 valid_until: vrc
@@ -300,8 +306,14 @@ impl MainPageState {
                         m.values()
                             .map(|vrc| content::RelationshipVrc {
                                 issuer: shorten_did(vrc.issuer(), 40),
+                                issuer_agent_name: config
+                                    .agent_name_for(vrc.issuer())
+                                    .map(|n| sanitize_display(n, 256)),
                                 issuer_full: vrc.issuer().to_string(),
                                 subject: shorten_did(vrc.subject(), 40),
+                                subject_agent_name: config
+                                    .agent_name_for(vrc.subject())
+                                    .map(|n| sanitize_display(n, 256)),
                                 subject_full: vrc.subject().to_string(),
                                 valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                                 valid_until: vrc
@@ -454,6 +466,10 @@ impl MainPageState {
         context_dids.sort_by(|a, b| a.did.cmp(&b.did));
         self.content_panel.vta.context_dids = context_dids.into();
 
+        // The VIC list is not derived from `Config` (it comes from the VTA
+        // credential vault), so it is annotated rather than rebuilt here.
+        self.sync_vic_agent_names(config);
+
         self.content_panel.settings.protection_type = match &config.public.protection {
             openvtc_core::config::ConfigProtectionType::Token(id) => {
                 format!(
@@ -538,6 +554,37 @@ impl MainPageState {
         if self.content_panel.communities.selected_index >= community_count {
             self.content_panel.communities.selected_index = community_count.saturating_sub(1);
         }
+    }
+
+    /// Stitch the verified agent name for each held VIC's issuer onto the VIC
+    /// list.
+    ///
+    /// The list itself comes from the VTA credential vault, not from `Config`
+    /// (`VicSummary::from_descriptor` has no `Config` to consult), so the names
+    /// are attached here instead of at construction. Called from
+    /// [`sync_from_config`](Self::sync_from_config) — so a background agent-name
+    /// sweep lands on the list — and again straight after each vault reload, so
+    /// a freshly loaded list is named without waiting for the next sync.
+    ///
+    /// Verified-only: the name always comes from `Config::agent_name_for`, and a
+    /// DID with no (or a cached-negative) entry keeps showing its DID.
+    pub fn sync_vic_agent_names(&mut self, config: &Config) {
+        if self.content_panel.vta.vics.is_empty() {
+            return;
+        }
+        let named: Vec<content::VicSummary> = self
+            .content_panel
+            .vta
+            .vics
+            .iter()
+            .map(|v| content::VicSummary {
+                issuer_agent_name: config
+                    .agent_name_for(&v.issuer)
+                    .map(|n| sanitize_display(n, 256)),
+                ..v.clone()
+            })
+            .collect();
+        self.content_panel.vta.vics = named.into();
     }
 }
 
@@ -1539,6 +1586,211 @@ mod tests {
         assert_eq!(row.agent_name.as_deref(), Some("example.com/@alice"));
         assert_eq!(row.did, ALICE_DID);
         assert_eq!(row.label, "Work me");
+    }
+
+    // --- agent names on the relationship-VRC rows and the VIC list ---
+
+    /// A config holding one relationship with `BOB_DID`, carrying one VRC we
+    /// issued (us → Bob) and one we received (Bob → us).
+    fn config_with_relationship_vrcs() -> Config {
+        use openvtc_core::relationships::{Relationship, RelationshipState};
+
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        let remote = Arc::new(BOB_DID.to_string());
+        config.private.relationships.relationships.insert(
+            remote.clone(),
+            Relationship {
+                task_id: Arc::new("task-1".to_string()),
+                our_did: Arc::new(ALICE_DID.to_string()),
+                remote_did: remote.clone(),
+                remote_p_did: remote.clone(),
+                created: chrono::Utc::now(),
+                state: RelationshipState::Established,
+                our_persona: None,
+                needs_reestablishment: false,
+            },
+        );
+        config
+            .private
+            .vrcs_issued
+            .insert(&remote, signed_vrc(ALICE_DID, BOB_DID))
+            .expect("issued VRC stores");
+        config
+            .private
+            .vrcs_received
+            .insert(&remote, signed_vrc(BOB_DID, ALICE_DID))
+            .expect("received VRC stores");
+        config
+    }
+
+    /// The relationship detail's VRC rows carry the verified name for the
+    /// issuer/subject DID each row displays — the same pair the credentials
+    /// panel already carries, one screen behind.
+    #[test]
+    fn relationship_vrc_rows_carry_verified_agent_names() {
+        let mut config = config_with_relationship_vrcs();
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(BOB_DID, Some("example.com/@bob".into()), now);
+        config.set_cached_agent_name(ALICE_DID, Some("example.com/@alice".into()), now);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let rel = &page.content_panel.relationships.relationships[0];
+
+        // "To: …" on an issued row renders the subject.
+        let issued = &rel.vrcs_issued[0];
+        assert_eq!(
+            issued.subject_agent_name.as_deref(),
+            Some("example.com/@bob")
+        );
+        assert_eq!(
+            issued.issuer_agent_name.as_deref(),
+            Some("example.com/@alice")
+        );
+        // "From: …" on a received row renders the issuer.
+        let received = &rel.vrcs_received[0];
+        assert_eq!(
+            received.issuer_agent_name.as_deref(),
+            Some("example.com/@bob")
+        );
+        assert_eq!(
+            received.subject_agent_name.as_deref(),
+            Some("example.com/@alice")
+        );
+
+        // The shortened DIDs are untouched — the name sits beside them, and
+        // that is what the row renders through `display_identifier`.
+        assert_eq!(issued.subject, shorten_did(BOB_DID, 40));
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                issued.subject_agent_name.as_deref(),
+                &issued.subject,
+                40
+            ),
+            "example.com/@bob"
+        );
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                received.issuer_agent_name.as_deref(),
+                &received.issuer,
+                40
+            ),
+            "example.com/@bob"
+        );
+    }
+
+    /// A cached *negative* lookup (and an uncached DID) leaves the VRC rows
+    /// showing the DID.
+    #[test]
+    fn relationship_vrc_rows_ignore_a_cached_negative_lookup() {
+        let mut config = config_with_relationship_vrcs();
+        config.set_cached_agent_name(BOB_DID, None, chrono::Utc::now());
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let rel = &page.content_panel.relationships.relationships[0];
+
+        let issued = &rel.vrcs_issued[0];
+        let received = &rel.vrcs_received[0];
+        assert!(issued.subject_agent_name.is_none());
+        assert!(received.issuer_agent_name.is_none());
+        // ALICE_DID was never looked up at all.
+        assert!(issued.issuer_agent_name.is_none());
+        assert!(received.subject_agent_name.is_none());
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                issued.subject_agent_name.as_deref(),
+                &issued.subject,
+                40
+            ),
+            shorten_did(BOB_DID, 40)
+        );
+    }
+
+    /// Seed the VTA panel's VIC list with one entry issued by `issuer`.
+    fn page_with_vic(issuer: &str) -> MainPageState {
+        let mut page = MainPageState::default();
+        page.content_panel.vta.vics = vec![content::VicSummary {
+            id: "urn:vic:1".to_string(),
+            issuer: issuer.to_string(),
+            issuer_agent_name: None,
+            status: "valid".to_string(),
+            lifecycle: content::VicLifecycle::Active,
+            valid_until: String::new(),
+        }]
+        .into();
+        page
+    }
+
+    /// The VIC list is annotated at sync time (it is not derived from `Config`),
+    /// so the row can show the issuing community's verified name.
+    #[test]
+    fn vic_row_carries_the_issuers_verified_agent_name() {
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
+        config.set_cached_agent_name(
+            vtc_did,
+            Some("example.com/@acme".into()),
+            chrono::Utc::now(),
+        );
+
+        let mut page = page_with_vic(vtc_did);
+        page.sync_from_config(&config);
+        let vic = &page.content_panel.vta.vics[0];
+
+        assert_eq!(vic.issuer_agent_name.as_deref(), Some("example.com/@acme"));
+        assert_eq!(vic.issuer, vtc_did);
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                vic.issuer_agent_name.as_deref(),
+                &vic.issuer,
+                256
+            ),
+            "example.com/@acme"
+        );
+    }
+
+    /// A cached negative lookup leaves the VIC row on the issuer DID.
+    #[test]
+    fn vic_row_ignores_a_cached_negative_lookup() {
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
+        config.set_cached_agent_name(vtc_did, None, chrono::Utc::now());
+
+        let mut page = page_with_vic(vtc_did);
+        page.sync_from_config(&config);
+        let vic = &page.content_panel.vta.vics[0];
+
+        assert!(vic.issuer_agent_name.is_none());
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                vic.issuer_agent_name.as_deref(),
+                &vic.issuer,
+                256
+            ),
+            vtc_did
+        );
+    }
+
+    /// Re-syncing must not leave a stale name behind: a name that disappears
+    /// from the cache (re-checked, no longer verifiable) clears from the row.
+    #[test]
+    fn vic_row_name_clears_when_the_lookup_turns_negative() {
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
+        config.set_cached_agent_name(
+            vtc_did,
+            Some("example.com/@acme".into()),
+            chrono::Utc::now(),
+        );
+
+        let mut page = page_with_vic(vtc_did);
+        page.sync_from_config(&config);
+        assert!(page.content_panel.vta.vics[0].issuer_agent_name.is_some());
+
+        config.set_cached_agent_name(vtc_did, None, chrono::Utc::now());
+        page.sync_from_config(&config);
+        assert!(page.content_panel.vta.vics[0].issuer_agent_name.is_none());
     }
 
     /// A cached negative lookup leaves the Context Identities row on the DID.

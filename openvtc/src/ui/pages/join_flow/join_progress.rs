@@ -10,6 +10,7 @@ use crate::colors::{
     COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
 };
 use crossterm::event::{KeyCode, KeyEvent};
+use openvtc_core::display::display_identifier;
 use ratatui::{
     Frame,
     layout::{
@@ -24,11 +25,23 @@ use ratatui::{
 use crate::{
     state_handler::{
         actions::Action,
-        join::JoinState,
+        join::{JoinState, PresentedInvitation},
         setup_sequence::{Completion, MessageType},
     },
     ui::pages::join_flow::JoinFlow,
 };
+
+/// Width the success page renders the invitation's bound-to identifier at. The
+/// page has never truncated this DID, so this only bounds an agent name shown in
+/// its place.
+const BOUND_TO_WIDTH: usize = 256;
+
+/// What the success page's `Bound to:` row shows for the invitation's subject —
+/// the verified agent name of the persona the VIC binds when one is cached,
+/// otherwise the DID itself.
+fn bound_to_display(vic: &PresentedInvitation, subject: &str) -> String {
+    display_identifier(vic.subject_agent_name.as_deref(), subject, BOUND_TO_WIDTH).into_owned()
+}
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct JoinProgress;
@@ -127,7 +140,7 @@ impl JoinProgress {
                                         Style::new().fg(COLOR_SUCCESS),
                                     ),
                                     Span::styled(
-                                        subject.clone(),
+                                        bound_to_display(vic, subject),
                                         Style::new().fg(COLOR_SOFT_PURPLE),
                                     ),
                                 ]));
@@ -183,5 +196,36 @@ impl JoinProgress {
             Paragraph::new(bottom_line).block(Block::new().padding(Padding::new(2, 0, 1, 0))),
             bottom,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PERSONA_DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAA:example.com:alice";
+
+    /// The `Bound to:` row shows the verified name of the persona the invitation
+    /// binds, in place of that persona's DID.
+    #[test]
+    fn bound_to_prefers_the_verified_agent_name() {
+        let vic = PresentedInvitation {
+            id: "urn:vic:1".to_string(),
+            subject: Some(PERSONA_DID.to_string()),
+            subject_agent_name: Some("example.com/@alice".to_string()),
+        };
+        assert_eq!(bound_to_display(&vic, PERSONA_DID), "example.com/@alice");
+    }
+
+    /// No cached name — including a cached *negative* lookup, which reads the
+    /// same as uncached — leaves the DID on screen.
+    #[test]
+    fn bound_to_falls_back_to_the_did() {
+        let vic = PresentedInvitation {
+            id: "urn:vic:1".to_string(),
+            subject: Some(PERSONA_DID.to_string()),
+            subject_agent_name: None,
+        };
+        assert_eq!(bound_to_display(&vic, PERSONA_DID), PERSONA_DID);
     }
 }

@@ -3398,6 +3398,7 @@ mod key_handler_tests {
         VicSummary {
             id: id.to_string(),
             issuer: "did:webvh:example:community".to_string(),
+            issuer_agent_name: None,
             status: "valid".to_string(),
             lifecycle,
             valid_until: String::new(),

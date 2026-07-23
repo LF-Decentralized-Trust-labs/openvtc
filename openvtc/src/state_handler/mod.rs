@@ -1374,23 +1374,32 @@ impl StateHandler {
                         .await;
                     },
                     Action::VicRefresh => {
-                        self.refresh_vics(&mut state, admin_vta.as_ref()).await;
+                        self.refresh_vics(&mut state, admin_vta.as_ref(), Some(&config))
+                            .await;
                     },
                     Action::VicToggleInactive => {
                         state.main_page.content_panel.vta.vic_show_inactive =
                             !state.main_page.content_panel.vta.vic_show_inactive;
-                        self.refresh_vics(&mut state, admin_vta.as_ref()).await;
+                        self.refresh_vics(&mut state, admin_vta.as_ref(), Some(&config))
+                            .await;
                     },
                     Action::AddVicSubmit => {
-                        self.run_add_vic(&mut state, admin_vta.as_ref()).await;
+                        self.run_add_vic(&mut state, admin_vta.as_ref(), Some(&config))
+                            .await;
                     },
                     Action::VicArchive(i)
                     | Action::VicUnarchive(i)
                     | Action::VicRestore(i)
                     | Action::DeleteVic(i)
                     | Action::PurgeVic(i) => {
-                        self.run_vic_lifecycle(&mut state, admin_vta.as_ref(), &action, i)
-                            .await;
+                        self.run_vic_lifecycle(
+                            &mut state,
+                            admin_vta.as_ref(),
+                            Some(&config),
+                            &action,
+                            i,
+                        )
+                        .await;
                     },
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
@@ -2433,10 +2442,16 @@ impl StateHandler {
     /// honouring the "show inactive" toggle. Best-effort: a query failure logs
     /// and leaves the previous list in place. Called when the operator focuses
     /// the VIC list, toggles inactive, and after every mutation.
+    ///
+    /// `config` (when available) supplies the verified agent names for the
+    /// issuer DIDs: the vault descriptors carry only DIDs, so the freshly loaded
+    /// list is annotated here rather than waiting for the next
+    /// `sync_from_config`.
     async fn refresh_vics(
         &self,
         state: &mut State,
         admin_vta: Option<&vta_sdk::client::VtaClient>,
+        config: Option<&Config>,
     ) {
         let Some(admin_vta) = admin_vta else { return };
         let include_inactive = state.main_page.content_panel.vta.vic_show_inactive;
@@ -2445,6 +2460,9 @@ impl StateHandler {
                 let vta = &mut state.main_page.content_panel.vta;
                 vta.vic_selected_index = vta.vic_selected_index.min(list.len().saturating_sub(1));
                 vta.vics = list.into();
+                if let Some(config) = config {
+                    state.main_page.sync_vic_agent_names(config);
+                }
             }
             Err(e) => {
                 state
@@ -2457,7 +2475,12 @@ impl StateHandler {
 
     /// Validate + store the pasted VIC from the add-VIC overlay, then refresh the
     /// list. Mirrors `run_create_persona`'s phase handling.
-    async fn run_add_vic(&self, state: &mut State, admin_vta: Option<&vta_sdk::client::VtaClient>) {
+    async fn run_add_vic(
+        &self,
+        state: &mut State,
+        admin_vta: Option<&vta_sdk::client::VtaClient>,
+        config: Option<&Config>,
+    ) {
         use crate::state_handler::main_page::content::AddVicPhase;
 
         let json = match state.main_page.add_vic.as_ref() {
@@ -2493,7 +2516,7 @@ impl StateHandler {
                     o.messages.push("Invitation credential stored.".to_string());
                 }
                 state.main_page.log("Stored an invitation credential.");
-                self.refresh_vics(state, Some(admin_vta)).await;
+                self.refresh_vics(state, Some(admin_vta), config).await;
             }
             Err(e) => {
                 // A validation error keeps the operator on the input phase so they
@@ -2517,6 +2540,7 @@ impl StateHandler {
         &self,
         state: &mut State,
         admin_vta: Option<&vta_sdk::client::VtaClient>,
+        config: Option<&Config>,
         action: &Action,
         index: usize,
     ) {
@@ -2552,7 +2576,7 @@ impl StateHandler {
                 .main_page
                 .log_error(format!("VIC {} failed", verb.to_lowercase()), &e),
         }
-        self.refresh_vics(state, Some(admin_vta)).await;
+        self.refresh_vics(state, Some(admin_vta), config).await;
     }
 
     /// Remove the community at `index` in the Communities display list: withdraw
@@ -2809,17 +2833,20 @@ impl StateHandler {
                     }
                     Action::VicRefresh => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        self.refresh_vics(state, av).await;
+                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
+                        self.refresh_vics(state, av, cfg).await;
                     }
                     Action::VicToggleInactive => {
                         state.main_page.content_panel.vta.vic_show_inactive =
                             !state.main_page.content_panel.vta.vic_show_inactive;
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        self.refresh_vics(state, av).await;
+                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
+                        self.refresh_vics(state, av, cfg).await;
                     }
                     Action::AddVicSubmit => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        self.run_add_vic(state, av).await;
+                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
+                        self.run_add_vic(state, av, cfg).await;
                     }
                     Action::VicArchive(i)
                     | Action::VicUnarchive(i)
@@ -2827,7 +2854,8 @@ impl StateHandler {
                     | Action::DeleteVic(i)
                     | Action::PurgeVic(i) => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        self.run_vic_lifecycle(state, av, &action, i).await;
+                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
+                        self.run_vic_lifecycle(state, av, cfg, &action, i).await;
                     }
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
