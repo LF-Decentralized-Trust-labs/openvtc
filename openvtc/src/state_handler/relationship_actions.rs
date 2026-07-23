@@ -375,7 +375,7 @@ fn create_request_message(
 // ============================================================
 
 use crate::state_handler::{
-    actions::RelationshipAction, dispatch_util, log_did, main_page::content::RelationshipsMode,
+    actions::RelationshipAction, dispatch_util, main_page::content::RelationshipsMode,
     resolve_did_to_display, state::State,
 };
 use openvtc_core::config::protected_config::Contact;
@@ -764,18 +764,19 @@ impl RelationshipOutcome {
                          Task ID:       {msg_id}",
                             if used_r_did { "yes" } else { "no" },
                         );
+                        // The summary is what the Logs list shows, so it names
+                        // the party; the detail block above keeps the raw DIDs
+                        // for diagnosis. Same shape as the trust-ping path.
+                        let display_name = resolve_did_to_display(config, &respondent_did);
                         dispatch_util::save_and_sync(
                             &mut state.main_page,
                             config,
                             save,
                             dispatch_util::Persist::SaveAndSync,
                             status,
-                            format!("Request sent to {}", log_did(&respondent_did)),
+                            format!("Request sent to {display_name}"),
                             dispatch_util::SyncLog::Detailed {
-                                summary: format!(
-                                    "Relationship request sent to {}",
-                                    log_did(&respondent_did)
-                                ),
+                                summary: format!("Relationship request sent to {display_name}"),
                                 detail,
                             },
                         );
@@ -1777,7 +1778,10 @@ mod tests {
                 .relationships
                 .status_message
                 .as_deref(),
-            Some("Request sent to did:peer:respondent")
+            // Names the party rather than echoing its DID: the fixture has a
+            // contact alias for this peer, and the status line honours the same
+            // alias → verified agent name → DID precedence as everywhere else.
+            Some("Request sent to Respondent")
         );
     }
 

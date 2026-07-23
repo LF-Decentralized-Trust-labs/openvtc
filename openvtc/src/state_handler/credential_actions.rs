@@ -81,7 +81,7 @@ pub fn remove_vrc(config: &mut Config, vrc_id: &str) -> Result<()> {
 
 use crate::state_handler::{
     actions::CredentialAction,
-    dispatch_util, log_did,
+    dispatch_util,
     main_page::content::{CredentialTab, CredentialsMode},
     save_coalesce::SaveScheduler,
     state::State,
@@ -156,17 +156,17 @@ async fn handle_submit_request(
     match send_vrc_request(config, tdk, service, relationship_p_did, reason).await {
         Ok(()) => {
             state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+            // Names the party, like every other user-facing status line.
+            let display_name =
+                crate::state_handler::resolve_did_to_display(config, relationship_p_did);
             dispatch_util::save_and_sync(
                 &mut state.main_page,
                 config,
                 save,
                 dispatch_util::Persist::SaveAndSync,
                 |mp| &mut mp.content_panel.credentials.status_message,
-                format!("VRC request sent to {}", log_did(relationship_p_did)),
-                dispatch_util::SyncLog::Plain(format!(
-                    "VRC request sent to {}",
-                    log_did(relationship_p_did)
-                )),
+                format!("VRC request sent to {display_name}"),
+                dispatch_util::SyncLog::Plain(format!("VRC request sent to {display_name}")),
             );
         }
         Err(e) => {

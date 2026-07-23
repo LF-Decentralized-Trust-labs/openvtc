@@ -452,9 +452,12 @@ fn build_persona_options(config: &Config, vics: &[AvailableVic]) -> Vec<PersonaO
                 .memberships()
                 .filter(|c| c.persona_ref == p.persona_id)
                 .map(|c| {
-                    c.display_name
-                        .clone()
-                        .unwrap_or_else(|| shorten_did(&c.vtc_did, 40))
+                    crate::state_handler::community_label(
+                        config,
+                        &c.vtc_did,
+                        c.display_name.as_deref(),
+                        40,
+                    )
                 })
                 .collect();
             linked_communities.sort();
@@ -464,7 +467,14 @@ fn build_persona_options(config: &Config, vics: &[AvailableVic]) -> Vec<PersonaO
                 .count();
             PersonaOption {
                 id: p.persona_id,
-                label: p.label.clone().unwrap_or_else(|| shorten_did(&p.did, 32)),
+                // Explicit label, then the persona's verified agent name, then
+                // the DID — matching what the communities panel already does
+                // for the same personas.
+                label: p
+                    .label
+                    .clone()
+                    .or_else(|| config.agent_name_for(&p.did).map(str::to_owned))
+                    .unwrap_or_else(|| shorten_did(&p.did, 32)),
                 did: p.did.clone(),
                 linked_communities,
                 valid_vic_count,

@@ -1731,7 +1731,10 @@ impl StateHandler {
                                 );
                             } else {
                                 state.main_page.log_detailed(
-                                    format!("Ping from {} — ignored", log_did(sender)),
+                                    format!(
+                                        "Ping from {} — ignored",
+                                        resolve_did_to_display(&config, sender)
+                                    ),
                                     format!(
                                         "Trust-Ping Rejected\n\
                                          ───────────────────\n\
