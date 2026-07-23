@@ -146,51 +146,64 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
     lines.push(Line::from("Credential Details").fg(COLOR_SUCCESS).bold());
     lines.push(Line::from(""));
 
-    if let Some(alias) = &vrc.alias {
-        lines.push(Line::from(vec![
-            Span::styled("Contact:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-            Span::styled(alias.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
-        ]));
-    }
-    // The verified agent name, above the full DID it belongs to.
-    if let Some(agent_name) = &vrc.remote_agent_name {
-        lines.push(Line::from(vec![
-            Span::styled("Agent name: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-            Span::styled(agent_name.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
-        ]));
-    }
+    // Headline: what this credential asserts, and whether it is currently in
+    // its validity window.
+    let kind = vrc.kind.clone().unwrap_or_else(|| "Credential".to_string());
+    let status_style = if vrc.status == "valid" {
+        Style::new().fg(COLOR_SUCCESS)
+    } else {
+        Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED)
+    };
     lines.push(Line::from(vec![
-        Span::styled("Remote DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        Span::styled(vrc.remote_p_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        Span::styled(kind, Style::new().fg(COLOR_TEXT_DEFAULT).bold()),
+        Span::styled("  ·  ", Style::new().fg(COLOR_DARK_GRAY)),
+        Span::styled(vrc.status.clone(), status_style),
     ]));
-    // Issuer/subject show their verified name when one is known, else the DID.
-    // The raw credential below always carries the underlying DIDs.
+    lines.push(Line::from(""));
+
+    // Who issued it and who it is about. `Contact`/`Agent name`/`Remote DID`
+    // used to sit alongside these naming the *same* party three more ways; the
+    // full DIDs are in the raw credential below, so the summary keeps names.
+    let party = |alias: Option<&str>, name: Option<&str>, did: &str| -> String {
+        let resolved = display_identifier(name, did, 256).into_owned();
+        match alias {
+            // An explicit alias outranks a resolved name, but both are useful
+            // here: the alias is what you call them, the name is verifiable.
+            Some(a) if a != resolved => format!("{a}  ·  {resolved}"),
+            _ => resolved,
+        }
+    };
+
     lines.push(Line::from(vec![
-        Span::styled("Issuer:     ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+        Span::styled("Issued by   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
         Span::styled(
-            display_identifier(vrc.issuer_agent_name.as_deref(), &vrc.issuer, 256).into_owned(),
+            party(
+                vrc.alias.as_deref(),
+                vrc.issuer_agent_name.as_deref(),
+                &vrc.issuer,
+            ),
             Style::new().fg(COLOR_SOFT_PURPLE),
         ),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled("Subject:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+
+    let mut about = vec![
+        Span::styled("About       ", Style::new().fg(COLOR_TEXT_DEFAULT)),
         Span::styled(
             display_identifier(vrc.subject_agent_name.as_deref(), &vrc.subject, 256).into_owned(),
             Style::new().fg(COLOR_SOFT_PURPLE),
         ),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled("Valid from: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        Span::styled(vrc.valid_from.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
-    ]));
-    if let Some(until) = &vrc.valid_until {
-        lines.push(Line::from(vec![
-            Span::styled("Valid until: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-            Span::styled(until.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
-        ]));
+    ];
+    if vrc.subject_is_self {
+        about.push(Span::styled("  (you)", Style::new().fg(COLOR_DARK_GRAY)));
     }
+    lines.push(Line::from(about));
+
     lines.push(Line::from(vec![
-        Span::styled("VRC ID:     ", Style::new().fg(COLOR_DARK_GRAY)),
+        Span::styled("Valid       ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+        Span::styled(vrc.validity.clone(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("ID          ", Style::new().fg(COLOR_DARK_GRAY)),
         Span::styled(vrc.vrc_id.clone(), Style::new().fg(COLOR_DARK_GRAY)),
     ]));
 

@@ -602,6 +602,26 @@ fn collect_vrcs(
                     subject_agent_name: config
                         .agent_name_for(vrc.subject())
                         .map(|n| sanitize_display(n, 256)),
+                    validity: {
+                        let (v, _) = format_validity_from_dates(
+                            vrc.valid_from(),
+                            vrc.valid_until(),
+                            chrono::Utc::now(),
+                        );
+                        v
+                    },
+                    status: {
+                        let (_, s) = format_validity_from_dates(
+                            vrc.valid_from(),
+                            vrc.valid_until(),
+                            chrono::Utc::now(),
+                        );
+                        s
+                    },
+                    // A peer-to-peer VRC carries no membership/role kind; the
+                    // credential's own `type` is visible in the raw JSON.
+                    kind: None,
+                    subject_is_self: config.is_persona_did(vrc.subject()),
                     valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                     valid_until: vrc.valid_until().map(|d| d.format("%Y-%m-%d").to_string()),
                 });
@@ -617,9 +637,13 @@ fn collect_vrcs(
 fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
     let mut result = Vec::new();
     for c in config.account.memberships() {
+        // Explicit name, then the community's verified agent name, then the DID.
+        // Falling straight from the display name to a 64-char truncation was
+        // what put a DID sliced mid-string on the credential's Contact line.
         let community = c
             .display_name
             .clone()
+            .or_else(|| config.agent_name_for(&c.vtc_did).map(str::to_owned))
             .unwrap_or_else(|| sanitize_display(&c.vtc_did, 64));
         for kind in openvtc_core::CredentialKind::ALL {
             let Some(vc) = c.credentials.get(kind) else {
@@ -657,6 +681,8 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
             // already-parsed JSON value by Arc pointer (a `serde_json::Value`
             // pretty-prints identically whether done now or later).
             let raw_json = content::RawCredential::Value(Arc::new(vc.clone()));
+            let (validity, status) =
+                format_validity(&valid_from, valid_until.as_deref(), chrono::Utc::now());
             result.push(VrcSummary {
                 vrc_id: vc_id,
                 remote_p_did: sanitize_display(&c.vtc_did, 256),
@@ -664,7 +690,7 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
                     .agent_name_for(&c.vtc_did)
                     .map(|n| sanitize_display(n, 256)),
                 raw_json,
-                alias: Some(format!("{community} — {}", kind.config_key())),
+                alias: Some(community.clone()),
                 issuer: sanitize_display(&issuer, 256),
                 issuer_agent_name: config
                     .agent_name_for(&issuer)
@@ -673,12 +699,94 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
                 subject_agent_name: config
                     .agent_name_for(&subject)
                     .map(|n| sanitize_display(n, 256)),
+                validity,
+                status,
+                kind: Some(kind.config_key().to_string()),
+                subject_is_self: config.is_persona_did(&subject),
                 valid_from,
                 valid_until,
             });
         }
     }
     result
+}
+
+/// Render a credential's validity window for people rather than machines.
+///
+/// Returns `(validity, status)` — e.g. `("22 Jul 2026 → 21 Aug 2026 · 29 days
+/// left", "valid")`. The raw `validFrom`/`validUntil` are RFC 3339 timestamps;
+/// read literally they answer "is this still good?" only after mental
+/// arithmetic, which is the question the detail view exists to answer.
+///
+/// `status` reflects the **window only**. A credential can be inside its window
+/// and still be revoked; that needs the issuer's status list, which is not
+/// consulted here — so this never claims more than it checked.
+///
+/// Unparseable timestamps fall back to the raw strings rather than being hidden.
+fn format_validity(
+    valid_from: &str,
+    valid_until: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (String, String) {
+    use chrono::DateTime;
+
+    let fmt = |s: &str| -> Option<DateTime<chrono::Utc>> {
+        DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|d| d.with_timezone(&chrono::Utc))
+    };
+    let human = |d: DateTime<chrono::Utc>| d.format("%-d %b %Y").to_string();
+
+    let from = fmt(valid_from);
+    let until = valid_until.and_then(fmt);
+
+    let from_text = from.map_or_else(|| valid_from.to_string(), human);
+
+    let Some(until_text) = until.map(human) else {
+        // No expiry: the window is open-ended, so the only state is whether it
+        // has started.
+        let status = match from {
+            Some(f) if f > now => "not yet valid",
+            _ => "valid",
+        };
+        return (format!("from {from_text}"), status.to_string());
+    };
+
+    let (status, note) = match (from, until) {
+        (Some(f), _) if f > now => ("not yet valid", "starts in the future".to_string()),
+        (_, Some(u)) if u <= now => ("expired", "expired".to_string()),
+        (_, Some(u)) => {
+            let days = (u - now).num_days();
+            let note = match days {
+                0 => "expires today".to_string(),
+                1 => "1 day left".to_string(),
+                d => format!("{d} days left"),
+            };
+            ("valid", note)
+        }
+        _ => ("valid", String::new()),
+    };
+
+    let validity = if note.is_empty() {
+        format!("{from_text} → {until_text}")
+    } else {
+        format!("{from_text} → {until_text}  ·  {note}")
+    };
+    (validity, status.to_string())
+}
+
+/// [`format_validity`] for callers that already hold parsed dates, so a
+/// timestamp is not formatted only to be parsed straight back.
+fn format_validity_from_dates(
+    valid_from: chrono::DateTime<chrono::Utc>,
+    valid_until: Option<chrono::DateTime<chrono::Utc>>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> (String, String) {
+    format_validity(
+        &valid_from.to_rfc3339(),
+        valid_until.map(|d| d.to_rfc3339()).as_deref(),
+        now,
+    )
 }
 
 /// Returns true for unicode codepoints that can spoof or mangle TUI
@@ -963,12 +1071,71 @@ mod tests {
         assert_eq!(row.display_name, "example.com/@acme");
     }
 
-    /// The expanded troubleshooting block carries the names *alongside* the
-    /// DIDs. The DIDs stay: that block is what you read and copy when
-    /// diagnosing, so the name is added on its own row rather than replacing
-    /// the identifier it labels.
+    /// The point of the summary line: "is this still good, and for how long"
+    /// answered without the reader doing date arithmetic on RFC 3339 stamps.
     #[test]
-    fn community_detail_carries_agent_names_beside_the_dids() {
+    fn validity_reads_in_human_terms_with_a_relative_note() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-23T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (validity, status) =
+            format_validity("2026-07-22T01:36:31Z", Some("2026-08-21T01:36:31Z"), now);
+        assert_eq!(status, "valid");
+        assert!(validity.contains("22 Jul 2026"), "{validity}");
+        assert!(validity.contains("21 Aug 2026"), "{validity}");
+        assert!(validity.contains("29 days left"), "{validity}");
+    }
+
+    /// An elapsed window reads as expired rather than as a countdown.
+    #[test]
+    fn validity_reports_an_expired_window() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (validity, status) =
+            format_validity("2026-07-22T01:36:31Z", Some("2026-08-21T01:36:31Z"), now);
+        assert_eq!(status, "expired");
+        assert!(validity.contains("expired"), "{validity}");
+    }
+
+    /// A window that has not opened yet is neither valid nor expired.
+    #[test]
+    fn validity_reports_a_future_window() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (_, status) =
+            format_validity("2026-07-22T01:36:31Z", Some("2026-08-21T01:36:31Z"), now);
+        assert_eq!(status, "not yet valid");
+    }
+
+    /// No `validUntil` means open-ended — it must not render as expired, and
+    /// must not invent an end date.
+    #[test]
+    fn validity_handles_an_open_ended_credential() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-07-23T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let (validity, status) = format_validity("2026-07-22T01:36:31Z", None, now);
+        assert_eq!(status, "valid");
+        assert!(validity.starts_with("from "), "{validity}");
+        assert!(!validity.contains('→'), "no end date to show: {validity}");
+    }
+
+    /// An unparseable timestamp is shown as-is rather than dropped — a
+    /// credential with an odd date should still display something truthful.
+    #[test]
+    fn validity_falls_back_to_the_raw_string() {
+        let now = chrono::Utc::now();
+        let (validity, _) = format_validity("not-a-date", None, now);
+        assert!(validity.contains("not-a-date"), "{validity}");
+    }
+
+    /// The detail block's identity rows resolve to a verified agent name, with
+    /// the DID kept in the view model as the fallback the renderer uses when
+    /// there is no name.
+    #[test]
+    fn community_detail_carries_agent_names_for_its_identity_rows() {
         let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
         let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
         let mut config = config_with_membership(persona_did, None, vtc_did, None);

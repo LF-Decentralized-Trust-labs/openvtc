@@ -2859,6 +2859,10 @@ mod key_handler_tests {
             subject_agent_name: None,
             valid_from: String::new(),
             valid_until: None,
+            kind: None,
+            subject_is_self: false,
+            validity: String::new(),
+            status: "valid".to_string(),
         }
     }
 
