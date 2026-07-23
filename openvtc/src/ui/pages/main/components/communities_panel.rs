@@ -140,7 +140,16 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
                     Span::styled(v, value),
                 ])
             };
+            // Verified agent name above the DID it belongs to, never instead of
+            // it: this block exists for troubleshooting, so the DID has to stay
+            // readable. Same shape as the settings Context block.
+            if let Some(name) = &c.persona_agent_name {
+                lines.push(kv("Persona name:", name.clone()));
+            }
             lines.push(kv("Persona DID:", c.persona_did.clone()));
+            if let Some(name) = &c.vtc_agent_name {
+                lines.push(kv("VTC name:", name.clone()));
+            }
             lines.push(kv("VTC DID:", c.vtc_did.clone()));
             if !c.sub_context_id.is_empty() {
                 lines.push(kv("Sub-context:", c.sub_context_id.clone()));

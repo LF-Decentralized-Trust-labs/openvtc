@@ -320,8 +320,16 @@ pub struct CommunitySummary {
     /// Full persona `did:webvh` presented to this community (troubleshooting
     /// detail). Empty if the `persona_ref` dangles.
     pub persona_did: String,
+    /// Verified agent name for [`Self::persona_did`], if it has one.
+    ///
+    /// Shown on its own row *above* the DID rather than replacing it: the
+    /// troubleshooting block's DID rows are what you read and copy when
+    /// diagnosing, so the DID stays put and the name is added alongside.
+    pub persona_agent_name: Option<String>,
     /// The community's VTC `did:webvh` (troubleshooting detail).
     pub vtc_did: String,
+    /// Verified agent name for [`Self::vtc_did`], if it has one.
+    pub vtc_agent_name: Option<String>,
     /// The per-community sub-context id (troubleshooting detail).
     pub sub_context_id: String,
     /// The join request id while `Pending`; empty otherwise.

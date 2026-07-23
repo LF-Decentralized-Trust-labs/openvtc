@@ -30,6 +30,57 @@ pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
 /// choice; a verified agent name (`example.com/@alice`, already round-tripped
 /// before caching) comes next; the truncated DID is the last resort. The same
 /// order applies when a remote R-DID resolves through to its persona DID.
+/// Render a listener lifecycle event for the activity log.
+///
+/// A listener is identified by its DID, so every message here runs the
+/// identifier through [`resolve_did_to_display`] — the operator sees
+/// `webvh.storm.ws/@magic-depart` rather than 90 characters of `did:webvh:`.
+/// The logger task cannot do this itself: it is detached and has no `Config`,
+/// which is exactly why these lines showed raw DIDs.
+///
+/// Only the *display* changes. The listener id remains the DID everywhere it is
+/// used as an identity — it is a map key for cycling detection and reconnect
+/// matching, and DIDs sharing a trailing path segment across hosts would
+/// collide if it were shortened.
+pub(crate) fn format_lifecycle_log(
+    config: &openvtc_core::config::Config,
+    event: &didcomm::LifecycleLog,
+) -> String {
+    use didcomm::LifecycleLog;
+    match event {
+        LifecycleLog::Connected { listener_id } => {
+            format!(
+                "Listener '{}' connected",
+                resolve_did_to_display(config, listener_id)
+            )
+        }
+        LifecycleLog::Disconnected { listener_id, error } => {
+            let who = resolve_did_to_display(config, listener_id);
+            match error {
+                Some(e) => format!("Listener '{who}' disconnected: {e}"),
+                None => format!("Listener '{who}' disconnected"),
+            }
+        }
+        LifecycleLog::CyclingRapidly { listener_id } => {
+            format!(
+                "WARNING: Listener '{}' cycling rapidly — possible duplicate connection",
+                resolve_did_to_display(config, listener_id)
+            )
+        }
+        LifecycleLog::Restarting {
+            listener_id,
+            attempt,
+            delay,
+        } => {
+            format!(
+                "Listener '{}' restarting (attempt {attempt}, backoff {delay:?})",
+                resolve_did_to_display(config, listener_id)
+            )
+        }
+        LifecycleLog::Missed { count } => format!("Missed {count} lifecycle event(s)"),
+    }
+}
+
 pub(crate) fn resolve_did_to_display(config: &openvtc_core::config::Config, did: &str) -> String {
     // 1. User alias on the DID directly.
     if let Some(contact) = config.private.contacts.find_contact(did)
@@ -586,7 +637,8 @@ impl StateHandler {
         let mut seen_messages = openvtc_core::messaging::SeenMessages::new();
 
         // Forward lifecycle events (connect/disconnect/restart) to the activity log
-        let (lifecycle_log_tx, mut lifecycle_log_rx) = mpsc::unbounded_channel::<String>();
+        let (lifecycle_log_tx, mut lifecycle_log_rx) =
+            mpsc::unbounded_channel::<didcomm::LifecycleLog>();
         let _lifecycle_handle = didcomm::spawn_lifecycle_logger(&didcomm_service, lifecycle_log_tx);
 
         // Log registered listeners for diagnostics
@@ -1728,8 +1780,10 @@ impl StateHandler {
                     );
                 },
                 // Lifecycle log messages from the DIDCommService
-                Some(log_msg) = lifecycle_log_rx.recv() => {
-                    state.main_page.log(log_msg);
+                Some(event) = lifecycle_log_rx.recv() => {
+                    // Formatted here, not in the logger task: naming a listener
+                    // needs `config`, which only this thread holds.
+                    state.main_page.log(format_lifecycle_log(&config, &event));
                 },
                 // Typed listener lifecycle events → drive the connection status
                 // asynchronously (phase 2). The persona listener connecting flips
@@ -3283,6 +3337,68 @@ fn build_trust_pong(
 mod tests {
     use super::*;
     use crate::state_handler::main_page::menu::MainMenu;
+
+    /// Lifecycle log lines name the listener by its verified agent name. These
+    /// showed raw `did:webvh:` strings because the logger task is detached and
+    /// has no `Config` to resolve with.
+    #[test]
+    fn lifecycle_log_shows_the_verified_agent_name() {
+        const DID: &str = "did:webvh:QmScidAAAAAAAAAAAAAAAAAAAAAAAA:webvh.storm.ws:magic-depart";
+
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        config.set_cached_agent_name(
+            DID,
+            Some("webvh.storm.ws/@magic-depart".into()),
+            chrono::Utc::now(),
+        );
+
+        let line = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Connected {
+                listener_id: DID.to_string(),
+            },
+        );
+        assert_eq!(line, "Listener 'webvh.storm.ws/@magic-depart' connected");
+
+        // The error detail survives, alongside the resolved name.
+        let line = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Disconnected {
+                listener_id: DID.to_string(),
+                error: Some("connection reset".into()),
+            },
+        );
+        assert_eq!(
+            line,
+            "Listener 'webvh.storm.ws/@magic-depart' disconnected: connection reset"
+        );
+    }
+
+    /// Without a verified name the line stays on the DID rather than going
+    /// blank — and a lagged-stream notice carries no identifier at all.
+    #[test]
+    fn lifecycle_log_falls_back_to_the_did() {
+        const DID: &str = "did:webvh:QmScidBBBBBBBBBBBBBBBBBBBBBBBB:example.com:nameless";
+
+        let config = crate::state_handler::dispatch_util::test_config();
+        let line = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Connected {
+                listener_id: DID.to_string(),
+            },
+        );
+        assert!(line.starts_with("Listener '"), "{line}");
+        assert!(line.ends_with("' connected"), "{line}");
+        assert!(
+            !line.contains("@"),
+            "no name exists, so none may appear: {line}"
+        );
+
+        assert_eq!(
+            format_lifecycle_log(&config, &didcomm::LifecycleLog::Missed { count: 3 }),
+            "Missed 3 lifecycle event(s)"
+        );
+    }
 
     /// `resolve_did_to_display` precedence: a verified agent name is shown when
     /// present, but a user alias overrides it, and an unknown DID falls back to
