@@ -7,10 +7,16 @@ use crate::state_handler::{
     main_page::content::{ContentPanelState, RelationshipsMode, RelationshipsState},
     state::ConnectionState,
 };
+use openvtc_core::display::display_identifier;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Width the VRC list rows render an identifier at. Matches the `shorten_did`
+/// width the summaries are built with, so swapping in an agent name does not
+/// change the row's budget.
+const VRC_ID_WIDTH: usize = 40;
 
 /// Relationships content panel.
 pub struct RelationshipsPanel;
@@ -220,7 +226,17 @@ fn render_detail(
                 lines.push(Line::from(vec![
                     Span::styled(prefix, bullet_style),
                     Span::styled("● ", bullet_style),
-                    Span::styled(format!("To: {}  ", vrc.subject), text_style),
+                    Span::styled(
+                        format!(
+                            "To: {}  ",
+                            display_identifier(
+                                vrc.subject_agent_name.as_deref(),
+                                &vrc.subject,
+                                VRC_ID_WIDTH,
+                            )
+                        ),
+                        text_style,
+                    ),
                     Span::styled(
                         validity,
                         if is_selected {
@@ -289,7 +305,17 @@ fn render_detail(
                 lines.push(Line::from(vec![
                     Span::styled(prefix, bullet_style),
                     Span::styled("● ", bullet_style),
-                    Span::styled(format!("From: {}  ", vrc.issuer), text_style),
+                    Span::styled(
+                        format!(
+                            "From: {}  ",
+                            display_identifier(
+                                vrc.issuer_agent_name.as_deref(),
+                                &vrc.issuer,
+                                VRC_ID_WIDTH,
+                            )
+                        ),
+                        text_style,
+                    ),
                     Span::styled(
                         validity,
                         if is_selected {
@@ -460,4 +486,110 @@ fn render_form(
     );
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_handler::main_page::content::{
+        RawCredential, RelationshipSummary, RelationshipVrc,
+    };
+    use crate::state_handler::main_page::shorten_did;
+    use std::sync::Arc;
+
+    const ALICE_DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAA:example.com:alice";
+    const BOB_DID: &str = "did:webvh:QmScidBobBBBBBBBBBBBBBBBBBBBBBB:example.com:bob";
+
+    /// Flatten the rendered lines to plain text, one entry per line.
+    fn text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn raw() -> RawCredential {
+        RawCredential::Value(Arc::new(serde_json::json!({})))
+    }
+
+    fn vrc(issuer_name: Option<&str>, subject_name: Option<&str>) -> RelationshipVrc {
+        // `issuer` / `subject` arrive pre-shortened to `VRC_ID_WIDTH`, exactly
+        // as `sync_from_config` builds them.
+        RelationshipVrc {
+            issuer: shorten_did(BOB_DID, VRC_ID_WIDTH),
+            issuer_agent_name: issuer_name.map(str::to_owned),
+            issuer_full: BOB_DID.to_string(),
+            subject: shorten_did(ALICE_DID, VRC_ID_WIDTH),
+            subject_agent_name: subject_name.map(str::to_owned),
+            subject_full: ALICE_DID.to_string(),
+            valid_from: "2024-06-18".to_string(),
+            valid_until: None,
+            raw_json: raw(),
+        }
+    }
+
+    /// A detail view holding the same VRC on both the issued and received lists,
+    /// so one render exercises the "To: …" and "From: …" rows together.
+    fn detail_state(vrc: RelationshipVrc) -> RelationshipsState {
+        RelationshipsState {
+            relationships: vec![RelationshipSummary {
+                remote_p_did: BOB_DID.to_string(),
+                alias: None,
+                agent_name: None,
+                state: "Established".to_string(),
+                our_did: ALICE_DID.to_string(),
+                remote_did: BOB_DID.to_string(),
+                created: "2024-06-18 10:00".to_string(),
+                vrcs_issued: vec![vrc.clone()],
+                vrcs_received: vec![vrc],
+                needs_reestablishment: false,
+            }]
+            .into(),
+            mode: RelationshipsMode::Detail {
+                index: 0,
+                selected_vrc: None,
+            },
+            ..RelationshipsState::default()
+        }
+    }
+
+    #[test]
+    fn vrc_rows_show_verified_agent_names() {
+        let out = text(&render(&detail_state(vrc(
+            Some("example.com/@bob"),
+            Some("example.com/@alice"),
+        ))));
+
+        assert!(
+            out.iter().any(|l| l.contains("To: example.com/@alice")),
+            "issued row names the subject: {out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l.contains("From: example.com/@bob")),
+            "received row names the issuer: {out:?}"
+        );
+    }
+
+    /// A cached *negative* lookup reaches the panel as `None`, so both rows keep
+    /// showing the DID.
+    #[test]
+    fn vrc_rows_without_names_keep_the_dids() {
+        let out = text(&render(&detail_state(vrc(None, None))));
+
+        let subject = shorten_did(ALICE_DID, VRC_ID_WIDTH);
+        let issuer = shorten_did(BOB_DID, VRC_ID_WIDTH);
+        assert!(
+            out.iter().any(|l| l.contains(&format!("To: {subject}"))),
+            "issued row keeps the subject DID: {out:?}"
+        );
+        assert!(
+            out.iter().any(|l| l.contains(&format!("From: {issuer}"))),
+            "received row keeps the issuer DID: {out:?}"
+        );
+    }
 }

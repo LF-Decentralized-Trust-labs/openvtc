@@ -6,7 +6,7 @@ use crate::state_handler::{
     main_page::content::{ContentPanelState, VicLifecycle, VtaFocus, VtaState},
     state::ConnectionState,
 };
-use openvtc_core::display::display_identifier;
+use openvtc_core::display::{display_identifier, truncate_did_centered};
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
@@ -15,6 +15,11 @@ use ratatui::{
 /// Width the DID lists render an identifier at. The panel has never truncated
 /// these, so this only bounds an agent name shown in a DID's place.
 const ID_WIDTH: usize = 256;
+
+/// Width the delete-confirm prompt renders the target DID at. The prompt carries
+/// a name *and* the DID plus the y/n hint, so the DID is centre-truncated here
+/// (both ends stay visible) to keep the line on one row.
+const CONFIRM_DID_WIDTH: usize = 48;
 
 /// VTA service information panel.
 pub struct VtaPanel;
@@ -231,11 +236,21 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         // Confirmation prompt (a delete is armed) or the navigation/remove hint.
         lines.push(Line::from(""));
         if let Some(idx) = state.confirm_delete_did {
-            let target = state
-                .context_dids
-                .get(idx)
-                .map(|d| d.did.as_str())
-                .unwrap_or("this identity");
+            // Keep *both* the name and the DID. The row the operator selected
+            // shows the name, so a DID-only prompt names something they never
+            // saw; but a destructive confirm must stay unambiguous, so the DID
+            // is not dropped either — it is centre-truncated to keep the line
+            // readable while both ends stay checkable.
+            let target = match state.context_dids.get(idx) {
+                Some(d) => {
+                    let did = truncate_did_centered(&d.did, CONFIRM_DID_WIDTH);
+                    match d.agent_name.as_deref() {
+                        Some(name) => format!("{name} ({did})"),
+                        None => did.into_owned(),
+                    }
+                }
+                None => "this identity".to_string(),
+            };
             lines.push(
                 Line::from(format!("Remove {target}?   y: confirm    n: cancel"))
                     .fg(COLOR_ORANGE)
@@ -316,10 +331,13 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
             Span::styled(v.id.clone(), id_style),
         ]));
 
+        // The issuer is a community VTC DID, which the agent-name sweep already
+        // targets — so a verified name is usually available and shown in its
+        // place. No name (or a cached negative) keeps the DID.
         let issuer = if v.issuer.is_empty() {
             "issuer unknown".to_string()
         } else {
-            v.issuer.clone()
+            display_identifier(v.issuer_agent_name.as_deref(), &v.issuer, ID_WIDTH).into_owned()
         };
         let mut detail = format!("      {issuer}  ·  {}", v.status);
         if v.lifecycle != VicLifecycle::Active {
@@ -373,6 +391,126 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
                 "↑/↓ select   a: import   {restore_verb}   d: delete   p: purge   i: inactive"
             ))
             .fg(COLOR_DARK_GRAY),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state_handler::main_page::content::{ManagedDid, VicSummary};
+
+    const PERSONA_DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAA:example.com:alice";
+    const VTC_DID: &str = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+
+    /// Flatten the rendered lines to plain text, one entry per line.
+    fn text(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn managed_did(agent_name: Option<&str>) -> ManagedDid {
+        ManagedDid {
+            did: PERSONA_DID.to_string(),
+            agent_name: agent_name.map(str::to_owned),
+            label: "Work me".to_string(),
+            bound_communities: 0,
+            is_active: false,
+        }
+    }
+
+    fn vic(issuer_agent_name: Option<&str>) -> VicSummary {
+        VicSummary {
+            id: "urn:vic:1".to_string(),
+            issuer: VTC_DID.to_string(),
+            issuer_agent_name: issuer_agent_name.map(str::to_owned),
+            status: "valid".to_string(),
+            lifecycle: VicLifecycle::Active,
+            valid_until: String::new(),
+        }
+    }
+
+    fn state_with(dids: Vec<ManagedDid>, vics: Vec<VicSummary>) -> VtaState {
+        VtaState {
+            context_dids: dids.into(),
+            vics: vics.into(),
+            ..VtaState::default()
+        }
+    }
+
+    // --- VIC issuer ---------------------------------------------------------
+
+    #[test]
+    fn vic_row_shows_the_issuers_verified_agent_name() {
+        let out = text(&render(&state_with(
+            vec![],
+            vec![vic(Some("example.com/@acme"))],
+        )));
+        assert!(
+            out.iter().any(|l| l.contains("example.com/@acme")),
+            "issuer name is shown: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|l| l.contains(VTC_DID)),
+            "the DID is replaced by the name: {out:?}"
+        );
+    }
+
+    /// A cached negative lookup arrives as `None`, so the row keeps the DID.
+    #[test]
+    fn vic_row_without_a_name_keeps_the_issuer_did() {
+        let out = text(&render(&state_with(vec![], vec![vic(None)])));
+        assert!(
+            out.iter().any(|l| l.contains(VTC_DID)),
+            "issuer DID is shown: {out:?}"
+        );
+    }
+
+    // --- delete-confirm prompt (KEEP-BOTH) ----------------------------------
+
+    /// The destructive confirm names what the operator selected *and* keeps the
+    /// DID, so it is both recognisable and unambiguous.
+    #[test]
+    fn delete_confirm_keeps_both_the_name_and_the_did() {
+        let mut state = state_with(vec![managed_did(Some("example.com/@alice"))], vec![]);
+        state.confirm_delete_did = Some(0);
+        let out = text(&render(&state));
+
+        let prompt = out
+            .iter()
+            .find(|l| l.starts_with("Remove "))
+            .expect("confirm prompt rendered");
+        assert!(prompt.contains("example.com/@alice"), "{prompt}");
+        // The DID is centre-truncated, so both ends must still be checkable.
+        assert!(prompt.contains("did:webvh:QmScidAlice"), "{prompt}");
+        assert!(prompt.contains("example.com:alice"), "{prompt}");
+        assert!(prompt.contains("y: confirm"), "{prompt}");
+    }
+
+    /// With no verified name (uncached or a cached negative) the prompt falls
+    /// back to the DID alone — never to an empty or name-less "this identity".
+    #[test]
+    fn delete_confirm_without_a_name_shows_the_did() {
+        let mut state = state_with(vec![managed_did(None)], vec![]);
+        state.confirm_delete_did = Some(0);
+        let out = text(&render(&state));
+
+        let prompt = out
+            .iter()
+            .find(|l| l.starts_with("Remove "))
+            .expect("confirm prompt rendered");
+        assert!(prompt.contains("did:webvh:QmScidAlice"), "{prompt}");
+        assert!(prompt.contains("example.com:alice"), "{prompt}");
+        assert!(
+            !prompt.contains('('),
+            "no empty name parenthetical: {prompt}"
         );
     }
 }

@@ -425,6 +425,14 @@ pub struct VicSummary {
     pub id: String,
     /// Issuer DID (the community that issued the invitation), if recorded.
     pub issuer: String,
+    /// Verified agent name for [`issuer`](Self::issuer), if cached.
+    ///
+    /// The issuer is a community VTC DID, which the agent-name background sweep
+    /// already targets, so a name is usually available. Not set by
+    /// [`VicSummary::from_descriptor`] — that maps a vault descriptor and has no
+    /// `Config` — but stitched on in `MainPageState::sync_vic_agent_names`,
+    /// which runs at every `sync_from_config` and after every vault reload.
+    pub issuer_agent_name: Option<String>,
     /// Validity status: "valid" / "expired" / "revoked" / "unknown".
     pub status: String,
     /// Archival lifecycle (active / archived / deleted), orthogonal to status.
@@ -440,6 +448,8 @@ impl VicSummary {
         VicSummary {
             id: s("id"),
             issuer: s("issuerDid"),
+            // No `Config` here; filled in by `sync_vic_agent_names`.
+            issuer_agent_name: None,
             status: {
                 let st = s("status");
                 if st.is_empty() {
@@ -761,14 +771,25 @@ pub struct RelationshipSummary {
 }
 
 /// VRC info for display in the relationship detail view.
+///
+/// Carries the same issuer/subject name pair as [`VrcSummary`] — the credentials
+/// panel and this list show the same credentials from two different screens, so
+/// they resolve names identically (verified-only, via `Config::agent_name_for`).
 #[derive(Clone, Debug)]
 pub struct RelationshipVrc {
     /// Issuer DID (shortened for display)
     pub issuer: String,
+    /// Verified agent name for the issuer DID, if cached. Shown in place of
+    /// [`issuer`](Self::issuer) on the list row; the expanded detail keeps
+    /// [`issuer_full`](Self::issuer_full) so the DID is still readable/copyable.
+    pub issuer_agent_name: Option<String>,
     /// Full issuer DID
     pub issuer_full: String,
     /// Subject DID (shortened for display)
     pub subject: String,
+    /// Verified agent name for the subject DID, if cached. Same treatment as
+    /// [`issuer_agent_name`](Self::issuer_agent_name).
+    pub subject_agent_name: Option<String>,
     /// Full subject DID
     pub subject_full: String,
     /// Formatted valid_from date

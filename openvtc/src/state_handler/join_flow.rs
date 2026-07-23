@@ -31,7 +31,7 @@ use crate::{
         actions::Action,
         join::{AvailableVic, JoinPage, JoinState, PersonaOption, PresentedInvitation},
         main_page::content::{VicLifecycle, VicSummary},
-        main_page::shorten_did,
+        main_page::{sanitize_display, shorten_did},
         setup_sequence::{Completion, MessageType, config::ConfigExtension, vta},
         state::{ActivePage, State},
     },
@@ -1005,16 +1005,21 @@ async fn run_join_sequence(
     }
     state.invitation_credential = presentable;
     state.join.has_invitation = state.invitation_credential.is_some();
-    state.join.presented_invitation =
-        state
-            .invitation_credential
-            .as_ref()
-            .map(|vic| PresentedInvitation {
-                id: openvtc_core::join::invitation_id(vic)
-                    .unwrap_or_default()
-                    .to_string(),
-                subject: openvtc_core::join::invitation_subject(vic).map(str::to_string),
-            });
+    state.join.presented_invitation = state.invitation_credential.as_ref().map(|vic| {
+        let subject = openvtc_core::join::invitation_subject(vic).map(str::to_string);
+        PresentedInvitation {
+            id: openvtc_core::join::invitation_id(vic)
+                .unwrap_or_default()
+                .to_string(),
+            // Verified-only, from the persisted cache: the subject is one
+            // of our own personas, so the sweep normally has a name for it.
+            subject_agent_name: subject
+                .as_deref()
+                .and_then(|s| config.agent_name_for(s))
+                .map(|n| sanitize_display(n, 256)),
+            subject,
+        }
+    });
 
     // Present the holder VP. When a matching, unexpired invitation (VIC) is
     // resolved it rides in the VP's `verifiableCredential` array; the VTC
