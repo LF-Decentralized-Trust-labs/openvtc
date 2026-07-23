@@ -515,7 +515,13 @@ impl MainPageState {
                 archived: c.archived,
                 needs_attention: c.needs_attention(),
                 persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
+                persona_agent_name: persona
+                    .and_then(|p| config.agent_name_for(&p.did))
+                    .map(|n| sanitize_display(n, 256)),
                 vtc_did: c.vtc_did.clone(),
+                vtc_agent_name: config
+                    .agent_name_for(&c.vtc_did)
+                    .map(|n| sanitize_display(n, 256)),
                 sub_context_id: c.sub_context_id.clone(),
                 request_id,
                 has_membership_credential: c
@@ -955,6 +961,52 @@ mod tests {
 
         assert_eq!(row.persona_label, "example.com/@alice");
         assert_eq!(row.display_name, "example.com/@acme");
+    }
+
+    /// The expanded troubleshooting block carries the names *alongside* the
+    /// DIDs. The DIDs stay: that block is what you read and copy when
+    /// diagnosing, so the name is added on its own row rather than replacing
+    /// the identifier it labels.
+    #[test]
+    fn community_detail_carries_agent_names_beside_the_dids() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(persona_did, Some("example.com/@alice".into()), now);
+        config.set_cached_agent_name(vtc_did, Some("example.com/@acme".into()), now);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.communities.items[0];
+
+        assert_eq!(
+            row.persona_agent_name.as_deref(),
+            Some("example.com/@alice")
+        );
+        assert_eq!(row.vtc_agent_name.as_deref(), Some("example.com/@acme"));
+        // The DIDs are untouched — the name is additive, not a replacement.
+        assert_eq!(row.persona_did, persona_did);
+        assert_eq!(row.vtc_did, vtc_did);
+    }
+
+    /// A cached negative leaves the detail rows on the DID alone, with no name
+    /// row rendered.
+    #[test]
+    fn community_detail_ignores_a_cached_negative_lookup() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(persona_did, None, now);
+        config.set_cached_agent_name(vtc_did, None, now);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.communities.items[0];
+
+        assert_eq!(row.persona_agent_name, None);
+        assert_eq!(row.vtc_agent_name, None);
     }
 
     /// The user's own label still wins over an agent name — it is an explicit

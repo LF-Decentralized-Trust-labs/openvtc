@@ -475,12 +475,42 @@ pub async fn send_message_via(
         .await
 }
 
+/// A listener lifecycle event, ready to be rendered into the activity log.
+///
+/// Deliberately **not** a pre-formatted string. A listener is identified by its
+/// DID, and turning a DID into what the operator should read — a verified agent
+/// name, a contact alias, or a truncated DID — needs the `Config`, which lives
+/// on the runtime loop thread and is not available to this detached task. So the
+/// event carries the identifier and the loop formats it; see
+/// `StateHandler::format_lifecycle_log`.
+#[derive(Debug, Clone)]
+pub enum LifecycleLog {
+    /// A listener established its connection.
+    Connected { listener_id: String },
+    /// A listener's connection dropped, with the transport error if there was one.
+    Disconnected {
+        listener_id: String,
+        error: Option<String>,
+    },
+    /// A listener dropped again within the cycling window — usually a duplicate
+    /// connection fighting itself.
+    CyclingRapidly { listener_id: String },
+    /// A listener is being restarted after a backoff.
+    Restarting {
+        listener_id: String,
+        attempt: u32,
+        delay: std::time::Duration,
+    },
+    /// The event stream lagged and dropped `count` events.
+    Missed { count: u64 },
+}
+
 /// Subscribe to `DIDCommService` lifecycle events and forward them as
-/// log messages via the provided sender. Detects rapid reconnect cycling
-/// and logs warnings. Returns the spawned task handle.
+/// structured log events via the provided sender. Detects rapid reconnect
+/// cycling. Returns the spawned task handle.
 pub fn spawn_lifecycle_logger(
     service: &DIDCommService,
-    log_tx: mpsc::UnboundedSender<String>,
+    log_tx: mpsc::UnboundedSender<LifecycleLog>,
 ) -> tokio::task::JoinHandle<()> {
     let mut events_rx = service.subscribe();
     tokio::spawn(async move {
@@ -491,25 +521,23 @@ pub fn spawn_lifecycle_logger(
         loop {
             match events_rx.recv().await {
                 Ok(ListenerEvent::Connected { listener_id }) => {
-                    let _ = log_tx.send(format!("Listener '{listener_id}' connected"));
+                    let _ = log_tx.send(LifecycleLog::Connected { listener_id });
                 }
                 Ok(ListenerEvent::Disconnected { listener_id, error }) => {
                     let now = std::time::Instant::now();
-                    let msg = match &error {
-                        Some(e) => format!("Listener '{listener_id}' disconnected: {e}"),
-                        None => format!("Listener '{listener_id}' disconnected"),
-                    };
-                    let _ = log_tx.send(msg);
+                    let _ = log_tx.send(LifecycleLog::Disconnected {
+                        listener_id: listener_id.clone(),
+                        error: error.as_ref().map(ToString::to_string),
+                    });
 
                     // Detect rapid cycling: if we disconnected within 10s of last disconnect
                     if let Some(prev) = last_disconnect.get(&listener_id)
                         && now.duration_since(*prev).as_secs() < 10
                     {
-                        let warn_msg = format!(
-                            "WARNING: Listener '{listener_id}' cycling rapidly — possible duplicate connection"
-                        );
                         tracing::warn!(listener = %listener_id, "rapid disconnect cycling detected");
-                        let _ = log_tx.send(warn_msg);
+                        let _ = log_tx.send(LifecycleLog::CyclingRapidly {
+                            listener_id: listener_id.clone(),
+                        });
                     }
                     last_disconnect.insert(listener_id, now);
                 }
@@ -518,13 +546,15 @@ pub fn spawn_lifecycle_logger(
                     attempt,
                     delay,
                 }) => {
-                    let _ = log_tx.send(format!(
-                        "Listener '{listener_id}' restarting (attempt {attempt}, backoff {delay:?})"
-                    ));
+                    let _ = log_tx.send(LifecycleLog::Restarting {
+                        listener_id,
+                        attempt,
+                        delay,
+                    });
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    let _ = log_tx.send(format!("Missed {n} lifecycle event(s)"));
+                    let _ = log_tx.send(LifecycleLog::Missed { count: n });
                 }
             }
         }
