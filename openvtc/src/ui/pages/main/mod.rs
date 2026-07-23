@@ -2073,6 +2073,19 @@ fn view_id(page: &MainPageState) -> String {
     format!("{menu:?}:{mode}")
 }
 
+/// The account's self-display name for the top-right header slot, or `None` when
+/// it would only repeat the community chip already shown top-left.
+///
+/// A join used to copy the community's name into `public.friendly_name`, so this
+/// slot rendered the community a second time; accounts carrying that legacy
+/// value still would, and a user may also have typed the community's name in
+/// themselves. Either way the top bar should read "community · you", never
+/// "community · community · you".
+fn header_self_name<'a>(name: &'a str, community: &str) -> Option<&'a str> {
+    let name = name.trim();
+    (!name.is_empty() && name != community.trim()).then_some(name)
+}
+
 /// Copy text to the system clipboard, log the result to the activity log,
 /// and update the status panel message to give the user visual feedback.
 fn copy_to_clipboard(
@@ -2170,20 +2183,31 @@ impl ComponentRender<()> for MainPage {
             top[1],
         );
 
+        // Top-right: who *we* are. The account's self-display name goes above the
+        // active persona's identity — but only when it says something the chrome
+        // isn't already saying. A join used to copy the community's name into
+        // `friendly_name`, so this line rendered the community a second time,
+        // right of the community chip top-left; an account carrying that legacy
+        // value still would. Suppressing the duplicate leaves the top bar reading
+        // "community · you" instead of "community · community · you".
+        let mut top_right = Vec::new();
+        if let Some(self_name) = header_self_name(
+            &self.props.main_page.config.name,
+            &self.props.main_page.config.community,
+        ) {
+            top_right.push(Line::from(self_name.to_string()).fg(COLOR_SUCCESS));
+        }
+        top_right.push(
+            Line::from(match &self.props.main_page.config.agent_name {
+                // A verified agent name is short and human-readable — show it
+                // whole in place of the truncated DID.
+                Some(name) => name.clone(),
+                None => truncate_did_centered(&self.props.main_page.config.did, 30).into_owned(),
+            })
+            .fg(COLOR_TEXT_DEFAULT),
+        );
         frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(self.props.main_page.config.name.to_string()).fg(COLOR_SUCCESS),
-                Line::from(match &self.props.main_page.config.agent_name {
-                    // A verified agent name is short and human-readable — show it
-                    // whole in place of the truncated DID.
-                    Some(name) => name.clone(),
-                    None => {
-                        truncate_did_centered(&self.props.main_page.config.did, 30).into_owned()
-                    }
-                })
-                .fg(COLOR_TEXT_DEFAULT),
-            ])
-            .alignment(Alignment::Right),
+            Paragraph::new(top_right).alignment(Alignment::Right),
             top[2],
         );
 
@@ -2683,6 +2707,43 @@ impl MainPage {
         }
 
         frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+    }
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::header_self_name;
+
+    /// A distinct self-name is the point of the slot and is kept.
+    #[test]
+    fn a_distinct_self_name_is_shown() {
+        assert_eq!(
+            header_self_name("Glenn", "webvh.storm.ws/@first-vtc"),
+            Some("Glenn")
+        );
+    }
+
+    /// The regression: a join copied the community's name into `friendly_name`,
+    /// so the header announced the community either side of the connection
+    /// indicator.
+    #[test]
+    fn a_self_name_equal_to_the_community_is_suppressed() {
+        assert_eq!(
+            header_self_name("webvh.storm.ws/@first-vtc", "webvh.storm.ws/@first-vtc"),
+            None
+        );
+    }
+
+    /// Whitespace must not smuggle the duplicate back in.
+    #[test]
+    fn the_comparison_ignores_surrounding_whitespace() {
+        assert_eq!(header_self_name("  Acme  ", "Acme"), None);
+    }
+
+    #[test]
+    fn an_empty_self_name_is_suppressed() {
+        assert_eq!(header_self_name("", "Acme"), None);
+        assert_eq!(header_self_name("   ", ""), None);
     }
 }
 

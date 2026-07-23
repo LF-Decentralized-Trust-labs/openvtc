@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use openvtc_core::{
-    config::{Config, KeyBackend, account::PersonaId},
+    config::{Config, KeyBackend, KeyTypes, account::PersonaId},
     display::truncate_did,
     tasks::TaskType,
 };
@@ -375,38 +375,70 @@ impl MainPageState {
             .agent_name_for(config.persona_did())
             .map(str::to_owned);
         self.content_panel.vta.mediator_did = config.mediator_did().to_string();
+        self.content_panel.vta.mediator_agent_name = config
+            .agent_name_for(config.mediator_did())
+            .map(str::to_owned);
         match &config.key_backend {
             KeyBackend::Vta {
                 vta_url,
                 vta_did,
                 credential_did,
+                mediator_did,
                 ..
             } => {
                 self.content_panel.vta.vta_url = vta_url.clone();
                 self.content_panel.vta.vta_did = vta_did.clone();
+                self.content_panel.vta.vta_agent_name =
+                    config.agent_name_for(vta_did).map(str::to_owned);
                 self.content_panel.vta.credential_did = credential_did.clone();
                 self.content_panel.vta.is_vta_managed = true;
+                // Same condition `build_runtime_vta_client` branches on, so the
+                // panel names the transport this process actually connects over
+                // rather than guessing from the URL being non-empty (it stays
+                // populated on the DIDComm path as the REST fallback).
+                self.content_panel.vta.transports.in_use = if mediator_did.is_some() {
+                    content::VtaTransport::DidComm
+                } else {
+                    content::VtaTransport::Rest
+                };
+                self.content_panel.vta.transports.rest_url = vta_url.clone();
             }
             _ => {
                 self.content_panel.vta.is_vta_managed = false;
             }
         }
         self.content_panel.vta.key_count = config.key_info.len();
-        // Count persona vs relationship keys. With no active persona (State A)
-        // there are no persona keys — and `starts_with("")` would otherwise match
-        // every key, so guard on a non-empty persona DID.
+        // Classify keys by their recorded purpose, not by DID-prefix arithmetic.
+        // Counting persona keys with `k.starts_with(active_persona_did)` and
+        // calling the remainder "relationship" mislabelled every key belonging to
+        // a *different* persona — a two-persona account reported relationship
+        // keys it did not have. `KeyInfoConfig::purpose` already says what each
+        // key is for; anything outside the two buckets (e.g. webvh update keys)
+        // is counted as neither, so the two figures never over-claim.
         let persona_did = config.persona_did();
-        self.content_panel.vta.persona_key_count = if persona_did.is_empty() {
-            0
-        } else {
-            config
-                .key_info
-                .keys()
-                .filter(|k| k.starts_with(persona_did))
-                .count()
-        };
-        self.content_panel.vta.relationship_key_count =
-            self.content_panel.vta.key_count - self.content_panel.vta.persona_key_count;
+        self.content_panel.vta.persona_key_count = config
+            .key_info
+            .values()
+            .filter(|info| {
+                matches!(
+                    info.purpose,
+                    KeyTypes::PersonaSigning
+                        | KeyTypes::PersonaAuthentication
+                        | KeyTypes::PersonaEncryption
+                        | KeyTypes::PersonaOther
+                )
+            })
+            .count();
+        self.content_panel.vta.relationship_key_count = config
+            .key_info
+            .values()
+            .filter(|info| {
+                matches!(
+                    info.purpose,
+                    KeyTypes::RelationshipVerification | KeyTypes::RelationshipEncryption
+                )
+            })
+            .count();
         // Collect active DIDs — none for a zero-persona (State-A) account.
         let mut active_dids = Vec::new();
         if !persona_did.is_empty() {
@@ -1586,6 +1618,81 @@ mod tests {
         assert_eq!(row.agent_name.as_deref(), Some("example.com/@alice"));
         assert_eq!(row.did, ALICE_DID);
         assert_eq!(row.label, "Work me");
+    }
+
+    // --- VTA panel key counts ---
+
+    /// A `KeyInfoConfig` carrying just the purpose the count reads.
+    fn key_info(
+        purpose: openvtc_core::config::KeyTypes,
+    ) -> openvtc_core::config::secured_config::KeyInfoConfig {
+        openvtc_core::config::secured_config::KeyInfoConfig {
+            path: openvtc_core::config::secured_config::KeySourceMaterial::Derived {
+                path: String::new(),
+            },
+            create_time: chrono::Utc::now(),
+            purpose,
+        }
+    }
+
+    /// Key counts are a classification, not a subtraction. Counting persona keys
+    /// by `starts_with(active_persona_did)` and calling everything else
+    /// "relationship" reported a second persona's keys as relationship keys — an
+    /// account with no relationships at all showed a non-zero relationship
+    /// count. `KeyInfoConfig::purpose` already records what each key is for.
+    #[test]
+    fn key_counts_classify_by_purpose_not_by_active_persona_prefix() {
+        use openvtc_core::config::KeyTypes;
+
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
+
+        let mut key = |id: &str, purpose: KeyTypes| {
+            config.key_info.insert(id.to_string(), key_info(purpose));
+        };
+        // Two personas' worth of persona keys. Only ALICE is active, so the old
+        // prefix match saw BOB's as "relationship".
+        key(&format!("{ALICE_DID}#sign"), KeyTypes::PersonaSigning);
+        key(
+            &format!("{ALICE_DID}#auth"),
+            KeyTypes::PersonaAuthentication,
+        );
+        key(&format!("{BOB_DID}#sign"), KeyTypes::PersonaSigning);
+        key(&format!("{BOB_DID}#auth"), KeyTypes::PersonaAuthentication);
+        // A webvh update key belongs to neither bucket.
+        key(&format!("{ALICE_DID}#update"), KeyTypes::WebVHManagement);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let vta = &page.content_panel.vta;
+
+        assert_eq!(vta.key_count, 5, "total is every managed key");
+        assert_eq!(vta.persona_key_count, 4, "both personas' keys count");
+        assert_eq!(
+            vta.relationship_key_count, 0,
+            "no relationships means no relationship keys"
+        );
+    }
+
+    #[test]
+    fn relationship_keys_are_counted_by_their_own_purposes() {
+        use openvtc_core::config::KeyTypes;
+
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
+        for (id, purpose) in [
+            ("r1#verify", KeyTypes::RelationshipVerification),
+            ("r1#encrypt", KeyTypes::RelationshipEncryption),
+            (&format!("{ALICE_DID}#sign"), KeyTypes::PersonaSigning),
+        ] {
+            config.key_info.insert(id.to_string(), key_info(purpose));
+        }
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+
+        assert_eq!(page.content_panel.vta.persona_key_count, 1);
+        assert_eq!(page.content_panel.vta.relationship_key_count, 2);
     }
 
     // --- agent names on the relationship-VRC rows and the VIC list ---

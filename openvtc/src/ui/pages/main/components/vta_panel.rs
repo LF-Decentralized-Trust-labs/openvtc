@@ -1,9 +1,10 @@
 use super::panel::Panel;
+use super::status::push_status;
 use crate::colors::{
     COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
 };
 use crate::state_handler::{
-    main_page::content::{ContentPanelState, VicLifecycle, VtaFocus, VtaState},
+    main_page::content::{ContentPanelState, VicLifecycle, VtaFocus, VtaState, VtaTransport},
     state::ConnectionState,
 };
 use openvtc_core::display::{display_identifier, truncate_did_centered};
@@ -72,20 +73,29 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
             ),
         ]));
     } else {
-        if let Some(agent_name) = &state.persona_agent_name {
-            lines.push(Line::from(vec![
-                Span::styled("  Agent name:    ", label_style),
-                Span::styled(agent_name.clone(), value_style),
-            ]));
+        // One row per identity, not two. The name is the value and the DID is
+        // dimmed detail beneath it — the same shape the identity lists below
+        // already use, instead of an "Agent name" row and a "Persona DID" row
+        // naming the same party twice. With no verified name the DID *is* the
+        // value and there is no second line.
+        push_identity(
+            &mut lines,
+            "  Persona:       ",
+            state.persona_agent_name.as_deref(),
+            &state.persona_did,
+        );
+        // The mediator is a *transport* fact, not an identity one, so on a
+        // VTA-managed account it lives under `Transport:` below rather than
+        // being named here as well. A local-key account has no VTA Service
+        // section to host it, so it stays here.
+        if !state.is_vta_managed {
+            push_identity(
+                &mut lines,
+                "  Mediator:      ",
+                state.mediator_agent_name.as_deref(),
+                &state.mediator_did,
+            );
         }
-        lines.push(Line::from(vec![
-            Span::styled("  Persona DID:   ", label_style),
-            Span::styled(state.persona_did.clone(), value_style),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  Mediator DID:  ", label_style),
-            Span::styled(state.mediator_did.clone(), value_style),
-        ]));
     }
 
     if !state.is_vta_managed {
@@ -103,17 +113,22 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         lines.push(Line::from(" VTA Service").fg(COLOR_SUCCESS).bold());
         lines.push(Line::from(""));
 
+        push_identity(
+            &mut lines,
+            "  VTA:           ",
+            state.vta_agent_name.as_deref(),
+            &state.vta_did,
+        );
+        render_transports(state, &mut lines);
         lines.push(Line::from(vec![
-            Span::styled("  VTA URL:       ", label_style),
-            Span::styled(state.vta_url.clone(), value_style),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  VTA DID:       ", label_style),
-            Span::styled(state.vta_did.clone(), value_style),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("  Credential:    ", label_style),
-            Span::styled(state.credential_did.clone(), value_style),
+            // "Credential" said nothing about what the credential is *for*. It
+            // is the DID this client authenticates to the VTA as; a `did:key`
+            // can never carry an agent name, so it stays a (truncated) DID.
+            Span::styled("  Authenticated: ", label_style),
+            Span::styled(
+                truncate_did_centered(&state.credential_did, CONFIRM_DID_WIDTH).into_owned(),
+                value_style,
+            ),
         ]));
 
         lines.push(Line::from(""));
@@ -137,8 +152,15 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         ]));
     }
 
-    // Active DIDs
-    if !state.active_dids.is_empty() {
+    // Active DIDs — the persona plus one relationship pseudonym (R-DID) per
+    // relationship. Suppressed when it holds nothing but the persona: that row
+    // duplicates the one already marked `active` in Context Identities below,
+    // and a section that restates the row under it is noise, not structure.
+    let active_dids_worth_showing = state
+        .active_dids
+        .iter()
+        .any(|d| d.label.starts_with("R-DID"));
+    if active_dids_worth_showing {
         lines.push(Line::from(""));
         lines.push(
             Line::from(format!(" Active DIDs ({})", state.active_dids.len()))
@@ -169,19 +191,35 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
     // Context identities — every persona DID in this context, with its binding.
     // Orphans (no community) are flagged so they can be spotted and removed.
     if !state.context_dids.is_empty() {
+        // Same focus affordance the VIC section carries. Without it this list
+        // showed a `▸` selection cursor and a key-hint row with no indication
+        // that it was the focused list — the two lists looked equally live.
+        let focused = state.focus == VtaFocus::Dids;
         lines.push(Line::from(""));
-        lines.push(
-            Line::from(format!(
-                " Context Identities ({})",
-                state.context_dids.len()
-            ))
-            .fg(COLOR_SUCCESS)
-            .bold(),
-        );
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" Context Identities ({})", state.context_dids.len()),
+                if focused {
+                    Style::new().fg(COLOR_SUCCESS).bold()
+                } else {
+                    Style::new().fg(COLOR_DARK_GRAY).bold()
+                },
+            ),
+            Span::styled(
+                if focused {
+                    "   ◀ focus"
+                } else {
+                    "   [Tab] focus"
+                },
+                Style::new().fg(COLOR_DARK_GRAY),
+            ),
+        ]));
         lines.push(Line::from(""));
 
         for (i, d) in state.context_dids.iter().enumerate() {
-            let is_selected = i == state.did_selected_index;
+            // Only the focused list shows a selection cursor, so `↑/↓` never
+            // appears to be driving two lists at once (matches the VIC rows).
+            let is_selected = focused && i == state.did_selected_index;
             let orphan = d.bound_communities == 0;
             let prefix = if is_selected { "▸ " } else { "  " };
             let marker = if orphan { "○ " } else { "● " };
@@ -233,8 +271,12 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
             ]));
         }
 
-        // Confirmation prompt (a delete is armed) or the navigation/remove hint.
-        lines.push(Line::from(""));
+        // Confirmation prompt (a delete is armed) or, when focused, the
+        // navigation/remove hint. The spacer goes with them — an unfocused list
+        // ends at its last row rather than trailing a blank.
+        if state.confirm_delete_did.is_some() || focused {
+            lines.push(Line::from(""));
+        }
         if let Some(idx) = state.confirm_delete_did {
             // Keep *both* the name and the DID. The row the operator selected
             // shows the name, so a DID-only prompt names something they never
@@ -256,12 +298,12 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
                     .fg(COLOR_ORANGE)
                     .bold(),
             );
-        } else {
+        } else if focused {
+            // Same verb order as the VIC hints: navigation, then create, then
+            // the rest, each `key: verb` with the same separator.
             lines.push(
-                Line::from(
-                    "↑/↓ select   n: new persona   g: agent names   d: remove selected orphan",
-                )
-                .fg(COLOR_DARK_GRAY),
+                Line::from("↑/↓ select   n: new persona   g: agent names   d: remove orphan")
+                    .fg(COLOR_DARK_GRAY),
             );
         }
     } else {
@@ -275,6 +317,108 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
     render_vics(state, &mut lines);
 
     lines
+}
+
+/// Push a labelled identity as one row: the verified agent name as the value,
+/// with the DID as a dimmed second line. With no verified name the DID is the
+/// value and only one line is pushed — a party is never named twice.
+fn push_identity(
+    lines: &mut Vec<Line<'static>>,
+    label: &'static str,
+    agent_name: Option<&str>,
+    did: &str,
+) {
+    let label_style = Style::new().fg(COLOR_TEXT_DEFAULT);
+    let value_style = Style::new().fg(COLOR_SOFT_PURPLE);
+    match agent_name {
+        Some(name) => {
+            lines.push(Line::from(vec![
+                Span::styled(label, label_style),
+                Span::styled(name.to_string(), value_style),
+            ]));
+            lines.push(Line::from(Span::styled(
+                format!("{:width$}{did}", "", width = label.len()),
+                Style::new().fg(COLOR_DARK_GRAY),
+            )));
+        }
+        None => lines.push(Line::from(vec![
+            Span::styled(label, label_style),
+            Span::styled(did.to_string(), value_style),
+        ])),
+    }
+}
+
+/// Render the transport block: which transport this process is on, what the VTA
+/// advertises, and the endpoint behind each.
+///
+/// This replaced a bare `VTA URL:` row. The URL alone was misleading — it stays
+/// populated on the DIDComm path (where it is only the REST fallback), so it
+/// read as "we talk to the VTA over HTTPS" even when every call went over
+/// DIDComm. A probe that has not landed says "checking…", and a probe that
+/// *failed* says so explicitly, so an unreachable VTA is never rendered as one
+/// that advertises nothing (VTI R6.4).
+fn render_transports(state: &VtaState, lines: &mut Vec<Line<'static>>) {
+    let label_style = Style::new().fg(COLOR_TEXT_DEFAULT);
+    let dim = Style::new().fg(COLOR_DARK_GRAY);
+    let t = &state.transports;
+
+    let mut spans = vec![
+        Span::styled("  Transport:     ", label_style),
+        Span::styled(t.in_use.label().to_string(), Style::new().fg(COLOR_SUCCESS)),
+        Span::styled("  (in use)", dim),
+    ];
+    match &t.advertised {
+        None => spans.push(Span::styled("   ·   checking what else is offered…", dim)),
+        Some(a) if a.error.is_some() => {
+            spans.push(Span::styled("   ·   other transports unknown", {
+                Style::new().fg(COLOR_ORANGE)
+            }));
+        }
+        Some(a) => {
+            // Only mention the transport we are *not* on; the one in use is
+            // already the headline.
+            let other = match t.in_use {
+                VtaTransport::DidComm => a.rest_url.is_some().then_some("REST"),
+                VtaTransport::Rest => a.mediator_did.is_some().then_some("DIDComm"),
+            };
+            match other {
+                Some(name) => {
+                    spans.push(Span::styled(format!("   ·   {name} also available"), dim))
+                }
+                None => spans.push(Span::styled("   ·   only transport offered", dim)),
+            }
+        }
+    }
+    lines.push(Line::from(spans));
+
+    // Endpoint detail, indented under the transport it belongs to.
+    if !state.mediator_did.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("    via mediator  ", dim),
+            Span::styled(
+                display_identifier(
+                    state.mediator_agent_name.as_deref(),
+                    &state.mediator_did,
+                    ID_WIDTH,
+                )
+                .into_owned(),
+                dim,
+            ),
+        ]));
+    }
+    if !t.rest_url.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("    REST endpoint ", dim),
+            Span::styled(t.rest_url.clone(), dim),
+        ]));
+    }
+    if let Some(err) = t.advertised.as_ref().and_then(|a| a.error.as_deref()) {
+        push_status(
+            lines,
+            &format!("Could not read the VTA's advertised transports: {err}"),
+            "    ",
+        );
+    }
 }
 
 /// Render the "Invitation Credentials" (VIC) manager section: the held VICs with
@@ -398,7 +542,9 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_handler::main_page::content::{ManagedDid, VicSummary};
+    use crate::state_handler::main_page::content::{
+        ActiveDid, AdvertisedTransports, ManagedDid, VicSummary, VtaTransports,
+    };
 
     const PERSONA_DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAA:example.com:alice";
     const VTC_DID: &str = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
@@ -443,6 +589,206 @@ mod tests {
             vics: vics.into(),
             ..VtaState::default()
         }
+    }
+
+    // --- transports ---------------------------------------------------------
+
+    const VTA_DID: &str = "did:webvh:QmScidVtaCCCCCCCCCCCCCCCCCCCCCC:example.com:vta";
+    const MEDIATOR_DID: &str = "did:webvh:QmScidMediatorDDDDDDDDDDDDDDDD:example.com:mediator";
+
+    /// A VTA-managed account on the DIDComm transport with a REST fallback URL.
+    fn vta_managed(advertised: Option<AdvertisedTransports>) -> VtaState {
+        VtaState {
+            is_vta_managed: true,
+            persona_did: PERSONA_DID.to_string(),
+            mediator_did: MEDIATOR_DID.to_string(),
+            vta_did: VTA_DID.to_string(),
+            credential_did: "did:key:z6MkTestCredentialKeyAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            transports: VtaTransports {
+                in_use: VtaTransport::DidComm,
+                rest_url: "https://vta.example".to_string(),
+                advertised,
+            },
+            ..VtaState::default()
+        }
+    }
+
+    fn joined(lines: &[Line<'static>]) -> String {
+        text(lines).join("\n")
+    }
+
+    /// The headline fact is the transport in use, not the URL. A populated
+    /// `vta_url` on the DIDComm path is the REST *fallback* and must not read as
+    /// "we talk to the VTA over HTTPS".
+    #[test]
+    fn transport_row_names_the_transport_in_use() {
+        let out = joined(&render(&vta_managed(None)));
+        assert!(out.contains("Transport:"), "{out}");
+        assert!(out.contains("DIDComm"), "{out}");
+        assert!(out.contains("(in use)"), "{out}");
+        assert!(!out.contains("VTA URL"), "the bare URL row is gone: {out}");
+    }
+
+    /// Until the probe lands the panel says so, rather than claiming the VTA
+    /// offers only the transport we happen to be on.
+    #[test]
+    fn transport_row_says_checking_before_the_probe_lands() {
+        let out = joined(&render(&vta_managed(None)));
+        assert!(out.contains("checking"), "{out}");
+    }
+
+    #[test]
+    fn transport_row_reports_the_other_advertised_transport() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: Some("https://vta.example".to_string()),
+            error: None,
+        }))));
+        assert!(out.contains("REST also available"), "{out}");
+    }
+
+    /// A VTA that advertises only the transport in use says exactly that.
+    #[test]
+    fn transport_row_reports_a_single_advertised_transport() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: None,
+            error: None,
+        }))));
+        assert!(out.contains("only transport offered"), "{out}");
+    }
+
+    /// A failed probe must be distinguishable from "nothing else is offered" —
+    /// an unreachable publication endpoint is not the same fact (VTI R6.4).
+    #[test]
+    fn a_failed_probe_reads_as_unknown_not_as_unavailable() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            mediator_did: None,
+            rest_url: None,
+            error: Some("DID did not resolve".to_string()),
+        }))));
+        assert!(out.contains("other transports unknown"), "{out}");
+        assert!(
+            out.contains("DID did not resolve"),
+            "reason is shown: {out}"
+        );
+        assert!(
+            !out.contains("only transport offered"),
+            "must not claim the transports are known: {out}"
+        );
+    }
+
+    /// The credential DID is what we authenticate *as*; the old "Credential:"
+    /// label said nothing about that.
+    #[test]
+    fn the_credential_row_says_what_the_credential_is_for() {
+        let out = joined(&render(&vta_managed(None)));
+        assert!(out.contains("Authenticated:"), "{out}");
+    }
+
+    // --- identity rows ------------------------------------------------------
+
+    /// One row per party: the verified name is the value, the DID is dimmed
+    /// detail below it — not a separate "Agent name" row naming the same party.
+    #[test]
+    fn an_identity_row_leads_with_the_name_and_keeps_the_did_below() {
+        let mut state = vta_managed(None);
+        state.persona_agent_name = Some("example.com/@alice".to_string());
+        let out = text(&render(&state));
+
+        let name_row = out
+            .iter()
+            .position(|l| l.contains("Persona:") && l.contains("example.com/@alice"))
+            .expect("named persona row");
+        assert!(
+            out[name_row + 1].contains(PERSONA_DID),
+            "DID sits under the name: {:?}",
+            &out[name_row..name_row + 2]
+        );
+        assert!(
+            !out.iter().any(|l| l.contains("Agent name:")),
+            "no separate agent-name row: {out:?}"
+        );
+    }
+
+    /// With no verified name the DID is the value and there is no second line.
+    #[test]
+    fn an_identity_row_without_a_name_shows_only_the_did() {
+        let out = text(&render(&vta_managed(None)));
+        let rows: Vec<_> = out.iter().filter(|l| l.contains(PERSONA_DID)).collect();
+        assert_eq!(rows.len(), 1, "DID appears once: {out:?}");
+        assert!(rows[0].contains("Persona:"), "{rows:?}");
+    }
+
+    // --- section suppression ------------------------------------------------
+
+    /// "Active DIDs" holding nothing but the persona restates the row already
+    /// marked `active` in Context Identities, so it is suppressed.
+    #[test]
+    fn active_dids_is_hidden_when_it_only_restates_the_persona() {
+        let mut state = vta_managed(None);
+        state.active_dids = vec![ActiveDid {
+            did: PERSONA_DID.to_string(),
+            agent_name: None,
+            label: "Persona".to_string(),
+        }]
+        .into();
+        let out = joined(&render(&state));
+        assert!(!out.contains("Active DIDs"), "{out}");
+    }
+
+    /// A relationship pseudonym is information the identity list does not carry,
+    /// so the section comes back.
+    #[test]
+    fn active_dids_is_shown_once_a_relationship_pseudonym_exists() {
+        let mut state = vta_managed(None);
+        state.active_dids = vec![
+            ActiveDid {
+                did: PERSONA_DID.to_string(),
+                agent_name: None,
+                label: "Persona".to_string(),
+            },
+            ActiveDid {
+                did: "did:peer:2.Ez6Mk".to_string(),
+                agent_name: None,
+                label: "R-DID (bob)".to_string(),
+            },
+        ]
+        .into();
+        let out = joined(&render(&state));
+        assert!(out.contains("Active DIDs (2)"), "{out}");
+    }
+
+    // --- focus cues ---------------------------------------------------------
+
+    /// Both manageable lists carry the same focus affordance, and only the
+    /// focused one shows a selection cursor and its key hints.
+    #[test]
+    fn only_the_focused_identity_list_shows_a_cursor_and_hints() {
+        let mut state = state_with(vec![managed_did(None)], vec![vic(None)]);
+
+        state.focus = VtaFocus::Dids;
+        let focused = joined(&render(&state));
+        assert!(
+            focused.contains("Context Identities (1)   ◀ focus"),
+            "{focused}"
+        );
+        assert!(
+            focused.contains("▸ "),
+            "cursor shown when focused: {focused}"
+        );
+        assert!(focused.contains("n: new persona"), "{focused}");
+
+        state.focus = VtaFocus::Vics;
+        let unfocused = joined(&render(&state));
+        assert!(
+            unfocused.contains("Context Identities (1)   [Tab] focus"),
+            "{unfocused}"
+        );
+        assert!(
+            !unfocused.contains("n: new persona"),
+            "hints belong to the focused list: {unfocused}"
+        );
     }
 
     // --- VIC issuer ---------------------------------------------------------

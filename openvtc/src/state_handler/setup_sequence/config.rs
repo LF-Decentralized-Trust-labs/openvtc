@@ -56,17 +56,37 @@ pub trait ConfigExtension {
     /// into an existing account `config`, persist, and return its id. Used by the
     /// join flow (Stage 4) once a community has been chosen.
     ///
-    /// The persona label/username is read from `state.username` (set by the
-    /// caller — the setup wizard via `Action::SetUsername`, or the join flow from
-    /// the community display name). This replaces the previous
+    /// The persona label/username is read from `state.username` — a name the
+    /// *operator* chose (the setup wizard via `Action::SetUsername`, or the
+    /// create-persona overlay). This replaces the previous
     /// `setup_flow.username.username` read so the join flow needn't construct a
     /// full `SetupFlow` UI component just to carry one string.
+    ///
+    /// An **empty** `username` mints the persona unlabelled and leaves
+    /// `public.friendly_name` alone: the join flow has no operator-chosen name
+    /// to offer, and the community name it used to pass here is not a name for
+    /// the persona.
     async fn mint_persona_into(
         config: &mut Config,
         state: &SetupState,
         tdk: &TDK,
         profile: &str,
     ) -> Result<PersonaId>;
+}
+
+/// The operator-chosen name in `SetupState::username`, or `None` when there
+/// isn't one.
+///
+/// Gates both the persona's `label` and the account's `public.friendly_name`.
+/// The join flow used to pass the *community's* name here (falling back to a
+/// rendering of the community's VTC DID when it had no verified name), which
+/// labelled the persona with a community identifier and made the account's
+/// self-display name the community it had just joined — the top bar then named
+/// that community twice. A join now passes nothing and both fields are left
+/// alone; only a name the operator actually typed sets them.
+fn operator_chosen_name(username: &str) -> Option<&str> {
+    let name = username.trim();
+    (!name.is_empty()).then_some(name)
 }
 
 impl ConfigExtension for Config {
@@ -323,7 +343,7 @@ impl ConfigExtension for Config {
             mediator_did: Some(mediator_did.clone()),
             origin_context_id: String::new(),
             created_at: Utc::now(),
-            label: Some(state.username.clone()),
+            label: operator_chosen_name(&state.username).map(str::to_owned),
         };
 
         config.account.personas.insert(persona_id, persona_record);
@@ -338,7 +358,12 @@ impl ConfigExtension for Config {
             },
         );
         config.key_info.extend(key_info);
-        config.public.friendly_name = state.username.clone();
+        // Only an operator-chosen name may become the account's self-display
+        // name. The join flow passes nothing, so a join no longer overwrites
+        // `friendly_name` with the community it was joining.
+        if let Some(name) = operator_chosen_name(&state.username) {
+            config.public.friendly_name = name.to_string();
+        }
 
         config.save(
             profile,
@@ -442,6 +467,24 @@ mod tests {
     use super::*;
     use crate::state_handler::setup_sequence::VtaSetupState;
     use vta_sdk::provision_client::AdminCredentialReply;
+
+    // --- operator-chosen name gate ---
+
+    /// A name the operator typed labels the persona and becomes the account's
+    /// self-display name.
+    #[test]
+    fn an_operator_chosen_name_is_used() {
+        assert_eq!(operator_chosen_name("Glenn"), Some("Glenn"));
+        assert_eq!(operator_chosen_name("  Glenn  "), Some("Glenn"));
+    }
+
+    /// The join flow passes nothing, so the persona is minted unlabelled and
+    /// `friendly_name` is left alone — it must not inherit the community.
+    #[test]
+    fn no_name_leaves_both_fields_alone() {
+        assert_eq!(operator_chosen_name(""), None);
+        assert_eq!(operator_chosen_name("   "), None);
+    }
 
     /// A `SetupState` carrying just the VTA bootstrap output an account needs:
     /// the admin credential, top context, and (plaintext) protection.

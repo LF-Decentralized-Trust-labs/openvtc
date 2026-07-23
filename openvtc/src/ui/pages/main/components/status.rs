@@ -10,10 +10,38 @@ use ratatui::{
     text::{Line, Span},
 };
 
-/// Approximate visible width of the content panel after borders and padding.
-/// Panels don't know their own width at render time; this matches the width
-/// used by the logs-panel detail view.
-const STATUS_WRAP_WIDTH: usize = 76;
+/// Fallback wrap width, used only before the first frame has recorded a real
+/// one. Matches the width the logs-panel detail view has always assumed.
+const DEFAULT_STATUS_WRAP_WIDTH: usize = 76;
+
+/// Narrowest width worth wrapping to. Below this a "wrapped" message is one
+/// word per line, which is less readable than letting it run.
+const MIN_STATUS_WRAP_WIDTH: usize = 24;
+
+thread_local! {
+    /// Visible width of the content panel, recorded by [`set_wrap_width`] at the
+    /// top of each frame.
+    ///
+    /// The `Panel` trait renders to `Vec<Line>` without being told its area, so
+    /// wrapping used to be hardcoded to 76 columns — on a wide terminal every
+    /// status message wrapped at less than half the available width. Threading
+    /// the width through every panel signature would touch all of them for one
+    /// consumer; the render path is single-threaded and strictly
+    /// set-then-render within a frame, so a thread-local carries it instead.
+    static WRAP_WIDTH: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(DEFAULT_STATUS_WRAP_WIDTH) };
+}
+
+/// Record the content panel's visible width for this frame. Called by the
+/// content panel before it renders, so `push_status` wraps to the real width.
+pub fn set_wrap_width(width: usize) {
+    WRAP_WIDTH.set(width.max(MIN_STATUS_WRAP_WIDTH));
+}
+
+/// The width [`push_status`] wraps to.
+fn wrap_width() -> usize {
+    WRAP_WIDTH.get()
+}
 
 /// Push a status message as one or more wrapped lines (no trailing blank).
 ///
@@ -23,7 +51,7 @@ const STATUS_WRAP_WIDTH: usize = 76;
 /// a panel.
 pub fn push_status(lines: &mut Vec<Line<'static>>, msg: &str, indent: &'static str) {
     let style = status_style(msg);
-    let width = STATUS_WRAP_WIDTH.saturating_sub(indent.len()).max(1);
+    let width = wrap_width().saturating_sub(indent.len()).max(1);
     for wrapped in wrap_text(msg, width) {
         lines.push(Line::from(vec![Span::styled(
             format!("{}{}", indent, wrapped),

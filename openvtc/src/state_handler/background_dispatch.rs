@@ -70,6 +70,9 @@ pub(crate) enum DispatchDomain {
     /// many DIDs (the busy-guard is per-domain, so per-DID jobs would serialise),
     /// each a network round-trip; read-only, off the loop.
     AgentName,
+    /// VTA transport probe: resolve the VTA's DID document to learn which
+    /// transports it advertises. Read-only, one resolve, off the loop.
+    VtaTransports,
 }
 
 impl DispatchDomain {
@@ -81,6 +84,7 @@ impl DispatchDomain {
             DispatchDomain::Inbox => "Inbox action",
             DispatchDomain::Did => "Identity deletion",
             DispatchDomain::AgentName => "Agent name refresh",
+            DispatchDomain::VtaTransports => "VTA transport probe",
         }
     }
 }
@@ -149,6 +153,10 @@ pub(crate) enum DispatchOutcome {
     /// each DID resolved — `resolved_name` is `None` for a DID with no
     /// verifiable name (a cached negative). Applied on the loop thread.
     AgentName(Vec<(String, Option<String>)>),
+    /// A VTA transport probe finished. Carries what the VTA's DID document
+    /// advertises, or the reason the probe could not tell. Display-only — it
+    /// touches no `Config`, so it never marks the config dirty.
+    VtaTransports(crate::state_handler::main_page::content::AdvertisedTransports),
     /// A spawned dispatch job panicked (or was cancelled) and so never produced a
     /// real outcome. Synthesised by [`spawn_dispatch`] from the `JoinError` so the
     /// domain's busy-flag is still cleared (a panicking job that sent nothing would
@@ -166,6 +174,7 @@ impl DispatchOutcome {
             DispatchOutcome::Inbox(_) => DispatchDomain::Inbox,
             DispatchOutcome::Did(_) => DispatchDomain::Did,
             DispatchOutcome::AgentName(_) => DispatchDomain::AgentName,
+            DispatchOutcome::VtaTransports(_) => DispatchDomain::VtaTransports,
             DispatchOutcome::Panicked(domain) => *domain,
         }
     }
@@ -276,6 +285,12 @@ pub(crate) fn apply_outcome(
             if display_changed {
                 state.main_page.sync_from_config(config);
             }
+        }
+        DispatchOutcome::VtaTransports(advertised) => {
+            // Display-only: assign straight onto the panel state. Deliberately
+            // NOT written through `sync_from_config`, which rebuilds the panel
+            // from `Config` and would drop a field the config does not hold.
+            state.main_page.content_panel.vta.transports.advertised = Some(advertised);
         }
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic

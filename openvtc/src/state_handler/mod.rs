@@ -157,6 +157,7 @@ mod setup_vta_actions;
 mod setup_wizard;
 pub mod state;
 mod vic;
+mod vta_transports;
 
 pub struct DeferredLoad {
     pub profile: String,
@@ -1936,6 +1937,38 @@ impl StateHandler {
                                 let results =
                                     agent_name_refresh::resolve_batch(resolver, targets).await;
                                 background_dispatch::DispatchOutcome::AgentName(results)
+                            },
+                        );
+                    }
+
+                    // Probe what transports the VTA advertises, for the VTA
+                    // panel. Runs on this tick rather than its own so the loop
+                    // gains no extra timer. Re-probed only while the answer is
+                    // still missing or failed — once a VTA has answered, its
+                    // advertised services are stable for the session, so a
+                    // healthy setup probes exactly once per launch (R1.4).
+                    let needs_probe = state
+                        .main_page
+                        .content_panel
+                        .vta
+                        .transports
+                        .advertised
+                        .as_ref()
+                        .is_none_or(|a| a.error.is_some());
+                    if needs_probe
+                        && let openvtc_core::config::KeyBackend::Vta { vta_did, .. } =
+                            &config.key_backend
+                        && !vta_did.is_empty()
+                        && in_flight.try_begin(background_dispatch::DispatchDomain::VtaTransports)
+                    {
+                        let vta_did = vta_did.clone();
+                        background_dispatch::spawn_dispatch(
+                            dispatch_tx.clone(),
+                            background_dispatch::DispatchDomain::VtaTransports,
+                            async move {
+                                background_dispatch::DispatchOutcome::VtaTransports(
+                                    vta_transports::probe(vta_did).await,
+                                )
                             },
                         );
                     }

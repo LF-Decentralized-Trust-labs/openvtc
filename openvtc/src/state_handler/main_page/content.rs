@@ -358,12 +358,18 @@ pub struct VtaState {
     pub persona_agent_name: Option<String>,
     /// Mediator DID
     pub mediator_did: String,
+    /// Verified agent name for [`mediator_did`](Self::mediator_did), if cached.
+    pub mediator_agent_name: Option<String>,
     /// VTA service URL
     pub vta_url: String,
     /// VTA service DID
     pub vta_did: String,
+    /// Verified agent name for [`vta_did`](Self::vta_did), if cached.
+    pub vta_agent_name: Option<String>,
     /// Credential DID used for VTA authentication
     pub credential_did: String,
+    /// Which transports the VTA advertises and which one this process is on.
+    pub transports: VtaTransports,
     /// Total number of keys managed
     pub key_count: usize,
     /// Number of persona keys
@@ -404,6 +410,68 @@ pub struct VtaState {
     /// Which of the two manageable lists (Context Identities vs Invitation
     /// Credentials) has keyboard focus, so `↑/↓` and the verbs apply to it.
     pub focus: VtaFocus,
+}
+
+/// How this process reaches the VTA, and what the VTA says it offers.
+///
+/// Two independently-sourced halves, deliberately kept apart:
+///
+/// - [`in_use`](Self::in_use) is what *this* process connects over, derived
+///   synchronously from the stored key backend — `build_runtime_vta_client`
+///   picks DIDComm when a mediator DID is recorded and REST otherwise, so the
+///   same condition decides the label. No network, always accurate.
+/// - [`advertised`](Self::advertised) is what the VTA's own DID document
+///   publishes (`#vta-rest` and `DIDCommMessaging` services), which needs a
+///   resolve. `None` until the background probe lands, so the panel can say
+///   "checking…" rather than claim a transport is unavailable merely because
+///   nothing has been asked yet.
+///
+/// Keeping them separate is what makes the panel able to distinguish "the VTA
+/// offers REST too" from "we could not ask" (VTI R6.4).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct VtaTransports {
+    /// Transport this process is configured to use.
+    pub in_use: VtaTransport,
+    /// REST base URL from the stored config, if any. This is the URL that was
+    /// `VTA URL` before — kept as *detail under* the transport rather than as
+    /// the headline fact.
+    pub rest_url: String,
+    /// What the VTA's DID document advertises. `None` until probed.
+    pub advertised: Option<AdvertisedTransports>,
+}
+
+/// One VTA transport.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VtaTransport {
+    /// DIDComm via a mediator (the VTA session is the authenticator).
+    #[default]
+    DidComm,
+    /// REST challenge-response against the VTA URL.
+    Rest,
+}
+
+impl VtaTransport {
+    /// Label for the panel.
+    pub fn label(self) -> &'static str {
+        match self {
+            VtaTransport::DidComm => "DIDComm",
+            VtaTransport::Rest => "REST",
+        }
+    }
+}
+
+/// The transports a VTA's DID document advertises, as resolved by
+/// `vta_sdk::provision_client::resolve_vta`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdvertisedTransports {
+    /// Mediator DID from the document's `DIDCommMessaging` service, if any.
+    pub mediator_did: Option<String>,
+    /// REST base URL from the document's `#vta-rest` service, if any.
+    pub rest_url: Option<String>,
+    /// Set when the probe itself failed — the transports are unknown, not
+    /// absent. Rendered as an explicit "could not check" so an unreachable
+    /// publication endpoint never reads as "the VTA offers nothing".
+    pub error: Option<String>,
 }
 
 /// Which manageable list in the VTA panel has keyboard focus (toggled by `Tab`).
