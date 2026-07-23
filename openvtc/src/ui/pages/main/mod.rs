@@ -1976,6 +1976,62 @@ fn edit_text(code: KeyCode, current: &str) -> Option<String> {
 /// the active menu and its per-panel mode. When this changes across frames
 /// (e.g. list → detail, or switching menus), the content panel scroll offset
 /// is reset to 0 so the new view starts at the top.
+/// Break `text` into lines that fit `width` columns, splitting on whitespace and
+/// hard-splitting any single token longer than the width.
+///
+/// Overlay status text is rendered as discrete `Line`s, which a `Paragraph`
+/// clips rather than wraps — so a long message loses its tail silently. That is
+/// worst for exactly the messages worth reading: a decode failure quotes the
+/// field that was missing and the payload that arrived, and both sit at the end.
+///
+/// The hard split matters because these messages carry DIDs and JSON, which
+/// contain no spaces to break on.
+fn wrap_text(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let mut word = word;
+        // A token longer than the whole width can never fit beside anything;
+        // emit it in width-sized pieces.
+        while word.chars().count() > width {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+            }
+            let head: String = word.chars().take(width).collect();
+            let consumed = head.len();
+            lines.push(head);
+            word = &word[consumed..];
+        }
+        if word.is_empty() {
+            continue;
+        }
+        let extra = if current.is_empty() {
+            word.chars().count()
+        } else {
+            word.chars().count() + 1
+        };
+        if current.chars().count() + extra > width && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
 fn view_id(page: &MainPageState) -> String {
     use crate::state_handler::main_page::content::{
         CredentialsMode, RelationshipsMode, SettingsMode,
@@ -2391,7 +2447,23 @@ impl MainPage {
 
         let area = frame.area();
         let popup_width = 68u16.min(area.width.saturating_sub(4));
-        let popup_height = 16u16.min(area.height.saturating_sub(2)).max(9);
+        // Inner width: two border columns and `Padding::uniform(1)` either side.
+        let inner_width = popup_width.saturating_sub(4) as usize;
+
+        // Wrapped up front, because the popup has to be tall enough to show it.
+        let message_lines: Vec<String> = overlay
+            .message
+            .as_deref()
+            .map(|m| wrap_text(m, inner_width))
+            .unwrap_or_default();
+
+        // Grow by whatever the message needs beyond the single line the base
+        // height already allows, then clamp to the screen.
+        let extra = message_lines.len().saturating_sub(1) as u16;
+        let popup_height = 16u16
+            .saturating_add(extra)
+            .min(area.height.saturating_sub(2))
+            .max(9);
 
         let [popup_area] = Layout::vertical([Constraint::Length(popup_height)])
             .flex(Flex::Center)
@@ -2469,12 +2541,14 @@ impl MainPage {
             }
         }
 
-        if let Some(msg) = &overlay.message {
+        if !message_lines.is_empty() {
             lines.push(Line::default());
-            lines.push(Line::from(Span::styled(
-                msg.clone(),
-                Style::new().fg(COLOR_ORANGE),
-            )));
+            for msg_line in &message_lines {
+                lines.push(Line::from(Span::styled(
+                    msg_line.clone(),
+                    Style::new().fg(COLOR_ORANGE),
+                )));
+            }
         }
 
         lines.push(Line::default());
@@ -2609,6 +2683,59 @@ impl MainPage {
         }
 
         frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+    }
+}
+
+#[cfg(test)]
+mod wrap_text_tests {
+    use super::wrap_text;
+
+    #[test]
+    fn wraps_on_whitespace_within_the_width() {
+        let got = wrap_text("the quick brown fox jumps", 10);
+        assert_eq!(got, vec!["the quick", "brown fox", "jumps"]);
+        assert!(got.iter().all(|l| l.chars().count() <= 10));
+    }
+
+    /// The case that actually matters here: decode errors quote DIDs and JSON,
+    /// which contain no spaces. Without a hard split an over-long token would
+    /// still overflow its line and be clipped — the bug this fixes.
+    #[test]
+    fn hard_splits_a_token_longer_than_the_width() {
+        let did =
+            "did:webvh:QmXi1PZD4NEvcvjfErAzVoCGtBFEv7dhXZQJHvcFY4U83F:webvh.storm.ws:first-vtc";
+        let got = wrap_text(did, 20);
+        assert!(
+            got.iter().all(|l| l.chars().count() <= 20),
+            "every line must fit: {got:?}"
+        );
+        assert_eq!(got.concat(), did, "no characters may be lost");
+    }
+
+    #[test]
+    fn keeps_the_whole_message_when_it_fits() {
+        assert_eq!(wrap_text("short", 40), vec!["short"]);
+    }
+
+    /// A realistic decode failure must survive wrapping intact — the field name
+    /// and the payload excerpt are the whole point of the message.
+    #[test]
+    fn preserves_a_decode_error_in_full() {
+        let msg = "decoding agent-name list result: missing field `names`. \
+                   VTA sent: {\"did\":\"did:webvh:QmXi1PZD4NEvcvjfErAzVoCGtBFEv7dhXZQJHvcFY4U83F\"}";
+        let got = wrap_text(msg, 64);
+        assert!(got.iter().all(|l| l.chars().count() <= 64), "{got:?}");
+        let rejoined = got.join(" ");
+        assert!(rejoined.contains("missing field"), "{rejoined}");
+        assert!(rejoined.contains("names"), "{rejoined}");
+        assert!(rejoined.contains("VTA sent"), "{rejoined}");
+    }
+
+    #[test]
+    fn degenerate_widths_do_not_panic_or_drop_text() {
+        assert_eq!(wrap_text("abc", 0), vec!["abc"]);
+        assert_eq!(wrap_text("", 10), vec![""]);
+        assert_eq!(wrap_text("aaaa", 1).concat(), "aaaa");
     }
 }
 
