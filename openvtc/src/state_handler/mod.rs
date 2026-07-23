@@ -2143,7 +2143,7 @@ impl StateHandler {
             Err(e) => self.set_agent_name_message(
                 state,
                 AgentNameManagerPhase::Ready,
-                format!("Could not load agent names: {e}"),
+                format!("Could not load agent names: {e:#}"),
             ),
         }
     }
@@ -2204,7 +2204,7 @@ impl StateHandler {
             Err(e) => self.set_agent_name_message(
                 state,
                 AgentNameManagerPhase::Ready,
-                format!("Could not claim @{name}: {e}"),
+                format!("Could not claim @{name}: {e:#}"),
             ),
         }
     }
@@ -2246,7 +2246,7 @@ impl StateHandler {
             Err(e) => self.set_agent_name_message(
                 state,
                 AgentNameManagerPhase::Ready,
-                format!("Could not {} @{name}: {e}", verb.to_lowercase()),
+                format!("Could not {} @{name}: {e:#}", verb.to_lowercase()),
             ),
         }
     }
@@ -2279,7 +2279,7 @@ impl StateHandler {
             Err(e) => self.set_agent_name_message(
                 state,
                 AgentNameManagerPhase::Ready,
-                format!("Could not remove @{name}: {e}"),
+                format!("Could not remove @{name}: {e:#}"),
             ),
         }
     }
@@ -2320,7 +2320,7 @@ impl StateHandler {
             Err(e) => self.set_agent_name_message(
                 state,
                 AgentNameManagerPhase::Ready,
-                format!("Applied, but could not reload the list: {e}"),
+                format!("Applied, but could not reload the list: {e:#}"),
             ),
         }
     }
