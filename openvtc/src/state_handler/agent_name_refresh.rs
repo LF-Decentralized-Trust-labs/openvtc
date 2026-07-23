@@ -17,6 +17,7 @@
 // direct dependency on the cache SDK.
 use affinidi_tdk::did_resolver::DIDCacheClient;
 use tokio::task::JoinSet;
+use tracing::debug;
 
 /// Maximum concurrent DID resolutions inside one batch job.
 const CONCURRENCY: usize = 4;
@@ -35,7 +36,21 @@ pub(crate) async fn resolve_batch(
     let spawn_one = |set: &mut JoinSet<(String, Option<String>)>, did: String| {
         let resolver = resolver.clone();
         set.spawn(async move {
-            let name = openvtc_core::agent_name::resolve_verified_name(&resolver, &did).await;
+            // Resolve via the reason-carrying entry point and log the outcome.
+            // A DID that renders as a raw DID is otherwise indistinguishable on
+            // screen from one that has no name at all, so without this line the
+            // only way to tell an unreachable naming host from an unclaimed name
+            // from a spoof is to reproduce it by hand (VTI R6.4).
+            let name = match openvtc_core::agent_name::resolve_name_outcome(&resolver, &did).await {
+                Ok(outcome) => {
+                    debug!("agent name for {did}: {}", outcome.summary());
+                    outcome.name().map(str::to_owned)
+                }
+                Err(e) => {
+                    debug!("agent name for {did}: DID did not resolve: {e}");
+                    None
+                }
+            };
             (did, name)
         });
     };
@@ -56,5 +71,11 @@ pub(crate) async fn resolve_batch(
             spawn_one(&mut in_flight, did);
         }
     }
+
+    let resolved = out.iter().filter(|(_, name)| name.is_some()).count();
+    debug!(
+        "agent name sweep: {} DID(s) checked, {resolved} name(s) verified",
+        out.len()
+    );
     out
 }

@@ -9,6 +9,7 @@ use crate::state_handler::{
     },
     state::ConnectionState,
 };
+use openvtc_core::display::display_identifier;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
@@ -95,9 +96,12 @@ fn render_list(state: &CredentialsState) -> Vec<Line<'static>> {
                 Style::new().fg(COLOR_TEXT_DEFAULT)
             };
 
+            // Precedence: user alias → verified agent name → the DID itself
+            // (matches the relationships panel).
             let display_name = vrc
                 .alias
                 .as_deref()
+                .or(vrc.remote_agent_name.as_deref())
                 .unwrap_or(&vrc.remote_p_did)
                 .to_string();
 
@@ -148,17 +152,32 @@ fn render_detail(state: &CredentialsState, index: usize) -> Vec<Line<'static>> {
             Span::styled(alias.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
         ]));
     }
+    // The verified agent name, above the full DID it belongs to.
+    if let Some(agent_name) = &vrc.remote_agent_name {
+        lines.push(Line::from(vec![
+            Span::styled("Agent name: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            Span::styled(agent_name.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        ]));
+    }
     lines.push(Line::from(vec![
         Span::styled("Remote DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
         Span::styled(vrc.remote_p_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
     ]));
+    // Issuer/subject show their verified name when one is known, else the DID.
+    // The raw credential below always carries the underlying DIDs.
     lines.push(Line::from(vec![
         Span::styled("Issuer:     ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        Span::styled(vrc.issuer.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        Span::styled(
+            display_identifier(vrc.issuer_agent_name.as_deref(), &vrc.issuer, 256).into_owned(),
+            Style::new().fg(COLOR_SOFT_PURPLE),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("Subject:    ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-        Span::styled(vrc.subject.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+        Span::styled(
+            display_identifier(vrc.subject_agent_name.as_deref(), &vrc.subject, 256).into_owned(),
+            Style::new().fg(COLOR_SOFT_PURPLE),
+        ),
     ]));
     lines.push(Line::from(vec![
         Span::styled("Valid from: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
@@ -237,9 +256,11 @@ fn render_new_request(
             Style::new().fg(COLOR_TEXT_DEFAULT)
         };
 
+        // Precedence: user alias → verified agent name → the DID itself.
         let display_name = rel
             .alias
             .as_deref()
+            .or(rel.agent_name.as_deref())
             .unwrap_or(&rel.remote_p_did)
             .to_string();
 

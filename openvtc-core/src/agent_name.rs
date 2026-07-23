@@ -35,11 +35,32 @@ use serde::{Deserialize, Serialize};
 /// few names) is unaffected.
 const MAX_CANDIDATES: usize = 4;
 
-/// How long a persisted lookup (positive **or** negative) is trusted before the
-/// background refresh re-verifies it. The resolver's own name cache is short
-/// (~5 min) and handles churn; this persisted layer only exists so names show
-/// instantly at launch without a network round-trip, so a day is ample.
+/// How long a persisted **positive** lookup is trusted before the background
+/// refresh re-verifies it. The resolver's own name cache is short (~5 min) and
+/// handles churn; this persisted layer only exists so names show instantly at
+/// launch without a network round-trip, so a day is ample.
 pub const AGENT_NAME_TTL: Duration = Duration::hours(24);
+
+/// How long a persisted **negative** lookup is trusted.
+///
+/// Deliberately far shorter than [`AGENT_NAME_TTL`]. A negative is not a fact
+/// about the DID, it is the absence of evidence — and every transient cause
+/// produces one: the naming host briefly down, no network at launch, a name
+/// claimed on the VTA moments ago whose redirect is not yet live. Caching those
+/// for a day blinds every display surface for a day, with the DID rendering
+/// exactly as it would if it genuinely had no name, and nothing in the sweep to
+/// re-check it (`agent_name_refresh_targets` skips entries that are not stale).
+///
+/// A few minutes is enough to stop a nameless DID being re-resolved on every
+/// render, while letting a transient failure heal itself on the next sweep.
+///
+/// Set to the sweep interval rather than below it. Because staleness is
+/// `now - checked_at >= TTL`, a negative written *during* a sweep is a shade
+/// under one interval old at the next tick and is picked up by the one after,
+/// so the effective retry is ~2 sweeps. That is deliberate: retrying a failing
+/// name on *every* sweep would re-fetch up to `MAX_CANDIDATES` redirects per DID
+/// indefinitely, which is the unbounded-polling shape VTI R1.4 warns about.
+pub const AGENT_NAME_NEGATIVE_TTL: Duration = Duration::minutes(5);
 
 /// A persisted DID → agent-name lookup. The value is deliberately an
 /// `Option`: a resolved-and-verified name, **or** `None` recording that the DID
@@ -55,11 +76,22 @@ pub struct CachedAgentName {
 }
 
 impl CachedAgentName {
-    /// Whether this entry is older than [`AGENT_NAME_TTL`] as of `now` and
+    /// How long this entry is trusted: [`AGENT_NAME_TTL`] for a verified name,
+    /// the much shorter [`AGENT_NAME_NEGATIVE_TTL`] for a negative.
+    #[must_use]
+    pub fn ttl(&self) -> Duration {
+        if self.name.is_some() {
+            AGENT_NAME_TTL
+        } else {
+            AGENT_NAME_NEGATIVE_TTL
+        }
+    }
+
+    /// Whether this entry has outlived its [`ttl`](Self::ttl) as of `now` and
     /// should be re-verified by the background refresh.
     #[must_use]
     pub fn is_stale(&self, now: DateTime<Utc>) -> bool {
-        now - self.checked_at >= AGENT_NAME_TTL
+        now - self.checked_at >= self.ttl()
     }
 }
 
@@ -89,14 +121,82 @@ pub async fn verified_agent_name(
     did: &str,
     doc: &Document,
 ) -> Option<String> {
+    match name_outcome(resolver, did, doc).await {
+        NameOutcome::Verified(name) => Some(name),
+        NameOutcome::NoClaim | NameOutcome::NotVerified(_) => None,
+    }
+}
+
+/// Why `did` does or does not have a displayable agent name.
+///
+/// Same verification as [`verified_agent_name`], but it keeps the reasons
+/// instead of collapsing them to `None`. Display code should use
+/// `verified_agent_name`; this exists so the background sweep and any operator
+/// diagnostic can say *why* a DID is rendering as a raw DID — the distinction
+/// between "this DID claims no name", "the naming host is unreachable" and
+/// "the name points at somebody else's DID" is invisible otherwise, which is
+/// what makes a silent no-name display so hard to debug (VTI R6.4).
+pub async fn name_outcome(resolver: &DIDCacheClient, did: &str, doc: &Document) -> NameOutcome {
     let candidates = agent_names::extract_agent_names(doc);
-    verify_candidates(did, candidates, |name| async move {
+    verify_candidates_detailed(did, candidates, |name| async move {
         // resolve_any performs the mandatory `alsoKnownAs` check on the document
         // it fetches; we additionally require its resolved DID to be the one we
         // are labelling, which ties the name's forward redirect back to `did`.
-        resolver.resolve_any(&name).await.ok().map(|resp| resp.did)
+        resolver
+            .resolve_any(&name)
+            .await
+            .map(|resp| resp.did)
+            .map_err(|e| e.to_string())
     })
     .await
+}
+
+/// The outcome of looking for a displayable agent name for a DID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameOutcome {
+    /// A name that completed the full round-trip and is safe to display.
+    Verified(String),
+    /// The document claims no agent names at all — this DID simply has none.
+    NoClaim,
+    /// Names were claimed but none verified; carries each rejection reason.
+    NotVerified(Vec<CandidateFailure>),
+}
+
+impl NameOutcome {
+    /// The verified name, if there is one.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            NameOutcome::Verified(n) => Some(n),
+            _ => None,
+        }
+    }
+
+    /// A short operator-facing summary for logs.
+    #[must_use]
+    pub fn summary(&self) -> String {
+        match self {
+            NameOutcome::Verified(n) => format!("verified '{n}'"),
+            NameOutcome::NoClaim => "no agent name claimed in the document".to_string(),
+            NameOutcome::NotVerified(failures) => {
+                let detail = failures
+                    .iter()
+                    .map(|f| format!("'{}' ({})", f.name, f.reason))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                format!("claimed but not verified: {detail}")
+            }
+        }
+    }
+}
+
+/// One claimed name that failed verification, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateFailure {
+    /// The claimed name, scheme-less.
+    pub name: String,
+    /// Why it was rejected — unreachable host, not a DID, or a spoof.
+    pub reason: String,
 }
 
 /// Resolve `did` to a verified agent name, fetching its document first.
@@ -106,8 +206,22 @@ pub async fn verified_agent_name(
 /// resolver's document cache. `None` if the DID does not resolve or has no
 /// verifiable name.
 pub async fn resolve_verified_name(resolver: &DIDCacheClient, did: &str) -> Option<String> {
-    let resp = resolver.resolve(did).await.ok()?;
-    verified_agent_name(resolver, did, &resp.doc).await
+    match resolve_name_outcome(resolver, did).await {
+        Ok(outcome) => outcome.name().map(str::to_owned),
+        Err(_) => None,
+    }
+}
+
+/// [`resolve_verified_name`] retaining the reason, for the background sweep and
+/// operator diagnostics. `Err` carries the resolver's message when the DID
+/// itself could not be resolved — distinct from resolving fine but having no
+/// verifiable name.
+pub async fn resolve_name_outcome(
+    resolver: &DIDCacheClient,
+    did: &str,
+) -> Result<NameOutcome, String> {
+    let resp = resolver.resolve(did).await.map_err(|e| e.to_string())?;
+    Ok(name_outcome(resolver, did, &resp.doc).await)
 }
 
 /// The verification decision, factored out so the spoof guard is testable
@@ -117,21 +231,41 @@ pub async fn resolve_verified_name(resolver: &DIDCacheClient, did: &str) -> Opti
 ///
 /// `resolve` maps a name's canonical string to the DID it forward-resolves to
 /// (`None` on any failure).
-async fn verify_candidates<F, Fut>(
+/// The verification decision, factored out so the spoof guard is testable
+/// without a live resolver, and retaining the rejection reasons.
+///
+/// `resolve` maps a name's canonical string to the DID it forward-resolves to,
+/// or an error describing why it could not be resolved.
+async fn verify_candidates_detailed<F, Fut>(
     did: &str,
     candidates: Vec<AgentName>,
     resolve: F,
-) -> Option<String>
+) -> NameOutcome
 where
     F: Fn(String) -> Fut,
-    Fut: std::future::Future<Output = Option<String>>,
+    Fut: std::future::Future<Output = Result<String, String>>,
 {
+    if candidates.is_empty() {
+        return NameOutcome::NoClaim;
+    }
+    let mut failures = Vec::new();
     for name in candidates.into_iter().take(MAX_CANDIDATES) {
-        if resolve(name.as_str().to_string()).await.as_deref() == Some(did) {
-            return Some(name.without_scheme().to_string());
+        match resolve(name.as_str().to_string()).await {
+            Ok(got) if got == did => {
+                return NameOutcome::Verified(name.without_scheme().to_string());
+            }
+            // The spoof case: the name is real but belongs to another DID.
+            Ok(got) => failures.push(CandidateFailure {
+                name: name.without_scheme().to_string(),
+                reason: format!("forward-resolves to a different DID ({got})"),
+            }),
+            Err(reason) => failures.push(CandidateFailure {
+                name: name.without_scheme().to_string(),
+                reason,
+            }),
         }
     }
-    None
+    NameOutcome::NotVerified(failures)
 }
 
 /// Why an identifier the user typed could not be turned into a DID.
@@ -226,22 +360,62 @@ mod tests {
         assert!(fresh.is_stale(checked_at + Duration::hours(25)));
     }
 
+    /// A negative expires on the short TTL, not the 24h one. Caching "no name"
+    /// for a day is what made a transient resolve failure — host briefly down,
+    /// offline at launch, a redirect not yet live — hide every name until the
+    /// next day, indistinguishable from the DID genuinely having no name.
+    #[test]
+    fn negative_entries_expire_far_sooner_than_positive_ones() {
+        let checked_at = Utc::now();
+        let negative = CachedAgentName {
+            name: None,
+            checked_at,
+        };
+        assert_eq!(negative.ttl(), AGENT_NAME_NEGATIVE_TTL);
+        assert!(!negative.is_stale(checked_at));
+        assert!(negative.is_stale(checked_at + AGENT_NAME_NEGATIVE_TTL));
+
+        // The point of the split: at a time when a negative is already stale, a
+        // positive written at the same instant is still trusted.
+        let positive = CachedAgentName {
+            name: Some("example.com/@alice".into()),
+            checked_at,
+        };
+        let after = checked_at + AGENT_NAME_NEGATIVE_TTL;
+        assert!(negative.is_stale(after));
+        assert!(!positive.is_stale(after));
+    }
+
     /// The spoof case, and the single most important behaviour in this module:
     /// a document claims `example.com/@alice`, but that name forward-resolves to
-    /// a *different* DID. It must NOT be displayed as our name.
+    /// a *different* DID. It must NOT be displayed as our name, and the reason
+    /// must name the DID it actually landed on so the report is actionable.
     #[tokio::test]
     async fn rejects_name_resolving_to_a_different_did() {
-        let got = verify_candidates(
+        let got = verify_candidates_detailed(
             "did:webvh:us:example.com",
             vec![name("example.com/@alice")],
             // The name points at somebody else's DID.
-            |_| async { Some("did:webvh:them:evil.example".to_string()) },
+            |_| async { Ok("did:webvh:them:evil.example".to_string()) },
         )
         .await;
         assert_eq!(
-            got, None,
+            got.name(),
+            None,
             "a name pointing at a different DID must be rejected"
         );
+        match &got {
+            NameOutcome::NotVerified(failures) => {
+                assert_eq!(failures.len(), 1);
+                assert_eq!(failures[0].name, "example.com/@alice");
+                assert!(
+                    failures[0].reason.contains("did:webvh:them:evil.example"),
+                    "reason was: {}",
+                    failures[0].reason
+                );
+            }
+            other => panic!("expected NotVerified, got {other:?}"),
+        }
     }
 
     /// The happy path: the claimed name forward-resolves back to the DID we are
@@ -249,28 +423,31 @@ mod tests {
     #[tokio::test]
     async fn accepts_name_that_round_trips() {
         let did = "did:webvh:us:example.com";
-        let got = verify_candidates(did, vec![name("example.com/@alice")], |n| {
+        let got = verify_candidates_detailed(did, vec![name("example.com/@alice")], |n| {
             let did = did.to_string();
             async move {
                 assert_eq!(n, "https://example.com/@alice");
-                Some(did)
+                Ok(did)
             }
         })
         .await;
-        assert_eq!(got.as_deref(), Some("example.com/@alice"));
+        assert_eq!(got.name(), Some("example.com/@alice"));
     }
 
     /// A name that does not resolve at all (host down, no redirect) yields no
-    /// name rather than an error — the caller falls back to the DID.
+    /// name rather than an error — the caller falls back to the DID — but the
+    /// transport reason is kept, so "host is down" stays distinguishable from
+    /// "the name is not claimed".
     #[tokio::test]
     async fn skips_unresolvable_name() {
-        let got = verify_candidates(
+        let got = verify_candidates_detailed(
             "did:webvh:us:example.com",
             vec![name("example.com/@alice")],
-            |_| async { None },
+            |_| async { Err("connection refused".to_string()) },
         )
         .await;
-        assert_eq!(got, None);
+        assert_eq!(got.name(), None);
+        assert!(got.summary().contains("connection refused"), "{got:?}");
     }
 
     /// A document that claims many names must not trigger an unbounded number of
@@ -281,13 +458,13 @@ mod tests {
         let candidates: Vec<AgentName> = (0..(MAX_CANDIDATES + 5))
             .map(|i| name(&format!("example.com/@name{i}")))
             .collect();
-        let got = verify_candidates("did:webvh:us:example.com", candidates, |_| {
+        let got = verify_candidates_detailed("did:webvh:us:example.com", candidates, |_| {
             calls.set(calls.get() + 1);
             // None of them match, so every attempt (up to the cap) is made.
-            async { Some("did:webvh:other:host".to_string()) }
+            async { Ok("did:webvh:other:host".to_string()) }
         })
         .await;
-        assert_eq!(got, None);
+        assert_eq!(got.name(), None);
         assert_eq!(calls.get(), MAX_CANDIDATES, "must not resolve past the cap");
     }
 
@@ -297,14 +474,27 @@ mod tests {
         let did = "did:webvh:us:example.com";
         let calls = Cell::new(0usize);
         let candidates = vec![name("example.com/@first"), name("example.com/@second")];
-        let got = verify_candidates(did, candidates, |_| {
+        let got = verify_candidates_detailed(did, candidates, |_| {
             calls.set(calls.get() + 1);
             let did = did.to_string();
-            async move { Some(did) }
+            async move { Ok(did) }
         })
         .await;
-        assert_eq!(got.as_deref(), Some("example.com/@first"));
+        assert_eq!(got.name(), Some("example.com/@first"));
         assert_eq!(calls.get(), 1, "must short-circuit on the first match");
+    }
+
+    /// A document claiming nothing is reported as `NoClaim`, not as a failure —
+    /// the operator needs "this DID has no name" to read differently from "the
+    /// name would not verify".
+    #[tokio::test]
+    async fn no_claimed_names_reports_no_claim() {
+        let got = verify_candidates_detailed("did:webvh:us:example.com", vec![], |_| async {
+            panic!("must not resolve anything when there are no candidates")
+        })
+        .await;
+        assert_eq!(got, NameOutcome::NoClaim);
+        assert!(got.summary().contains("no agent name claimed"));
     }
 
     #[test]

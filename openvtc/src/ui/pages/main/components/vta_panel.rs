@@ -6,10 +6,15 @@ use crate::state_handler::{
     main_page::content::{ContentPanelState, VicLifecycle, VtaFocus, VtaState},
     state::ConnectionState,
 };
+use openvtc_core::display::display_identifier;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Width the DID lists render an identifier at. The panel has never truncated
+/// these, so this only bounds an agent name shown in a DID's place.
+const ID_WIDTH: usize = 256;
 
 /// VTA service information panel.
 pub struct VtaPanel;
@@ -138,13 +143,20 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
 
         for did_entry in state.active_dids.iter() {
+            // `label` is the DID's *role* ("Persona", "R-DID (…)"), not a name
+            // for it — the verified agent name (when known) replaces the DID
+            // beside it.
             lines.push(Line::from(vec![
                 Span::styled("  ● ", Style::new().fg(COLOR_SUCCESS)),
                 Span::styled(
                     format!("{:<16}", did_entry.label),
                     Style::new().fg(COLOR_TEXT_DEFAULT),
                 ),
-                Span::styled(did_entry.did.clone(), Style::new().fg(COLOR_DARK_GRAY)),
+                Span::styled(
+                    display_identifier(did_entry.agent_name.as_deref(), &did_entry.did, ID_WIDTH)
+                        .into_owned(),
+                    Style::new().fg(COLOR_DARK_GRAY),
+                ),
             ]));
         }
     }
@@ -181,7 +193,10 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
             lines.push(Line::from(vec![
                 Span::styled(prefix, marker_style),
                 Span::styled(marker, marker_style),
-                Span::styled(d.did.clone(), did_style),
+                Span::styled(
+                    display_identifier(d.agent_name.as_deref(), &d.did, ID_WIDTH).into_owned(),
+                    did_style,
+                ),
             ]));
 
             let name = if d.label.is_empty() {

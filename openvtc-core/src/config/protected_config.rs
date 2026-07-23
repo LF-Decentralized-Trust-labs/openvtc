@@ -247,6 +247,25 @@ pub struct ProtectedConfig {
     pub agent_names: HashMap<String, CachedAgentName>,
 }
 
+impl ProtectedConfig {
+    /// Drop every cached *negative* agent-name lookup, returning how many went.
+    ///
+    /// Called on load. A negative records only that a name could not be verified
+    /// at some past moment, and the usual causes do not survive a restart: no
+    /// network at the time, the naming host briefly down, or a name claimed
+    /// moments before its redirect went live. Persisting those across a relaunch
+    /// means the operator's instinctive fix — restart it — provably cannot work,
+    /// which is exactly the trap this cache fell into.
+    ///
+    /// Verified names are kept: showing them instantly at launch without a
+    /// network round-trip is the reason the cache is persisted at all.
+    pub fn prune_agent_name_negatives(&mut self) -> usize {
+        let before = self.agent_names.len();
+        self.agent_names.retain(|_, cached| cached.name.is_some());
+        before - self.agent_names.len()
+    }
+}
+
 /// Manual impl so freshly created configs are stamped with the current
 /// schema version (a derived `Default` would set `schema_version` to 0).
 impl Default for ProtectedConfig {
@@ -558,5 +577,40 @@ mod tests {
         let seed1 = ProtectedConfig::get_seed_from_credential("key1").unwrap();
         let seed2 = ProtectedConfig::get_seed_from_credential("key2").unwrap();
         assert_ne!(seed1.expose_secret(), seed2.expose_secret(),);
+    }
+
+    /// Negatives are dropped on load so a restart re-checks them; verified names
+    /// survive, since instant display at launch is why the cache is persisted.
+    #[test]
+    fn pruning_drops_negatives_and_keeps_verified_names() {
+        use crate::agent_name::CachedAgentName;
+
+        let now = chrono::Utc::now();
+        let mut cfg = ProtectedConfig::default();
+        cfg.agent_names.insert(
+            "did:webvh:us:example.com".to_string(),
+            CachedAgentName {
+                name: Some("example.com/@alice".to_string()),
+                checked_at: now,
+            },
+        );
+        cfg.agent_names.insert(
+            "did:webvh:us:nameless.example".to_string(),
+            CachedAgentName {
+                name: None,
+                checked_at: now,
+            },
+        );
+
+        assert_eq!(cfg.prune_agent_name_negatives(), 1);
+        assert_eq!(cfg.agent_names.len(), 1);
+        assert!(cfg.agent_names.contains_key("did:webvh:us:example.com"));
+        assert!(
+            !cfg.agent_names
+                .contains_key("did:webvh:us:nameless.example")
+        );
+
+        // Idempotent: a second prune has nothing left to drop.
+        assert_eq!(cfg.prune_agent_name_negatives(), 0);
     }
 }

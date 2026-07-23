@@ -2721,10 +2721,13 @@ mod key_handler_tests {
         VrcSummary {
             vrc_id: vrc_id.to_string(),
             remote_p_did: "did:example:them".to_string(),
+            remote_agent_name: None,
             raw_json: RawCredential::Value(Arc::new(serde_json::Value::Null)),
             alias: None,
             issuer: "did:example:issuer".to_string(),
+            issuer_agent_name: None,
             subject: "did:example:subject".to_string(),
+            subject_agent_name: None,
             valid_from: String::new(),
             valid_until: None,
         }
@@ -2736,6 +2739,7 @@ mod key_handler_tests {
             type_display: "Trust Ping".to_string(),
             kind: TaskKind::TrustPing,
             remote_did: "did:example:them".to_string(),
+            remote_agent_name: None,
             created: String::new(),
         }
     }
@@ -3041,12 +3045,14 @@ mod key_handler_tests {
             s.main_page.content_panel.vta.context_dids = vec![
                 ManagedDid {
                     did: "did:webvh:example.com:alice".into(),
+                    agent_name: None,
                     label: "Alice".into(),
                     bound_communities: 1,
                     is_active: true,
                 },
                 ManagedDid {
                     did: "did:webvh:example.com:bob".into(),
+                    agent_name: None,
                     label: "Bob".into(),
                     bound_communities: 0,
                     is_active: false,
