@@ -147,6 +147,10 @@ fn handle_inbox_open_detail(state: &mut State, index: usize) {
             } => Some(ActiveTaskView::RelationshipRequestInbound {
                 task_id: task.id.clone(),
                 from_did: from_did.clone(),
+                // `remote_agent_name` is the verified name for the requester's
+                // persona DID — i.e. `from_did`, the DID this labels. The
+                // requester's R-DID (`their_did`) is a pseudonym and gets none.
+                from_agent_name: task.remote_agent_name.clone(),
                 their_did: their_did.clone(),
                 reason: reason.clone(),
                 name: name.clone(),
@@ -154,28 +158,35 @@ fn handle_inbox_open_detail(state: &mut State, index: usize) {
             TaskKind::VRCRequestInbound { reason } => Some(ActiveTaskView::VRCRequestInbound {
                 task_id: task.id.clone(),
                 from_did: task.remote_did.clone(),
+                from_agent_name: task.remote_agent_name.clone(),
                 reason: reason.clone(),
             }),
             TaskKind::VRCIssued => Some(ActiveTaskView::VRCIssued {
                 task_id: task.id.clone(),
                 issuer: task.remote_did.clone(),
+                issuer_agent_name: task.remote_agent_name.clone(),
             }),
-            TaskKind::RelationshipRequestOutbound { our_did } => {
-                Some(ActiveTaskView::RelationshipRequestOutbound {
-                    task_id: task.id.clone(),
-                    to_did: task.remote_did.clone(),
-                    our_did: our_did.clone(),
-                    state: "Request Sent".to_string(),
-                })
-            }
+            TaskKind::RelationshipRequestOutbound {
+                our_did,
+                our_agent_name,
+            } => Some(ActiveTaskView::RelationshipRequestOutbound {
+                task_id: task.id.clone(),
+                to_did: task.remote_did.clone(),
+                to_agent_name: task.remote_agent_name.clone(),
+                our_did: our_did.clone(),
+                our_agent_name: our_agent_name.clone(),
+                state: "Request Sent".to_string(),
+            }),
             TaskKind::VRCRequestOutbound => Some(ActiveTaskView::VRCRequestOutbound {
                 task_id: task.id.clone(),
                 remote_did: task.remote_did.clone(),
+                remote_agent_name: task.remote_agent_name.clone(),
             }),
             TaskKind::TrustPing | TaskKind::Informational(_) => Some(ActiveTaskView::Info {
                 task_id: task.id.clone(),
                 type_display: task.type_display.clone(),
                 remote_did: task.remote_did.clone(),
+                remote_agent_name: task.remote_agent_name.clone(),
             }),
         };
         state.main_page.content_panel.inbox.active_task = view;

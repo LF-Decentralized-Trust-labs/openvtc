@@ -510,6 +510,11 @@ pub enum AddVicPhase {
 pub struct ManagedDid {
     /// The persona `did:webvh`.
     pub did: String,
+    /// Verified agent name for [`did`](Self::did) (`example.com/@me`), if one is
+    /// cached. Shown in place of the DID; the DID is the fallback. Populated in
+    /// `sync_from_config` from the persisted cache, which only ever holds
+    /// round-tripped (verified) lookups.
+    pub agent_name: Option<String>,
     /// Optional human label.
     pub label: String,
     /// How many communities present this persona (0 ⇒ orphan).
@@ -523,6 +528,11 @@ pub struct ManagedDid {
 pub struct ActiveDid {
     /// The DID string
     pub did: String,
+    /// Verified agent name for [`did`](Self::did), if one is cached. Shown in
+    /// place of the DID; the DID is the fallback. A relationship R-DID is a
+    /// per-relationship pseudonym and never carries one, so this stays `None`
+    /// for those rows.
+    pub agent_name: Option<String>,
     /// Human-readable label
     pub label: String,
 }
@@ -569,6 +579,12 @@ pub struct TaskSummary {
     pub kind: TaskKind,
     /// Shortened DID of the remote party (if applicable)
     pub remote_did: String,
+    /// Verified agent name for exactly the DID held in
+    /// [`remote_did`](Self::remote_did), if one is cached — shown in its place.
+    /// Only ever sourced from `Config::agent_name_for` (verified, round-tripped
+    /// lookups); it outranks the requester-supplied `name` on an inbound
+    /// relationship request, which is self-asserted and therefore spoofable.
+    pub remote_agent_name: Option<String>,
     /// Formatted creation timestamp
     pub created: String,
 }
@@ -588,7 +604,12 @@ pub enum TaskKind {
         name: Option<String>,
     },
     /// Outbound relationship request awaiting response
-    RelationshipRequestOutbound { our_did: String },
+    RelationshipRequestOutbound {
+        our_did: String,
+        /// Verified agent name for `our_did`, if cached. `None` when we sent the
+        /// request from a generated R-DID (a pseudonym, which carries no name).
+        our_agent_name: Option<String>,
+    },
     /// Inbound VRC request awaiting accept/reject
     VRCRequestInbound { reason: Option<String> },
     /// Outbound VRC request awaiting response
@@ -602,11 +623,18 @@ pub enum TaskKind {
 }
 
 /// Detailed view of a specific task for the interaction screen.
+///
+/// Every `*_agent_name` is the **verified** name for exactly the DID in the
+/// field it sits beside (from `Config::agent_name_for`), so rendering the name
+/// in place of that DID never relabels a different identity. `their_did` — the
+/// requester's relationship DID — has no name field on purpose: an R-DID is a
+/// per-relationship pseudonym, deliberately not a stable named identity.
 #[derive(Clone, Debug)]
 pub enum ActiveTaskView {
     RelationshipRequestInbound {
         task_id: String,
         from_did: String,
+        from_agent_name: Option<String>,
         their_did: String,
         reason: Option<String>,
         name: Option<String>,
@@ -615,28 +643,34 @@ pub enum ActiveTaskView {
     RelationshipRequestOutbound {
         task_id: String,
         to_did: String,
+        to_agent_name: Option<String>,
         our_did: String,
+        our_agent_name: Option<String>,
         state: String,
     },
     VRCRequestInbound {
         task_id: String,
         from_did: String,
+        from_agent_name: Option<String>,
         reason: Option<String>,
     },
     /// Outbound VRC request — waiting for response
     VRCRequestOutbound {
         task_id: String,
         remote_did: String,
+        remote_agent_name: Option<String>,
     },
     VRCIssued {
         task_id: String,
         issuer: String,
+        issuer_agent_name: Option<String>,
     },
     /// Generic info task (ping, pong, informational)
     Info {
         task_id: String,
         type_display: String,
         remote_did: String,
+        remote_agent_name: Option<String>,
     },
 }
 
@@ -799,14 +833,22 @@ pub struct VrcSummary {
     pub vrc_id: String,
     /// Remote party's persona DID
     pub remote_p_did: String,
+    /// Verified agent name for [`remote_p_did`](Self::remote_p_did), if cached.
+    /// Shown when there is no user alias; the DID is the last resort. Populated
+    /// in `sync_from_config` from the persisted (verified-only) cache.
+    pub remote_agent_name: Option<String>,
     /// Raw credential source, pretty-printed lazily at detail-view time.
     pub raw_json: RawCredential,
     /// Contact alias (if set)
     pub alias: Option<String>,
     /// Issuer DID
     pub issuer: String,
+    /// Verified agent name for [`issuer`](Self::issuer), if cached.
+    pub issuer_agent_name: Option<String>,
     /// Subject DID
     pub subject: String,
+    /// Verified agent name for [`subject`](Self::subject), if cached.
+    pub subject_agent_name: Option<String>,
     /// Formatted valid_from date
     pub valid_from: String,
     /// Formatted valid_until date (if set)

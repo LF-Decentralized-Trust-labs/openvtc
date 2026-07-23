@@ -176,7 +176,13 @@ impl MainPageState {
                             .get(to)
                             .map(|rel| rel.our_did.to_string())
                             .unwrap_or_default();
-                        TaskKind::RelationshipRequestOutbound { our_did }
+                        let our_agent_name = config
+                            .agent_name_for(&our_did)
+                            .map(|n| sanitize_display(n, 256));
+                        TaskKind::RelationshipRequestOutbound {
+                            our_did,
+                            our_agent_name,
+                        }
                     }
                     TaskType::VRCRequestInbound { request, .. } => TaskKind::VRCRequestInbound {
                         reason: request.reason.as_deref().map(|r| sanitize_display(r, 256)),
@@ -216,11 +222,33 @@ impl MainPageState {
                     TaskType::VRCIssued { vrc } => sanitize_display(vrc.issuer(), 40),
                     _ => String::new(),
                 };
+                // The verified name for *exactly* the DID `remote_did` renders,
+                // so showing the name in its place can never relabel a different
+                // identity. Cache-only (`agent_name_for`) — an unverified
+                // `alsoKnownAs` claim never reaches it. A relationship R-DID has
+                // no cache entry, so those rows keep showing the DID.
+                let remote_agent_name = match &task.type_ {
+                    TaskType::RelationshipRequestInbound { from, .. } => {
+                        config.agent_name_for(from)
+                    }
+                    TaskType::RelationshipRequestOutbound { to } => config.agent_name_for(to),
+                    TaskType::TrustPing { to, .. } => config.agent_name_for(to),
+                    TaskType::VRCRequestInbound { remote_p_did, .. } => {
+                        config.agent_name_for(remote_p_did)
+                    }
+                    TaskType::VRCRequestOutbound { remote_p_did } => {
+                        config.agent_name_for(remote_p_did)
+                    }
+                    TaskType::VRCIssued { vrc } => config.agent_name_for(vrc.issuer()),
+                    _ => None,
+                }
+                .map(|n| sanitize_display(n, 256));
                 TaskSummary {
                     id: task.id.to_string(),
                     type_display: task.type_.to_string(),
                     kind,
                     remote_did: sanitize_display(&remote_did, 256),
+                    remote_agent_name,
                     created: task.created.format("%Y-%m-%d %H:%M").to_string(),
                 }
             })
@@ -372,6 +400,9 @@ impl MainPageState {
         if !persona_did.is_empty() {
             active_dids.push(content::ActiveDid {
                 did: persona_did.to_string(),
+                agent_name: config
+                    .agent_name_for(persona_did)
+                    .map(|n| sanitize_display(n, 256)),
                 label: "Persona".to_string(),
             });
         }
@@ -384,6 +415,13 @@ impl MainPageState {
                     .and_then(|c| c.alias.clone())
                     .unwrap_or_else(|| shorten_did(remote_p_did, 30));
                 active_dids.push(content::ActiveDid {
+                    // An R-DID is a per-relationship pseudonym: there is no
+                    // cache entry for it, so this resolves to `None` and the
+                    // row keeps showing the DID. Looked up all the same so the
+                    // name always belongs to the DID being displayed.
+                    agent_name: config
+                        .agent_name_for(rel.our_did.as_str())
+                        .map(|n| sanitize_display(n, 256)),
                     did: rel.our_did.to_string(),
                     label: format!("R-DID ({})", alias),
                 });
@@ -400,6 +438,9 @@ impl MainPageState {
             .personas
             .values()
             .map(|p| content::ManagedDid {
+                agent_name: config
+                    .agent_name_for(&p.did)
+                    .map(|n| sanitize_display(n, 256)),
                 did: p.did.clone(),
                 label: p.label.clone().unwrap_or_default(),
                 bound_communities: config
@@ -542,10 +583,19 @@ fn collect_vrcs(
                 result.push(VrcSummary {
                     vrc_id: vrc_id.to_string(),
                     remote_p_did: sanitize_display(remote_p_did, 256),
+                    remote_agent_name: config
+                        .agent_name_for(remote_p_did)
+                        .map(|n| sanitize_display(n, 256)),
                     raw_json,
                     alias: alias.as_deref().map(|a| sanitize_display(a, 256)),
                     issuer: sanitize_display(vrc.issuer(), 256),
+                    issuer_agent_name: config
+                        .agent_name_for(vrc.issuer())
+                        .map(|n| sanitize_display(n, 256)),
                     subject: sanitize_display(vrc.subject(), 256),
+                    subject_agent_name: config
+                        .agent_name_for(vrc.subject())
+                        .map(|n| sanitize_display(n, 256)),
                     valid_from: vrc.valid_from().format("%Y-%m-%d").to_string(),
                     valid_until: vrc.valid_until().map(|d| d.format("%Y-%m-%d").to_string()),
                 });
@@ -604,10 +654,19 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
             result.push(VrcSummary {
                 vrc_id: vc_id,
                 remote_p_did: sanitize_display(&c.vtc_did, 256),
+                remote_agent_name: config
+                    .agent_name_for(&c.vtc_did)
+                    .map(|n| sanitize_display(n, 256)),
                 raw_json,
                 alias: Some(format!("{community} — {}", kind.config_key())),
                 issuer: sanitize_display(&issuer, 256),
+                issuer_agent_name: config
+                    .agent_name_for(&issuer)
+                    .map(|n| sanitize_display(n, 256)),
                 subject: sanitize_display(&subject, 256),
+                subject_agent_name: config
+                    .agent_name_for(&subject)
+                    .map(|n| sanitize_display(n, 256)),
                 valid_from,
                 valid_until,
             });
@@ -935,6 +994,209 @@ mod tests {
         assert_eq!(row.persona_label, shorten_did(persona_did, 24));
     }
 
+    // --- agent names on the credential / inbox / VTA-DID view models ---
+    //
+    // These cover the three panels migrated off raw DIDs. Each asserts the
+    // *view model* carries the verified name beside the DID it labels; the
+    // panels render it through `openvtc_core::display::display_identifier`,
+    // which is unit-tested in `openvtc-core`.
+
+    const ALICE_DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAA:example.com:alice";
+    const BOB_DID: &str = "did:webvh:QmScidBobBBBBBBBBBBBBBBBBBBBBBB:example.com:bob";
+
+    /// A minimally-valid *signed* VRC. `Vrcs::insert` keys on the proof value,
+    /// so an unsigned credential cannot be stored.
+    fn signed_vrc(issuer: &str, subject: &str) -> Arc<dtg_credentials::DTGCredential> {
+        let json = serde_json::json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "type": ["VerifiableCredential", "DTGCredential", "RelationshipCredential"],
+            "issuer": issuer,
+            "validFrom": "2024-06-18T10:00:00Z",
+            "credentialSubject": { "id": subject },
+            "proof": {
+                "type": "DataIntegrityProof",
+                "cryptosuite": "eddsa-jcs-2022",
+                "created": "2024-06-18T10:00:00",
+                "verificationMethod": "did:example:test#key-1",
+                "proofPurpose": "assertionMethod",
+                "proofValue": "z-test-proof"
+            }
+        });
+        Arc::new(serde_json::from_value(json).expect("valid signed VRC"))
+    }
+
+    /// A config holding one received VRC issued by `BOB_DID` to `ALICE_DID`.
+    fn config_with_received_vrc() -> Config {
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        let remote = Arc::new(BOB_DID.to_string());
+        config
+            .private
+            .vrcs_received
+            .insert(&remote, signed_vrc(BOB_DID, ALICE_DID))
+            .expect("VRC stores");
+        config
+    }
+
+    /// The credentials panel's view model carries the verified name for every
+    /// DID it shows: the remote party, the issuer and the subject.
+    #[test]
+    fn vrc_summary_carries_verified_agent_names() {
+        let mut config = config_with_received_vrc();
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(BOB_DID, Some("example.com/@bob".into()), now);
+        config.set_cached_agent_name(ALICE_DID, Some("example.com/@alice".into()), now);
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let vrc = &page.content_panel.credentials.received[0];
+
+        assert_eq!(vrc.remote_agent_name.as_deref(), Some("example.com/@bob"));
+        assert_eq!(vrc.issuer_agent_name.as_deref(), Some("example.com/@bob"));
+        assert_eq!(
+            vrc.subject_agent_name.as_deref(),
+            Some("example.com/@alice")
+        );
+        // The DIDs themselves are unchanged — the name sits beside them.
+        assert_eq!(vrc.issuer, BOB_DID);
+        assert_eq!(vrc.subject, ALICE_DID);
+    }
+
+    /// No cache entry (and a cached *negative* lookup) must leave every name
+    /// unset, so the panel keeps rendering the DID.
+    #[test]
+    fn vrc_summary_has_no_name_without_a_verified_lookup() {
+        let mut config = config_with_received_vrc();
+        config.set_cached_agent_name(BOB_DID, None, chrono::Utc::now());
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let vrc = &page.content_panel.credentials.received[0];
+
+        assert!(vrc.remote_agent_name.is_none());
+        assert!(vrc.issuer_agent_name.is_none());
+        // ALICE_DID was never looked up at all.
+        assert!(vrc.subject_agent_name.is_none());
+    }
+
+    /// Insert one task and return the summary the inbox panel would render.
+    fn task_summary_for(config: &mut Config, type_: TaskType) -> TaskSummary {
+        let id = Arc::new("task-1".to_string());
+        config.private.tasks.new_task(&id, type_);
+        let mut page = MainPageState::default();
+        page.sync_from_config(config);
+        page.content_panel.inbox.tasks[0].clone()
+    }
+
+    /// An inbox row carries the verified name for exactly the DID it displays.
+    #[test]
+    fn inbox_task_carries_verified_agent_name() {
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        config.set_cached_agent_name(BOB_DID, Some("example.com/@bob".into()), chrono::Utc::now());
+
+        let task = task_summary_for(
+            &mut config,
+            TaskType::VRCRequestOutbound {
+                remote_p_did: Arc::new(BOB_DID.to_string()),
+            },
+        );
+
+        assert_eq!(task.remote_agent_name.as_deref(), Some("example.com/@bob"));
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                task.remote_agent_name.as_deref(),
+                &task.remote_did,
+                60
+            ),
+            "example.com/@bob"
+        );
+    }
+
+    /// A verified name outranks the requester-supplied `name` on an inbound
+    /// relationship request: that name is self-asserted and spoofable, so it
+    /// must not win over a name that actually round-tripped to this DID.
+    #[test]
+    fn inbox_verified_name_outranks_a_self_asserted_request_name() {
+        use openvtc_core::relationships::RelationshipRequestBody;
+
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        config.set_cached_agent_name(BOB_DID, Some("example.com/@bob".into()), chrono::Utc::now());
+
+        let task = task_summary_for(
+            &mut config,
+            TaskType::RelationshipRequestInbound {
+                from: Arc::new(BOB_DID.to_string()),
+                to: Arc::new(ALICE_DID.to_string()),
+                request: RelationshipRequestBody {
+                    reason: None,
+                    did: BOB_DID.to_string(),
+                    name: Some("Totally Not Bob".to_string()),
+                },
+            },
+        );
+
+        // The self-asserted name is still what the DID slot falls back to...
+        assert_eq!(task.remote_did, "Totally Not Bob");
+        // ...but the verified name is what gets rendered.
+        assert_eq!(
+            openvtc_core::display::display_identifier(
+                task.remote_agent_name.as_deref(),
+                &task.remote_did,
+                60
+            ),
+            "example.com/@bob"
+        );
+    }
+
+    /// An unresolvable DID leaves the inbox row on its existing display string.
+    #[test]
+    fn inbox_task_without_a_name_keeps_the_did() {
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        let task = task_summary_for(
+            &mut config,
+            TaskType::VRCRequestOutbound {
+                remote_p_did: Arc::new(BOB_DID.to_string()),
+            },
+        );
+
+        assert!(task.remote_agent_name.is_none());
+        assert_eq!(task.remote_did, shorten_did(BOB_DID, 60));
+    }
+
+    /// The VTA panel's Context Identities list carries the persona's verified
+    /// name beside its DID; the persona's own label is a separate line and is
+    /// left untouched.
+    #[test]
+    fn context_did_row_carries_verified_agent_name() {
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, Some("Work me"), vtc_did, None);
+        config.set_cached_agent_name(
+            ALICE_DID,
+            Some("example.com/@alice".into()),
+            chrono::Utc::now(),
+        );
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+        let row = &page.content_panel.vta.context_dids[0];
+
+        assert_eq!(row.agent_name.as_deref(), Some("example.com/@alice"));
+        assert_eq!(row.did, ALICE_DID);
+        assert_eq!(row.label, "Work me");
+    }
+
+    /// A cached negative lookup leaves the Context Identities row on the DID.
+    #[test]
+    fn context_did_row_ignores_a_cached_negative_lookup() {
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
+        config.set_cached_agent_name(ALICE_DID, None, chrono::Utc::now());
+
+        let mut page = MainPageState::default();
+        page.sync_from_config(&config);
+
+        assert!(page.content_panel.vta.context_dids[0].agent_name.is_none());
+    }
+
     // --- persona_in_scope (community-scoping filter, D10/R-C-6) ---
 
     #[test]
@@ -1101,6 +1363,7 @@ mod tests {
             type_display: "Test".to_string(),
             kind: TaskKind::Informational("x".to_string()),
             remote_did: "did:test:remote".to_string(),
+            remote_agent_name: None,
             created: "2024-01-01 00:00".to_string(),
         }]
         .into();

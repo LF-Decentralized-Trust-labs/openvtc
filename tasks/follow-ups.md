@@ -38,17 +38,24 @@ persisted name cache (first served name → the persona's displayed name) so the
 header/panels update without waiting for the background sweep.
 The destructive `remove` is gated behind a local `y`/Enter confirm (#169).
 
-### [ ] Agent names — remaining display + input surfaces
-Consumer display covers relationships, communities, the header, VTA/settings
-persona lines, and every log message (`resolve_did_to_display`). Still on the
-raw-DID pattern, to migrate onto the same view-model + `display_identifier`
-approach: VRC issuer/subject (`credentials_panel.rs`), inbox message DIDs
-(`inbox_panel.rs`), and the persona/context DID lists (`ActiveDid`/`ManagedDid`
-in `vta_panel.rs`). Input support covers the join VTC-DID entry and the new
-relationship request; the setup-time entries (VTA DID, webvh import, custom
-mediator, org DID) still take a DID only — apply the same
-`looks_like_agent_name` + `resolve_identifier` pattern, threading a resolver
-into those setup handlers.
+### [ ] Agent names — remaining input surfaces
+Consumer **display** is done. On top of relationships, communities, the header,
+VTA/settings persona lines and every log message (`resolve_did_to_display`), the
+last three panels now use the same view-model + `display_identifier` approach:
+VRC remote/issuer/subject (`credentials_panel.rs`, via
+`VrcSummary::{remote,issuer,subject}_agent_name`), inbox message DIDs
+(`inbox_panel.rs`, via `TaskSummary::remote_agent_name` and the per-variant
+`*_agent_name` on `ActiveTaskView`), and the persona/context DID lists
+(`ActiveDid::agent_name` / `ManagedDid::agent_name` in `vta_panel.rs`).
+Deliberately left on the raw DID: the requester's R-DID on an inbound
+relationship request (a per-relationship pseudonym), and the mediator / VTA /
+credential DIDs — `Config::agent_name_refresh_targets` never resolves those, so
+a name for them could not appear without also extending the refresh sweep.
+
+Input support covers the join VTC-DID entry and the new relationship request;
+the setup-time entries (VTA DID, webvh import, custom mediator, org DID) still
+take a DID only — apply the same `looks_like_agent_name` + `resolve_identifier`
+pattern, threading a resolver into those setup handlers.
 
 ### [x] Agent names — resolve → verify e2e
 DONE (#168). `openvtc-core/tests/agent_name_e2e.rs` drives the whole chain

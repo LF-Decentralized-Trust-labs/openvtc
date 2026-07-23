@@ -7,10 +7,16 @@ use crate::state_handler::{
     main_page::content::{ActiveTaskView, ContentPanelState, InboxConfirm, InboxState, TaskKind},
     state::{ConnectionState, MediatorStatus},
 };
+use openvtc_core::display::display_identifier;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
 };
+
+/// Width the inbox shows a counterparty identifier at. The DIDs in the view
+/// model are already shortened to this by the builder; it bounds the agent name
+/// shown in a DID's place.
+const ID_WIDTH: usize = 60;
 
 /// Inbox content panel.
 pub struct InboxPanel;
@@ -111,7 +117,15 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
                 };
                 lines.push(Line::from(vec![
                     Span::styled("    ", Style::default()),
-                    Span::styled(task.remote_did.clone(), did_style),
+                    Span::styled(
+                        display_identifier(
+                            task.remote_agent_name.as_deref(),
+                            &task.remote_did,
+                            ID_WIDTH,
+                        )
+                        .into_owned(),
+                        did_style,
+                    ),
                     Span::styled("  ", Style::default()),
                     Span::styled(task.created.clone(), did_style),
                 ]));
@@ -150,6 +164,7 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
         ActiveTaskView::RelationshipRequestInbound {
             task_id,
             from_did,
+            from_agent_name,
             their_did,
             reason,
             name,
@@ -168,8 +183,15 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             }
             lines.push(Line::from(vec![
                 Span::styled("From:      ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-                Span::styled(from_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                Span::styled(
+                    // Full-width here: the detail view shows the whole DID
+                    // (sanitised to 256 by the builder), unlike the list.
+                    display_identifier(from_agent_name.as_deref(), from_did, 256).into_owned(),
+                    Style::new().fg(COLOR_SOFT_PURPLE),
+                ),
             ]));
+            // `their_did` is the requester's relationship DID — a pseudonym with
+            // no agent name — so it always renders as the DID.
             let uses_r_did = from_did != their_did;
             lines.push(Line::from(vec![
                 Span::styled("Their DID: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
@@ -210,13 +232,17 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
         ActiveTaskView::VRCRequestInbound {
             task_id,
             from_did,
+            from_agent_name,
             reason,
         } => {
             lines.push(Line::from("Inbound VRC Request").fg(COLOR_SUCCESS).bold());
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("From:  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-                Span::styled(from_did.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                Span::styled(
+                    display_identifier(from_agent_name.as_deref(), from_did, ID_WIDTH).into_owned(),
+                    Style::new().fg(COLOR_SOFT_PURPLE),
+                ),
             ]));
             if let Some(reason) = reason {
                 lines.push(Line::from(vec![
@@ -234,12 +260,19 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
                     .fg(COLOR_DARK_GRAY),
             );
         }
-        ActiveTaskView::VRCIssued { task_id, issuer } => {
+        ActiveTaskView::VRCIssued {
+            task_id,
+            issuer,
+            issuer_agent_name,
+        } => {
             lines.push(Line::from("VRC Received").fg(COLOR_SUCCESS).bold());
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("Issuer: ", Style::new().fg(COLOR_TEXT_DEFAULT)),
-                Span::styled(issuer.clone(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                Span::styled(
+                    display_identifier(issuer_agent_name.as_deref(), issuer, ID_WIDTH).into_owned(),
+                    Style::new().fg(COLOR_SOFT_PURPLE),
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("Task:   ", Style::new().fg(COLOR_DARK_GRAY)),
@@ -251,7 +284,9 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
         ActiveTaskView::RelationshipRequestOutbound {
             task_id,
             to_did,
+            to_agent_name,
             our_did,
+            our_agent_name,
             state,
         } => {
             let label = Style::new().fg(COLOR_TEXT_DEFAULT);
@@ -265,11 +300,18 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("To:       ", label),
-                Span::styled(to_did.clone(), value),
+                Span::styled(
+                    display_identifier(to_agent_name.as_deref(), to_did, ID_WIDTH).into_owned(),
+                    value,
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("Our DID:  ", label),
-                Span::styled(our_did.clone(), value),
+                Span::styled(
+                    // Full-width: `our_did` is not shortened by the builder.
+                    display_identifier(our_agent_name.as_deref(), our_did, 256).into_owned(),
+                    value,
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("Status:   ", label),
@@ -285,6 +327,7 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
         ActiveTaskView::VRCRequestOutbound {
             task_id,
             remote_did,
+            remote_agent_name,
         } => {
             let label = Style::new().fg(COLOR_TEXT_DEFAULT);
             let value = Style::new().fg(COLOR_SOFT_PURPLE);
@@ -293,7 +336,11 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![
                 Span::styled("To:    ", label),
-                Span::styled(remote_did.clone(), value),
+                Span::styled(
+                    display_identifier(remote_agent_name.as_deref(), remote_did, ID_WIDTH)
+                        .into_owned(),
+                    value,
+                ),
             ]));
             lines.push(Line::from(vec![
                 Span::styled("Task:  ", dim),
@@ -306,6 +353,7 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             task_id,
             type_display,
             remote_did,
+            remote_agent_name,
         } => {
             let label = Style::new().fg(COLOR_TEXT_DEFAULT);
             let value = Style::new().fg(COLOR_SOFT_PURPLE);
@@ -315,7 +363,11 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             if !remote_did.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("DID:   ", label),
-                    Span::styled(remote_did.clone(), value),
+                    Span::styled(
+                        display_identifier(remote_agent_name.as_deref(), remote_did, ID_WIDTH)
+                            .into_owned(),
+                        value,
+                    ),
                 ]));
             }
             lines.push(Line::from(vec![
