@@ -182,6 +182,14 @@ impl Config {
             info!("Config will be re-encrypted with the updated seed derivation on next save");
         }
 
+        // Cached "this DID has no verifiable name" results do not survive a
+        // restart — see `prune_agent_name_negatives`. The first refresh sweep
+        // fires immediately after launch, so these re-resolve straight away.
+        let pruned = private_cfg.prune_agent_name_negatives();
+        if pruned > 0 {
+            debug!("Discarded {pruned} cached agent-name negative(s); will re-resolve on launch");
+        }
+
         log_private_config_shape(&private_cfg);
 
         // The v2 `account` persisted in the protected tier is the source of
