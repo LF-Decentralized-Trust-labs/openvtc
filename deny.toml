@@ -18,6 +18,16 @@ no-default-features = false
 version = 2
 yanked = "deny"
 ignore = [
+    # RUSTSEC-2026-0215: smallstr is unmaintained. Not a vulnerability —
+    # no CVE, no known exploit; the crate is a `SmallVec`-backed string type
+    # and the advisory is purely a maintenance-status signal. Transitive and
+    # deep: smallstr <- json-syntax <- json-ld <- ssi-json-ld <-
+    # ssi-claims-core <- ssi-dids-core <- the affinidi DID resolver. Nothing
+    # here names it, and all versions are affected so there is nothing to
+    # upgrade to. The suggested replacements (compact_str, smol_str) are a
+    # change for the json-syntax / `ssi-*` maintainers. Drop this when
+    # json-syntax releases off smallstr and the `ssi-*` chain picks it up.
+    "RUSTSEC-2026-0215",
     # RUSTSEC-2023-0071: Marvin Attack — timing sidechannel in the `rsa`
     # crate's RSA key operations. There is no upstream patch yet; the
     # affected code is reachable only through `pgp`/`openpgp-card-rpgp`/
