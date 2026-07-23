@@ -861,6 +861,24 @@ pub struct VrcSummary {
     pub valid_from: String,
     /// Formatted valid_until date (if set)
     pub valid_until: Option<String>,
+    /// What this credential asserts — "Membership", "Role" — when known.
+    ///
+    /// Previously only reachable by parsing it back out of [`alias`](Self::alias),
+    /// which packed `"<community> — <kind>"` into one string.
+    pub kind: Option<String>,
+    /// Whether the subject is one of this account's own personas, so the detail
+    /// view can say which side is you rather than leaving two names to compare.
+    pub subject_is_self: bool,
+    /// The validity window in human form, with a relative note — e.g.
+    /// `"22 Jul 2026 → 21 Aug 2026 · 29 days left"`.
+    ///
+    /// Composed where `chrono` and the current time are already at hand, so the
+    /// renderer stays free of date arithmetic.
+    pub validity: String,
+    /// One-word validity state for the header line: `valid`, `expired`, or
+    /// `not yet valid`. Derived from the window only — this is **not** a
+    /// revocation check, which needs the issuer's status list.
+    pub status: String,
 }
 
 // ****************************************************************************

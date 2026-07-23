@@ -11,6 +11,11 @@ use ratatui::{
     text::{Line, Span},
 };
 
+/// Width for identifier rows in the expanded detail block. Generous, because a
+/// DID shown here is what you copy when diagnosing — truncating it would defeat
+/// the purpose of the block.
+const ID_WIDTH: usize = 256;
+
 /// Communities overview content panel (R-C-1..R-C-8).
 pub struct CommunitiesPanel;
 
@@ -140,17 +145,29 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
                     Span::styled(v, value),
                 ])
             };
-            // Verified agent name above the DID it belongs to, never instead of
-            // it: this block exists for troubleshooting, so the DID has to stay
-            // readable. Same shape as the settings Context block.
-            if let Some(name) = &c.persona_agent_name {
-                lines.push(kv("Persona name:", name.clone()));
-            }
-            lines.push(kv("Persona DID:", c.persona_did.clone()));
-            if let Some(name) = &c.vtc_agent_name {
-                lines.push(kv("VTC name:", name.clone()));
-            }
-            lines.push(kv("VTC DID:", c.vtc_did.clone()));
+            // The identifier row shows the verified agent name when there is
+            // one, and the DID when there is not — so the label is "Persona",
+            // not "Persona DID": it names the party, and the DID is simply what
+            // it falls back to. Two rows per identity (name above DID) read as
+            // two different things to someone scanning the block.
+            lines.push(kv(
+                "Persona:",
+                openvtc_core::display::display_identifier(
+                    c.persona_agent_name.as_deref(),
+                    &c.persona_did,
+                    ID_WIDTH,
+                )
+                .into_owned(),
+            ));
+            lines.push(kv(
+                "VTC:",
+                openvtc_core::display::display_identifier(
+                    c.vtc_agent_name.as_deref(),
+                    &c.vtc_did,
+                    ID_WIDTH,
+                )
+                .into_owned(),
+            ));
             if !c.sub_context_id.is_empty() {
                 lines.push(kv("Sub-context:", c.sub_context_id.clone()));
             }
