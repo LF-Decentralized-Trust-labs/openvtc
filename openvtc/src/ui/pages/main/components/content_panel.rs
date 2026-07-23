@@ -64,6 +64,11 @@ impl ContentPanelState {
                 .title("Content")
         };
 
+        // Record this frame's usable content width before any panel renders, so
+        // status messages wrap to the terminal rather than a fixed 76 columns.
+        // Two columns come off for the panel's own leading indentation.
+        super::status::set_wrap_width(content_block.inner(rect).width.saturating_sub(2) as usize);
+
         let panel: Option<Box<dyn Panel>> = match menu.selected_menu {
             MainMenu::Communities => {
                 if self.capabilities.view.is_some() {

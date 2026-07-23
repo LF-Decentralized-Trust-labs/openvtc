@@ -836,9 +836,16 @@ async fn run_join_sequence(
                 openvtc_core::config::KeyBackend::Vta { mediator_did, .. } => mediator_did.clone(),
                 _ => None,
             };
-            state.setup.username = display_name.clone().unwrap_or_else(|| {
-                openvtc_core::config::context_path::render_for_display(&vtc_did).to_string()
-            });
+            // A join mints the persona *unlabelled*. `display_name` here is the
+            // COMMUNITY's name — naming the persona after it (or, with no
+            // verified name, after a DID-derived rendering of the VTC DID) put a
+            // community identifier in the persona's own label, and
+            // `mint_persona_into` copied that on into `public.friendly_name`, so
+            // the header announced the community twice and the DID manager
+            // listed a persona labelled with a community DID. The persona's
+            // community binding is recorded on the membership record and shown
+            // beside it; the label is for a name the operator chose.
+            state.setup.username = String::new();
 
             // 5. Persist the persona into the account. `mint_persona_into` writes the
             // persona record + runtime identity + key info to disk *immediately* (a

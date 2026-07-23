@@ -471,9 +471,17 @@ impl Config {
     /// Every DID the UI displays that needs an agent-name lookup — those with no
     /// cache entry or a stale one (`now` past [`AGENT_NAME_TTL`]).
     ///
-    /// Covers persona DIDs, community VTC DIDs, relationship remote-persona DIDs
-    /// and contact DIDs. De-duplicated; the same DID appearing in several places
-    /// is resolved once. Fed to the background batch refresh.
+    /// Covers persona DIDs, community VTC DIDs, relationship remote-persona DIDs,
+    /// contact DIDs, and the two infrastructure DIDs the VTA panel displays (the
+    /// VTA's own DID and the active persona's mediator). De-duplicated; the same
+    /// DID appearing in several places is resolved once. Fed to the background
+    /// batch refresh.
+    ///
+    /// The infrastructure DIDs are included because the VTA panel renders them
+    /// to the operator: a `did:webvh` VTA or mediator can publish a verifiable
+    /// name like any other party, and leaving them out of the sweep was the only
+    /// reason those two rows always showed a raw DID. A DID with no verifiable
+    /// name simply caches a negative and keeps rendering as a DID.
     ///
     /// [`AGENT_NAME_TTL`]: crate::agent_name::AGENT_NAME_TTL
     #[must_use]
@@ -490,6 +498,20 @@ impl Config {
         }
         for contact in self.private.contacts.contacts.keys() {
             dids.insert(contact.to_string());
+        }
+        // Every persona's mediator, plus the VTA's DID. Only `did:*` values —
+        // a mediator field left empty must not become a lookup for "".
+        for persona in self.account.personas.values() {
+            if let Some(mediator) = persona.mediator_did.as_deref()
+                && mediator.starts_with("did:")
+            {
+                dids.insert(mediator.to_string());
+            }
+        }
+        if let KeyBackend::Vta { vta_did, .. } = &self.key_backend
+            && vta_did.starts_with("did:")
+        {
+            dids.insert(vta_did.clone());
         }
         dids.into_iter()
             .filter(|did| {
@@ -861,6 +883,86 @@ mod tests {
         // Once stale, the entry becomes a target again.
         let later = now + crate::agent_name::AGENT_NAME_TTL;
         assert!(config.agent_name_refresh_targets(later).contains(&did));
+    }
+
+    /// The VTA panel renders the VTA's DID and the persona's mediator DID, so
+    /// both must be swept — leaving them out was the only reason those two rows
+    /// always showed a raw DID even when the party published a verifiable name.
+    #[test]
+    fn agent_name_targets_include_the_vta_and_mediator_dids() {
+        use crate::config::account::{PersonaId, PersonaRecord};
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let mut config = test_config(BTreeMap::new());
+        let pid = PersonaId::new();
+        let mediator = "did:webvh:example.com:mediator".to_string();
+        config.account.personas.insert(
+            pid,
+            PersonaRecord {
+                persona_id: pid,
+                did: "did:webvh:example.com:alice".into(),
+                did_document: None,
+                key_refs: vec![],
+                mediator_did: Some(mediator.clone()),
+                origin_context_id: "openvtc/alice".into(),
+                created_at: now,
+                label: None,
+            },
+        );
+        let vta_did = "did:webvh:example.com:vta".to_string();
+        config.key_backend = KeyBackend::Vta {
+            vta_url: "https://vta.example".into(),
+            vta_did: vta_did.clone(),
+            credential_did: "did:key:z6MkTest".into(),
+            credential_private_key: SecretString::new("z6Mktest".into()),
+            mediator_did: Some(mediator.clone()),
+            credential_bundle: SecretString::new("bundle".into()),
+            encryption_seed: SecretBox::new(Box::new(vec![0u8; 32])),
+        };
+
+        let targets = config.agent_name_refresh_targets(now);
+        assert!(targets.contains(&mediator), "mediator swept: {targets:?}");
+        assert!(targets.contains(&vta_did), "VTA DID swept: {targets:?}");
+    }
+
+    /// An unset mediator field must not become a lookup for the empty string.
+    #[test]
+    fn agent_name_targets_skip_non_did_infrastructure_values() {
+        use crate::config::account::{PersonaId, PersonaRecord};
+        use chrono::Utc;
+
+        let now = Utc::now();
+        let mut config = test_config(BTreeMap::new());
+        let pid = PersonaId::new();
+        config.account.personas.insert(
+            pid,
+            PersonaRecord {
+                persona_id: pid,
+                did: "did:webvh:example.com:alice".into(),
+                did_document: None,
+                key_refs: vec![],
+                mediator_did: Some(String::new()),
+                origin_context_id: "openvtc/alice".into(),
+                created_at: now,
+                label: None,
+            },
+        );
+        config.key_backend = KeyBackend::Vta {
+            vta_url: "https://vta.example".into(),
+            vta_did: String::new(),
+            credential_did: "did:key:z6MkTest".into(),
+            credential_private_key: SecretString::new("z6Mktest".into()),
+            mediator_did: None,
+            credential_bundle: SecretString::new("bundle".into()),
+            encryption_seed: SecretBox::new(Box::new(vec![0u8; 32])),
+        };
+
+        let targets = config.agent_name_refresh_targets(now);
+        assert!(
+            !targets.iter().any(|t| t.is_empty()),
+            "no empty target: {targets:?}"
+        );
     }
 
     /// A State-A (account-bootstrap, R-A-5) config carries an account but no
