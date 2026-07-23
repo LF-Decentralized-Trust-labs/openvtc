@@ -30,6 +30,29 @@ pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
 /// choice; a verified agent name (`example.com/@alice`, already round-tripped
 /// before caching) comes next; the truncated DID is the last resort. The same
 /// order applies when a remote R-DID resolves through to its persona DID.
+/// What to call a community on screen.
+///
+/// Precedence: the user's explicit display name, then the community's verified
+/// agent name, then its DID shortened to `max_len`.
+///
+/// Exists because the middle step kept being missed. Three separate places
+/// wrote `display_name.unwrap_or_else(|| vtc_did)` — the header, the membership
+/// credential builder and the capabilities view — so a community with a
+/// perfectly good agent name still announced itself as `did:webvh:QmXi1…` in
+/// each of them, and each had to be found and fixed on its own. One helper, one
+/// precedence.
+pub(crate) fn community_label(
+    config: &openvtc_core::config::Config,
+    vtc_did: &str,
+    display_name: Option<&str>,
+    max_len: usize,
+) -> String {
+    display_name
+        .map(str::to_owned)
+        .or_else(|| config.agent_name_for(vtc_did).map(str::to_owned))
+        .unwrap_or_else(|| openvtc_core::display::truncate_did(vtc_did, max_len).into_owned())
+}
+
 /// Render a listener lifecycle event for the activity log.
 ///
 /// A listener is identified by its DID, so every message here runs the
@@ -951,7 +974,7 @@ impl StateHandler {
                                 (
                                     c.vtc_did.clone(),
                                     c.persona_ref,
-                                    c.display_name.clone().unwrap_or_else(|| c.vtc_did.clone()),
+                                    community_label(&config, &c.vtc_did, c.display_name.as_deref(), 256),
                                 )
                             });
                         if let Some((vtc, persona_id, name)) = target {

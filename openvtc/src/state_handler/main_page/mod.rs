@@ -637,14 +637,12 @@ fn collect_vrcs(
 fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
     let mut result = Vec::new();
     for c in config.account.memberships() {
-        // Explicit name, then the community's verified agent name, then the DID.
-        // Falling straight from the display name to a 64-char truncation was
-        // what put a DID sliced mid-string on the credential's Contact line.
-        let community = c
-            .display_name
-            .clone()
-            .or_else(|| config.agent_name_for(&c.vtc_did).map(str::to_owned))
-            .unwrap_or_else(|| sanitize_display(&c.vtc_did, 64));
+        let community = crate::state_handler::community_label(
+            config,
+            &c.vtc_did,
+            c.display_name.as_deref(),
+            64,
+        );
         for kind in openvtc_core::CredentialKind::ALL {
             let Some(vc) = c.credentials.get(kind) else {
                 continue;
@@ -931,9 +929,12 @@ impl From<&Config> for MainMenuConfigState {
                     .into_iter()
                     .find(|c| c.status.is_active() && c.persona_ref == persona)
                     .map(|c| {
-                        c.display_name
-                            .clone()
-                            .unwrap_or_else(|| shorten_did(&c.vtc_did, 40))
+                        crate::state_handler::community_label(
+                            config,
+                            &c.vtc_did,
+                            c.display_name.as_deref(),
+                            40,
+                        )
                     })
             })
             .unwrap_or_default();
@@ -944,7 +945,15 @@ impl From<&Config> for MainMenuConfigState {
         };
         MainMenuConfigState {
             name: if in_community {
-                config.public.friendly_name.clone()
+                // The friendly name is user-chosen text, but setup can leave a
+                // DID in it. Resolve it when it turns out to be one this account
+                // has a verified name for, so the header never announces a
+                // `did:webvh:` string it could name instead.
+                let friendly = config.public.friendly_name.clone();
+                config
+                    .agent_name_for(&friendly)
+                    .map(str::to_owned)
+                    .unwrap_or(friendly)
             } else {
                 String::new()
             },
@@ -1069,6 +1078,135 @@ mod tests {
 
         assert_eq!(row.persona_label, "example.com/@alice");
         assert_eq!(row.display_name, "example.com/@acme");
+    }
+
+    /// Select the account's only persona as the working one. The header's
+    /// community slot is keyed off `active_persona`, which the shared
+    /// membership helper deliberately leaves unset.
+    fn with_active_persona(mut config: Config) -> Config {
+        let persona_id = *config
+            .account
+            .personas
+            .keys()
+            .next()
+            .expect("helper inserts one persona");
+        config.active_persona = Some(persona_id);
+        config
+    }
+
+    /// The header's community slot names the community by its verified agent
+    /// name when it has no explicit display name — it used to fall straight to a
+    /// shortened DID, so a named community still announced itself as
+    /// `did:webvh:QmXi1…` in the top-left.
+    #[test]
+    fn header_community_falls_back_to_the_agent_name_before_the_did() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config =
+            with_active_persona(config_with_membership(persona_did, None, vtc_did, None));
+        config.set_cached_agent_name(
+            vtc_did,
+            Some("example.com/@acme".into()),
+            chrono::Utc::now(),
+        );
+
+        let header = MainMenuConfigState::from(&config);
+        assert_eq!(header.community, "example.com/@acme");
+    }
+
+    /// An explicit display name still wins — it is the user's own label.
+    #[test]
+    fn header_community_prefers_an_explicit_display_name() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = with_active_persona(config_with_membership(
+            persona_did,
+            None,
+            vtc_did,
+            Some("Acme Corp"),
+        ));
+        config.set_cached_agent_name(
+            vtc_did,
+            Some("example.com/@acme".into()),
+            chrono::Utc::now(),
+        );
+
+        assert_eq!(MainMenuConfigState::from(&config).community, "Acme Corp");
+    }
+
+    /// With no name of any kind the DID is still shown, rather than a blank.
+    #[test]
+    fn header_community_falls_back_to_the_did_when_unnamed() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let config = with_active_persona(config_with_membership(persona_did, None, vtc_did, None));
+
+        let header = MainMenuConfigState::from(&config);
+        assert!(!header.community.is_empty());
+        assert!(
+            header.community.contains("did:webvh:"),
+            "{}",
+            header.community
+        );
+    }
+
+    /// A friendly name that is really a DID resolves to that DID's verified
+    /// name, so the header never prints an identifier it could have named.
+    #[test]
+    fn header_name_resolves_a_did_shaped_friendly_name() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+        config.public.friendly_name = vtc_did.to_string();
+        config.set_cached_agent_name(
+            vtc_did,
+            Some("example.com/@acme".into()),
+            chrono::Utc::now(),
+        );
+
+        assert_eq!(MainMenuConfigState::from(&config).name, "example.com/@acme");
+    }
+
+    /// The capabilities view titles itself with the same community label as the
+    /// header and the credential list, rather than a raw DID.
+    #[test]
+    fn community_label_is_shared_across_surfaces() {
+        use crate::state_handler::community_label;
+
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+
+        // No name of any kind: the DID, shortened.
+        assert!(community_label(&config, vtc_did, None, 40).contains("did:webvh:"));
+
+        // A verified agent name takes over.
+        config.set_cached_agent_name(
+            vtc_did,
+            Some("example.com/@acme".into()),
+            chrono::Utc::now(),
+        );
+        assert_eq!(
+            community_label(&config, vtc_did, None, 40),
+            "example.com/@acme"
+        );
+
+        // An explicit display name still outranks it.
+        assert_eq!(
+            community_label(&config, vtc_did, Some("Acme Corp"), 40),
+            "Acme Corp"
+        );
+    }
+
+    /// An ordinary friendly name is left exactly as the user wrote it.
+    #[test]
+    fn header_name_leaves_a_real_friendly_name_alone() {
+        let persona_did = "did:webvh:QmScidPersonaAAAAAAAAAAAAAAAAAAA:example.com:persona";
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let mut config = config_with_membership(persona_did, None, vtc_did, None);
+        config.public.friendly_name = "Glenn".to_string();
+
+        assert_eq!(MainMenuConfigState::from(&config).name, "Glenn");
     }
 
     /// The point of the summary line: "is this still good, and for how long"
