@@ -64,6 +64,9 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
 
 const WIPE_CONFIRM_TOKEN: &str = "WIPE";
 
+/// Width the settings rows truncate their values to.
+const VALUE_WIDTH: usize = 50;
+
 fn render_wipe_confirm(confirm_input: &str) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
     lines.push(
@@ -128,11 +131,20 @@ fn render_wipe_confirm(confirm_input: &str) -> Vec<Line<'static>> {
 }
 
 fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
+    // The persona row names the party, so it shows the verified agent name and
+    // falls back to the DID — hence "Persona", not "Persona DID". The value was
+    // already on the view model and simply never read here.
+    let persona = openvtc_core::display::display_identifier(
+        state.persona_agent_name.as_deref(),
+        &state.persona_did,
+        VALUE_WIDTH,
+    )
+    .into_owned();
     let settings = [
-        ("Friendly Name", &state.friendly_name, true),
-        ("Mediator DID", &state.mediator_did, true),
-        ("Org DID", &state.org_did, true),
-        ("Persona DID", &state.persona_did, false),
+        ("Friendly Name", state.friendly_name.clone(), true),
+        ("Mediator DID", state.mediator_did.clone(), true),
+        ("Org DID", state.org_did.clone(), true),
+        ("Persona", persona, false),
     ];
 
     let mut lines = vec![Line::from("")];
@@ -163,11 +175,10 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
             Span::styled(prefix, style),
             Span::styled(format!("{}: ", label), style),
             Span::styled(
-                if value.len() > 50 {
-                    format!("{}...", &value[..47])
-                } else {
-                    value.to_string()
-                },
+                // `&value[..47]` sliced by *bytes* — it panics when the cut
+                // lands inside a multi-byte character, which a friendly name or
+                // an agent name may well contain.
+                openvtc_core::display::truncate_did(value, VALUE_WIDTH).into_owned(),
                 Style::new().fg(COLOR_SOFT_PURPLE),
             ),
             Span::styled(edit_hint, Style::new().fg(COLOR_DARK_GRAY)),
