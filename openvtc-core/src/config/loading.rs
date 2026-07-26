@@ -292,17 +292,17 @@ impl Config {
         let hydrate: Result<(), OpenVTCError> = async {
             for (persona_id, persona_did, persona_mediator, cached_document) in &personas {
                 // Name the persona's messaging profile after its community so it
-                // is identifiable (not a generic "Persona") — matches the runtime
-                // listener label (`Config::persona_profile_label`).
-                let profile_label = account
-                    .memberships()
-                    .find(|c| c.persona_ref == *persona_id)
-                    .map(|c| {
-                        c.display_name.clone().unwrap_or_else(|| {
-                            crate::config::context_path::render_for_display(&c.vtc_did).to_string()
-                        })
-                    })
-                    .unwrap_or_else(|| "Persona".to_string());
+                // is identifiable (not a generic "Persona"). Shares one helper
+                // with the runtime label (`Config::persona_profile_label`) —
+                // this used to be a second copy of the expression, which is how
+                // the two could drift.
+                //
+                // No `Config` exists yet here, so the verified-name lookup goes
+                // through `private_cfg` directly.
+                let profile_label = crate::config::membership_profile_label(
+                    account.memberships().find(|c| c.persona_ref == *persona_id),
+                    |did| private_cfg.cached_agent_name(did).map(ToString::to_string),
+                );
 
                 // PERF #3: prefer the persisted persona DID document over a fresh
                 // network resolve (~1s). did:webvh docs change rarely between

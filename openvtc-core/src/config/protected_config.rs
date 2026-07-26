@@ -248,6 +248,21 @@ pub struct ProtectedConfig {
 }
 
 impl ProtectedConfig {
+    /// The verified agent name cached for `did`, if one is known.
+    ///
+    /// `Some` only for a positive lookup; a cached *negative* (the DID has no
+    /// verifiable name) reads as `None`, same as an uncached DID. That
+    /// collapsing is the point — a caller rendering a label must not be able to
+    /// tell the two apart and accidentally show something unverified.
+    ///
+    /// [`Config::agent_name_for`](crate::config::Config::agent_name_for)
+    /// delegates here so the rule has one definition; the config-loading path
+    /// needs it before a `Config` exists.
+    #[must_use]
+    pub fn cached_agent_name(&self, did: &str) -> Option<&str> {
+        self.agent_names.get(did).and_then(|c| c.name.as_deref())
+    }
+
     /// Drop every cached *negative* agent-name lookup, returning how many went.
     ///
     /// Called on load. A negative records only that a name could not be verified
