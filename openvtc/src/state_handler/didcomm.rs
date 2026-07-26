@@ -20,17 +20,33 @@ use tracing::debug;
 /// (e.g. a State-A account with no persona).
 pub const PERSONA_LISTENER_ID: &str = "persona";
 
-/// The listener ID for a persona, derived from its DID slug so it is stable,
-/// unique per community (one persona per community), and identifiable in the
-/// activity log — e.g. `silent-tongue` rather than a generic `persona`. Derived
-/// from the DID alone (not the full `Config`) so the runtime and message senders
-/// (`listener_id_for_did`) agree on the same id without extra context.
+/// The listener ID for a persona: **its DID, verbatim**.
+///
+/// This is an *identity key*, not a label. It keys the rapid-cycling detection
+/// map in [`spawn_lifecycle_logger`] and is what reconnect logic matches on, so
+/// it has to be collision-free. A DID is; a trailing path segment is not —
+/// `did:webvh:ScidA:host1.example:magic-depart` and
+/// `did:webvh:ScidB:host2.example:magic-depart` would collapse onto one id and
+/// two personas would share a listener. Do not shorten it here.
+///
+/// It used to run the DID through `context_path::render_for_display` and the doc
+/// promised a short slug (`silent-tongue`). That call was always a no-op: it
+/// splits on `/`, which a DID has none of, so the whole DID came back. Removing
+/// it changes no behaviour and stops the contract claiming something it never
+/// delivered.
+///
+/// Display is a separate concern, handled where the id is *rendered* rather than
+/// where it is minted: the runtime loop formats listener ids through
+/// `resolve_did_to_display`, so the activity log reads
+/// `Listener 'webvh.storm.ws/@magic-depart' connected`.
+///
+/// Derived from the DID alone (not the full `Config`) so the runtime and message
+/// senders (`listener_id_for_did`) agree on the same id without extra context.
 pub fn persona_listener_id(persona_did: &str) -> String {
-    let slug = openvtc_core::config::context_path::render_for_display(persona_did).to_string();
-    if slug.is_empty() {
+    if persona_did.is_empty() {
         PERSONA_LISTENER_ID.to_string()
     } else {
-        slug
+        persona_did.to_string()
     }
 }
 
@@ -660,6 +676,35 @@ pub fn relationship_listener_config_from_secrets(
         restart_policy: default_listener_restart_policy(),
         auto_delete: true,
         ..Default::default()
+    }
+}
+
+#[cfg(test)]
+mod persona_listener_id_tests {
+    use super::{PERSONA_LISTENER_ID, persona_listener_id};
+
+    /// The contract: the id *is* the DID. Stated as a test because the doc
+    /// comment previously promised a slug and the code silently did this.
+    #[test]
+    fn the_id_is_the_did_verbatim() {
+        let did = "did:webvh:QmR6e4:webvh.storm.ws:magic-depart";
+        assert_eq!(persona_listener_id(did), did);
+    }
+
+    /// The reason not to "fix" this by slugging the trailing segment. Two
+    /// personas on different hosts, with different SCIDs, share a final
+    /// segment — slugging would key both onto one listener.
+    #[test]
+    fn personas_sharing_a_trailing_segment_get_distinct_ids() {
+        let a = persona_listener_id("did:webvh:ScidA:host1.example:magic-depart");
+        let b = persona_listener_id("did:webvh:ScidB:host2.example:magic-depart");
+        assert_ne!(a, b, "listener_id is an identity key and must not collide");
+    }
+
+    /// A State-A account with no persona still needs a listener id.
+    #[test]
+    fn an_empty_did_falls_back_to_the_generic_id() {
+        assert_eq!(persona_listener_id(""), PERSONA_LISTENER_ID);
     }
 }
 
