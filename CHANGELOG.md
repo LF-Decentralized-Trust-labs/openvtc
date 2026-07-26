@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Follow the VTC Trust Tasks onto the `spec/vtc` registry authority** —
+  `vta-sdk` 0.20.0 → 0.20.1 (and `trust-tasks-rs` 0.2.26 → 0.2.38). The VTC's
+  Trust Tasks have moved off the non-conformant
+  `trusttasks.org/openvtc/vtc/…` authority to the canonical registry at
+  `trusttasks.org/spec/vtc/…`
+  (OpenVTC/verifiable-trust-infrastructure#806, dtgwg-trust-tasks-tf#144).
+
+  No source change was needed: the join ceremony and the reciprocal-VMC
+  exchange dispatch on `vta_sdk::protocols` constants rather than string
+  literals, so the new URIs arrive with the bump —
+  `MEMBER_REQUEST_VMC_TYPE` and `MEMBER_VMC_TYPE` now read
+  `spec/vtc/members/{request-vmc,vmc}/0.1`, and the join-request and
+  self-remove receipts likewise. That indirection is why this is a lockfile
+  change and not an audit of every dispatch site.
+
+  The inbound router already accepted both authorities — `OPENVTC_CATCH_ALL_PATTERN`
+  gained its `spec/vtc/` arm ahead of the migration precisely so migrated
+  traffic would not be dropped before dispatch. It stays dual-arm for now:
+  the `openvtc/vtc/` arm can be retired once no supported VTC emits it, and
+  eight VTC tasks are still on the old authority awaiting a canonical fold.
+
 ## [0.2.1] - 2026-05-24
 
 ### Security
