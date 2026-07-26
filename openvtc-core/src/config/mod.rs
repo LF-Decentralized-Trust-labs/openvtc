@@ -343,6 +343,48 @@ pub struct ExportedConfig {
     pub sc: secured_config::SecuredConfig,
 }
 
+/// The messaging-profile label for a community membership: its display name,
+/// else the community's **verified** agent name, else the VTC DID.
+///
+/// Shared by [`Config::persona_profile_label_for`] and the hydration path in
+/// `loading.rs`, which built this label with its own copy of the same
+/// expression. The two must agree — otherwise a persona's messaging profile is
+/// named one thing at startup and another at runtime — and holding one copy
+/// makes that structural instead of a comment asking the next editor to
+/// remember.
+///
+/// The middle arm used to be `context_path::render_for_display(&c.vtc_did)`.
+/// That is a **sub-context** helper: it splits on the last `/` and returns the
+/// tail, which is right for `openvtc-glenn/qmxi1pzd4nev` and a no-op on a DID,
+/// since a DID contains no `/`. So the "slug" fallback was the whole
+/// `did:webvh:Qm…` string. A verified agent name is the readable label that arm
+/// was reaching for.
+///
+/// `agent_name` must yield **only verified** names. [`Config::agent_name_for`]
+/// and [`ProtectedConfig::cached_agent_name`] both read the cache of completed
+/// round-trips and collapse a cached negative to `None`, which is what callers
+/// should pass. Rendering a name straight from a document's `alsoKnownAs` would
+/// make this a phishing surface — anyone can claim `bigbank.com/@support` in
+/// their own document. See [`crate::agent_name`].
+///
+/// The closure returns an owned `String` rather than a borrow: the two callers
+/// hold the cache behind different owners (a `&Config` and, during loading, a
+/// `ProtectedConfig` that is later moved into one), and a borrowed return has no
+/// lifetime to tie itself to that satisfies both. The allocation happens only on
+/// the fallback path, where a label is being built anyway.
+pub(crate) fn membership_profile_label(
+    membership: Option<&account::CommunityRecord>,
+    agent_name: impl FnOnce(&str) -> Option<String>,
+) -> String {
+    let Some(c) = membership else {
+        return "Persona".to_string();
+    };
+    c.display_name
+        .clone()
+        .or_else(|| agent_name(&c.vtc_did))
+        .unwrap_or_else(|| c.vtc_did.clone())
+}
+
 impl Config {
     /// Returns the 32-byte encryption seed used to encrypt/decrypt `ProtectedConfig`.
     ///
@@ -411,9 +453,9 @@ impl Config {
     }
 
     /// Human label for the active persona's messaging profile: the community it
-    /// belongs to (its display name, else the VTC DID slug), so each community's
-    /// profile is identifiable rather than a generic "Persona". Falls back to
-    /// "Persona" when the persona has no community yet.
+    /// belongs to (its display name, else its verified agent name, else the VTC
+    /// DID), so each community's profile is identifiable rather than a generic
+    /// "Persona". Falls back to "Persona" when the persona has no community yet.
     pub fn persona_profile_label(&self) -> String {
         match self.active_identity().map(|i| i.persona_id) {
             Some(pid) => self.persona_profile_label_for(pid),
@@ -425,15 +467,12 @@ impl Config {
     /// [`Config::persona_profile_label`]). Used when building one DIDComm
     /// listener per persona so each is named after its community.
     pub fn persona_profile_label_for(&self, persona_id: account::PersonaId) -> String {
-        self.account
-            .memberships()
-            .find(|c| c.persona_ref == persona_id)
-            .map(|c| {
-                c.display_name.clone().unwrap_or_else(|| {
-                    crate::config::context_path::render_for_display(&c.vtc_did).to_string()
-                })
-            })
-            .unwrap_or_else(|| "Persona".to_string())
+        membership_profile_label(
+            self.account
+                .memberships()
+                .find(|c| c.persona_ref == persona_id),
+            |did| self.agent_name_for(did).map(ToString::to_string),
+        )
     }
 
     /// The verified agent name cached for `did`, if one is known.
@@ -445,10 +484,7 @@ impl Config {
     /// directly.
     #[must_use]
     pub fn agent_name_for(&self, did: &str) -> Option<&str> {
-        self.private
-            .agent_names
-            .get(did)
-            .and_then(|c| c.name.as_deref())
+        self.private.cached_agent_name(did)
     }
 
     /// Record a verified agent-name lookup (positive or negative) for `did`,
@@ -716,6 +752,62 @@ impl std::fmt::Debug for KeyInfo {
             .field("expiry", &self.expiry)
             .field("created", &self.created)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod membership_profile_label_tests {
+    use super::membership_profile_label;
+    use crate::config::account::{CommunityRecord, PersonaId};
+
+    const VTC_DID: &str = "did:webvh:QmScidCommunityCCCCCCCCCCCC:vtc.example:acme";
+
+    fn membership(display_name: Option<&str>) -> CommunityRecord {
+        CommunityRecord::new_pending(
+            VTC_DID.to_string(),
+            display_name.map(ToString::to_string),
+            "openvtc-glenn/qmxi1pzd4nev".to_string(),
+            PersonaId::default(),
+            uuid::Uuid::nil(),
+            chrono::Utc::now(),
+        )
+    }
+
+    /// A display name resolved from the VTC document wins outright — it is the
+    /// community's own name for itself.
+    #[test]
+    fn a_display_name_is_preferred() {
+        let c = membership(Some("Acme Corp"));
+        let label = membership_profile_label(Some(&c), |_| Some("vtc.example/@acme".to_string()));
+        assert_eq!(label, "Acme Corp");
+    }
+
+    /// The arm this change fixes. It used to run the DID through
+    /// `context_path::render_for_display` — a no-op on a DID — so the label was
+    /// the whole `did:webvh:…` string.
+    #[test]
+    fn a_verified_agent_name_is_used_when_there_is_no_display_name() {
+        let c = membership(None);
+        let label = membership_profile_label(Some(&c), |did| {
+            assert_eq!(did, VTC_DID, "the VTC DID is what gets looked up");
+            Some("vtc.example/@acme".to_string())
+        });
+        assert_eq!(label, "vtc.example/@acme");
+    }
+
+    /// No display name and no *verified* name leaves the DID. Unpretty, but it
+    /// is the only thing left that is true — a name that did not verify must
+    /// never be shown (see `crate::agent_name`).
+    #[test]
+    fn an_unverified_community_falls_back_to_the_did() {
+        let c = membership(None);
+        assert_eq!(membership_profile_label(Some(&c), |_| None), VTC_DID);
+    }
+
+    /// A persona with no community yet (State-A) keeps the generic label.
+    #[test]
+    fn no_membership_is_the_generic_persona_label() {
+        assert_eq!(membership_profile_label(None, |_| None), "Persona");
     }
 }
 
