@@ -17,6 +17,9 @@ pub mod agent_name;
 pub mod bip32;
 pub mod capabilities;
 pub mod config;
+/// DIDComm transport plumbing (listeners, routing, sending). Distinct from
+/// [`messaging`], which is the pure protocol logic — see that module's docs.
+pub mod didcomm;
 pub mod display;
 pub mod errors;
 pub mod identity;
