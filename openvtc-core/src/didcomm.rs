@@ -26,8 +26,9 @@
 //!   into it.
 //! - this module is the **transport**: sockets, listeners, mediators, retries.
 //!
-//! The one crossing point is [`build_didcomm_message`], re-exported below because
-//! building a message is pure and belongs with the protocol logic.
+//! The one crossing point is [`crate::messaging::build_didcomm_message`],
+//! re-exported below because building a message is pure and belongs with the
+//! protocol logic.
 
 use crate::config::Config;
 use crate::relationships::RelationshipState;
