@@ -292,9 +292,9 @@ dependencies = [
 
 [[package]]
 name = "affinidi-messaging-delivery"
-version = "0.1.11"
+version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb92150efbc0d18868510c2163ab0e314b34e71a16a032688c6f3033eb1f4e14"
+checksum = "d6ea99eb78ae37cf0092d7669a1e2b76ad6e4a5fe71099ca2144bd89653ec01f"
 dependencies = [
  "affinidi-messaging-core",
  "async-trait",
@@ -5764,7 +5764,10 @@ dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
  "affinidi-did-resolver-cache-sdk",
+ "affinidi-messaging-core",
+ "affinidi-messaging-delivery",
  "affinidi-messaging-didcomm-service",
+ "affinidi-messaging-sdk",
  "affinidi-messaging-test-mediator",
  "affinidi-tdk",
  "agent-names",
@@ -5781,6 +5784,7 @@ dependencies = [
  "dirs",
  "dtg-credentials",
  "ed25519-dalek-bip32",
+ "futures-util",
  "hex",
  "hkdf 0.13.0",
  "keyring-core",

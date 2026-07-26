@@ -47,7 +47,7 @@ use vta_sdk::protocols::join_requests::{
     JoinRequestSubmitBody, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
 };
 
-use common::{MockMediator, init_test_tracing, start_profile_service};
+use common::{MockMediator, ProfileMessaging, init_test_tracing, start_profile_messaging};
 
 /// Connect the persona (alice) and VTC (bob) profiles to the mediator,
 /// each routing `routes` into its own inbound channel, and wait for both
@@ -57,8 +57,8 @@ async fn connect_persona_and_vtc(
     mediator: &MockMediator,
     routes: &[&'static str],
 ) -> (
-    affinidi_messaging_didcomm_service::DIDCommService,
-    affinidi_messaging_didcomm_service::DIDCommService,
+    ProfileMessaging,
+    ProfileMessaging,
     String,
     String,
     mpsc::UnboundedReceiver<Message>,
@@ -72,21 +72,21 @@ async fn connect_persona_and_vtc(
     // VTC listener comes up first so its pickup queue is ready when the
     // persona pushes the join request.
     let (vtc_tx, vtc_rx) = mpsc::unbounded_channel::<Message>();
-    let (vtc_service, _vtc_shutdown) = start_profile_service(vtc, routes, vtc_tx)
+    let vtc_service = start_profile_messaging(vtc, routes, vtc_tx)
         .await
-        .expect("vtc service");
+        .expect("vtc messaging");
 
     let (persona_tx, persona_rx) = mpsc::unbounded_channel::<Message>();
-    let (persona_service, _persona_shutdown) = start_profile_service(persona, routes, persona_tx)
+    let persona_service = start_profile_messaging(persona, routes, persona_tx)
         .await
-        .expect("persona service");
+        .expect("persona messaging");
 
     vtc_service
-        .wait_connected("bob", Duration::from_secs(15))
+        .wait_connected(Duration::from_secs(15))
         .await
         .expect("vtc connect");
     persona_service
-        .wait_connected("alice", Duration::from_secs(15))
+        .wait_connected(Duration::from_secs(15))
         .await
         .expect("persona connect");
 
@@ -118,7 +118,7 @@ fn pending_account(vtc_did: &str, request_id: Uuid) -> Account {
 /// Send the persona's join request to the VTC and assert the VTC
 /// deserialises the production `JoinRequestSubmitBody` off the wire.
 async fn submit_and_assert(
-    persona_service: &affinidi_messaging_didcomm_service::DIDCommService,
+    persona_service: &ProfileMessaging,
     persona_did: &str,
     vtc_did: &str,
     vtc_rx: &mut mpsc::UnboundedReceiver<Message>,
@@ -142,7 +142,7 @@ async fn submit_and_assert(
     .finalize();
 
     persona_service
-        .send_message_with_retry("alice", submit, vtc_did, 3, Duration::from_secs(2))
+        .send(&submit, vtc_did)
         .await
         .expect("persona -> vtc submit");
 
@@ -165,7 +165,7 @@ async fn submit_and_assert(
 /// (correlated to `request_id`) back to the persona, who receives it off
 /// the wire. Returns the delivered message for the reducer to consume.
 async fn respond_status(
-    vtc_service: &affinidi_messaging_didcomm_service::DIDCommService,
+    vtc_service: &ProfileMessaging,
     vtc_did: &str,
     persona_did: &str,
     request_id: Uuid,
@@ -188,7 +188,7 @@ async fn respond_status(
     .finalize();
 
     vtc_service
-        .send_message_with_retry("bob", response, persona_did, 3, Duration::from_secs(2))
+        .send(&response, persona_did)
         .await
         .expect("vtc -> persona status response");
 
@@ -316,7 +316,7 @@ async fn member_self_remove_round_trip() {
     .finalize();
 
     persona_service
-        .send_message_with_retry("alice", leave, &vtc_did, 3, Duration::from_secs(2))
+        .send(&leave, &vtc_did)
         .await
         .expect("persona -> vtc self-remove");
 
