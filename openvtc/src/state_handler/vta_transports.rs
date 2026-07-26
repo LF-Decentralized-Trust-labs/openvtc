@@ -12,10 +12,18 @@
 //! on the loop thread, preserving the single-mutator invariant.
 //!
 //! The endpoint extraction is **not** hand-rolled: `vta_sdk`'s
-//! `provision_client::resolve_vta` already reads the `#vta-rest` and
-//! `DIDCommMessaging` services out of the document, and the setup flow calls the
-//! same function — so the panel and the bootstrap diagnostics can never disagree
-//! about what a VTA advertises.
+//! `provision_client::resolve_vta` already reads the `#tsp` (`TSPTransport`),
+//! `#vta-rest` and `DIDCommMessaging` services out of the document, and the
+//! setup flow calls the same function — so the panel and the bootstrap
+//! diagnostics can never disagree about what a VTA advertises.
+//!
+//! `#tsp` extraction arrived with vta-sdk 0.20 (upstream
+//! OpenVTC/verifiable-trust-infrastructure#765). Before it, `ResolvedVta`
+//! surfaced only DIDComm and REST, so a TSP-enabled VTA that advertised nothing
+//! else rendered as `DIDComm (in use) · only transport offered` — a claim the
+//! panel had no way to know was false. Taking it from the SDK rather than
+//! reaching into the DID document here is what keeps that from recurring in the
+//! other direction.
 
 use crate::state_handler::main_page::content::AdvertisedTransports;
 
@@ -39,6 +47,7 @@ pub(crate) async fn probe(vta_did: String) -> AdvertisedTransports {
     let failed = |reason: String| {
         tracing::debug!("VTA transport probe for {vta_did} failed: {reason}");
         AdvertisedTransports {
+            tsp_mediator_did: None,
             mediator_did: None,
             rest_url: None,
             error: Some(reason),
@@ -52,6 +61,7 @@ pub(crate) async fn probe(vta_did: String) -> AdvertisedTransports {
     .await
     {
         Ok(Ok(resolved)) => AdvertisedTransports {
+            tsp_mediator_did: resolved.tsp_mediator_did,
             mediator_did: resolved.mediator_did,
             rest_url: resolved.rest_url,
             error: None,
