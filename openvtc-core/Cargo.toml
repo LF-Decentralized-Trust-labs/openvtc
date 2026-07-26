@@ -81,6 +81,13 @@ criterion = { version = "0.8", features = ["html_reports"] }
 # harness that did the same dance manually.
 affinidi-messaging-test-mediator = "0.2"
 affinidi-messaging-didcomm-service = { workspace = true }
+# The delivery layer, for the integration harness. The harness has to move with
+# the production code: it builds its own messaging stack, so tests left on the old
+# framework would keep passing while covering none of the migrated path.
+affinidi-messaging-delivery = { workspace = true }
+affinidi-messaging-core = { workspace = true }
+affinidi-messaging-sdk = { workspace = true }
+futures-util = { workspace = true }
 # In-process MockVta for the bootstrap e2e (VTI#406/#427 test-support seams).
 # `vta-service` is the VTA server crate; it carries the credential-vault
 # lifecycle tasks (receive/query/archive/delete/restore/purge) + the

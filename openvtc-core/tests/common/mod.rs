@@ -17,20 +17,39 @@
 //!
 //! CI's coverage job runs `--include-ignored` so the integration suite
 //! still contributes to the report.
+//!
+//! ## Which messaging stack this builds
+//!
+//! [`ProfileMessaging`] / [`start_profile_messaging`] stand a profile up on the
+//! **delivery layer** (`affinidi-messaging-delivery`'s `MessagingService` over a
+//! `DidCommTransport`), not the `affinidi-messaging-didcomm-service` framework the
+//! production code still uses. That is deliberate and it is the point: the harness
+//! builds its own messaging stack, so had it stayed on the framework these tests
+//! would keep passing while covering none of the migrated path (#189). Migrating it
+//! first makes the suite the regression net for the production swap rather than a
+//! green light that proves nothing.
 
 #![allow(dead_code)]
 
-use affinidi_messaging_didcomm_service::{
-    DIDCommResponse, DIDCommService, DIDCommServiceConfig, DIDCommServiceError, HandlerContext,
-    ListenerConfig, RestartPolicy, RetryConfig, Router, handler_fn, ignore_handler,
-    trust_ping_handler,
+use affinidi_messaging_core::{ConnState, MessageTransport};
+use affinidi_messaging_delivery::{
+    Delivery, InMemoryOutboxStore, MessagingService, OutboxStore, Sent, drain_loop_via,
 };
+use affinidi_messaging_sdk::DidCommTransport;
 use affinidi_messaging_test_mediator::{TestMediator, TestMediatorHandle, TestMediatorUser};
+use affinidi_tdk::common::TDKSharedState;
+use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::didcomm::Message;
+use affinidi_tdk::messaging::ATM;
+use affinidi_tdk::messaging::config::ATMConfig;
+use affinidi_tdk::messaging::profiles::ATMProfile;
+use affinidi_tdk::secrets_resolver::SecretsResolver;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
+use futures_util::StreamExt;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync + 'static>>;
 
@@ -118,18 +137,107 @@ pub fn init_test_tracing() {
         .try_init();
 }
 
-/// Build a `DIDCommService` for `profile` with a router that captures
-/// any inbound message in `routes` into `inbound_tx`. Returns the
-/// running service plus the cancellation token guarding its background
-/// tasks.
-pub async fn start_profile_service(
+/// A profile's messaging stack on the **delivery layer** — the replacement for
+/// the `DIDCommService` the framework harness used to build.
+///
+/// Holds the pieces a test needs to send, plus the dispatcher task that pumps
+/// inbound messages into the test's channel. Dropping it aborts the dispatcher.
+///
+/// The ATM and profile are kept because outbound is now a two-step the framework
+/// used to hide: the delivery layer's `MessageTransport::send` takes **already
+/// packed** bytes, so packing is the caller's job (`MessagingProtocol`'s concern,
+/// not the transport's). This mirrors what `vtc-service` does on the same layer.
+pub struct ProfileMessaging {
+    pub service: Arc<MessagingService>,
+    pub atm: ATM,
+    pub profile: Arc<ATMProfile>,
+    /// The transport id this profile is installed under — its own DID, matching
+    /// the production convention where the transport *is* the identity.
+    pub transport_id: String,
+    did: String,
+    dispatcher: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ProfileMessaging {
+    fn drop(&mut self) {
+        self.dispatcher.abort();
+    }
+}
+
+impl ProfileMessaging {
+    /// Wait until this profile's transport reports `Connected`, or `timeout`.
+    ///
+    /// Replaces the framework's `wait_connected`. Polls
+    /// `transport_state`, which reads the transport's live connection signal
+    /// rather than a boot-time latch — so a transport that connects, drops and
+    /// reconnects is reported truthfully throughout (R6.2).
+    pub async fn wait_connected(&self, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if self.service.transport_state(&self.transport_id) == Some(ConnState::Connected) {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "transport {} did not reach Connected within {timeout:?} (last state: {:?})",
+                    self.transport_id,
+                    self.service.transport_state(&self.transport_id)
+                )
+                .into());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    /// Pack `message` authcrypt (from this profile's DID to `to`) and send it over
+    /// this profile's transport.
+    ///
+    /// `Delivery::Guaranteed` rather than `BestEffort`, because the framework call
+    /// this replaces (`send_message_with_retry`) retried on a disconnected
+    /// listener. The outbox is that retry, so a send issued while the socket is
+    /// reconnecting still lands instead of failing the test flakily.
+    pub async fn send(&self, message: &Message, to: &str) -> Result<Sent> {
+        let (packed, _meta) = self
+            .atm
+            .pack_encrypted(message, to, Some(&self.did), Some(&self.did))
+            .await?;
+        let sent = self
+            .service
+            .send_via(
+                &self.transport_id,
+                to,
+                packed.into_bytes(),
+                Delivery::Guaranteed {
+                    idempotency_key: Some(message.id.clone()),
+                    ordering_key: None,
+                    deliver_by: Duration::from_secs(30),
+                },
+            )
+            .await?;
+        Ok(sent)
+    }
+}
+
+/// Build a profile's messaging stack on the delivery layer, capturing inbound
+/// messages whose type is in `routes` into `inbound_tx`.
+///
+/// The construction sequence is the canonical one (secrets seeded **before**
+/// `ATM::new`, profile via `from_tdk_profile`, then `profile_add(_, true)` to
+/// bring the websocket up before binding the transport) — `DidCommTransport::new`
+/// fails on a profile with no websocket running.
+///
+/// The transport is installed under the profile's **DID** rather than the
+/// `"default"` id, so this harness exercises the same
+/// one-transport-per-identity shape the production code uses.
+///
+/// Type filtering replaces the old `Router`: the delivery layer has no
+/// type-routed dispatch, so a consumer matches on the message itself — the same
+/// move `vtc-service` made when it cut over.
+pub async fn start_profile_messaging(
     profile: TestProfile,
     routes: &[&'static str],
     inbound_tx: mpsc::UnboundedSender<Message>,
-) -> std::result::Result<
-    (DIDCommService, CancellationToken),
-    Box<dyn std::error::Error + Send + Sync>,
-> {
+) -> Result<ProfileMessaging> {
     let TestProfile {
         alias,
         did,
@@ -137,51 +245,61 @@ pub async fn start_profile_service(
         mediator_did,
     } = profile;
 
-    let tdk_profile = TDKProfile::new(&alias, &did, Some(&mediator_did), secrets);
+    let tdk_profile = TDKProfile::new(&alias, &did, Some(&mediator_did), secrets.clone());
+    let tdk = Arc::new(TDKSharedState::new(TDKConfig::builder().build()?).await?);
+    for secret in secrets {
+        tdk.secrets_resolver().insert(secret).await;
+    }
+    let atm = ATM::new(ATMConfig::builder().build()?, tdk).await?;
+    let atm_profile = ATMProfile::from_tdk_profile(&atm, &tdk_profile).await?;
+    let profile = atm.profile_add(&atm_profile, true).await?;
 
-    let config = DIDCommServiceConfig {
-        listeners: vec![ListenerConfig {
-            id: alias.clone(),
-            profile: tdk_profile,
-            restart_policy: RestartPolicy::Always {
-                backoff: RetryConfig::default(),
-            },
-            // Use the default acl_mode (None) — the mediator's own
-            // global mode (ExplicitDeny by default) is what governs
-            // whether new accounts are accepted.
-            ..Default::default()
-        }],
-    };
+    let transport: Arc<dyn MessageTransport> =
+        Arc::new(DidCommTransport::new(atm.clone(), profile.clone()).await?);
+    // The store is held here as well as handed to the service: `MessagingService`
+    // does not expose its outbox, and the drain needs the same one the service
+    // enqueues into.
+    let store: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
+    // `empty` + `add_transport` rather than `new`, which would install the
+    // transport as `"default"`. Keying it by DID is what makes this harness
+    // exercise the production one-transport-per-identity shape.
+    let service = Arc::new(MessagingService::empty(store.clone()));
+    service.add_transport(did.clone(), transport.clone());
 
-    let make_capture = || {
-        let tx = inbound_tx.clone();
-        handler_fn(move |_ctx: HandlerContext, msg: Message| {
-            let tx = tx.clone();
-            async move {
-                let _ = tx.send(msg);
-                Ok::<Option<DIDCommResponse>, DIDCommServiceError>(None)
+    // One drain per identity, keyed by the same id the transport is installed
+    // under, so a `Guaranteed` send is retried over its own socket rather than
+    // another identity's.
+    let drain = tokio::spawn(drain_loop_via(
+        store,
+        did.clone(),
+        transport,
+        Duration::from_millis(200),
+    ));
+
+    let wanted: Vec<String> = routes.iter().map(|r| (*r).to_string()).collect();
+    let dispatcher = {
+        let mut inbound = service.subscribe();
+        tokio::spawn(async move {
+            // Keep the drain alive for as long as the dispatcher: both die with
+            // the `ProfileMessaging` that owns them.
+            let _drain = drain;
+            while let Some(item) = inbound.next().await {
+                let Ok(message) = serde_json::from_slice::<Message>(&item.message.payload) else {
+                    continue;
+                };
+                if wanted.contains(&message.typ) {
+                    let _ = inbound_tx.send(message);
+                }
             }
         })
     };
 
-    let mut router = Router::new()
-        // Built-in trust-ping responder so the mediator sees a connected
-        // and well-behaved listener.
-        .route(
-            affinidi_messaging_didcomm_service::TRUST_PING_TYPE,
-            handler_fn(trust_ping_handler),
-        )?
-        // Drop pickup-status messages — the SDK handles them internally
-        // but the router still gets them as a courtesy event.
-        .route(
-            affinidi_messaging_didcomm_service::MESSAGE_PICKUP_STATUS_TYPE,
-            handler_fn(ignore_handler),
-        )?;
-    for type_url in routes {
-        router = router.route(type_url, make_capture())?;
-    }
-
-    let shutdown = CancellationToken::new();
-    let service = DIDCommService::start(config, router, shutdown.clone()).await?;
-    Ok((service, shutdown))
+    Ok(ProfileMessaging {
+        service,
+        atm,
+        profile,
+        transport_id: did.clone(),
+        did,
+        dispatcher,
+    })
 }

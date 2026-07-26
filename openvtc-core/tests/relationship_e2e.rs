@@ -26,14 +26,13 @@ mod common;
 
 use std::time::Duration;
 
-use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::didcomm::Message;
 use openvtc_core::protocol_urls::{RELATIONSHIP_REQUEST, VRC_REJECTED, VRC_REQUEST};
 use openvtc_core::relationships::RelationshipRequestBody;
 use openvtc_core::vrc::{VRCRequestReject, VrcRequest};
 use tokio::sync::mpsc;
 
-use common::{MockMediator, init_test_tracing, start_profile_service};
+use common::{MockMediator, ProfileMessaging, init_test_tracing, start_profile_messaging};
 
 const TEST_MESSAGE_TYPE: &str = "https://example.com/openvtc-test/1.0/echo";
 
@@ -44,8 +43,8 @@ async fn connect_alice_and_bob(
     mediator: &MockMediator,
     routes: &[&'static str],
 ) -> (
-    DIDCommService,
-    DIDCommService,
+    ProfileMessaging,
+    ProfileMessaging,
     String,
     String,
     mpsc::UnboundedReceiver<Message>,
@@ -56,21 +55,21 @@ async fn connect_alice_and_bob(
     let bob_did = bob.did.clone();
 
     let (bob_inbound_tx, bob_inbound_rx) = mpsc::unbounded_channel::<Message>();
-    let (bob_service, _bob_shutdown) = start_profile_service(bob, routes, bob_inbound_tx)
+    let bob_service = start_profile_messaging(bob, routes, bob_inbound_tx)
         .await
         .expect("bob service");
 
     let (alice_inbound_tx, _alice_inbound_rx) = mpsc::unbounded_channel::<Message>();
-    let (alice_service, _alice_shutdown) = start_profile_service(alice, routes, alice_inbound_tx)
+    let alice_service = start_profile_messaging(alice, routes, alice_inbound_tx)
         .await
         .expect("alice service");
 
     bob_service
-        .wait_connected("bob", Duration::from_secs(15))
+        .wait_connected(Duration::from_secs(15))
         .await
         .expect("bob connect");
     alice_service
-        .wait_connected("alice", Duration::from_secs(15))
+        .wait_connected(Duration::from_secs(15))
         .await
         .expect("alice connect");
 
@@ -102,7 +101,7 @@ async fn alice_sends_to_bob_via_mediator() {
     .finalize();
 
     alice_service
-        .send_message_with_retry("alice", msg, &bob_did, 3, Duration::from_secs(2))
+        .send(&msg, &bob_did)
         .await
         .expect("alice send");
 
@@ -152,7 +151,7 @@ async fn relationship_request_round_trip() {
     .finalize();
 
     alice_service
-        .send_message_with_retry("alice", msg, &bob_did, 3, Duration::from_secs(2))
+        .send(&msg, &bob_did)
         .await
         .expect("alice send");
 
@@ -193,21 +192,21 @@ async fn vrc_request_and_reject_round_trip() {
     let routes: &[&'static str] = &[VRC_REQUEST, VRC_REJECTED];
 
     let (alice_inbound_tx, mut alice_inbound_rx) = mpsc::unbounded_channel::<Message>();
-    let (alice_service, _alice_shutdown) = start_profile_service(alice, routes, alice_inbound_tx)
+    let alice_service = start_profile_messaging(alice, routes, alice_inbound_tx)
         .await
         .expect("alice service");
 
     let (bob_inbound_tx, mut bob_inbound_rx) = mpsc::unbounded_channel::<Message>();
-    let (bob_service, _bob_shutdown) = start_profile_service(bob, routes, bob_inbound_tx)
+    let bob_service = start_profile_messaging(bob, routes, bob_inbound_tx)
         .await
         .expect("bob service");
 
     bob_service
-        .wait_connected("bob", Duration::from_secs(15))
+        .wait_connected(Duration::from_secs(15))
         .await
         .expect("bob connect");
     alice_service
-        .wait_connected("alice", Duration::from_secs(15))
+        .wait_connected(Duration::from_secs(15))
         .await
         .expect("alice connect");
 
@@ -226,7 +225,7 @@ async fn vrc_request_and_reject_round_trip() {
     .finalize();
 
     alice_service
-        .send_message_with_retry("alice", request_msg, &bob_did, 3, Duration::from_secs(2))
+        .send(&request_msg, &bob_did)
         .await
         .expect("alice -> bob send");
 
@@ -257,7 +256,7 @@ async fn vrc_request_and_reject_round_trip() {
     .finalize();
 
     bob_service
-        .send_message_with_retry("bob", reject_msg, &alice_did, 3, Duration::from_secs(2))
+        .send(&reject_msg, &alice_did)
         .await
         .expect("bob -> alice send");
 

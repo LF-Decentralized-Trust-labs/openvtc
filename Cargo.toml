@@ -27,6 +27,17 @@ argon2 = "0.5"
 affinidi-tdk = "0.8"
 affinidi-data-integrity = "0.7"
 affinidi-messaging-didcomm-service = "0.3"
+# The delivery layer (D1) that replaces the `affinidi-messaging-didcomm-service`
+# type-routed framework — both VTI services have already cut over to it (see #189).
+# `-delivery` is the durable outbox + `MessagingService`; `-core` is the
+# `MessageTransport` contract it builds on; `-sdk` supplies `DidCommTransport`, the
+# DIDComm implementation of that contract (and the one that also surfaces inbound
+# TSP off the same multiplexed pickup socket).
+affinidi-messaging-delivery = "0.1.12"
+affinidi-messaging-core = "0.1.5"
+affinidi-messaging-sdk = "0.18.60"
+# `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
+futures-util = "0.3"
 # Agent names (DID shortcuts). `agent-names` carries the parse /
 # canonicalisation / `alsoKnownAs`-verification half; the resolver's
 # `agent-names` feature is NOT default, and a direct dependency here is what
