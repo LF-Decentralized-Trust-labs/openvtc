@@ -375,17 +375,36 @@ fn render_transports(state: &VtaState, lines: &mut Vec<Line<'static>>) {
             }));
         }
         Some(a) => {
-            // Only mention the transport we are *not* on; the one in use is
-            // already the headline.
-            let other = match t.in_use {
+            // Only mention the transports we are *not* on; the one in use is
+            // already the headline. This used to be a single `Option<&str>`
+            // computed as REST-or-nothing, so a VTA advertising `#tsp` and no
+            // `#vta-rest` fell through to "only transport offered" — false
+            // about a VTA that offers two.
+            let mut others = Vec::new();
+
+            let switchable = match t.in_use {
                 VtaTransport::DidComm => a.rest_url.is_some().then_some("REST"),
                 VtaTransport::Rest => a.mediator_did.is_some().then_some("DIDComm"),
             };
-            match other {
-                Some(name) => {
-                    spans.push(Span::styled(format!("   ·   {name} also available"), dim))
-                }
-                None => spans.push(Span::styled("   ·   only transport offered", dim)),
+            if let Some(name) = switchable {
+                others.push(Span::styled(format!("   ·   {name} also available"), dim));
+            }
+
+            // TSP is reported separately from the transports we could switch
+            // to, because the CLI cannot speak it yet. Staying silent would
+            // reproduce the original defect; calling it "also available" would
+            // promise a transport the operator has no way to select.
+            if a.tsp_mediator_did.is_some() {
+                others.push(Span::styled(
+                    "   ·   TSP advertised (not yet supported)",
+                    dim,
+                ));
+            }
+
+            if others.is_empty() {
+                spans.push(Span::styled("   ·   only transport offered", dim));
+            } else {
+                spans.extend(others);
             }
         }
     }
@@ -407,10 +426,24 @@ fn render_transports(state: &VtaState, lines: &mut Vec<Line<'static>>) {
         ]));
     }
     if !t.rest_url.is_empty() {
-        lines.push(Line::from(vec![
+        // `t.rest_url` is *stored config*, not something the document
+        // advertises, so a bare "REST endpoint" line could sit directly under a
+        // transport line reporting that the VTA offers no REST — two true facts
+        // reading as a contradiction. Label it when we positively know the
+        // document carries no `#vta-rest`; stay silent when the probe has not
+        // landed or failed, where "not advertised" is not something we know.
+        let known_absent = t
+            .advertised
+            .as_ref()
+            .is_some_and(|a| a.error.is_none() && a.rest_url.is_none());
+        let mut spans = vec![
             Span::styled("    REST endpoint ", dim),
             Span::styled(t.rest_url.clone(), dim),
-        ]));
+        ];
+        if known_absent {
+            spans.push(Span::styled("  (configured; not advertised)", dim));
+        }
+        lines.push(Line::from(spans));
     }
     if let Some(err) = t.advertised.as_ref().and_then(|a| a.error.as_deref()) {
         push_status(
@@ -595,6 +628,9 @@ mod tests {
 
     const VTA_DID: &str = "did:webvh:QmScidVtaCCCCCCCCCCCCCCCCCCCCCC:example.com:vta";
     const MEDIATOR_DID: &str = "did:webvh:QmScidMediatorDDDDDDDDDDDDDDDD:example.com:mediator";
+    /// Distinct from [`MEDIATOR_DID`] on purpose: `#tsp` is read from its own
+    /// service entry, so the tests must not pass by conflating the two.
+    const TSP_MEDIATOR_DID: &str = "did:webvh:QmScidTspMediatorTTTTTTTTTTTT:example.com:tsp";
 
     /// A VTA-managed account on the DIDComm transport with a REST fallback URL.
     fn vta_managed(advertised: Option<AdvertisedTransports>) -> VtaState {
@@ -640,6 +676,7 @@ mod tests {
     #[test]
     fn transport_row_reports_the_other_advertised_transport() {
         let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: None,
             mediator_did: Some(MEDIATOR_DID.to_string()),
             rest_url: Some("https://vta.example".to_string()),
             error: None,
@@ -651,6 +688,7 @@ mod tests {
     #[test]
     fn transport_row_reports_a_single_advertised_transport() {
         let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: None,
             mediator_did: Some(MEDIATOR_DID.to_string()),
             rest_url: None,
             error: None,
@@ -658,11 +696,111 @@ mod tests {
         assert!(out.contains("only transport offered"), "{out}");
     }
 
+    /// The defect in #185: a VTA advertising `#tsp` alongside `#vta-didcomm`,
+    /// and no `#vta-rest`, rendered as "only transport offered". Two transports
+    /// were offered.
+    #[test]
+    fn a_tsp_advertising_vta_is_not_reported_as_single_transport() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: None,
+            error: None,
+        }))));
+        assert!(
+            !out.contains("only transport offered"),
+            "TSP is offered, so this claim is false: {out}"
+        );
+        assert!(out.contains("TSP advertised"), "{out}");
+    }
+
+    /// Advertised-but-unsupported is its own state. TSP must not read as
+    /// something the operator can switch to — we cannot speak it yet — nor as
+    /// absent (VTI R6.4).
+    #[test]
+    fn tsp_reads_as_advertised_but_unsupported() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: None,
+            error: None,
+        }))));
+        assert!(out.contains("TSP advertised (not yet supported)"), "{out}");
+        assert!(
+            !out.contains("TSP also available"),
+            "must not promise a transport that cannot be selected: {out}"
+        );
+    }
+
+    /// A VTA offering all three lists both transports we are not on, and keeps
+    /// the selectable one distinct from the one we cannot speak.
+    #[test]
+    fn a_triple_transport_vta_reports_both_others() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: Some("https://vta.example".to_string()),
+            error: None,
+        }))));
+        assert!(out.contains("REST also available"), "{out}");
+        assert!(out.contains("TSP advertised (not yet supported)"), "{out}");
+    }
+
+    /// The adjacent inconsistency #185 exposed: `rest_url` is stored config, so
+    /// the endpoint line printed under a transport line saying REST is not
+    /// offered. Both facts are true; unlabelled they read as a contradiction.
+    #[test]
+    fn a_configured_but_unadvertised_rest_endpoint_is_labelled_as_such() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: None,
+            error: None,
+        }))));
+        assert!(out.contains("REST endpoint"), "{out}");
+        assert!(out.contains("(configured; not advertised)"), "{out}");
+    }
+
+    /// …but only when we positively know. A probe that failed, or has not
+    /// landed, is not evidence that the VTA advertises no REST.
+    #[test]
+    fn an_unprobed_rest_endpoint_is_not_labelled_unadvertised() {
+        for state in [
+            vta_managed(None),
+            vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: None,
+                mediator_did: None,
+                rest_url: None,
+                error: Some("DID did not resolve".to_string()),
+            })),
+        ] {
+            let out = joined(&render(&state));
+            assert!(
+                !out.contains("not advertised"),
+                "we have not established that: {out}"
+            );
+        }
+    }
+
+    /// When the VTA does advertise REST, the endpoint line carries no caveat.
+    #[test]
+    fn an_advertised_rest_endpoint_is_not_labelled() {
+        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: None,
+            mediator_did: Some(MEDIATOR_DID.to_string()),
+            rest_url: Some("https://vta.example".to_string()),
+            error: None,
+        }))));
+        assert!(out.contains("REST endpoint"), "{out}");
+        assert!(!out.contains("not advertised"), "{out}");
+    }
+
     /// A failed probe must be distinguishable from "nothing else is offered" —
     /// an unreachable publication endpoint is not the same fact (VTI R6.4).
     #[test]
     fn a_failed_probe_reads_as_unknown_not_as_unavailable() {
         let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
+            tsp_mediator_did: None,
             mediator_did: None,
             rest_url: None,
             error: Some("DID did not resolve".to_string()),

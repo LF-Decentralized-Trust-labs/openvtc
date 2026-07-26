@@ -421,7 +421,7 @@ pub struct VtaState {
 ///   picks DIDComm when a mediator DID is recorded and REST otherwise, so the
 ///   same condition decides the label. No network, always accurate.
 /// - [`advertised`](Self::advertised) is what the VTA's own DID document
-///   publishes (`#vta-rest` and `DIDCommMessaging` services), which needs a
+///   publishes (`#tsp`, `#vta-rest` and `DIDCommMessaging` services), which needs a
 ///   resolve. `None` until the background probe lands, so the panel can say
 ///   "checking…" rather than claim a transport is unavailable merely because
 ///   nothing has been asked yet.
@@ -462,8 +462,20 @@ impl VtaTransport {
 
 /// The transports a VTA's DID document advertises, as resolved by
 /// `vta_sdk::provision_client::resolve_vta`.
+///
+/// This is *offered*, not *usable*: a transport appears here because the VTA
+/// publishes it, regardless of whether this CLI can speak it. TSP is currently
+/// the case in point — advertised by the VTA, not yet spoken by us — and the
+/// panel has to keep those apart, because "not offered" and "offered but we
+/// cannot use it" call for different operator action (VTI R6.4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AdvertisedTransports {
+    /// Mediator DID from the document's `#tsp` (`TSPTransport`) service, if any.
+    ///
+    /// Read from that entry specifically — *not* assumed to equal
+    /// [`mediator_did`](Self::mediator_did), even though a dual-transport VTA
+    /// usually points both at the same mediator.
+    pub tsp_mediator_did: Option<String>,
     /// Mediator DID from the document's `DIDCommMessaging` service, if any.
     pub mediator_did: Option<String>,
     /// REST base URL from the document's `#vta-rest` service, if any.

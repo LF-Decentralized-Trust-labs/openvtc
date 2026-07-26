@@ -94,7 +94,7 @@ trust-tasks-capability-client = "0.1"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-vta-sdk = { version = "0.19", features = [
+vta-sdk = { version = "0.20", features = [
   "session",
   "client",
   "didcomm",
