@@ -675,8 +675,12 @@ impl StateHandler {
 
         // Log registered listeners for diagnostics
         let listeners = didcomm_service.list_listeners().await;
-        for l in &listeners {
-            debug!(id = %l.id, state = ?l.state, "registered listener");
+        for id in &listeners {
+            debug!(
+                listener = %openvtc_core::display::truncate_did(id, 32),
+                state = ?didcomm_service.listener_state(id),
+                "registered listener"
+            );
         }
         info!(count = listeners.len(), "DIDComm listeners registered");
 
@@ -830,11 +834,7 @@ impl StateHandler {
                                 let listener_id = removed
                                     .map(|s| s.listener_id)
                                     .unwrap_or_else(|| didcomm::persona_listener_id(&did));
-                                if let Err(e) =
-                                    didcomm_service.remove_listener(&listener_id).await
-                                {
-                                    debug!("remove_listener after community delete: {e}");
-                                }
+                                didcomm_service.remove_listener(&listener_id).await;
                                 state
                                     .main_page
                                     .log("Community removed — persona listener stopped.");
@@ -1729,9 +1729,13 @@ impl StateHandler {
                                 if let Some(ref from_did) = from
                                     && let Ok(pong_msg) =
                                         build_trust_pong(&our_listener_did, from_did, &message_id)
-                                    && let Err(e) = didcomm_service
-                                        .send_message(&listener_id, pong_msg, from_did)
-                                        .await
+                                    && let Err(e) = didcomm::send_message_via(
+                                        &didcomm_service,
+                                        &pong_msg,
+                                        &listener_id,
+                                        from_did,
+                                    )
+                                    .await
                                 {
                                     state.main_page.log_error("Failed to send pong", &e);
                                 }
@@ -1823,7 +1827,7 @@ impl StateHandler {
                         outcome,
                     );
                 },
-                // Lifecycle log messages from the DIDCommService
+                // Lifecycle log messages from the Messaging
                 Some(event) = lifecycle_log_rx.recv() => {
                     // Formatted here, not in the logger task: naming a listener
                     // needs `config`, which only this thread holds.
@@ -1834,8 +1838,7 @@ impl StateHandler {
                 // the status to Connected; a disconnect drops back to Connecting
                 // while the service auto-reconnects.
                 ev = listener_events.recv() => {
-                    use affinidi_messaging_didcomm_service::ListenerEvent;
-                    if let Ok(ev) = ev {
+                                        if let Ok(ev) = ev {
                         // Route persona-listener lifecycle through the session
                         // manager (D11/D15), which holds per-session status; a
                         // disconnect carrying an error is recorded as that one
@@ -1845,15 +1848,14 @@ impl StateHandler {
                         // Events for R-DID listeners (not persona sessions) match
                         // nothing and are ignored.
                         let changed = match ev {
-                            ListenerEvent::Connected { listener_id } => {
+                            didcomm::ListenerStatus::Connected { listener_id } => {
                                 session_manager.mark_connected(&listener_id)
                             }
-                            ListenerEvent::Disconnected { listener_id, error } => match error {
-                                Some(e) => session_manager.mark_failed(&listener_id, e),
-                                None => session_manager.mark_disconnected(&listener_id),
-                            },
-                            ListenerEvent::Restarting { listener_id, .. } => {
-                                session_manager.mark_disconnected(&listener_id)
+                            didcomm::ListenerStatus::Disconnected { listener_id, error } => {
+                                match error {
+                                    Some(e) => session_manager.mark_failed(&listener_id, e),
+                                    None => session_manager.mark_disconnected(&listener_id),
+                                }
                             }
                         };
                         // Derive the global connection indicator from the
@@ -2678,7 +2680,7 @@ impl StateHandler {
         state: &mut State,
         config: &mut Config,
         admin_vta: Option<&vta_sdk::client::VtaClient>,
-        didcomm_service: &affinidi_messaging_didcomm_service::DIDCommService,
+        didcomm_service: &openvtc_core::didcomm::Messaging,
         index: usize,
     ) -> Option<relationship_actions::DidDeleteJob> {
         state.main_page.content_panel.vta.confirm_delete_did = None;
@@ -3284,7 +3286,7 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
 /// `NoActiveCommunity` when the account has no live community left.
 async fn deregister_inactive_community(
     session_manager: &mut session_manager::SessionManager,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    service: &openvtc_core::didcomm::Messaging,
     config: &Config,
     state: &mut State,
     vtc: &openvtc_core::config::account::VtcDid,
@@ -3302,9 +3304,7 @@ async fn deregister_inactive_community(
         let listener_id = removed
             .map(|s| s.listener_id)
             .unwrap_or_else(|| didcomm::persona_listener_id(&did));
-        if let Err(e) = service.remove_listener(&listener_id).await {
-            debug!("remove_listener after community inactivation: {e}");
-        }
+        service.remove_listener(&listener_id).await;
         state
             .main_page
             .log("Community inactive — persona listener stopped.");
@@ -3318,7 +3318,7 @@ async fn deregister_inactive_community(
 
 async fn register_joined_session(
     session_manager: &mut session_manager::SessionManager,
-    service: &affinidi_messaging_didcomm_service::DIDCommService,
+    service: &openvtc_core::didcomm::Messaging,
     tdk: &TDK,
     config: &Config,
     joined: join_flow::JoinedSession,
@@ -3350,13 +3350,9 @@ async fn register_joined_session(
             // listener SessionManager isn't tracking may linger. `add_listener`
             // errors on a duplicate id ("Listener already exists"), so reuse the
             // existing listener rather than failing the join's live session (D1).
-            if let Some(existing) = service
-                .list_listeners()
-                .await
-                .into_iter()
-                .find(|l| l.id == lid)
-            {
-                if existing.state == affinidi_messaging_didcomm_service::ListenerState::Running {
+            if service.has_listener(&lid).await {
+                if service.listener_state(&lid) == Some(openvtc_core::didcomm::ConnState::Connected)
+                {
                     session_manager.mark_connected(&lid);
                     state
                         .main_page

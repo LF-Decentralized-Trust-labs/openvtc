@@ -26,9 +26,8 @@ aes-gcm = "0.10"
 argon2 = "0.5"
 affinidi-tdk = "0.8"
 affinidi-data-integrity = "0.7"
-affinidi-messaging-didcomm-service = "0.3"
-# The delivery layer (D1) that replaces the `affinidi-messaging-didcomm-service`
-# type-routed framework — both VTI services have already cut over to it (see #189).
+# The delivery layer (D1). Replaced `affinidi-messaging-didcomm-service`, the
+# type-routed framework both VTI services had already cut over from (#189).
 # `-delivery` is the durable outbox + `MessagingService`; `-core` is the
 # `MessageTransport` contract it builds on; `-sdk` supplies `DidCommTransport`, the
 # DIDComm implementation of that contract (and the one that also surfaces inbound

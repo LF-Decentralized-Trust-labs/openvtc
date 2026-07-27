@@ -6,11 +6,11 @@
 
 use std::sync::Arc;
 
-use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::TDK;
 use affinidi_tdk::didcomm::Message;
 use anyhow::Result;
 use chrono::Utc;
+use openvtc_core::didcomm::Messaging;
 use openvtc_core::{
     config::Config,
     logs::LogFamily,
@@ -267,7 +267,7 @@ impl InboxJob {
 /// Owned inputs for a backgrounded relationship-acceptance.
 pub(crate) struct AcceptJob {
     tdk: TDK,
-    service: DIDCommService,
+    service: Messaging,
     /// `Some` ⇒ mint an R-DID first; `None` ⇒ use the persona DID directly.
     rdid_plan: Option<crate::state_handler::relationship_actions::RDidPlan>,
     persona_did: Arc<String>,
@@ -336,7 +336,7 @@ impl AcceptJob {
 
 /// A single backgrounded inbox DIDComm send + the post-send effect.
 pub(crate) struct InboxSend {
-    service: DIDCommService,
+    service: Messaging,
     listener_id: String,
     to_did: Arc<String>,
     message: Box<Message>,
@@ -564,7 +564,7 @@ async fn prepare_accept_relationship(
     config: &mut Box<Config>,
     tdk: &TDK,
     state: &mut State,
-    service: &DIDCommService,
+    service: &Messaging,
     task_id: &str,
     generate_r_did: bool,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
@@ -654,7 +654,7 @@ async fn prepare_accept_relationship(
 /// + resolve the persona listener; the task sends it.
 fn prepare_reject_relationship(
     config: &mut Box<Config>,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     task_id: &str,
     reason: Option<&str>,
@@ -695,7 +695,7 @@ fn prepare_reject_relationship(
 async fn prepare_accept_vrc_request(
     config: &mut Box<Config>,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     task_id: &str,
 ) -> Result<InboxJob> {
@@ -759,7 +759,7 @@ async fn prepare_accept_vrc_request(
 /// the task sends it.
 fn prepare_reject_vrc_request(
     config: &mut Box<Config>,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     task_id: &str,
     reason: Option<&str>,
@@ -877,7 +877,7 @@ pub(crate) async fn dispatch(
     action: InboxAction,
     config: &mut Box<Config>,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     save: &mut SaveScheduler,
     admin_vta: Option<&vta_sdk::client::VtaClient>,
