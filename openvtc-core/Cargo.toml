@@ -31,12 +31,20 @@ argon2.workspace = true
 affinidi-tdk.workspace = true
 affinidi-data-integrity.workspace = true
 affinidi-did-resolver-cache-sdk.workspace = true
-# Both promoted from dev-dependencies when the DIDComm transport module moved
-# here from the `openvtc` binary crate (#189) — `crate::didcomm` wraps
-# `DIDCommService` and takes a `CancellationToken` for shutdown, so these are now
-# real dependencies rather than test-only scaffolding.
-affinidi-messaging-didcomm-service = { workspace = true }
+# `CancellationToken`, for `start_service`'s shutdown hook.
 tokio-util = { workspace = true }
+# The delivery layer this module now runs on (#189): `-delivery` is the durable
+# outbox + `MessagingService`, `-core` the `MessageTransport` contract, `-sdk` the
+# `DidCommTransport` implementing it over DIDComm (and surfacing inbound TSP off
+# the same multiplexed pickup socket).
+affinidi-messaging-delivery = { workspace = true }
+affinidi-messaging-core = { workspace = true }
+affinidi-messaging-sdk = { workspace = true }
+futures-util = { workspace = true }
+# The inbound dispatcher compiles `OPENVTC_CATCH_ALL_PATTERN` to decide which
+# message types reach the state handler — the delivery layer has no type-routed
+# dispatch, so this replaces the framework's `route_regex`.
+regex = { workspace = true }
 agent-names.workspace = true
 base64.workspace = true
 bip39.workspace = true
@@ -76,9 +84,6 @@ openpgp-card-rpgp = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
-# `didcomm::catch_all_tests` compiles the router's catch-all pattern to assert
-# which message types reach the handler at all — test-only, so a dev-dependency.
-regex = { workspace = true }
 # In-process mediator for integration tests. `memory-backend` keeps the
 # whole mediator (config + queue + secrets) in RAM — no Redis sidecar,
 # no on-disk fixtures — so `cargo test` stays self-contained. Slow tests
@@ -89,13 +94,6 @@ regex = { workspace = true }
 # defaults, and local-DID whitelisting set up. Replaces the hand-rolled
 # harness that did the same dance manually.
 affinidi-messaging-test-mediator = "0.2"
-# The delivery layer, for the integration harness. The harness has to move with
-# the production code: it builds its own messaging stack, so tests left on the old
-# framework would keep passing while covering none of the migrated path.
-affinidi-messaging-delivery = { workspace = true }
-affinidi-messaging-core = { workspace = true }
-affinidi-messaging-sdk = { workspace = true }
-futures-util = { workspace = true }
 # In-process MockVta for the bootstrap e2e (VTI#406/#427 test-support seams).
 # `vta-service` is the VTA server crate; it carries the credential-vault
 # lifecycle tasks (receive/query/archive/delete/restore/purge) + the

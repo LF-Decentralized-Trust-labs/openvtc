@@ -327,30 +327,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "affinidi-messaging-didcomm-service"
-version = "0.3.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8537805a24165d2c07c3db3f668dacea4eb86db17d698b12bcd141493dfd7df5"
-dependencies = [
- "affinidi-messaging-didcomm",
- "affinidi-messaging-sdk",
- "affinidi-secrets-resolver",
- "affinidi-tdk-common",
- "async-trait",
- "regex",
- "serde",
- "serde_json",
- "sha256",
- "thiserror 2.0.19",
- "tokio",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
- "trust-tasks-rs",
- "uuid",
-]
-
-[[package]]
 name = "affinidi-messaging-mediator"
 version = "0.17.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5705,7 +5681,6 @@ version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "affinidi-data-integrity",
- "affinidi-messaging-didcomm-service",
  "affinidi-tdk",
  "anyhow",
  "apple-native-keyring-store",
@@ -5766,7 +5741,6 @@ dependencies = [
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm-service",
  "affinidi-messaging-sdk",
  "affinidi-messaging-test-mediator",
  "affinidi-tdk",

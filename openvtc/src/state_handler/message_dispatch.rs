@@ -11,9 +11,9 @@
 
 use std::sync::Arc;
 
-use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{TDK, didcomm::Message};
 use dtg_credentials::DTGCredential;
+use openvtc_core::didcomm::Messaging;
 use openvtc_core::messaging::{
     SeenMessages, check_message_age, check_task_capacity, create_finalize_message,
     handle_credential_issue, handle_join_problem_report, handle_join_status_response,
@@ -161,7 +161,7 @@ pub(crate) async fn capability_toggle_for(
 pub async fn process_inbound_message(
     config: &mut Config,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     seen: &mut SeenMessages,
     message: &Message,
     inactivated: &mut Vec<(VtcDid, openvtc_core::config::account::PersonaId)>,
@@ -411,10 +411,10 @@ pub async fn process_inbound_message(
                 .filter(|our_did| !config.is_persona_did(our_did.as_str()));
             let listener_to_remove =
                 our_did.map(|our_did| super::didcomm::listener_id_for_did(&our_did, config));
-            if let Some(lid) = listener_to_remove
-                && let Err(e) = service.remove_listener(&lid).await
-            {
-                warn!(listener = %lid, error = %e, "failed to remove R-DID listener during rejection cleanup");
+            if let Some(lid) = listener_to_remove {
+                // Infallible now: dropping a transport closes its socket and
+                // forgets its wire, with nothing left that can fail.
+                service.remove_listener(&lid).await;
             }
             let _ = config.private.relationships.remove_by_task_id(
                 &task_id,

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use crate::state_handler::setup_sequence::vta;
-use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::{
     TDK,
     affinidi_crypto::ed25519::ed25519_private_to_x25519,
@@ -15,6 +14,7 @@ use anyhow::Result;
 use base64::Engine;
 use chrono::Utc;
 use ed25519_dalek_bip32::DerivationPath;
+use openvtc_core::didcomm::Messaging;
 use openvtc_core::{
     config::{
         Config, KeyBackend, KeyTypes,
@@ -145,7 +145,7 @@ impl RDidPlan {
     pub(crate) async fn create_io(
         self,
         tdk: &TDK,
-        service: &DIDCommService,
+        service: &Messaging,
         remote_p_did: &str,
     ) -> Result<CreatedRDid> {
         let mediator = self.mediator().to_string();
@@ -387,10 +387,10 @@ use openvtc_core::relationships::Relationship as RelRecord;
 /// validation, contact add, R-DID key creation + listener registration), then a
 /// `tokio::spawn`ed task does the slow network send with these owned values and
 /// reports the result back as a [`RelationshipOutcome`]. It borrows nothing tied
-/// to the loop's `Config`/`TDK`: `DIDCommService` is `Arc`-cheap to clone and the
+/// to the loop's `Config`/`TDK`: `Messaging` is `Arc`-cheap to clone and the
 /// message/ids are owned, so the future is `'static` + `Send`.
 pub(crate) struct RelationshipSend {
-    service: DIDCommService,
+    service: Messaging,
     /// The listener id the message is sent through, resolved on the loop thread
     /// (`listener_id_for_did`) so the task needs no `Config`. Persona listener for
     /// handshake messages; R-DID listener once established.
@@ -418,7 +418,7 @@ pub(crate) enum RelationshipJob {
     /// Remove: tear down the (optional) R-DID listener, then the loop thread
     /// removes the relationship/contact records.
     Remove {
-        service: DIDCommService,
+        service: Messaging,
         /// `Some` only when the relationship used a dedicated R-DID listener.
         listener_id: Option<String>,
         remote_p_did: String,
@@ -430,7 +430,7 @@ pub(crate) enum RelationshipJob {
 /// the task is `'static` + `Send`.
 pub(crate) struct CreateJob {
     tdk: TDK,
-    service: DIDCommService,
+    service: Messaging,
     /// `Some` ⇒ mint an R-DID first; `None` ⇒ use the persona DID directly.
     rdid_plan: Option<RDidPlan>,
     /// Our persona DID (message `from`, and the listener the request is sent via).
@@ -565,10 +565,8 @@ impl RelationshipJob {
                 listener_id,
                 remote_p_did,
             } => {
-                if let Some(lid) = listener_id
-                    && let Err(e) = service.remove_listener(&lid).await
-                {
-                    tracing::warn!(listener = %lid, error = %e, "failed to remove R-DID listener");
+                if let Some(lid) = listener_id {
+                    service.remove_listener(&lid).await;
                 }
                 RelationshipOutcome {
                     effect: RelationshipEffect::Remove { remote_p_did },
@@ -966,7 +964,7 @@ impl RelationshipOutcome {
 /// resolution) ran on the loop thread before this was built.
 pub(crate) struct DidDeleteJob {
     pub(crate) admin_vta: Option<vta_sdk::client::VtaClient>,
-    pub(crate) service: DIDCommService,
+    pub(crate) service: Messaging,
     pub(crate) did: String,
     pub(crate) persona_id: openvtc_core::config::account::PersonaId,
     pub(crate) key_ids: Vec<String>,
@@ -990,9 +988,7 @@ impl DidDeleteJob {
             tracing::debug!("delete_did_webvh({did}) failed (continuing local cleanup): {e}");
         }
         let listener_id = super::didcomm::persona_listener_id(&did);
-        if let Err(e) = service.remove_listener(&listener_id).await {
-            tracing::debug!("remove_listener after DID delete: {e}");
-        }
+        service.remove_listener(&listener_id).await;
         DidDeleteOutcome {
             did,
             persona_id,
@@ -1094,7 +1090,7 @@ fn handle_toggle_r_did(state: &mut State) {
 async fn prepare_submit(
     config: &mut Box<Config>,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     did: &str,
     alias: &str,
@@ -1224,7 +1220,7 @@ async fn prepare_submit(
 /// `apply` on success.
 fn prepare_ping(
     config: &mut Box<Config>,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     remote_p_did: &str,
 ) -> Result<RelationshipJob> {
@@ -1271,7 +1267,7 @@ fn prepare_ping(
 /// then the task tears the listener down; the record removal happens in `apply`.
 fn prepare_remove(
     config: &mut Box<Config>,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     remote_p_did: &str,
 ) -> RelationshipJob {
@@ -1299,7 +1295,7 @@ fn prepare_remove(
 /// success. Mirrors the pre-R14 `credential_actions::send_vrc_request` split.
 fn prepare_request_vrc(
     config: &mut Box<Config>,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     remote_p_did: &str,
 ) -> Result<RelationshipJob> {
@@ -1442,7 +1438,7 @@ pub(crate) async fn dispatch(
     action: RelationshipAction,
     config: &mut Box<Config>,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     save: &mut crate::state_handler::save_coalesce::SaveScheduler,
     admin_vta: Option<&vta_sdk::client::VtaClient>,

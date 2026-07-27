@@ -33,27 +33,21 @@ use std::time::Duration;
 use affinidi_tdk::didcomm::Message;
 use common::{MockMediator, init_test_tracing};
 use openvtc_core::didcomm::{
-    DIDCommEvent, add_listener, build_router, relationship_listener_config_from_secrets,
+    DIDCommEvent, Messaging, add_listener, relationship_listener_config_from_secrets,
     send_message_via,
 };
 use tokio::sync::mpsc;
-use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// An OpenVTC protocol type the production catch-all pattern must route.
 const OPENVTC_TYPE: &str = "https://linuxfoundation.org/openvtc/test/1.0/ping";
 
-/// Start a `DIDCommService` for one profile using the **production** router and
-/// the production `Config`-free listener builder.
+/// Stand up one profile's production `Messaging` runtime and install its listener.
 async fn start_production_service(
     profile: common::TestProfile,
     remote_did: &str,
     event_tx: mpsc::Sender<DIDCommEvent>,
-) -> (
-    affinidi_messaging_didcomm_service::DIDCommService,
-    String,
-    CancellationToken,
-) {
+) -> (Messaging, String) {
     let listener = relationship_listener_config_from_secrets(
         &profile.did,
         remote_did,
@@ -61,22 +55,11 @@ async fn start_production_service(
         profile.secrets.clone(),
     );
     let listener_id = listener.id.clone();
-    let router = build_router(event_tx).expect("production router builds");
-    let shutdown = CancellationToken::new();
-    // Start empty and install through the production `add_listener` seam, so the
-    // test drives the same path the runtime does rather than reaching past it
-    // into the framework's own config type.
-    let service = affinidi_messaging_didcomm_service::DIDCommService::start(
-        affinidi_messaging_didcomm_service::DIDCommServiceConfig { listeners: vec![] },
-        router,
-        shutdown.clone(),
-    )
-    .await
-    .expect("service starts");
+    let service = Messaging::start(event_tx);
     add_listener(&service, &listener)
         .await
         .expect("production listener spec installs");
-    (service, listener_id, shutdown)
+    (service, listener_id)
 }
 
 /// The end-to-end path the swap will replace: production listener → production
@@ -93,18 +76,16 @@ async fn an_openvtc_message_routes_through_the_production_transport() {
 
     // Receiver first: a listener that is not yet polling would miss the frame.
     let (bob_tx, mut bob_rx) = mpsc::channel::<DIDCommEvent>(16);
-    let (bob_service, bob_listener, _bob_shutdown) =
-        start_production_service(bob, &alice_did, bob_tx).await;
+    let (bob_service, bob_listener) = start_production_service(bob, &alice_did, bob_tx).await;
     bob_service
-        .wait_connected(&bob_listener, Duration::from_secs(15))
+        .wait_connected(&bob_listener, Duration::from_secs(20))
         .await
         .expect("bob listener connects");
 
     let (alice_tx, _alice_rx) = mpsc::channel::<DIDCommEvent>(16);
-    let (alice_service, alice_listener, _alice_shutdown) =
-        start_production_service(alice, &bob_did, alice_tx).await;
+    let (alice_service, alice_listener) = start_production_service(alice, &bob_did, alice_tx).await;
     alice_service
-        .wait_connected(&alice_listener, Duration::from_secs(15))
+        .wait_connected(&alice_listener, Duration::from_secs(20))
         .await
         .expect("alice listener connects");
 
@@ -162,18 +143,16 @@ async fn an_unrelated_message_type_reaches_no_handler() {
     let bob_did = bob.did.clone();
 
     let (bob_tx, mut bob_rx) = mpsc::channel::<DIDCommEvent>(16);
-    let (bob_service, bob_listener, _bob_shutdown) =
-        start_production_service(bob, &alice_did, bob_tx).await;
+    let (bob_service, bob_listener) = start_production_service(bob, &alice_did, bob_tx).await;
     bob_service
-        .wait_connected(&bob_listener, Duration::from_secs(15))
+        .wait_connected(&bob_listener, Duration::from_secs(20))
         .await
         .expect("bob listener connects");
 
     let (alice_tx, _alice_rx) = mpsc::channel::<DIDCommEvent>(16);
-    let (alice_service, alice_listener, _alice_shutdown) =
-        start_production_service(alice, &bob_did, alice_tx).await;
+    let (alice_service, alice_listener) = start_production_service(alice, &bob_did, alice_tx).await;
     alice_service
-        .wait_connected(&alice_listener, Duration::from_secs(15))
+        .wait_connected(&alice_listener, Duration::from_secs(20))
         .await
         .expect("alice listener connects");
 

@@ -10,14 +10,14 @@
 //! the registry of live persona-sessions, their per-session connection status, a
 //! bounded maximum number of concurrent sessions, and the register/deregister
 //! bookkeeping for join/leave. The actual connect / restart / recovery I/O stays
-//! in the SDK `DIDCommService`, which already supervises each listener
+//! in the SDK `Messaging`, which already supervises each listener
 //! independently (per-listener restart policy) — a mediator outage on one session
 //! is contained by the SDK and reflected here as that session's status, never
 //! affecting the others.
 //!
 //! It is **pure bookkeeping** (no I/O, no SDK types) so it is unit-testable with
 //! simulated sessions without a live mediator. The runtime loop turns its
-//! decisions into `DIDCommService` `add_listener`/`remove_listener` calls and
+//! decisions into `Messaging` `add_listener`/`remove_listener` calls and
 //! feeds `ListenerEvent`s back into [`SessionManager::mark_connected`] etc.
 
 use std::collections::{BTreeSet, HashMap};

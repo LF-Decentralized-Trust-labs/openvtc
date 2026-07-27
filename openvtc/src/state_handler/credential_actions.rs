@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-use affinidi_messaging_didcomm_service::DIDCommService;
 use affinidi_tdk::TDK;
 use anyhow::Result;
+use openvtc_core::didcomm::Messaging;
 use openvtc_core::{config::Config, logs::LogFamily, tasks::TaskType, vrc::VrcRequest};
 use tracing::{debug, info};
 
@@ -12,7 +12,7 @@ use tracing::{debug, info};
 pub async fn send_vrc_request(
     config: &mut Config,
     _tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     remote_p_did: &str,
     reason: Option<&str>,
 ) -> Result<()> {
@@ -147,7 +147,7 @@ fn handle_reason_update(state: &mut State, value: String) {
 async fn handle_submit_request(
     config: &mut Box<Config>,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     save: &mut SaveScheduler,
     relationship_p_did: &str,
@@ -210,7 +210,7 @@ pub(crate) async fn dispatch(
     action: CredentialAction,
     config: &mut Box<Config>,
     tdk: &TDK,
-    service: &DIDCommService,
+    service: &Messaging,
     state: &mut State,
     save: &mut SaveScheduler,
 ) {
