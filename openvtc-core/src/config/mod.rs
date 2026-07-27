@@ -671,6 +671,61 @@ async fn enable_tsp_if_advertised(client: &mut vta_sdk::client::VtaClient, vta_d
     enable_tsp_with_resolver(client, vta_did, &resolver).await;
 }
 
+/// The TSP mediator `peer_did` advertises, if any — for a **VTC**, not the VTA.
+///
+// Not an intra-doc link: `discover_tsp_mediator` is private, and a public item
+// linking to it fails `rustdoc -D warnings`.
+/// Same `#tsp` / `TSPTransport` lookup `discover_tsp_mediator` does for a VTA:
+/// the service entry is generic, so what changes is only whose document is read.
+/// Exposed publicly because the ceremony call sites live in the binary crate.
+///
+/// `None` on every non-answer — not advertised, unresolvable, or the bounded wait
+/// elapsed — because all three mean the same thing to a caller: **use DIDComm**.
+/// The distinction is kept in the log rather than the return type (R6.4), since
+/// unlike the VTA panel there is nothing here to render it into.
+///
+/// Discovery is deliberately per-send rather than cached on the community: the
+/// resolver caches the document, so a repeat is cheap, and a VTC that gains or
+/// loses `#tsp` is picked up without a restart or a migration.
+pub async fn peer_tsp_mediator(peer_did: &str) -> Option<String> {
+    let resolver = match affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+        affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+    )
+    .await
+    {
+        Ok(resolver) => resolver,
+        Err(e) => {
+            tracing::debug!(
+                peer = %peer_did,
+                "TSP discovery resolver init failed ({e}); using DIDComm"
+            );
+            return None;
+        }
+    };
+    match discover_tsp_mediator(peer_did, &resolver).await {
+        TspDiscovery::Advertised(mediator) => {
+            tracing::info!(
+                peer = %peer_did,
+                mediator = %mediator,
+                "peer advertises #tsp — sending trust tasks over TSP"
+            );
+            Some(mediator)
+        }
+        TspDiscovery::NotAdvertised => {
+            tracing::debug!(peer = %peer_did, "peer advertises no #tsp — using DIDComm");
+            None
+        }
+        TspDiscovery::Unavailable(reason) => {
+            tracing::warn!(
+                peer = %peer_did,
+                reason = %reason,
+                "could not determine whether the peer offers TSP — using DIDComm"
+            );
+            None
+        }
+    }
+}
+
 /// What transport discovery decided about the TSP leg.
 ///
 /// Returned rather than logged-and-dropped so the decision is assertable. The

@@ -37,6 +37,7 @@ pub mod presentation;
 pub mod process_lock;
 pub mod relationships;
 pub mod tasks;
+pub mod tsp;
 pub mod vrc;
 
 /// Primary Linux Foundation Mediator DID.

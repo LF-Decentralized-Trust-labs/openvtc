@@ -41,6 +41,7 @@ use crate::relationships::RelationshipState;
 /// need not depend on `affinidi-messaging-core` directly.
 pub use affinidi_messaging_core::ConnState;
 use affinidi_messaging_core::MessageTransport;
+use affinidi_messaging_core::types::Protocol;
 use affinidi_messaging_delivery::{
     Delivery, InMemoryOutboxStore, MessagingService, OutboxStore, drain_loop_via,
 };
@@ -638,12 +639,23 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
 
     let mut inbound = service.subscribe();
     while let Some(item) = inbound.next().await {
-        // A DIDComm frame's payload is the `Message` JSON (`to_inbound` in the
-        // SDK adapter). A TSP frame's is not, so it will not parse here — TSP
-        // routing lands with #185 and is deliberately skipped rather than logged
-        // as an error.
-        let Ok(message) = serde_json::from_slice::<Message>(&item.message.payload) else {
-            continue;
+        // Both protocols arrive on this one stream — `DidCommTransport` owns the
+        // single mediator socket and surfaces each, tagged. A DIDComm frame's
+        // payload is the `Message` JSON (`to_inbound` in the SDK adapter); a TSP
+        // frame's is a bare Trust Task document, which is normalised into the
+        // same shape so everything below is transport-agnostic.
+        let message = match item.message.protocol {
+            Protocol::DIDComm => match serde_json::from_slice::<Message>(&item.message.payload) {
+                Ok(message) => message,
+                Err(e) => {
+                    debug!(error = %e, "inbound DIDComm frame is not a Message — dropped");
+                    continue;
+                }
+            },
+            Protocol::TSP => match tsp_frame_to_message(&item) {
+                Some(message) => message,
+                None => continue,
+            },
         };
         // The transport authenticated the sender; the plaintext `from` header is
         // sender-controlled. Prefer the cryptographically-bound one.
@@ -691,6 +703,72 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
             tracing::warn!(error = %e, "DIDComm event channel saturated — dropping inbound message");
         }
     }
+}
+
+/// Normalise an inbound TSP frame into the [`Message`] shape the dispatcher and
+/// the whole `crate::messaging` handler set already speak.
+///
+/// This is lossless rather than lossy, because the two transports carry the
+/// **same document**. A VTC reply routed through `dispatch_trust_task_core` is
+/// serialised once; DIDComm then wraps it in an envelope that repeats two of its
+/// members outside (`tt_didcomm_reply` sets the message `type` from the
+/// document's `type` and threads on the request's message id), whereas TSP
+/// carries it bare. So the mapping just reads back out of the document what
+/// DIDComm would have put in the envelope:
+///
+/// | `Message` field | taken from |
+/// |---|---|
+/// | `typ`  | the document's `type` |
+/// | `thid` | the document's `threadId` |
+/// | `id`   | the document's `id` (falling back to the frame hash) |
+/// | `body` | the whole document — the same value `tt_didcomm_reply` sets |
+/// | `from` | the TSP-authenticated sender VID, never a self-asserted field |
+///
+/// `body` being the whole document is what makes the handlers work unchanged:
+/// they read their payload through `messaging::trust_task_reply_payload`, which
+/// unwraps `payload` (#200). Had that fix not landed first, every TSP reply
+/// would have parsed at the wrong nesting.
+///
+/// A frame that is not a JSON object, or carries no `type`, is dropped with a
+/// warning rather than guessed at: unlike DIDComm there is no envelope to fall
+/// back on, and inventing a type would route it to the wrong handler.
+fn tsp_frame_to_message(item: &affinidi_messaging_core::transport::Inbound) -> Option<Message> {
+    let doc: serde_json::Value = match serde_json::from_slice(&item.message.payload) {
+        Ok(doc) => doc,
+        Err(e) => {
+            tracing::warn!(error = %e, "inbound TSP frame is not JSON — dropped");
+            return None;
+        }
+    };
+    let Some(typ) = doc.get("type").and_then(|t| t.as_str()) else {
+        tracing::warn!(
+            "inbound TSP frame carries no `type` — dropped (a TSP frame has no \
+             envelope to recover it from)"
+        );
+        return None;
+    };
+
+    // The document id, when it has one. A TSP frame carries no message id of its
+    // own; the SDK substitutes the frame hash, which stays the fallback so a
+    // malformed document still gets a unique id rather than an empty one.
+    let id = doc
+        .get("id")
+        .and_then(|i| i.as_str())
+        .unwrap_or(&item.message.id)
+        .to_string();
+
+    let mut builder = Message::build(id, typ.to_string(), doc.clone());
+    // `threadId` is the correlation key on this transport, and it is the request
+    // *document* id — which OpenVTC makes equal to the request message id when it
+    // sends (see `join::submit_join_request`), so one handle correlates a reply
+    // arriving on either transport.
+    if let Some(thid) = doc.get("threadId").and_then(|t| t.as_str()) {
+        builder = builder.thid(thid.to_string());
+    }
+    if let Some(sender) = item.message.sender.as_deref() {
+        builder = builder.from(sender.to_string());
+    }
+    Some(builder.to(item.message.recipient.clone()).finalize())
 }
 
 /// Catch-all pattern for OpenVTC protocol messages + VTC Trust-Task
@@ -1342,6 +1420,119 @@ mod persona_listener_id_tests {
     #[test]
     fn an_empty_did_falls_back_to_the_generic_id() {
         assert_eq!(persona_listener_id(""), PERSONA_LISTENER_ID);
+    }
+}
+
+#[cfg(test)]
+mod tsp_inbound_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use super::tsp_frame_to_message;
+    use affinidi_messaging_core::transport::{Inbound, InboundAck};
+    use affinidi_messaging_core::types::{Protocol, ReceivedMessage};
+
+    const VERDICT_TYPE: &str = "https://trusttasks.org/spec/vtc/join-requests/submit/0.1#response";
+
+    /// A TSP frame as the transport hands it over: the payload is the bare Trust
+    /// Task document, and `sender` is the VID `unpack` authenticated.
+    fn tsp_frame(payload: serde_json::Value, sender: Option<&str>) -> Inbound {
+        Inbound {
+            message: ReceivedMessage {
+                id: "frame-hash".to_string(),
+                sender: sender.map(str::to_string),
+                recipient: "did:webvh:example:alice".to_string(),
+                payload: serde_json::to_vec(&payload).unwrap(),
+                protocol: Protocol::TSP,
+                verified: true,
+                encrypted: true,
+            },
+            thread_id: None,
+            ack: InboundAck("frame-hash".to_string()),
+        }
+    }
+
+    fn verdict_document(thread_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "id": "urn:uuid:11111111-1111-4111-8111-111111111111",
+            "threadId": thread_id,
+            "type": VERDICT_TYPE,
+            "issuer": "did:webvh:example:vtc",
+            "recipient": "did:webvh:example:alice",
+            "payload": {
+                "requestId": "22222222-2222-4222-8222-222222222222",
+                "verdict": { "effect": "allow", "with": {} },
+            },
+        })
+    }
+
+    /// The whole point: a TSP frame must land in the same shape the DIDComm
+    /// dispatcher already routes, with `type`/`threadId` lifted out of the
+    /// document into the envelope positions DIDComm would have filled.
+    #[test]
+    fn verdict_document_normalises_into_a_message() {
+        let thid = "urn:uuid:33333333-3333-4333-8333-333333333333";
+        let doc = verdict_document(thid);
+        let message =
+            tsp_frame_to_message(&tsp_frame(doc.clone(), Some("did:webvh:example:vtc"))).unwrap();
+
+        assert_eq!(message.typ, VERDICT_TYPE, "type comes from the document");
+        assert_eq!(
+            message.thid.as_deref(),
+            Some(thid),
+            "threadId is the correlation key on this transport"
+        );
+        assert_eq!(
+            message.id, "urn:uuid:11111111-1111-4111-8111-111111111111",
+            "the document id, not the frame hash, when the document has one"
+        );
+        assert_eq!(
+            message.body, doc,
+            "body is the whole document — the same value tt_didcomm_reply sets, \
+             which is what lets the handlers read it unchanged"
+        );
+        assert_eq!(
+            message.from.as_deref(),
+            Some("did:webvh:example:vtc"),
+            "from is the TSP-authenticated sender"
+        );
+    }
+
+    /// The `from` header must never be recovered from the document's own
+    /// `issuer`: that field is written by the sender, so trusting it would let
+    /// any TSP peer claim to be the VTC.
+    #[test]
+    fn unauthenticated_frame_carries_no_sender() {
+        let doc = verdict_document("urn:uuid:44444444-4444-4444-8444-444444444444");
+        let message = tsp_frame_to_message(&tsp_frame(doc, None)).unwrap();
+
+        assert!(
+            message.from.is_none(),
+            "a frame with no proven sender must not inherit the document's issuer"
+        );
+    }
+
+    /// No envelope to fall back on, so an untyped document cannot be routed —
+    /// dropping beats guessing a type and reaching the wrong handler.
+    #[test]
+    fn document_without_a_type_is_dropped() {
+        let doc = serde_json::json!({ "id": "urn:uuid:5", "payload": {} });
+        assert!(tsp_frame_to_message(&tsp_frame(doc, Some("did:webvh:example:vtc"))).is_none());
+    }
+
+    #[test]
+    fn non_json_frame_is_dropped() {
+        let mut frame = tsp_frame(serde_json::json!({}), Some("did:webvh:example:vtc"));
+        frame.message.payload = b"not json at all".to_vec();
+        assert!(tsp_frame_to_message(&frame).is_none());
+    }
+
+    /// A document with no `id` still needs a unique message id; the frame hash
+    /// is the transport's own stable handle for it.
+    #[test]
+    fn frame_hash_is_the_id_fallback() {
+        let doc = serde_json::json!({ "type": VERDICT_TYPE, "payload": {} });
+        let message = tsp_frame_to_message(&tsp_frame(doc, Some("did:webvh:example:vtc"))).unwrap();
+        assert_eq!(message.id, "frame-hash");
     }
 }
 

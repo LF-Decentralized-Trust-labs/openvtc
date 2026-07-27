@@ -1056,6 +1056,10 @@ async fn run_join_sequence(
         state.invitation_credential.as_ref(),
         linkage.as_ref(),
     );
+    // Does this community accept Trust Tasks over TSP? `None` — not advertised,
+    // or discovery could not answer — sends over DIDComm exactly as before, so a
+    // VTC that has not been flipped is unaffected.
+    let vtc_tsp_mediator = openvtc_core::config::peer_tsp_mediator(&vtc_did).await;
     let request_id = match openvtc_core::join::submit_join_request(
         atm,
         &persona_profile,
@@ -1063,6 +1067,7 @@ async fn run_join_sequence(
         &vtc_did,
         &persona_mediator,
         vp,
+        vtc_tsp_mediator.as_deref(),
     )
     .await
     {

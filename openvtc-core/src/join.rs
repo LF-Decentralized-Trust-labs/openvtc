@@ -1,12 +1,20 @@
 /*!
  * VTC join-ceremony client helpers.
  *
- * Sends the applicant side of the join ceremony to a VTC over DIDComm.
- * Authcrypt makes the sender (the persona DID) the authenticated
- * applicant — the VTC reads it from the envelope, so no separate
- * holder-binding signature is needed. DIDComm is also the *only* path
- * that works for a `did:webvh` persona: the VTC's REST holder-binding
- * verification accepts `did:key` applicants only.
+ * Sends the applicant side of the join ceremony to a VTC over DIDComm or,
+ * when the community advertises `#tsp`, over TSP (#185 item 2f).
+ *
+ * The payload is the same either way: a Trust Task **document**, which is
+ * what the VTC's `dispatch_trust_task_core` reads on every transport.
+ * DIDComm wraps that document in an authcrypt envelope; TSP carries it bare
+ * and seals it in the routing layer. So the transport choice changes the
+ * wire, not the ceremony.
+ *
+ * Either way the sender is cryptographically proven — the authcrypt sender
+ * over DIDComm, the sender VID over TSP — so no separate holder-binding
+ * signature is needed. **REST remains unusable** for a `did:webvh` persona
+ * regardless: the VTC's REST holder-binding verification accepts `did:key`
+ * applicants only.
  */
 
 use std::sync::Arc;
@@ -33,11 +41,23 @@ use crate::errors::OpenVTCError;
 /// `mediator_did`; the VTC authenticates the applicant from the
 /// envelope's `from`.
 ///
-/// Returns the DIDComm message id. That id is the thread root the VTC's
-/// `join-requests/submit-receipt/1.0` reply references (`thid`); the
-/// authoritative VTC `requestId` arrives on that asynchronous receipt
-/// (handled separately), so callers use the returned id as the
-/// client-side correlation handle until then.
+/// Returns the correlation handle the VTC's reply threads on. **The same value
+/// on either transport**, which is what lets one handle correlate a reply that
+/// may arrive over either.
+///
+/// That takes a deliberate step, because the two transports thread differently:
+/// DIDComm threads the reply on the request *message* id (`vtc-service` sets
+/// `thid = msg.id`), while TSP has no message and threads on the request
+/// *document* id (`threadId`). Those are two different UUIDs unless something
+/// makes them one — so the DIDComm message is built with `id` equal to the Trust
+/// Task document's id. `Uuid::parse_str` accepts the `urn:uuid:` form, so the
+/// existing correlation code reads either unchanged.
+///
+/// `tsp_mediator_did` selects the wire: `Some` sends the bare Trust Task
+/// document over TSP through that (the VTC's **advertised**) mediator; `None`
+/// wraps it in DIDComm as before. Discovery belongs to the caller so that a VTC
+/// which does not advertise `#tsp` simply degrades to DIDComm rather than
+/// failing.
 pub async fn submit_join_request(
     atm: &ATM,
     profile: &Arc<ATMProfile>,
@@ -45,23 +65,33 @@ pub async fn submit_join_request(
     vtc_did: &str,
     mediator_did: &str,
     vp: Value,
+    tsp_mediator_did: Option<&str>,
 ) -> Result<Uuid, OpenVTCError> {
-    let body = build_join_submit_document(persona_did, vtc_did, vp)?;
+    // One id, used as both the document id and — on the DIDComm path — the
+    // message id, so the two transports' threading conventions coincide.
+    let request_id = Uuid::new_v4();
+    let document_id = format!("urn:uuid:{request_id}");
+    let body = build_join_submit_document(persona_did, vtc_did, vp, &document_id)?;
 
-    let msg_id = Uuid::new_v4();
-    let now = Utc::now().timestamp().max(0) as u64;
-    let msg = Message::build(
-        msg_id.to_string(),
-        JOIN_REQUEST_SUBMIT_TYPE.to_string(),
-        body,
-    )
-    .from(persona_did.to_string())
-    .to(vtc_did.to_string())
-    .created_time(now)
-    .finalize();
+    match tsp_mediator_did {
+        // TSP carries the Trust Task document as-is: no DIDComm envelope, and
+        // the VTC's dispatcher reads `type`/`threadId` out of the document.
+        Some(tsp_mediator) => {
+            crate::tsp::send_trust_task(atm, profile, &body, vtc_did, tsp_mediator).await?;
+        }
+        None => {
+            let now = Utc::now().timestamp().max(0) as u64;
+            let msg = Message::build(document_id, JOIN_REQUEST_SUBMIT_TYPE.to_string(), body)
+                .from(persona_did.to_string())
+                .to(vtc_did.to_string())
+                .created_time(now)
+                .finalize();
 
-    crate::pack_and_send(atm, profile, &msg, persona_did, vtc_did, mediator_did).await?;
-    Ok(msg_id)
+            crate::pack_and_send(atm, profile, &msg, persona_did, vtc_did, mediator_did).await?;
+        }
+    }
+
+    Ok(request_id)
 }
 
 /// Build the DIDComm body for a join-request submit: a Trust Task *document*
@@ -78,6 +108,7 @@ fn build_join_submit_document(
     persona_did: &str,
     vtc_did: &str,
     vp: Value,
+    document_id: &str,
 ) -> Result<Value, OpenVTCError> {
     let payload = JoinRequestSubmitBody {
         vp,
@@ -87,7 +118,10 @@ fn build_join_submit_document(
     let type_uri = JOIN_REQUEST_SUBMIT_TYPE
         .parse()
         .map_err(|e| OpenVTCError::Config(format!("join submit type URI parse: {e}")))?;
-    let mut doc = TrustTask::new(format!("urn:uuid:{}", Uuid::new_v4()), type_uri, payload);
+    // Supplied rather than minted here: on the DIDComm path this same id is the
+    // message id, which is what makes the two transports' reply threading agree
+    // (see [`submit_join_request`]).
+    let mut doc = TrustTask::new(document_id.to_string(), type_uri, payload);
     doc.issuer = Some(persona_did.to_string());
     doc.recipient = Some(vtc_did.to_string());
     doc.issued_at = Some(Utc::now());
@@ -511,6 +545,7 @@ mod tests {
             "did:webvh:example.com:alice",
             "did:webvh:example.com:community",
             vp,
+            &format!("urn:uuid:{}", Uuid::new_v4()),
         )
         .expect("build document");
 
