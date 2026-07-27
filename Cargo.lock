@@ -73,6 +73,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "affinidi-cesr"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e986f772f1639a7de3bf1ba1cf9b99aa87175fa28463d289a4afa5fc1c274266"
+dependencies = [
+ "base64ct",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "affinidi-crypto"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -449,6 +459,7 @@ dependencies = [
  "affinidi-crypto",
  "affinidi-did-authentication",
  "affinidi-did-common 0.4.0",
+ "affinidi-did-resolver-cache-sdk",
  "affinidi-encoding",
  "affinidi-messaging-core",
  "affinidi-messaging-didcomm",
@@ -456,12 +467,14 @@ dependencies = [
  "affinidi-secrets-resolver",
  "affinidi-task-utils",
  "affinidi-tdk-common",
+ "affinidi-tsp",
  "ahash 0.8.12",
  "async-trait",
  "base64 0.22.1",
  "futures-util",
  "rand 0.10.2",
  "regex",
+ "reqwest 0.13.4",
  "rustls",
  "rustls-pemfile 2.2.0",
  "serde",
@@ -669,6 +682,7 @@ dependencies = [
  "affinidi-messaging-sdk",
  "affinidi-secrets-resolver",
  "affinidi-tdk-common",
+ "affinidi-tsp",
  "clap",
  "rustls",
  "serde",
@@ -705,6 +719,32 @@ dependencies = [
  "tokio",
  "tracing",
  "windows-native-keyring-store",
+]
+
+[[package]]
+name = "affinidi-tsp"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a9499c93bcd77125a532d4e881d5daff9844660ae0de03a5a085a71e97b7143"
+dependencies = [
+ "affinidi-cesr",
+ "affinidi-did-common 0.4.0",
+ "affinidi-did-resolver-cache-sdk",
+ "affinidi-encoding",
+ "blake2",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "hex",
+ "hkdf 0.12.4",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
+ "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
@@ -837,7 +877,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -848,7 +888,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2756,7 +2796,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3051,7 +3091,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5271,7 +5311,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5726,7 +5766,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.20.1",
+ "vta-sdk 0.20.2",
  "windows-native-keyring-store",
  "x25519-dalek",
  "zeroize",
@@ -5785,7 +5825,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.20.1",
+ "vta-sdk 0.20.2",
  "vta-service",
  "wiremock",
  "x25519-dalek",
@@ -5823,7 +5863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6537,7 +6577,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7184,7 +7224,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7260,7 +7300,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7905,7 +7945,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8391,7 +8431,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8404,7 +8444,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8985,9 +9025,9 @@ dependencies = [
 
 [[package]]
 name = "trust-tasks-rs"
-version = "0.2.38"
+version = "0.2.39"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "15438a66c6f3e061554d8cd5a0e2c07c0828618f3e3ff3331be266347caccf25"
+checksum = "d7f80508c771f601bcd02b85d0a6d0890bdcee07b305d6afa9dff9d5c1f57f2c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -9415,9 +9455,9 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.20.1"
+version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4df4c5b889ee964e46fe15338b4aaad4318caeae191b8292b959a5a68ac92fd2"
+checksum = "e4e33bd7fc9bf9557724e730b62181774d778cbfa5a2525dac73e1449e73d199"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
@@ -9425,6 +9465,7 @@ dependencies = [
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
  "affinidi-messaging-didcomm",
+ "affinidi-messaging-sdk",
  "affinidi-openid4vci",
  "affinidi-openid4vp",
  "affinidi-secrets-resolver",
@@ -9988,7 +10029,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

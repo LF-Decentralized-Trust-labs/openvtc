@@ -390,15 +390,15 @@ fn render_transports(state: &VtaState, lines: &mut Vec<Line<'static>>) {
                 others.push(Span::styled(format!("   ·   {name} also available"), dim));
             }
 
-            // TSP is reported separately from the transports we could switch
-            // to, because the CLI cannot speak it yet. Staying silent would
-            // reproduce the original defect; calling it "also available" would
-            // promise a transport the operator has no way to select.
+            // TSP is reported separately from the transports we could switch to,
+            // because it is not one: it carries the **trust-task surface only**,
+            // as a leg of the DIDComm session rather than an alternative to it.
+            // Key management, DID minting and context listing stay on DIDComm
+            // unconditionally — the VTA has no TSP dispatcher behind them. So
+            // "also available" would be wrong in the other direction now: TSP is
+            // in use for part of the traffic, not available to switch to.
             if a.tsp_mediator_did.is_some() {
-                others.push(Span::styled(
-                    "   ·   TSP advertised (not yet supported)",
-                    dim,
-                ));
+                others.push(Span::styled("   ·   TSP for trust tasks", dim));
             }
 
             if others.is_empty() {
@@ -711,24 +711,28 @@ mod tests {
             !out.contains("only transport offered"),
             "TSP is offered, so this claim is false: {out}"
         );
-        assert!(out.contains("TSP advertised"), "{out}");
+        assert!(out.contains("TSP for trust tasks"), "{out}");
     }
 
-    /// Advertised-but-unsupported is its own state. TSP must not read as
-    /// something the operator can switch to — we cannot speak it yet — nor as
-    /// absent (VTI R6.4).
+    /// TSP is neither "available to switch to" nor absent: it carries the
+    /// trust-task surface as a leg of the DIDComm session, while everything else
+    /// stays on DIDComm. The panel has to express that third thing (VTI R6.4).
     #[test]
-    fn tsp_reads_as_advertised_but_unsupported() {
+    fn tsp_reads_as_carrying_the_trust_task_surface() {
         let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
             tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
             mediator_did: Some(MEDIATOR_DID.to_string()),
             rest_url: None,
             error: None,
         }))));
-        assert!(out.contains("TSP advertised (not yet supported)"), "{out}");
+        assert!(out.contains("TSP for trust tasks"), "{out}");
         assert!(
             !out.contains("TSP also available"),
-            "must not promise a transport that cannot be selected: {out}"
+            "TSP is not an alternative transport to switch to: {out}"
+        );
+        assert!(
+            !out.contains("not yet supported"),
+            "TSP now carries the trust-task surface: {out}"
         );
     }
 
@@ -743,7 +747,7 @@ mod tests {
             error: None,
         }))));
         assert!(out.contains("REST also available"), "{out}");
-        assert!(out.contains("TSP advertised (not yet supported)"), "{out}");
+        assert!(out.contains("TSP for trust tasks"), "{out}");
     }
 
     /// The adjacent inconsistency #185 exposed: `rest_url` is stored config, so
