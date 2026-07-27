@@ -703,11 +703,7 @@ pub(crate) async fn discover_tsp_mediator(
 ) -> TspDiscovery {
     let resolved = match tokio::time::timeout(
         TSP_DISCOVERY_TIMEOUT,
-        // Note the deeper path: `provision_client/mod.rs` re-exports `resolve_vta`
-        // but not its `_with_resolver` sibling — an asymmetry introduced with the
-        // function in VTI #813 (mine). The module is `pub`, so this reaches it;
-        // an upstream re-export fix is filed separately.
-        vta_sdk::provision_client::resolve::resolve_vta_with_resolver(vta_did, resolver),
+        vta_sdk::provision_client::resolve_vta_with_resolver(vta_did, resolver),
     )
     .await
     {

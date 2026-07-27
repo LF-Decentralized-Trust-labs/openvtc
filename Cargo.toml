@@ -104,17 +104,18 @@ trust-tasks-capability-client = "0.1"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-vta-sdk = { version = "0.20.4", features = [
+vta-sdk = { version = "0.20.6", features = [
   "session",
   "client",
   "didcomm",
   "provision-client",
   # Routes the Trust-Task surface over TSP as a leg of the existing DIDComm
   # session (VTI #803 / #810) — no second socket, no second mediator connection.
-  # 0.20.2 is the floor for the leg itself: earlier 0.20.x only offered
+  # 0.20.6 is the floor: 0.20.2 first offered the leg (earlier 0.20.x only had
   # `connect_tsp`, which opens its own websocket and is unusable for a client
-  # that already holds a DIDComm session. 0.20.3 adds the resolver-injection
-  # seam this crate's discovery tests need (VTI #813).
+  # already holding a DIDComm session), 0.20.3 added the resolver-injection seam
+  # the discovery tests need (VTI #813), and 0.20.6 exports it from
+  # `provision_client` rather than only its inner `resolve` module (VTI #825).
   "tsp",
   # DCQL credential selection + holder-bound OID4VP `vp_token` assembly
   # (`vta_sdk::vp`), for answering a VTC's `credential-exchange/query`.
