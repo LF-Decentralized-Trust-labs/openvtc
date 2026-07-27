@@ -242,7 +242,7 @@ impl RDidPlan {
             &mediator,
             vec![v_secret.clone(), e_secret.clone()],
         );
-        if let Err(e) = service.add_listener(listener_config).await {
+        if let Err(e) = super::didcomm::add_listener(service, &listener_config).await {
             tracing::warn!(did = %r_did, error = %e, "failed to add R-DID listener");
         }
 

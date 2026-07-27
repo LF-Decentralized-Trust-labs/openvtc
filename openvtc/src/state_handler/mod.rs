@@ -3373,7 +3373,7 @@ async fn register_joined_session(
             }
             match didcomm::persona_listener_config_for(config, tdk, joined.persona_id).await {
                 Some(cfg) => {
-                    if let Err(e) = service.add_listener(cfg).await {
+                    if let Err(e) = didcomm::add_listener(service, &cfg).await {
                         session_manager.mark_failed(&lid, format!("{e:#}"));
                         state.main_page.log(format!(
                             "Joined, but couldn't start its live session now (it will connect \
