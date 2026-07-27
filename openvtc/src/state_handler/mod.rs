@@ -2847,11 +2847,11 @@ impl StateHandler {
                                 .main_page
                                 .log("Joined — starting secure messaging…");
                             let _ = self.state_tx.send(state.clone());
-                            break DegradedOutcome::Joined(
+                            break DegradedOutcome::Joined(Box::new(
                                 join_ctx
                                     .take()
                                     .expect("join_ctx present when join succeeded"),
-                            );
+                            ));
                         }
                     }
                     Action::CreatePersonaSubmit => {
@@ -2984,7 +2984,12 @@ enum DegradedOutcome {
     /// An in-session join minted the account's first persona. The runtime
     /// context (with its still-open admin session) is handed back so `run()` can
     /// bring up the persona's DIDComm listener without a process restart.
-    Joined(DegradedJoinContext),
+    ///
+    /// Boxed because it dwarfs `Exit`: it carries the whole runtime context
+    /// including the `VtaClient`, which grew when the client gained its TSP leg.
+    /// Every `Exit` — the overwhelmingly common outcome — would otherwise pay for
+    /// the join case's size.
+    Joined(Box<DegradedJoinContext>),
 }
 
 /// Apply correlated `governance/capability/*` replies to the open

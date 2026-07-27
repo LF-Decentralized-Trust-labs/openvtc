@@ -104,11 +104,17 @@ trust-tasks-capability-client = "0.1"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-vta-sdk = { version = "0.20", features = [
+vta-sdk = { version = "0.20.2", features = [
   "session",
   "client",
   "didcomm",
   "provision-client",
+  # Routes the Trust-Task surface over TSP as a leg of the existing DIDComm
+  # session (VTI #803 / #810) — no second socket, no second mediator connection.
+  # 0.20.2 is the floor: earlier 0.20.x only offered `connect_tsp`, which opens
+  # its own websocket and is therefore unusable for a client that already holds
+  # a DIDComm session.
+  "tsp",
 ] }
 reqwest = { version = "0.13", features = ["json"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }

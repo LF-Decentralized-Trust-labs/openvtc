@@ -615,7 +615,7 @@ pub async fn build_runtime_vta_client(
     // encapsulates them so this no longer hand-rolls the branch (R22). The
     // issued REST token is dropped: runtime clients re-auth per process and
     // never cached it here.
-    vta_sdk::client::VtaClient::connect_auto(vta_sdk::client::AutoConnect {
+    let mut client = vta_sdk::client::VtaClient::connect_auto(vta_sdk::client::AutoConnect {
         vta_url,
         vta_did,
         credential_did,
@@ -624,7 +624,70 @@ pub async fn build_runtime_vta_client(
     })
     .await
     .map(|connected| connected.client)
-    .map_err(map_connect_error)
+    .map_err(map_connect_error)?;
+
+    enable_tsp_if_advertised(&mut client, vta_did).await;
+    Ok(client)
+}
+
+/// Ceiling on the `#tsp` discovery resolve.
+///
+/// TSP is an upgrade, not a requirement, so this must never be able to delay
+/// startup by more than a beat (R1.2). A resolver that hangs leaves the client on
+/// DIDComm, which is exactly where it was before.
+const TSP_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Move the Trust-Task surface onto TSP when the VTA advertises `#tsp`.
+///
+/// Only the **trust-task** surface moves. `rpc`/`rpc_void` — key management,
+/// `create_did_webvh`, `list_contexts` — stay on DIDComm unconditionally, because
+/// the VTA has no TSP dispatcher behind them. That per-surface split is the whole
+/// reason this is a call on an existing client rather than a transport choice at
+/// connect time (VTI #803 / #810).
+///
+/// No second socket: `enable_tsp_trust_tasks` rides the DIDComm session's own
+/// mediator connection. The mediator permits one websocket per DID, and opening a
+/// second is what made the previous `connect_tsp` route unusable for a consumer
+/// that already held a session.
+///
+/// **Best-effort by construction.** Every failure path leaves the client exactly as
+/// `connect_auto` returned it — on DIDComm, fully working. A VTA that advertises no
+/// `#tsp`, a resolve that times out, or a split-mediator topology (which needs its
+/// own session and key material a `DIDCommSession` deliberately does not keep) all
+/// degrade silently to the previous behaviour rather than failing a startup that
+/// would otherwise have succeeded.
+async fn enable_tsp_if_advertised(client: &mut vta_sdk::client::VtaClient, vta_did: &str) {
+    let resolved = match tokio::time::timeout(
+        TSP_DISCOVERY_TIMEOUT,
+        vta_sdk::provision_client::resolve_vta(vta_did),
+    )
+    .await
+    {
+        Ok(Ok(resolved)) => resolved,
+        Ok(Err(e)) => {
+            tracing::debug!("TSP discovery for {vta_did} failed ({e}); staying on DIDComm");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!(
+                "TSP discovery for {vta_did} timed out after {}s; staying on DIDComm",
+                TSP_DISCOVERY_TIMEOUT.as_secs()
+            );
+            return;
+        }
+    };
+
+    let Some(tsp_mediator_did) = resolved.tsp_mediator_did else {
+        tracing::debug!("{vta_did} advertises no #tsp service; trust tasks stay on DIDComm");
+        return;
+    };
+
+    match client.enable_tsp_trust_tasks(&tsp_mediator_did) {
+        Ok(()) => tracing::info!("trust tasks routed over TSP (mediator {tsp_mediator_did})"),
+        Err(e) => {
+            tracing::debug!("could not enable the TSP leg ({e}); trust tasks stay on DIDComm")
+        }
+    }
 }
 
 /// Map a `vta_sdk` connect error onto the typed [`OpenVTCError`] taxonomy so
