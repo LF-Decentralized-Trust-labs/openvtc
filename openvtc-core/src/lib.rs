@@ -17,8 +17,12 @@ pub mod agent_name;
 pub mod bip32;
 pub mod capabilities;
 pub mod config;
-/// DIDComm transport plumbing (listeners, routing, sending). Distinct from
-/// [`messaging`], which is the pure protocol logic — see that module's docs.
+// `didcomm` is DIDComm transport plumbing; `messaging` is the pure protocol
+// logic. Both module docs state the split. Deliberately a `//` comment, not a
+// `///` doc: an outer doc on a `pub mod` merges with that module's own `//!`
+// docs and is resolved in *this* file's scope, so every intra-doc link the
+// module writes about its own items breaks — which is what failed CI on #192
+// and again here.
 pub mod didcomm;
 pub mod display;
 pub mod errors;
@@ -29,6 +33,7 @@ pub mod members;
 pub mod messaging;
 #[cfg(feature = "openpgp-card")]
 pub mod openpgp_card;
+pub mod presentation;
 pub mod process_lock;
 pub mod relationships;
 pub mod tasks;

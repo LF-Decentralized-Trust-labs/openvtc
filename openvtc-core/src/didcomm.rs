@@ -2,7 +2,7 @@
 //! sending, and listener lifecycle.
 //!
 //! Runs on the **delivery layer** (`affinidi-messaging-delivery`): one
-//! `MessagingService` holding one `DidCommTransport` per identity, with a
+//! [`MessagingService`] holding one `DidCommTransport` per identity, with a
 //! durable outbox behind every send.
 //!
 //! It used to wrap `affinidi-messaging-didcomm-service`, the type-routed framework
