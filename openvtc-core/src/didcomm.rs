@@ -39,8 +39,76 @@ use affinidi_messaging_didcomm_service::{
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
+use affinidi_tdk::secrets_resolver::secrets::Secret;
 use tokio::sync::mpsc;
 use tracing::debug;
+
+/// How a listener is described, independently of the framework that runs it.
+///
+/// The delivery-layer swap replaces `ListenerConfig` (a
+/// `affinidi-messaging-didcomm-service` type) with an ATM profile plus a
+/// `DidCommTransport`, and the two have no common constructor. This spec is the
+/// shape both can be built from — DID, mediator, label, secrets — so the callers
+/// that build listeners (persona reconnect, relationship creation) name *what*
+/// they want without naming *which* framework runs it.
+///
+/// Deliberately not `ListenerConfig` re-exported: keeping the framework type in
+/// the signatures is what would force every caller to change again at the swap.
+#[derive(Clone)]
+pub struct ListenerSpec {
+    /// The listener id — the DID, per [`persona_listener_id`].
+    pub id: String,
+    /// The identity this listener speaks as.
+    pub did: String,
+    /// The mediator it connects through.
+    pub mediator_did: String,
+    /// Human label for the messaging profile (the community, or the relationship).
+    pub label: String,
+    /// Signing + key-agreement secrets for [`did`](Self::did).
+    pub secrets: Vec<Secret>,
+}
+
+impl std::fmt::Debug for ListenerSpec {
+    /// Hand-written so the secrets are never rendered.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenerSpec")
+            .field("id", &self.id)
+            .field("did", &self.did)
+            .field("mediator_did", &self.mediator_did)
+            .field("label", &self.label)
+            .field(
+                "secrets",
+                &format_args!("<{} redacted>", self.secrets.len()),
+            )
+            .finish()
+    }
+}
+
+impl ListenerSpec {
+    /// The framework `ListenerConfig` this spec describes.
+    ///
+    /// The one place the framework type is constructed, so the swap has a single
+    /// seam to cut rather than four scattered struct literals.
+    fn to_listener_config(&self) -> ListenerConfig {
+        ListenerConfig {
+            id: self.id.clone(),
+            profile: make_profile(
+                &self.did,
+                &self.mediator_did,
+                &self.label,
+                self.secrets.clone(),
+            ),
+            restart_policy: default_listener_restart_policy(),
+            // Keep `auto_delete: true`. It delegates message deletion to the
+            // mediator's live-stream protocol, which uses the mediator-native
+            // storage id. If you ever set this to false and delete from app
+            // code, you MUST delete by `UnpackMetadata.sha256_hash` (the
+            // mediator-native id), NOT by the DIDComm protocol id `msg.id`.
+            auto_delete: true,
+            ..Default::default()
+        }
+    }
+}
 
 /// Fallback listener ID for the persona DID listener when no DID is available
 /// (e.g. a State-A account with no persona).
@@ -143,12 +211,12 @@ pub enum ReconnectOutcome {
 pub async fn reconnect_persona_listener_io(
     service: &DIDCommService,
     listener_id: String,
-    new_config: ListenerConfig,
+    new_config: ListenerSpec,
 ) -> ReconnectOutcome {
     if let Err(e) = service.remove_listener(&listener_id).await {
         debug!("remove_listener during reconnect: {e}");
     }
-    if let Err(e) = service.add_listener(new_config).await {
+    if let Err(e) = service.add_listener(new_config.to_listener_config()).await {
         return ReconnectOutcome::Failed(format!("{e:#}"));
     }
     match service
@@ -158,6 +226,20 @@ pub async fn reconnect_persona_listener_io(
         Ok(()) => ReconnectOutcome::Connected,
         Err(e) => ReconnectOutcome::Failed(format!("{e:#}")),
     }
+}
+
+/// Install a listener described by `spec` on a running service.
+///
+/// The public way to add a listener, so `ListenerConfig` stays inside this
+/// module: every caller names a [`ListenerSpec`] and this is the only place the
+/// framework type is handed over. At the delivery-layer swap the body becomes
+/// "build an ATM profile + `DidCommTransport` and `add_transport`", and no
+/// caller changes.
+pub async fn add_listener(
+    service: &DIDCommService,
+    spec: &ListenerSpec,
+) -> Result<(), DIDCommServiceError> {
+    service.add_listener(spec.to_listener_config()).await
 }
 
 /// Catch-all pattern for OpenVTC protocol messages + VTC Trust-Task
@@ -354,7 +436,7 @@ fn default_listener_restart_policy() -> RestartPolicy {
     }
 }
 
-/// Build `ListenerConfig`s from the loaded `Config`.
+/// Build [`ListenerSpec`]s from the loaded `Config`.
 ///
 /// Includes one persona listener per resolved identity (so every community's
 /// persona receives messages), plus per-relationship listeners for established
@@ -362,12 +444,7 @@ fn default_listener_restart_policy() -> RestartPolicy {
 ///
 /// Secrets for each DID are extracted from the TDK's secrets resolver
 /// so that each listener can authenticate with the mediator.
-pub async fn build_listener_configs(
-    config: &Config,
-    tdk: &affinidi_tdk::TDK,
-) -> Vec<ListenerConfig> {
-    let restart = default_listener_restart_policy();
-
+pub async fn build_listener_configs(config: &Config, tdk: &affinidi_tdk::TDK) -> Vec<ListenerSpec> {
     // One persona listener per resolved identity. A single-persona account
     // yields exactly one — identical to the previous behaviour. `persona_dids`
     // is also the exclusion set for the R-DID listeners below.
@@ -384,20 +461,12 @@ pub async fn build_listener_configs(
             .as_deref()
             .unwrap_or(config.mediator_did());
         let label = config.persona_profile_label_for(identity.persona_id);
-        configs.push(ListenerConfig {
+        configs.push(ListenerSpec {
             id: persona_listener_id(did),
-            profile: make_profile(did, mediator, &label, persona_secrets),
-            restart_policy: restart.clone(),
-            // Keep `auto_delete: true`. It delegates message deletion to the
-            // mediator's live-stream protocol, which uses the mediator-native
-            // storage id. If you ever set this to false and delete from app
-            // code, you MUST delete by `UnpackMetadata.sha256_hash` (the
-            // mediator-native id), NOT by the DIDComm protocol id `msg.id` —
-            // they are different domains and the mediator's delete API only
-            // accepts the former. Mixing them silently leaks messages and
-            // causes duplicate processing on reconnect (see issue #44).
-            auto_delete: true,
-            ..Default::default()
+            did: did.to_string(),
+            mediator_did: mediator.to_string(),
+            label,
+            secrets: persona_secrets,
         });
     }
 
@@ -432,20 +501,15 @@ pub async fn build_listener_configs(
 
     for (our_did, remote_p_did) in &r_did_entries {
         let r_did_secrets = get_secrets_for_did(tdk, config, our_did).await;
-        configs.push(ListenerConfig {
+        configs.push(ListenerSpec {
             id: format!("rel-{}", short_did_id(our_did)),
-            profile: make_profile(
-                our_did,
-                config.mediator_did(),
-                &format!(
-                    "R-DID for {}",
-                    crate::display::truncate_did(remote_p_did, 32)
-                ),
-                r_did_secrets,
+            did: our_did.to_string(),
+            mediator_did: config.mediator_did().to_string(),
+            label: format!(
+                "R-DID for {}",
+                crate::display::truncate_did(remote_p_did, 32)
             ),
-            restart_policy: restart.clone(),
-            auto_delete: true,
-            ..Default::default()
+            secrets: r_did_secrets,
         });
     }
 
@@ -603,20 +667,15 @@ pub fn spawn_lifecycle_logger(
     })
 }
 
-/// Build a single `ListenerConfig` for the persona DID.
-pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -> ListenerConfig {
+/// Build a single [`ListenerSpec`] for the persona DID.
+pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -> ListenerSpec {
     let secrets = get_secrets_for_did(tdk, config, config.persona_did()).await;
-    ListenerConfig {
+    ListenerSpec {
         id: persona_listener_id(config.persona_did()),
-        profile: make_profile(
-            config.persona_did(),
-            config.mediator_did(),
-            &config.persona_profile_label(),
-            secrets,
-        ),
-        restart_policy: default_listener_restart_policy(),
-        auto_delete: true,
-        ..Default::default()
+        did: config.persona_did().to_string(),
+        mediator_did: config.mediator_did().to_string(),
+        label: config.persona_profile_label(),
+        secrets,
     }
 }
 
@@ -628,7 +687,7 @@ pub async fn persona_listener_config_for(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
     persona_id: crate::config::account::PersonaId,
-) -> Option<ListenerConfig> {
+) -> Option<ListenerSpec> {
     let ident = config.identities.get(&persona_id)?;
     let did = ident.did.as_str();
     let secrets = get_secrets_for_did(tdk, config, did).await;
@@ -637,12 +696,12 @@ pub async fn persona_listener_config_for(
         .as_deref()
         .unwrap_or(config.mediator_did());
     let label = config.persona_profile_label_for(persona_id);
-    Some(ListenerConfig {
+    Some(ListenerSpec {
         id: persona_listener_id(did),
-        profile: make_profile(did, mediator, &label, secrets),
-        restart_policy: default_listener_restart_policy(),
-        auto_delete: true,
-        ..Default::default()
+        did: did.to_string(),
+        mediator_did: mediator.to_string(),
+        label,
+        secrets,
     })
 }
 
@@ -655,16 +714,13 @@ pub async fn start_service(
 ) -> Result<DIDCommService, DIDCommServiceError> {
     let router = build_router(event_tx)
         .map_err(|e| DIDCommServiceError::Internal(format!("router init failed: {e}")))?;
-    let listener_configs = build_listener_configs(config, tdk).await;
+    let listeners = build_listener_configs(config, tdk)
+        .await
+        .iter()
+        .map(ListenerSpec::to_listener_config)
+        .collect();
 
-    DIDCommService::start(
-        DIDCommServiceConfig {
-            listeners: listener_configs,
-        },
-        router,
-        shutdown,
-    )
-    .await
+    DIDCommService::start(DIDCommServiceConfig { listeners }, router, shutdown).await
 }
 
 /// Produce a short, collision-resistant identifier from a DID for listener IDs.
@@ -677,7 +733,7 @@ fn short_did_id(did: &str) -> String {
     hex::encode(&hash[..8])
 }
 
-/// Build a relationship R-DID `ListenerConfig` from already-owned secrets.
+/// Build a relationship R-DID [`ListenerSpec`] from already-owned secrets.
 ///
 /// Config/TDK-free, so a backgrounded relationship-creation task (R14) can build
 /// the new R-DID listener from the secrets it just minted — no resolver lookup,
@@ -686,22 +742,17 @@ pub fn relationship_listener_config_from_secrets(
     our_did: &str,
     remote_p_did: &str,
     mediator_did: &str,
-    secrets: Vec<affinidi_tdk::secrets_resolver::secrets::Secret>,
-) -> ListenerConfig {
-    ListenerConfig {
+    secrets: Vec<Secret>,
+) -> ListenerSpec {
+    ListenerSpec {
         id: format!("rel-{}", short_did_id(our_did)),
-        profile: make_profile(
-            our_did,
-            mediator_did,
-            &format!(
-                "R-DID for {}",
-                crate::display::truncate_did(remote_p_did, 32)
-            ),
-            secrets,
+        did: our_did.to_string(),
+        mediator_did: mediator_did.to_string(),
+        label: format!(
+            "R-DID for {}",
+            crate::display::truncate_did(remote_p_did, 32)
         ),
-        restart_policy: default_listener_restart_policy(),
-        auto_delete: true,
-        ..Default::default()
+        secrets,
     }
 }
 

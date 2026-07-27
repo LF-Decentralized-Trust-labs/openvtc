@@ -33,7 +33,8 @@ use std::time::Duration;
 use affinidi_tdk::didcomm::Message;
 use common::{MockMediator, init_test_tracing};
 use openvtc_core::didcomm::{
-    DIDCommEvent, build_router, relationship_listener_config_from_secrets, send_message_via,
+    DIDCommEvent, add_listener, build_router, relationship_listener_config_from_secrets,
+    send_message_via,
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -62,15 +63,19 @@ async fn start_production_service(
     let listener_id = listener.id.clone();
     let router = build_router(event_tx).expect("production router builds");
     let shutdown = CancellationToken::new();
+    // Start empty and install through the production `add_listener` seam, so the
+    // test drives the same path the runtime does rather than reaching past it
+    // into the framework's own config type.
     let service = affinidi_messaging_didcomm_service::DIDCommService::start(
-        affinidi_messaging_didcomm_service::DIDCommServiceConfig {
-            listeners: vec![listener],
-        },
+        affinidi_messaging_didcomm_service::DIDCommServiceConfig { listeners: vec![] },
         router,
         shutdown.clone(),
     )
     .await
-    .expect("production listener config starts");
+    .expect("service starts");
+    add_listener(&service, &listener)
+        .await
+        .expect("production listener spec installs");
     (service, listener_id, shutdown)
 }
 
