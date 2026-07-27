@@ -5766,7 +5766,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.20.2",
+ "vta-sdk 0.20.4",
  "windows-native-keyring-store",
  "x25519-dalek",
  "zeroize",
@@ -5825,7 +5825,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.20.2",
+ "vta-sdk 0.20.4",
  "vta-service",
  "wiremock",
  "x25519-dalek",
@@ -9455,9 +9455,9 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.20.2"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4e33bd7fc9bf9557724e730b62181774d778cbfa5a2525dac73e1449e73d199"
+checksum = "ec68996cd07203472148a2a4b5b9ef2968e58b373ac6cc3ca3ed0057b4996b67"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",

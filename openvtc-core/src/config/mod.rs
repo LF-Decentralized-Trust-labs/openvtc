@@ -657,35 +657,94 @@ const TSP_DISCOVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 /// degrade silently to the previous behaviour rather than failing a startup that
 /// would otherwise have succeeded.
 async fn enable_tsp_if_advertised(client: &mut vta_sdk::client::VtaClient, vta_did: &str) {
+    let resolver = match affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+        affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+    )
+    .await
+    {
+        Ok(resolver) => resolver,
+        Err(e) => {
+            tracing::debug!("TSP discovery resolver init failed ({e}); staying on DIDComm");
+            return;
+        }
+    };
+    enable_tsp_with_resolver(client, vta_did, &resolver).await;
+}
+
+/// What transport discovery decided about the TSP leg.
+///
+/// Returned rather than logged-and-dropped so the decision is assertable. The
+/// caller turns it into a log line; a test turns it into an assertion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TspDiscovery {
+    /// The VTA advertises `#tsp` at this mediator — enable the leg.
+    Advertised(String),
+    /// Resolved fine; the VTA simply offers no `#tsp` service. Not a fault.
+    NotAdvertised,
+    /// Discovery could not complete (resolve error, or the bounded wait elapsed).
+    /// Also not a fault: TSP is an upgrade, so this degrades to DIDComm.
+    Unavailable(String),
+}
+
+/// Ask the VTA's DID document whether it advertises a TSP mediator.
+///
+/// Split from applying the result purely so it is testable. `resolve_vta` builds
+/// its resolver from the environment, so a test could not point discovery at a
+/// fixture — which is why #196 shipped with this path verified by construction
+/// rather than execution. vta-sdk 0.20.3 added the seam upstream (VTI #813); this
+/// is that seam one layer down, so a test can seed a `#tsp`-advertising document
+/// and assert what OpenVTC makes of it.
+///
+/// Bounded at [`TSP_DISCOVERY_TIMEOUT`] (R1.2): TSP is an upgrade, so discovery
+/// must never delay startup by more than a beat.
+pub(crate) async fn discover_tsp_mediator(
+    vta_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> TspDiscovery {
     let resolved = match tokio::time::timeout(
         TSP_DISCOVERY_TIMEOUT,
-        vta_sdk::provision_client::resolve_vta(vta_did),
+        // Note the deeper path: `provision_client/mod.rs` re-exports `resolve_vta`
+        // but not its `_with_resolver` sibling — an asymmetry introduced with the
+        // function in VTI #813 (mine). The module is `pub`, so this reaches it;
+        // an upstream re-export fix is filed separately.
+        vta_sdk::provision_client::resolve::resolve_vta_with_resolver(vta_did, resolver),
     )
     .await
     {
         Ok(Ok(resolved)) => resolved,
-        Ok(Err(e)) => {
-            tracing::debug!("TSP discovery for {vta_did} failed ({e}); staying on DIDComm");
-            return;
-        }
+        Ok(Err(e)) => return TspDiscovery::Unavailable(e.to_string()),
         Err(_) => {
-            tracing::debug!(
-                "TSP discovery for {vta_did} timed out after {}s; staying on DIDComm",
+            return TspDiscovery::Unavailable(format!(
+                "timed out after {}s",
                 TSP_DISCOVERY_TIMEOUT.as_secs()
-            );
-            return;
+            ));
         }
     };
 
-    let Some(tsp_mediator_did) = resolved.tsp_mediator_did else {
-        tracing::debug!("{vta_did} advertises no #tsp service; trust tasks stay on DIDComm");
-        return;
-    };
+    match resolved.tsp_mediator_did {
+        Some(mediator) => TspDiscovery::Advertised(mediator),
+        None => TspDiscovery::NotAdvertised,
+    }
+}
 
-    match client.enable_tsp_trust_tasks(&tsp_mediator_did) {
-        Ok(()) => tracing::info!("trust tasks routed over TSP (mediator {tsp_mediator_did})"),
-        Err(e) => {
-            tracing::debug!("could not enable the TSP leg ({e}); trust tasks stay on DIDComm")
+/// [`enable_tsp_if_advertised`] over a caller-supplied resolver.
+async fn enable_tsp_with_resolver(
+    client: &mut vta_sdk::client::VtaClient,
+    vta_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) {
+    match discover_tsp_mediator(vta_did, resolver).await {
+        TspDiscovery::Advertised(mediator) => match client.enable_tsp_trust_tasks(&mediator) {
+            Ok(()) => tracing::info!("trust tasks routed over TSP (mediator {mediator})"),
+            Err(e) => {
+                tracing::debug!("could not enable the TSP leg ({e}); trust tasks stay on DIDComm")
+            }
+        },
+        TspDiscovery::NotAdvertised => {
+            tracing::debug!("{vta_did} advertises no #tsp service; trust tasks stay on DIDComm")
+        }
+        TspDiscovery::Unavailable(reason) => {
+            tracing::debug!("TSP discovery for {vta_did} failed ({reason}); staying on DIDComm")
         }
     }
 }
@@ -815,6 +874,125 @@ impl std::fmt::Debug for KeyInfo {
             .field("expiry", &self.expiry)
             .field("created", &self.created)
             .finish()
+    }
+}
+
+/// TSP discovery against a **seeded** resolver.
+///
+/// These are the assertions #196 could not make. Its enablement path was verified
+/// by construction, because `resolve_vta` built its resolver from the environment
+/// and no fixture could reach it. vta-sdk 0.20.3 (VTI #813) added the seam; this
+/// exercises it, in-process with no network and no live VTA.
+#[cfg(test)]
+mod tsp_discovery_tests {
+    use super::{TspDiscovery, discover_tsp_mediator};
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use serde_json::json;
+
+    const VTA: &str = "did:web:vta.example";
+    const MEDIATOR: &str = "did:web:mediator.example";
+
+    async fn resolver_serving(services: serde_json::Value) -> DIDCacheClient {
+        let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        let doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": VTA,
+            "service": services,
+        });
+        client
+            .add_did_document(VTA, serde_json::from_value(doc).expect("fixture document"))
+            .await;
+        client
+    }
+
+    /// The reference deployment's shape: `#tsp` and `#vta-didcomm` at the **same**
+    /// mediator. This is the case #196 wires up and could not previously assert.
+    #[tokio::test]
+    async fn a_tsp_advertising_vta_yields_its_mediator() {
+        let resolver = resolver_serving(json!([
+            { "id": format!("{VTA}#tsp"), "type": "TSPTransport", "serviceEndpoint": MEDIATOR },
+            { "id": format!("{VTA}#vta-didcomm"), "type": "DIDCommMessaging", "serviceEndpoint": MEDIATOR },
+        ]))
+        .await;
+
+        assert_eq!(
+            discover_tsp_mediator(VTA, &resolver).await,
+            TspDiscovery::Advertised(MEDIATOR.to_string()),
+        );
+    }
+
+    /// A VTA offering no `#tsp` must report exactly that — distinct from a
+    /// discovery failure, because only one of the two is worth an operator's
+    /// attention (R6.4). Both still degrade to DIDComm.
+    #[tokio::test]
+    async fn a_didcomm_only_vta_is_not_advertised_rather_than_failed() {
+        let resolver = resolver_serving(json!([
+            { "id": format!("{VTA}#vta-didcomm"), "type": "DIDCommMessaging", "serviceEndpoint": MEDIATOR },
+        ]))
+        .await;
+
+        assert_eq!(
+            discover_tsp_mediator(VTA, &resolver).await,
+            TspDiscovery::NotAdvertised,
+        );
+    }
+
+    /// A DID that resolves to nothing **and** yields no URL is `Unavailable`,
+    /// not `NotAdvertised`. Conflating them would report "this VTA offers no TSP"
+    /// about one we simply failed to ask — the false-certainty #187 fixed in the
+    /// panel.
+    #[tokio::test]
+    async fn an_unresolvable_vta_is_unavailable_not_unadvertised() {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+
+        assert!(matches!(
+            discover_tsp_mediator("did:example:nothing-seeded", &resolver).await,
+            TspDiscovery::Unavailable(_)
+        ));
+    }
+
+    /// **An unresolvable `did:web` reports `NotAdvertised`, not `Unavailable`** —
+    /// surprising, and worth pinning rather than discovering again.
+    ///
+    /// `resolve_vta_endpoint` falls back to synthesizing `https://<domain>` from
+    /// the DID itself when resolution fails, and returns that as a REST endpoint.
+    /// So discovery succeeds, reports no `#tsp`, and we degrade to DIDComm — the
+    /// right outcome, reached by a route that hides the resolution failure.
+    ///
+    /// Only `did:web` and `did:webvh` have a domain to synthesize from, which is
+    /// why the test above needs a method that does not.
+    #[tokio::test]
+    async fn an_unresolvable_did_web_falls_back_rather_than_failing() {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+
+        assert_eq!(
+            discover_tsp_mediator("did:web:nothing-seeded.example", &resolver).await,
+            TspDiscovery::NotAdvertised,
+            "the URL fallback makes this look resolved"
+        );
+    }
+
+    /// A `#tsp` entry carrying a URL rather than a mediator DID is a
+    /// misconfiguration, not a routable endpoint. Enabling the leg against it
+    /// would point trust tasks at something that cannot carry them.
+    #[tokio::test]
+    async fn a_non_did_tsp_endpoint_is_not_advertised() {
+        let resolver = resolver_serving(json!([
+            { "id": format!("{VTA}#tsp"), "type": "TSPTransport", "serviceEndpoint": "https://not-a-did.example" },
+            { "id": format!("{VTA}#vta-didcomm"), "type": "DIDCommMessaging", "serviceEndpoint": MEDIATOR },
+        ]))
+        .await;
+
+        assert_eq!(
+            discover_tsp_mediator(VTA, &resolver).await,
+            TspDiscovery::NotAdvertised,
+        );
     }
 }
 
