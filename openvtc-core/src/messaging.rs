@@ -234,6 +234,33 @@ impl StatusOutcome {
     };
 }
 
+/// Extract the task-specific *payload* from a VTC Trust Task reply body.
+///
+/// The VTC replies to a Trust Task in one of two shapes, and which one you get
+/// depends on how the reply was built, not on the message type:
+///
+/// - Anything dispatched through `dispatch_trust_task_core` is returned by
+///   `vtc-service`'s `tt_didcomm_reply`, which sets the DIDComm body to the
+///   **whole `#response` document** — `{id, threadId, type, issuer, …,
+///   payload}` — with the task-specific members nested under `payload`. The
+///   join verdict and the status response arrive this way.
+/// - Replies the VTC hand-builds as a `Reply` carry the **bare body** with no
+///   document around it. `join-requests/submit-receipt` arrives this way.
+///
+/// So a handler cannot deserialize the body directly and be right for both.
+/// Prefer `payload` when present, else take the body whole: none of the bare
+/// reply bodies has a `payload` member, so the test is unambiguous.
+///
+/// This also makes the handlers transport-agnostic. A TSP frame carries the
+/// response document raw, with no DIDComm envelope around it, so it normalises
+/// into exactly the document shape this already accepts (#185).
+fn trust_task_reply_payload(body: &Value) -> Value {
+    match body.get("payload") {
+        Some(payload) => payload.clone(),
+        None => body.clone(),
+    }
+}
+
 /// Apply a VTC `join-requests/status-response` to the matching Pending community
 /// (R-B-8). Correlated by the body's `request_id` against the Pending record's
 /// stored id, and gated on the sender being the community's own VTC (anti-spoof).
@@ -252,13 +279,14 @@ pub fn handle_join_status_response(
     message: &Message,
     from_did: &str,
 ) -> StatusOutcome {
-    let body: JoinRequestStatusResponseBody = match serde_json::from_value(message.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "malformed join status-response body — ignoring");
-            return StatusOutcome::NONE;
-        }
-    };
+    let body: JoinRequestStatusResponseBody =
+        match serde_json::from_value(trust_task_reply_payload(&message.body)) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, "malformed join status-response body — ignoring");
+                return StatusOutcome::NONE;
+            }
+        };
     // Correlate to the specific pending membership by the authoritative
     // request id (a community may hold several memberships).
     let Some(record) = account.membership_by_pending_request(from_did, body.request_id) else {
@@ -337,13 +365,14 @@ pub fn handle_join_verdict(
         warn!(thid = %thid, "join verdict thid is not a uuid — ignoring");
         return StatusOutcome::NONE;
     };
-    let body: VerdictResponse = match serde_json::from_value(message.body.clone()) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(error = %e, "malformed join verdict body — ignoring");
-            return StatusOutcome::NONE;
-        }
-    };
+    let body: VerdictResponse =
+        match serde_json::from_value(trust_task_reply_payload(&message.body)) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(error = %e, "malformed join verdict body — ignoring");
+                return StatusOutcome::NONE;
+            }
+        };
     let Some(record) = account.membership_by_pending_request(from_did, placeholder) else {
         warn!(vtc = %from_did, "verdict did not match a pending request id — ignoring");
         return StatusOutcome::NONE;
@@ -994,6 +1023,56 @@ mod tests {
         .finalize()
     }
 
+    /// The status response in its wire form — the `#response` document, payload
+    /// nested — as `tt_didcomm_reply` sends it.
+    fn status_response_document(from: &str, request_id: Uuid, status: &str) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            JOIN_REQUEST_STATUS_RESPONSE_TYPE.to_string(),
+            serde_json::json!({
+                "id": format!("urn:uuid:{}", Uuid::new_v4()),
+                "threadId": format!("urn:uuid:{}", Uuid::new_v4()),
+                "type": JOIN_REQUEST_STATUS_RESPONSE_TYPE,
+                "issuer": from,
+                "payload": { "requestId": request_id, "status": status },
+            }),
+        )
+        .from(from.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn status_response_approved_activates_from_response_document() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_status_response(
+            &mut acct,
+            &status_response_document(vtc, rid, "approved"),
+            vtc,
+        );
+        assert!(
+            out.changed,
+            "an approved status response in its wire form must activate the membership"
+        );
+        assert!(matches!(only(&acct, vtc).status, CommunityStatus::Active));
+    }
+
+    /// Both reply shapes reach the same payload, and a bare body is left alone.
+    #[test]
+    fn reply_payload_accepts_document_and_bare_shapes() {
+        let bare = serde_json::json!({ "requestId": "r", "status": "approved" });
+        assert_eq!(trust_task_reply_payload(&bare), bare);
+
+        let document = serde_json::json!({
+            "id": "urn:uuid:1",
+            "type": "https://example.org/x/1.0#response",
+            "payload": bare.clone(),
+        });
+        assert_eq!(trust_task_reply_payload(&document), bare);
+    }
+
     #[test]
     fn status_response_approved_activates() {
         let vtc = "did:webvh:example:vtc";
@@ -1091,6 +1170,50 @@ mod tests {
         .from(from.to_string())
         .thid(thid.to_string())
         .finalize()
+    }
+
+    /// The verdict as the VTC actually puts it on the wire: the whole
+    /// `#response` Trust Task *document*, with the [`VerdictResponse`] nested
+    /// under `payload`. `vtc-service`'s `tt_didcomm_reply` sets the DIDComm body
+    /// to the parsed reply document, so this — not the bare payload the
+    /// `verdict` helper builds — is what arrives.
+    fn verdict_document(thid: &str, from: &str, effect: &str, with: serde_json::Value) -> Message {
+        Message::build(
+            Uuid::new_v4().to_string(),
+            vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RESPONSE_TYPE.to_string(),
+            serde_json::json!({
+                "id": format!("urn:uuid:{}", Uuid::new_v4()),
+                "threadId": thid,
+                "type": vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RESPONSE_TYPE,
+                "issuer": from,
+                "payload": {
+                    "requestId": Uuid::new_v4(),
+                    "verdict": { "effect": effect, "with": with },
+                },
+            }),
+        )
+        .from(from.to_string())
+        .thid(thid.to_string())
+        .finalize()
+    }
+
+    #[test]
+    fn verdict_allow_activates_from_response_document() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        let out = handle_join_verdict(
+            &mut acct,
+            &verdict_document(&rid.to_string(), vtc, "allow", serde_json::json!({})),
+            vtc,
+        );
+        assert!(
+            out.changed,
+            "an allow verdict in its wire form (payload nested in the #response \
+             document) must activate the membership"
+        );
+        assert!(matches!(only(&acct, vtc).status, CommunityStatus::Active));
     }
 
     #[test]
