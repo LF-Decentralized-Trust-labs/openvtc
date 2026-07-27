@@ -176,3 +176,48 @@ async fn an_unrelated_message_type_reaches_no_handler() {
         "an unrelated type must not reach the event channel"
     );
 }
+
+/// The supervisor must leave a **healthy** transport alone.
+///
+/// A rebuild tears the websocket down and builds a new one, so a supervisor that
+/// fired on a connected transport — or on every tick — would churn the socket and
+/// race the mediator's one-per-DID rule, manufacturing the `duplicate-channel`
+/// fault it exists to recover from (#132).
+///
+/// The unit tests in `supervisor_policy_tests` pin the timing thresholds. This
+/// asserts the loop actually honours them against a real mediator: across several
+/// supervisor ticks, a connected listener neither reports a disconnect transition
+/// nor leaves `Connected`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: spawns a real mediator and waits out several supervisor ticks"]
+async fn the_supervisor_does_not_churn_a_healthy_transport() {
+    init_test_tracing();
+    let mediator = MockMediator::start().await.expect("mediator start");
+    let alice = mediator.profile("alice").expect("alice");
+    let bob_did = mediator.profile("bob").expect("bob").did;
+
+    let (tx, _rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (service, listener_id) = start_production_service(alice, &bob_did, tx).await;
+    service
+        .wait_connected(&listener_id, Duration::from_secs(20))
+        .await
+        .expect("listener connects");
+
+    // Watch for transitions from here: a rebuild would surface as a disconnect.
+    let mut status = service.subscribe();
+
+    // Comfortably more than one supervisor tick (10s), so a loop that rebuilds
+    // unconditionally is caught.
+    tokio::time::sleep(Duration::from_secs(25)).await;
+
+    while let Ok(event) = status.try_recv() {
+        if let openvtc_core::didcomm::ListenerStatus::Disconnected { listener_id, .. } = event {
+            panic!("a healthy transport was disconnected — the supervisor churned {listener_id}");
+        }
+    }
+    assert_eq!(
+        service.listener_state(&listener_id),
+        Some(openvtc_core::didcomm::ConnState::Connected),
+        "the listener is still connected after several supervisor ticks"
+    );
+}

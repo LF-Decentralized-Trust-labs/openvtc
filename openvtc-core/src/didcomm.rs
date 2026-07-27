@@ -162,6 +162,72 @@ const CYCLING_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 /// still lags reports the gap rather than silently missing a state change.
 const LISTENER_STATUS_CAPACITY: usize = 64;
 
+/// How long a transport may sit non-`Connected` before the supervisor treats it as
+/// dead and rebuilds it.
+///
+/// **This being generous is the safety property, not a conservatism.** A
+/// `DidCommTransport` whose socket drops is *already retrying* inside its ATM —
+/// `ConnState::Disconnected` means "dropped, retrying or idle", not "gone". If the
+/// supervisor rebuilt on that, its fresh socket would race the ATM's own retry for
+/// the same DID, and the mediator rejects the second with `duplicate-channel`: the
+/// supervisor would *manufacture* the duelling-reconnect failure it exists to
+/// recover from (#132).
+///
+/// So the grace period has to exceed the window in which a healthy reconnect
+/// completes. 90 s is well past that while still bounding how long a genuinely
+/// dead persona listener can strand a community (R1.2).
+const REBUILD_GRACE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// First rebuild backoff; doubles per consecutive failed attempt.
+const REBUILD_BACKOFF_BASE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Rebuild backoff ceiling. Mirrors the framework's old `RestartPolicy`, which
+/// capped at 60 s — a listener that cannot come back should keep trying forever at
+/// a rate that neither hammers the mediator nor gives up on it.
+const REBUILD_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How often the supervisor evaluates transports.
+const SUPERVISOR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Backoff before the `attempts`-th consecutive rebuild: 5 s, 10 s, 20 s, 40 s,
+/// then capped at 60 s. `attempts == 0` (none yet) is no wait.
+fn rebuild_backoff(attempts: u32) -> std::time::Duration {
+    if attempts == 0 {
+        return std::time::Duration::ZERO;
+    }
+    let shifted = REBUILD_BACKOFF_BASE
+        .checked_mul(1u32 << attempts.saturating_sub(1).min(4))
+        .unwrap_or(REBUILD_BACKOFF_CAP);
+    shifted.min(REBUILD_BACKOFF_CAP)
+}
+
+/// Whether a transport that has been down for `down_for` is due a rebuild.
+///
+/// Split out from the supervisor loop because this is the whole risk: rebuilding
+/// too eagerly causes `duplicate-channel`, and never rebuilding strands the
+/// listener. A pure function is something tests can pin both ways.
+fn rebuild_due(
+    down_for: std::time::Duration,
+    attempts: u32,
+    since_last_attempt: Option<std::time::Duration>,
+) -> bool {
+    if down_for < REBUILD_GRACE {
+        return false;
+    }
+    match since_last_attempt {
+        None => true,
+        Some(elapsed) => elapsed >= rebuild_backoff(attempts),
+    }
+}
+
+/// What the supervisor knows about one transport that is currently down.
+#[derive(Debug, Clone, Copy)]
+struct DownSince {
+    first_seen: std::time::Instant,
+    attempts: u32,
+    last_attempt: Option<std::time::Instant>,
+}
+
 /// One identity's wire: the ATM and profile outbound packing needs.
 ///
 /// The delivery layer's `MessageTransport::send` takes **already-packed** bytes —
@@ -171,6 +237,14 @@ const LISTENER_STATUS_CAPACITY: usize = 64;
 struct IdentityWire {
     atm: ATM,
     did: String,
+    /// Kept so the supervisor can rebuild this identity's wire from scratch.
+    ///
+    /// A `DidCommTransport` is bound to the ATM task that owns its websocket. That
+    /// task retries internally, but if it dies outright the transport is stale
+    /// forever and nothing else can revive it — the framework's `RestartPolicy`
+    /// used to. Rebuilding means constructing a fresh ATM, profile and transport,
+    /// which needs the same inputs as the first time.
+    spec: ListenerSpec,
 }
 
 /// The runtime messaging handle: one transport per identity, multiplexed through
@@ -246,7 +320,17 @@ impl Messaging {
             tasks.push(poller);
         }
 
-        Self { inner }
+        let messaging = Self { inner };
+        let supervised = messaging.clone();
+        let supervisor = tokio::spawn(async move { supervise_transports(supervised).await });
+        messaging
+            .inner
+            .tasks
+            .lock()
+            .expect("tasks mutex")
+            .push(supervisor);
+
+        messaging
     }
 
     /// Whether a transport is installed for `listener_id`.
@@ -520,6 +604,7 @@ pub async fn add_listener(service: &Messaging, spec: &ListenerSpec) -> Result<()
         IdentityWire {
             atm,
             did: spec.did.clone(),
+            spec: spec.clone(),
         },
     );
 
@@ -916,6 +1001,100 @@ pub fn spawn_lifecycle_logger(
     })
 }
 
+/// Rebuild transports whose ATM has died, so a listener cannot be stranded.
+///
+/// `DidCommTransport::inbound()` survives a socket drop — the ATM reconnects
+/// underneath it — so ordinary churn needs nothing from this loop, and reacting to
+/// it would be actively harmful (see [`REBUILD_GRACE`]). What it recovers is the
+/// case the transport cannot: the ATM task itself dying, which leaves the transport
+/// permanently `Disconnected` with nothing retrying behind it. The framework's
+/// `RestartPolicy` covered that; the delivery layer has no equivalent, so this is
+/// it.
+///
+/// A rebuild **removes before it adds**, because the mediator permits one websocket
+/// per DID and rejects a second with `duplicate-channel`.
+async fn supervise_transports(service: Messaging) {
+    let mut down: HashMap<String, DownSince> = HashMap::new();
+
+    loop {
+        tokio::time::sleep(SUPERVISOR_INTERVAL).await;
+        let now = std::time::Instant::now();
+
+        for (listener_id, state) in service.inner.service.transport_states() {
+            if state == ConnState::Connected {
+                // Recovered — forget its history so the next outage starts from a
+                // full grace period and the first backoff step.
+                down.remove(&listener_id);
+                continue;
+            }
+
+            let tracked = down.entry(listener_id.clone()).or_insert(DownSince {
+                first_seen: now,
+                attempts: 0,
+                last_attempt: None,
+            });
+
+            if !rebuild_due(
+                now.duration_since(tracked.first_seen),
+                tracked.attempts,
+                tracked.last_attempt.map(|at| now.duration_since(at)),
+            ) {
+                continue;
+            }
+
+            let Some(spec) = service
+                .inner
+                .identities
+                .read()
+                .await
+                .get(&listener_id)
+                .map(|wire| wire.spec.clone())
+            else {
+                // Deliberately removed (community left, DID deleted) between the
+                // state sample and here. Not ours to resurrect.
+                down.remove(&listener_id);
+                continue;
+            };
+
+            tracked.attempts = tracked.attempts.saturating_add(1);
+            tracked.last_attempt = Some(now);
+            let attempt = tracked.attempts;
+
+            tracing::warn!(
+                listener = %crate::display::truncate_did(&listener_id, 32),
+                attempt,
+                down_for_secs = now.duration_since(tracked.first_seen).as_secs(),
+                "listener has not reconnected on its own — rebuilding its transport"
+            );
+
+            // Drop the dead transport first: one websocket per DID.
+            service.remove_listener(&listener_id).await;
+            match add_listener(&service, &spec).await {
+                Ok(()) => tracing::info!(
+                    listener = %crate::display::truncate_did(&listener_id, 32),
+                    "transport rebuilt"
+                ),
+                Err(e) => tracing::warn!(
+                    listener = %crate::display::truncate_did(&listener_id, 32),
+                    attempt,
+                    error = %e,
+                    "transport rebuild failed; will retry with backoff"
+                ),
+            }
+        }
+
+        // Stop tracking transports that no longer exist.
+        let live: std::collections::HashSet<String> = service
+            .inner
+            .service
+            .transport_states()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        down.retain(|id, _| live.contains(id));
+    }
+}
+
 /// The one connection poller: sample every transport's live state and broadcast
 /// the transitions.
 ///
@@ -1060,6 +1239,80 @@ pub fn relationship_listener_config_from_secrets(
             crate::display::truncate_did(remote_p_did, 32)
         ),
         secrets,
+    }
+}
+
+#[cfg(test)]
+mod supervisor_policy_tests {
+    use super::{REBUILD_BACKOFF_CAP, REBUILD_GRACE, rebuild_backoff, rebuild_due};
+    use std::time::Duration;
+
+    /// The dangerous direction. A transport that dropped a moment ago is retrying
+    /// inside its own ATM; rebuilding now would race a second websocket for the
+    /// same DID and the mediator would reject one as `duplicate-channel` — the
+    /// supervisor would cause the fault it exists to fix (#132).
+    #[test]
+    fn a_recent_drop_is_left_alone() {
+        assert!(!rebuild_due(Duration::from_secs(1), 0, None));
+        assert!(!rebuild_due(
+            REBUILD_GRACE - Duration::from_secs(1),
+            0,
+            None
+        ));
+    }
+
+    /// The other direction: past the grace period nothing else is coming, so a
+    /// listener must not be stranded.
+    #[test]
+    fn a_transport_down_past_the_grace_period_is_rebuilt() {
+        assert!(rebuild_due(REBUILD_GRACE, 0, None));
+        assert!(rebuild_due(
+            REBUILD_GRACE + Duration::from_secs(60),
+            0,
+            None
+        ));
+    }
+
+    /// Consecutive failures back off rather than hammering the mediator.
+    #[test]
+    fn a_failed_rebuild_waits_before_the_next_attempt() {
+        let down_for = REBUILD_GRACE + Duration::from_secs(600);
+        assert!(
+            !rebuild_due(down_for, 1, Some(Duration::from_secs(1))),
+            "one second after a failed attempt is too soon"
+        );
+        assert!(
+            rebuild_due(down_for, 1, Some(Duration::from_secs(5))),
+            "the first backoff step has elapsed"
+        );
+    }
+
+    #[test]
+    fn backoff_doubles_and_then_caps() {
+        assert_eq!(rebuild_backoff(0), Duration::ZERO);
+        assert_eq!(rebuild_backoff(1), Duration::from_secs(5));
+        assert_eq!(rebuild_backoff(2), Duration::from_secs(10));
+        assert_eq!(rebuild_backoff(3), Duration::from_secs(20));
+        assert_eq!(rebuild_backoff(4), Duration::from_secs(40));
+        assert_eq!(rebuild_backoff(5), REBUILD_BACKOFF_CAP);
+    }
+
+    /// A listener that has been failing for hours must still be retried — capped,
+    /// never abandoned. The framework's policy was `max_retries: None` and that
+    /// property is worth keeping: a mediator that comes back should be picked up
+    /// without restarting the app.
+    #[test]
+    fn a_long_outage_never_stops_retrying() {
+        let forever = Duration::from_secs(60 * 60 * 24);
+        assert_eq!(rebuild_backoff(u32::MAX), REBUILD_BACKOFF_CAP);
+        assert!(rebuild_due(forever, u32::MAX, Some(REBUILD_BACKOFF_CAP)));
+    }
+
+    /// The grace period has to exceed the backoff ceiling, or a rebuild could be
+    /// scheduled sooner than a healthy reconnect would have completed.
+    #[test]
+    fn the_grace_period_outlasts_the_backoff_ceiling() {
+        assert!(REBUILD_GRACE > REBUILD_BACKOFF_CAP);
     }
 }
 
