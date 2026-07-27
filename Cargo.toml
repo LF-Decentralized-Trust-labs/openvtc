@@ -115,6 +115,9 @@ vta-sdk = { version = "0.20.2", features = [
   # its own websocket and is therefore unusable for a client that already holds
   # a DIDComm session.
   "tsp",
+  # DCQL credential selection + holder-bound OID4VP `vp_token` assembly
+  # (`vta_sdk::vp`), for answering a VTC's `credential-exchange/query`.
+  "vp",
 ] }
 reqwest = { version = "0.13", features = ["json"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
