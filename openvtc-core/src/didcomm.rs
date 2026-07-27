@@ -1,9 +1,37 @@
-//! DIDComm service integration for the TUI.
+//! DIDComm **transport** plumbing: listener construction, routing, outbound
+//! sending, and listener lifecycle.
 //!
-//! Replaces the manual ATM/WebSocket/message-loop plumbing in `messaging/mod.rs`
-//! with `DIDCommService`, which handles connection lifecycle, message pickup,
+//! Wraps `DIDCommService`, which handles connection lifecycle, message pickup,
 //! dispatch via `Router`, and outbound sending with retry.
+//!
+//! ## Why this is in `openvtc-core` and not the TUI
+//!
+//! It lived at `openvtc/src/state_handler/didcomm.rs` until the delivery-layer
+//! migration (#189) needed it under test. `openvtc` is a **binary-only** crate
+//! (`[[bin]]`, no `src/lib.rs`), so no integration test can import it — which is
+//! why this module, alone among OpenVTC's messaging code, had no coverage beyond
+//! two pure unit groups. Its failure mode is `duplicate-channel` and duelling
+//! reconnect loops, which produce neither a compile error nor a failing unit
+//! test, so rewriting it without integration coverage was the wrong trade.
+//!
+//! Nothing here referenced the binary crate, so the move is mechanical.
+//!
+//! ## Relationship to [`crate::messaging`]
+//!
+//! Deliberately separate, and the split is load-bearing:
+//!
+//! - [`crate::messaging`] is **pure protocol logic** — inbound handling over core
+//!   domain types, no async I/O orchestration. That purity is what makes the
+//!   dispatch state machine unit-testable, so transport plumbing must not leak
+//!   into it.
+//! - this module is the **transport**: sockets, listeners, mediators, retries.
+//!
+//! The one crossing point is [`crate::messaging::build_didcomm_message`],
+//! re-exported below because building a message is pure and belongs with the
+//! protocol logic.
 
+use crate::config::Config;
+use crate::relationships::RelationshipState;
 use affinidi_messaging_didcomm_service::{
     DIDCommService, DIDCommServiceConfig, DIDCommServiceError, ListenerConfig, ListenerEvent,
     RestartPolicy, RetryConfig, Router, handler_fn,
@@ -11,8 +39,6 @@ use affinidi_messaging_didcomm_service::{
 use affinidi_tdk::common::profiles::TDKProfile;
 use affinidi_tdk::didcomm::Message;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
-use openvtc_core::config::Config;
-use openvtc_core::relationships::RelationshipState;
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -52,9 +78,9 @@ pub fn persona_listener_id(persona_did: &str) -> String {
 
 /// Build a timestamped DIDComm message with standard 48-hour expiry.
 ///
-/// Re-exported from [`openvtc_core::messaging`]; the implementation moved to
+/// Re-exported from [`crate::messaging`]; the implementation moved to
 /// core (it is pure) so the protocol logic there can build its own messages.
-pub use openvtc_core::messaging::build_didcomm_message;
+pub use crate::messaging::build_didcomm_message;
 
 /// Events sent from DIDComm router handlers to the state handler main loop.
 #[derive(Debug)]
@@ -177,10 +203,10 @@ pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyh
                     from = ?msg
                         .from
                         .as_deref()
-                        .map(|d| openvtc_core::display::truncate_did(d, 32)),
+                        .map(|d| crate::display::truncate_did(d, 32)),
                     to = ?msg.to.as_ref().map(|dids| {
                         dids.iter()
-                            .map(|d| openvtc_core::display::truncate_did(d, 32))
+                            .map(|d| crate::display::truncate_did(d, 32))
                             .collect::<Vec<_>>()
                     }),
                     thid = ?msg.thid,
@@ -263,7 +289,7 @@ pub fn build_router(event_tx: mpsc::Sender<DIDCommEvent>) -> Result<Router, anyh
         .route_regex(OPENVTC_CATCH_ALL_PATTERN, openvtc_handler)?
         // Message pickup status — silently drop
         .route(
-            openvtc_core::protocol_urls::MESSAGEPICKUP_STATUS,
+            crate::protocol_urls::MESSAGEPICKUP_STATUS,
             handler_fn(
                 |_ctx: affinidi_messaging_didcomm_service::HandlerContext, _msg: Message| async {
                     Ok(None)
@@ -413,7 +439,7 @@ pub async fn build_listener_configs(
                 config.mediator_did(),
                 &format!(
                     "R-DID for {}",
-                    openvtc_core::display::truncate_did(remote_p_did, 32)
+                    crate::display::truncate_did(remote_p_did, 32)
                 ),
                 r_did_secrets,
             ),
@@ -475,8 +501,8 @@ pub async fn send_message_via(
         from = ?message
             .from
             .as_deref()
-            .map(|d| openvtc_core::display::truncate_did(d, 32)),
-        to = %openvtc_core::display::truncate_did(to_did, 32),
+            .map(|d| crate::display::truncate_did(d, 32)),
+        to = %crate::display::truncate_did(to_did, 32),
         thid = ?message.thid,
         "sending DIDComm message"
     );
@@ -601,7 +627,7 @@ pub async fn persona_listener_config(config: &Config, tdk: &affinidi_tdk::TDK) -
 pub async fn persona_listener_config_for(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
-    persona_id: openvtc_core::config::account::PersonaId,
+    persona_id: crate::config::account::PersonaId,
 ) -> Option<ListenerConfig> {
     let ident = config.identities.get(&persona_id)?;
     let did = ident.did.as_str();
@@ -669,7 +695,7 @@ pub fn relationship_listener_config_from_secrets(
             mediator_did,
             &format!(
                 "R-DID for {}",
-                openvtc_core::display::truncate_did(remote_p_did, 32)
+                crate::display::truncate_did(remote_p_did, 32)
             ),
             secrets,
         ),

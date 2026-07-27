@@ -138,7 +138,15 @@ mod agent_name_refresh;
 mod background_dispatch;
 mod create_persona;
 mod credential_actions;
-pub mod didcomm;
+/// The DIDComm transport module, which now lives in `openvtc-core`.
+///
+/// Re-exported under its former path so every `didcomm::…` / `super::didcomm::…`
+/// call site in `state_handler` keeps resolving. It moved because `openvtc` is a
+/// binary-only crate and nothing there can be integration-tested — see
+/// [`openvtc_core::didcomm`] for the full rationale (#189). Keeping the shim
+/// means the move itself changed no call sites, so a regression in the messaging
+/// layer cannot hide inside an import churn diff.
+pub use openvtc_core::didcomm;
 mod dispatch_util;
 mod inbox_actions;
 pub mod join;
