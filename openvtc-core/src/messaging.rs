@@ -796,8 +796,14 @@ pub fn require_thid(message: &Message) -> Result<Arc<String>, anyhow::Error> {
 /// identities. We don't ship the full DID resolver here, but a strict
 /// syntactic gate is cheap insurance against malformed payloads.
 pub fn validate_did(did: &str) -> Result<(), anyhow::Error> {
+    // Character-aligned truncation, not `&did[..64]`: this runs on unvalidated
+    // inbound DIDs, and a byte cut inside a multi-byte scalar panics — turning
+    // the rejection path into a remote crash (OVTC-01).
     let bail = || -> anyhow::Error {
-        anyhow::anyhow!("invalid DID format: '{}'", &did[..did.len().min(64)])
+        anyhow::anyhow!(
+            "invalid DID format: '{}'",
+            crate::display::truncate_chars(did, 64)
+        )
     };
 
     let rest = did.strip_prefix("did:").ok_or_else(bail)?;
@@ -1709,6 +1715,29 @@ mod tests {
     fn validate_did_rejects_msi_with_invalid_chars() {
         assert!(validate_did("did:web:exam ple.com").is_err()); // space
         assert!(validate_did("did:web:exam\u{200E}ple.com").is_err()); // LRM
+    }
+
+    /// OVTC-01: the error path used to truncate the rejected input with a
+    /// *byte* slice, so an invalid DID longer than the cap whose cut landed
+    /// inside a multi-byte scalar panicked instead of returning `Err`. The
+    /// input here is attacker-controlled (an inbound `RelationshipRequest`
+    /// body), so the panic was a remote crash of the whole client.
+    #[test]
+    fn validate_did_rejects_oversized_multibyte_input_without_panicking() {
+        // Each case puts a 2-, 3- and 4-byte scalar across the 64-byte cut.
+        for (label, filler, scalar) in [
+            ("2-byte", 63, '\u{0281}'),  // ʁ  — bytes 63..65
+            ("3-byte", 62, '\u{20AC}'),  // €  — bytes 62..65
+            ("4-byte", 61, '\u{1F600}'), // 😀 — bytes 61..65
+        ] {
+            let did = format!("{}{scalar}", "x".repeat(filler));
+            assert!(did.len() > 64, "{label}: case must exceed the cap");
+            assert!(validate_did(&did).is_err(), "{label}: must reject, not panic");
+        }
+        // Same shape, but past the `did:` prefix so a later gate does the
+        // rejecting — the truncation runs for every bail arm.
+        let msi = format!("did:web:{}\u{1F600}", "x".repeat(60));
+        assert!(validate_did(&msi).is_err());
     }
 
     // --- inbound VRC-issued vetting (task R2) ---

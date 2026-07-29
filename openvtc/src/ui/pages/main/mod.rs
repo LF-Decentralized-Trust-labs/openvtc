@@ -2149,11 +2149,10 @@ impl ComponentRender<()> for MainPage {
                 ratatui::style::Style::default().fg(COLOR_TEXT_DEFAULT),
             )),
             MediatorStatus::Failed(reason) => {
-                let display = if reason.len() > 20 {
-                    format!("Failed: {}...", &reason[..17])
-                } else {
-                    format!("Failed: {}", reason)
-                };
+                let display = format!(
+                    "Failed: {}",
+                    openvtc_core::display::truncate_did(reason, 20)
+                );
                 Line::from(Span::styled(
                     display,
                     ratatui::style::Style::default().fg(COLOR_WARNING_ACCESSIBLE_RED),

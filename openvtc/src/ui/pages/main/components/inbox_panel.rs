@@ -51,11 +51,10 @@ pub fn render(state: &InboxState, connection: &ConnectionState) -> Vec<Line<'sta
         MediatorStatus::Connected => Line::from("Connected").fg(COLOR_SUCCESS),
         MediatorStatus::Connecting => Line::from("Connecting...").fg(COLOR_TEXT_DEFAULT),
         MediatorStatus::Failed(reason) => {
-            let display = if reason.len() > 40 {
-                format!("Failed: {}...", &reason[..37])
-            } else {
-                format!("Failed: {}", reason)
-            };
+            let display = format!(
+                "Failed: {}",
+                openvtc_core::display::truncate_did(reason, 40)
+            );
             Line::from(display).fg(COLOR_WARNING_ACCESSIBLE_RED)
         }
         MediatorStatus::Initializing(step) => {

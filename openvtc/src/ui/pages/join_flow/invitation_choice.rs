@@ -36,10 +36,10 @@ pub struct InvitationChoice;
 fn short_date(ts: &str) -> String {
     if ts.is_empty() {
         "—".to_string()
-    } else if ts.len() >= 10 {
-        ts[..10].to_string()
     } else {
-        ts.to_string()
+        // Character-aligned: the timestamp comes off a credential we did not
+        // mint, so a byte cut here would panic on a multi-byte scalar.
+        openvtc_core::display::truncate_chars(ts, 10).to_string()
     }
 }
 

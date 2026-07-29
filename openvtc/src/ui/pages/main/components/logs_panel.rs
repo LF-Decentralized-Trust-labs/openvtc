@@ -81,12 +81,9 @@ pub fn render(
             Style::new().fg(COLOR_TEXT_DEFAULT)
         };
 
-        // Truncate long entries for list display
-        let display = if entry.summary.len() > 80 {
-            format!("{}...", &entry.summary[..77])
-        } else {
-            entry.summary.clone()
-        };
+        // Truncate long entries for list display. Character-aligned — a summary
+        // can carry peer-supplied text, and a byte cut would panic mid-scalar.
+        let display = openvtc_core::display::truncate_did(&entry.summary, 80).into_owned();
 
         lines.push(Line::from(vec![Span::styled(
             format!("{}{}", prefix, display),
