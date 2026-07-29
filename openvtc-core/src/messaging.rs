@@ -1732,7 +1732,10 @@ mod tests {
         ] {
             let did = format!("{}{scalar}", "x".repeat(filler));
             assert!(did.len() > 64, "{label}: case must exceed the cap");
-            assert!(validate_did(&did).is_err(), "{label}: must reject, not panic");
+            assert!(
+                validate_did(&did).is_err(),
+                "{label}: must reject, not panic"
+            );
         }
         // Same shape, but past the `did:` prefix so a later gate does the
         // rejecting — the truncation runs for every bail arm.
