@@ -506,7 +506,7 @@ impl MainPageState {
             openvtc_core::config::ConfigProtectionType::Token(id) => {
                 format!(
                     "Hardware Token ({})",
-                    if id.len() > 20 { &id[..20] } else { id }
+                    openvtc_core::display::truncate_chars(id, 20)
                 )
             }
             openvtc_core::config::ConfigProtectionType::Encrypted => {

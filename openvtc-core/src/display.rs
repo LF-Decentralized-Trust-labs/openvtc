@@ -5,20 +5,42 @@
 
 use std::borrow::Cow;
 
-/// Tail-truncate `did` to at most `max_len` bytes, replacing the dropped
+/// Cut `s` down to at most `max_chars` characters, borrowing throughout.
+///
+/// The cut always lands on a character boundary, so this never panics on any
+/// input — which a byte slice (`&s[..n]`) does not guarantee. Every truncation
+/// in the tree goes through here or [`truncate_did`]: the strings we shorten
+/// (DIDs, agent names, peer-supplied error text, timestamps off the wire) are
+/// attacker-controlled, and a mid-scalar cut on one of them is a remote crash,
+/// not a cosmetic bug.
+///
+/// Counts characters, not display columns — wide glyphs still render wider than
+/// `max_chars` cells. Callers sizing a TUI column should treat it as an upper
+/// bound, not an exact width.
+#[must_use]
+pub fn truncate_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((end, _)) => &s[..end],
+        None => s,
+    }
+}
+
+/// Tail-truncate `did` to at most `max_len` characters, replacing the dropped
 /// suffix with `...`. Returns the input borrowed when it already fits, so
 /// the common no-truncation case avoids an allocation.
 ///
-/// `max_len` is interpreted in bytes. DIDs are restricted to ASCII, so
-/// byte-len matches char-len for any input we'll see in practice.
+/// `max_len` counts characters and the cut is always character-aligned: DIDs
+/// are ASCII by spec, but this is also the truncator for agent names, friendly
+/// names and DIDs that arrive off the wire *before* validation, none of which
+/// are ASCII by construction.
 #[must_use]
 pub fn truncate_did(did: &str, max_len: usize) -> Cow<'_, str> {
-    if did.len() <= max_len {
+    if did.char_indices().nth(max_len).is_none() {
         Cow::Borrowed(did)
     } else if max_len > 3 {
-        Cow::Owned(format!("{}...", &did[..max_len - 3]))
+        Cow::Owned(format!("{}...", truncate_chars(did, max_len - 3)))
     } else {
-        Cow::Owned(did[..max_len].to_string())
+        Cow::Owned(truncate_chars(did, max_len).to_string())
     }
 }
 
@@ -81,6 +103,29 @@ mod tests {
     fn truncate_did_below_ellipsis_width_returns_raw_truncation() {
         let out = truncate_did("did:web:example.com", 2);
         assert_eq!(out, "di");
+    }
+
+    /// OVTC-01, display side: the truncators run on unvalidated inbound DIDs
+    /// (log lines) and on agent / friendly names, so a byte-aligned cut was a
+    /// panic waiting on any multi-byte input. Cuts must land on a boundary for
+    /// 2-, 3- and 4-byte scalars alike.
+    #[test]
+    fn truncators_cut_on_char_boundaries() {
+        for scalar in ['\u{0281}', '\u{20AC}', '\u{1F600}'] {
+            let s = format!("{}{scalar}{}", "x".repeat(19), "y".repeat(40));
+            for max in 0..25 {
+                let out = truncate_did(&s, max);
+                assert!(out.chars().count() <= max.max(3), "max {max}: over budget");
+                assert!(truncate_chars(&s, max).chars().count() <= max);
+            }
+        }
+    }
+
+    #[test]
+    fn truncate_chars_counts_characters_not_bytes() {
+        assert_eq!(truncate_chars("😀😀😀", 2), "😀😀");
+        assert_eq!(truncate_chars("abc", 10), "abc");
+        assert_eq!(truncate_chars("abc", 0), "");
     }
 
     #[test]

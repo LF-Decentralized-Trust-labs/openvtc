@@ -98,7 +98,10 @@ impl Panel for CapabilitiesPanel {
                     if item.enabled {
                         if let Some(at) = &item.enabled_at {
                             spans.push(Span::styled(
-                                format!("   enabled {}", &at[..at.len().min(10)]),
+                                format!(
+                                    "   enabled {}",
+                                    openvtc_core::display::truncate_chars(at, 10)
+                                ),
                                 Style::default().fg(COLOR_DARK_GRAY),
                             ));
                         }
