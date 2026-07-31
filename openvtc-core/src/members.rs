@@ -73,8 +73,15 @@ pub async fn submit_member_vmc(
     mediator_did: &str,
     vc: Value,
 ) -> Result<Uuid, OpenVTCError> {
-    let body = serde_json::to_value(MemberVmcBody { vc })
-        .map_err(|e| OpenVTCError::Config(format!("member vmc body serialize: {e}")))?;
+    // `request_id` closes an *approved join request* as a side effect of the
+    // delivery. Neither caller here is join-time — this is the manual "issue
+    // VMC" action and the auto-answer to a VTC `members/request-vmc` — so the
+    // delivery carries no request to close.
+    let body = serde_json::to_value(MemberVmcBody {
+        vc,
+        request_id: None,
+    })
+    .map_err(|e| OpenVTCError::Config(format!("member vmc body serialize: {e}")))?;
 
     let msg_id = Uuid::new_v4();
     let now = Utc::now().timestamp().max(0) as u64;

@@ -32,7 +32,7 @@ anyhow.workspace = true
 # spawn the binary or re-run a VTA bootstrap. The signer now ships from its
 # own repo (OpenVTC/verifiable-git-infrastructure); openvtc is a downstream
 # consumer of the published crate.
-did-git-sign = "0.1"
+did-git-sign = "0.4"
 base64.workspace = true
 byteorder.workspace = true
 chrono.workspace = true

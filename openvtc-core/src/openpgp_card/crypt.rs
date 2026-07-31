@@ -112,7 +112,7 @@ where
 
     card.verify_user_pin(user_pin.to_owned())
         .map_err(|_| OpenVTCError::TokenBadPin)?;
-    card.to_user_card(None)
+    card.as_user_card(None)
         .map_err(|e| OpenVTCError::Token(format!("Couldn't unlock user mode on token: {e}")))?;
 
     let binding = || touch_prompt.touch_notify();

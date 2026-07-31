@@ -337,6 +337,50 @@ fn v2_blob_tampering_fails_decrypt() {
 }
 
 // ---------------------------------------------------------------------------
+// Known-answer vectors: on-disk format stability across crypto-crate upgrades
+//
+// Every other test here round-trips within a single build, so a change that
+// silently altered the stored layout — a different nonce length, a reordered
+// header, a KDF whose parameters moved — would still pass. These two blobs
+// were produced by the build before the aes-gcm 0.10 → 0.11 upgrade and are
+// checked in verbatim. They stand in for what is already sitting in a user's
+// OS keychain: if a future dependency bump makes these fail to decrypt, it
+// locks that user out of their config, and the failure belongs here rather
+// than on their machine.
+// ---------------------------------------------------------------------------
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("valid hex"))
+        .collect()
+}
+
+#[test]
+fn v1_blob_from_previous_release_still_decrypts() {
+    // [nonce(12) | ct+tag], key = HKDF-SHA256(ikm = unlock, salt = nonce).
+    let blob = unhex(
+        "7bf0396f20d789d71a928b217201718defc55d46ebc066bceb9ab64206bb6b71\
+         c77a7f02d3706613e9b9e8fc3f668cc62925fe1469d1aef5e88af2e6",
+    );
+    let unlock: [u8; 32] = core::array::from_fn(|i| i as u8);
+    let recovered = unlock_code_decrypt(&unlock, &blob).expect("v1 blob from previous release");
+    assert_eq!(recovered, b"openvtc format regression vector");
+}
+
+#[test]
+fn v2_blob_from_previous_release_still_decrypts() {
+    // [magic "OPV2" | salt(16) | nonce(12) | ct+tag], Argon2id over the salt.
+    let blob = unhex(
+        "4f505632b4c10d6b3333ae7cdd2fa944eb70a237e26fba713575548095ea1684\
+         3f66fc65ff46f10426d3e839f4a1888dca1b7b10a91801de9d65b8686edc1291b1",
+    );
+    let recovered = passphrase_decrypt(b"correct horse battery staple", b"kat", &blob)
+        .expect("v2 blob from previous release");
+    assert_eq!(recovered, b"openvtc v2 vector");
+}
+
+// ---------------------------------------------------------------------------
 // Export → import round-trip (task R1).
 //
 // `Config::export` writes a v2 blob (`passphrase_encrypt_v2`, OPV2 magic +
