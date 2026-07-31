@@ -104,7 +104,15 @@ trust-tasks-capability-client = "0.1"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-vta-sdk = { version = "0.20.6", features = [
+# Floor is 0.20.24: `protocols::members::MemberVmcBody` grew a `request_id`
+# field there, so `members.rs`'s initializer no longer builds against anything
+# older. The lock deliberately stays *at* 0.20.24 rather than the latest 0.20.x:
+# 0.20.30 requires trust-tasks-rs 0.2.51, which drags affinidi-messaging-sdk to
+# 0.18.65, whose `TrustTasksOps` dropped `acl_set` — still called by the
+# vta-sdk 0.19 line that the `vta-service` / test-mediator dev-dependencies pull
+# in, so an unpinned resolve builds the binary but breaks `cargo test`. Build
+# and install with `--locked`; lift the pin once those dev-deps move to 0.20.
+vta-sdk = { version = "0.20.24", features = [
   "session",
   "client",
   "didcomm",
