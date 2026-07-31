@@ -81,7 +81,7 @@ pub async fn submit_member_vmc(
         vc,
         request_id: None,
     })
-        .map_err(|e| OpenVTCError::Config(format!("member vmc body serialize: {e}")))?;
+    .map_err(|e| OpenVTCError::Config(format!("member vmc body serialize: {e}")))?;
 
     let msg_id = Uuid::new_v4();
     let now = Utc::now().timestamp().max(0) as u64;

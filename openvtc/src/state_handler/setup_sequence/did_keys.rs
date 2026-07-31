@@ -66,8 +66,8 @@ pub fn export_persona_did_keys(
 
     let mut signing_key = SecretKey::new(
         sk_pk.clone(),
-        SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
-            crypto::ed25519::SecretKey::try_from_bytes(
+        SecretParams::Plain(PlainSecretParams::EdDSALegacy(
+            crypto::eddsa_legacy::SecretKey::Ed25519(crypto::ed25519::SecretKey::try_from_bytes(
                 *keys
                     .signing
                     .secret
@@ -75,7 +75,7 @@ pub fn export_persona_did_keys(
                     .first_chunk::<32>()
                     .ok_or_else(|| anyhow::anyhow!("Signing private key is not 32 bytes"))?,
                 Mode::EdDSALegacy,
-            )?,
+            )?),
         )),
     )?;
 
@@ -137,8 +137,8 @@ pub fn export_persona_did_keys(
 
     let mut auth_key = SecretSubkey::new(
         ak_pk.clone(),
-        SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
-            crypto::ed25519::SecretKey::try_from_bytes(
+        SecretParams::Plain(PlainSecretParams::EdDSALegacy(
+            crypto::eddsa_legacy::SecretKey::Ed25519(crypto::ed25519::SecretKey::try_from_bytes(
                 *keys
                     .authentication
                     .secret
@@ -146,7 +146,7 @@ pub fn export_persona_did_keys(
                     .first_chunk::<32>()
                     .ok_or_else(|| anyhow::anyhow!("Authentication private key is not 32 bytes"))?,
                 Mode::EdDSALegacy,
-            )?,
+            )?),
         )),
     )?;
 
@@ -172,7 +172,7 @@ pub fn export_persona_did_keys(
         PublicKeyAlgorithm::ECDH,
         Timestamp::now(),
         None,
-        PublicParams::ECDH(EcdhPublicParams::Curve25519 {
+        PublicParams::ECDH(EcdhPublicParams::Curve25519Legacy {
             p: x25519_dalek::PublicKey::from(
                 *keys
                     .decryption
@@ -190,7 +190,7 @@ pub fn export_persona_did_keys(
     let mut dec_key = SecretSubkey::new(
         dk_pk.clone(),
         SecretParams::Plain(PlainSecretParams::ECDH(
-            crypto::ecdh::SecretKey::Curve25519(
+            crypto::ecdh::SecretKey::Curve25519Legacy(
                 StaticSecret::from(
                     *keys
                         .decryption

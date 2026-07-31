@@ -14,12 +14,12 @@ use crate::{
     config::{Config, KeyBackend, KeyTypes, UnlockCode},
     errors::OpenVTCError,
 };
-use aes_gcm::{AeadCore, Aes256Gcm, KeyInit, aead::Aead};
+use aes_gcm::{Aes256Gcm, KeyInit, aead::Aead};
 use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
 use hkdf::Hkdf;
 use keyring_core::Entry;
-use rand::rngs::OsRng;
+use rand::{RngCore, rngs::OsRng};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
@@ -608,7 +608,14 @@ fn derive_key(unlock: &[u8; 32], nonce: &[u8]) -> Result<Aes256Gcm, OpenVTCError
 ///
 /// Output format: `[12-byte nonce | ciphertext + auth tag]`
 pub fn unlock_code_encrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, OpenVTCError> {
-    let nonce = Aes256Gcm::generate_nonce(&mut OsRng);
+    // Fill the nonce from `rand`'s OsRng rather than aes-gcm's own
+    // `AeadCore::generate_nonce`: that helper wants an RNG from the rand_core
+    // 0.9 trait set, and this crate is pinned to rand 0.8 by the OpenPGP stack
+    // (see the `rand` entry in the workspace manifest). Same 12 random OS
+    // bytes either way.
+    let mut nonce_bytes = [0u8; NONCE_SIZE];
+    OsRng.fill_bytes(&mut nonce_bytes);
+    let nonce = aes_gcm::Nonce::from(nonce_bytes);
     let cipher = derive_key(unlock, &nonce)?;
 
     match cipher.encrypt(&nonce, input) {
@@ -638,9 +645,12 @@ pub fn unlock_code_decrypt(unlock: &[u8; 32], input: &[u8]) -> Result<Vec<u8>, O
 
     let (nonce_bytes, ciphertext) = input.split_at(NONCE_SIZE);
     // `nonce_bytes` is exactly NONCE_SIZE long (checked above + split_at), so
-    // the infallible slice→GenericArray conversion is safe. Using `.into()`
-    // avoids naming the now-deprecated `GenericArray::from_slice` path.
-    let nonce: &aes_gcm::Nonce<_> = nonce_bytes.into();
+    // the slice→array conversion cannot fail; aes-gcm 0.11's `Nonce` borrows
+    // from a fixed-size array rather than a slice.
+    let nonce_arr: &[u8; NONCE_SIZE] = nonce_bytes
+        .try_into()
+        .map_err(|_| OpenVTCError::Decrypt("Nonce is not 12 bytes".to_string()))?;
+    let nonce: &aes_gcm::Nonce<_> = nonce_arr.into();
     let cipher = derive_key(unlock, nonce_bytes)?;
 
     cipher.decrypt(nonce, ciphertext).map_err(|e| {

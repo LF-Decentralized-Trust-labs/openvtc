@@ -59,7 +59,7 @@ pub fn write_keys_to_card(
             .as_ref()
             .clone(),
     )?;
-    let mut card = open_card.to_admin_card(None)?;
+    let mut card = open_card.as_admin_card(None)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
         *last = MessageType::Info("✓ Unlocked token in admin mode".to_string());
     }
@@ -71,7 +71,7 @@ pub fn write_keys_to_card(
     ));
     let _ = action_tx.send(state.clone());
     let uk = create_pgp_secret_packet(&keys.signing, KeyPurpose::Signing)?;
-    card.import_key(Box::new(uk), KeyType::Signing)?;
+    card.import_key(&uk, KeyType::Signing)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
         *last = MessageType::Info("✓ Signing key written to token".to_string());
     }
@@ -81,7 +81,7 @@ pub fn write_keys_to_card(
     ));
     let _ = action_tx.send(state.clone());
     let uk = create_pgp_secret_packet(&keys.authentication, KeyPurpose::Authentication)?;
-    card.import_key(Box::new(uk), KeyType::Authentication)?;
+    card.import_key(&uk, KeyType::Authentication)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
         *last = MessageType::Info("✓ Authentication key written to token".to_string());
     }
@@ -91,7 +91,7 @@ pub fn write_keys_to_card(
     ));
     let _ = action_tx.send(state.clone());
     let uk = create_pgp_secret_packet(&keys.decryption, KeyPurpose::Encryption)?;
-    card.import_key(Box::new(uk), KeyType::Decryption)?;
+    card.import_key(&uk, KeyType::Decryption)?;
     if let Some(last) = state.setup.token_reset.messages.last_mut() {
         *last = MessageType::Info("✓ Decryption key written to token".to_string());
     }
@@ -125,16 +125,18 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             )?;
 
             // Create SecretParams
-            let sp = SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
-                crypto::ed25519::SecretKey::try_from_bytes(
-                    *key.secret
-                        .get_private_bytes()
-                        .first_chunk::<32>()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("Private key bytes shorter than 32 bytes")
-                        })?,
-                    Mode::EdDSALegacy,
-                )?,
+            let sp = SecretParams::Plain(PlainSecretParams::EdDSALegacy(
+                crypto::eddsa_legacy::SecretKey::Ed25519(
+                    crypto::ed25519::SecretKey::try_from_bytes(
+                        *key.secret
+                            .get_private_bytes()
+                            .first_chunk::<32>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Private key bytes shorter than 32 bytes")
+                            })?,
+                        Mode::EdDSALegacy,
+                    )?,
+                ),
             ));
 
             (pk, sp)
@@ -162,16 +164,18 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
             )?;
 
             // Create SecretParams
-            let sp = SecretParams::Plain(PlainSecretParams::Ed25519Legacy(
-                crypto::ed25519::SecretKey::try_from_bytes(
-                    *key.secret
-                        .get_private_bytes()
-                        .first_chunk::<32>()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("Private key bytes shorter than 32 bytes")
-                        })?,
-                    Mode::EdDSALegacy,
-                )?,
+            let sp = SecretParams::Plain(PlainSecretParams::EdDSALegacy(
+                crypto::eddsa_legacy::SecretKey::Ed25519(
+                    crypto::ed25519::SecretKey::try_from_bytes(
+                        *key.secret
+                            .get_private_bytes()
+                            .first_chunk::<32>()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("Private key bytes shorter than 32 bytes")
+                            })?,
+                        Mode::EdDSALegacy,
+                    )?,
+                ),
             ));
 
             (pk, sp)
@@ -194,7 +198,7 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
                 PublicKeyAlgorithm::ECDH,
                 Timestamp::now(),
                 key.expiry.map(|e| e.num_days() as u16),
-                PublicParams::ECDH(EcdhPublicParams::Curve25519 {
+                PublicParams::ECDH(EcdhPublicParams::Curve25519Legacy {
                     p: x25519_pk,
                     hash: crypto::hash::HashAlgorithm::Sha256,
                     alg_sym: crypto::sym::SymmetricKeyAlgorithm::AES256,
@@ -204,7 +208,7 @@ fn create_pgp_secret_packet(key: &KeyInfo, kp: KeyPurpose) -> Result<UploadableK
 
             // Create SecretParams
             let sp = SecretParams::Plain(PlainSecretParams::ECDH(
-                crypto::ecdh::SecretKey::Curve25519(x25519_sk.into()),
+                crypto::ecdh::SecretKey::Curve25519Legacy(x25519_sk.into()),
             ));
 
             (pk, sp)
@@ -233,7 +237,7 @@ pub fn set_signing_touch_policy(
             .as_ref()
             .clone(),
     )?;
-    let mut card = open_card.to_admin_card(None)?;
+    let mut card = open_card.as_admin_card(None)?;
 
     state.setup.token_set_touch.messages.push(MessageType::Info(
         "Setting touch policy on signing key...".to_string(),
@@ -268,7 +272,7 @@ pub fn set_cardholder_name(
             .as_ref()
             .clone(),
     )?;
-    let mut card = open_card.to_admin_card(None)?;
+    let mut card = open_card.as_admin_card(None)?;
 
     state
         .setup

@@ -22,7 +22,7 @@ openvtc-core = { version = "0.2", path = "openvtc-core", default-features = fals
 # Decentralized Trust Graph Credentials
 dtg-credentials = "0.1"
 
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 argon2 = "0.5"
 affinidi-tdk = "0.8"
 affinidi-data-integrity = "0.7"
@@ -52,7 +52,7 @@ anyhow = "1.0"
 # `#[derive(arbitrary::Arbitrary)]` proc-macro.
 arbitrary = { version = "1", features = ["derive"] }
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-base64 = "0.22"
+base64 = "0.23"
 bip39 = "2.2"
 byteorder = "1.5"
 chrono = "0.4"
@@ -73,15 +73,15 @@ apple-native-keyring-store = { version = "1", features = ["keychain"] }
 linux-keyutils-keyring-store = "1"
 windows-native-keyring-store = "1"
 multibase = "0.9"
-pgp = "0.19"
-# Stays on 0.8 until pgp 0.19 / aes-gcm 0.10 / ed25519-dalek-bip32 0.3
-# move off rand_core 0.6 — they all sit on the old trait set and rand 0.10
-# drops `OsRng`. Our `OsRng` call sites feed those crates directly
-# (pgp key gen + encrypt, aes-gcm `generate_nonce`), so they must share the
-# crate's RNG trait set. Re-evaluated 2026-06-03: pgp 0.19.0 and
-# ed25519-dalek-bip32 0.3.0 are still the latest releases and remain on
-# rand_core 0.6; aes-gcm 0.11 (rand_core 0.9) is still only a release
-# candidate. Bump together when the crypto stack is refreshed.
+pgp = "0.20"
+# Stays on 0.8 because pgp 0.20 does: it takes an `R: Rng + CryptoRng` from
+# the rand_core 0.6 trait set for key signing / `set_password` / ESK
+# encryption, and we hand it our `OsRng` directly, so the two must agree.
+# rand 0.10 also drops `OsRng` outright. Re-evaluated 2026-07-31: pgp 0.20.0
+# still declares `rand ^0.8.6`, and ed25519-dalek-bip32 0.3.0 is still the
+# latest release. aes-gcm no longer holds this pin — it moved to 0.11 and its
+# one RNG call site now fills the nonce from `rand`'s OsRng directly rather
+# than going through `AeadCore::generate_nonce`.
 rand = "0.8"
 ratatui = "0.30"
 regex = "1.12"
@@ -106,12 +106,7 @@ url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # Floor is 0.20.24: `protocols::members::MemberVmcBody` grew a `request_id`
 # field there, so `members.rs`'s initializer no longer builds against anything
-# older. The lock deliberately stays *at* 0.20.24 rather than the latest 0.20.x:
-# 0.20.30 requires trust-tasks-rs 0.2.51, which drags affinidi-messaging-sdk to
-# 0.18.65, whose `TrustTasksOps` dropped `acl_set` — still called by the
-# vta-sdk 0.19 line that the `vta-service` / test-mediator dev-dependencies pull
-# in, so an unpinned resolve builds the binary but breaks `cargo test`. Build
-# and install with `--locked`; lift the pin once those dev-deps move to 0.20.
+# older.
 vta-sdk = { version = "0.20.24", features = [
   "session",
   "client",
@@ -130,13 +125,17 @@ vta-sdk = { version = "0.20.24", features = [
   "vp",
 ] }
 reqwest = { version = "0.13", features = ["json"] }
+# Held at 2.x by the OpenPGP stack: pgp 0.20 and openpgp-card-rpgp 0.8 both
+# declare `x25519-dalek ^2`, and we hand our `StaticSecret` straight to pgp's
+# `ecdh::SecretKey::Curve25519Legacy` — a 3.x secret is a different type there
+# and would not compile. 3.0 also moves to curve25519-dalek 5 / rand_core 0.10.
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zeroize = "1.8"
 
 # Openpgp-Card Support
-openpgp-card = "0.6"
+openpgp-card = "0.7"
 card-backend-pcsc = "0.5"
-openpgp-card-rpgp = "0.7"
+openpgp-card-rpgp = "0.8"
 
 [profile.release]
 lto = true
