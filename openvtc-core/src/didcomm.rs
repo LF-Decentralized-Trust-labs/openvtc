@@ -656,6 +656,15 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
                 Some(message) => message,
                 None => continue,
             },
+            // A protocol OpenVTC does not speak — DIDComm v1 today, whatever
+            // `Protocol` gains next. The enum is `#[non_exhaustive]` precisely so
+            // a new variant is not a breaking change, and dropping is the honest
+            // handling: nothing below could read the payload, and neither
+            // listener we install ever negotiates one of these.
+            other => {
+                debug!(protocol = %other, "inbound frame on an unsupported protocol — dropped");
+                continue;
+            }
         };
         // The transport authenticated the sender; the plaintext `from` header is
         // sender-controlled. Prefer the cryptographically-bound one.

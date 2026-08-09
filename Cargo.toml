@@ -33,8 +33,12 @@ affinidi-data-integrity = "0.7"
 # DIDComm implementation of that contract (and the one that also surfaces inbound
 # TSP off the same multiplexed pickup socket).
 affinidi-messaging-delivery = "0.1.12"
-affinidi-messaging-core = "0.1.5"
-affinidi-messaging-sdk = "0.18.60"
+# Floor is 0.1.6: it marks `Protocol` `#[non_exhaustive]` and adds the
+# `DIDCommV1` variant. The inbound dispatcher's wildcard arm needs both — on
+# 0.1.5 the enum is exhaustively matched already and that arm is an
+# unreachable pattern, which `-D warnings` rejects.
+affinidi-messaging-core = "0.1.6"
+affinidi-messaging-sdk = "0.19.2"
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
 futures-util = "0.3"
 # Agent names (DID shortcuts). `agent-names` carries the parse /
@@ -77,7 +81,7 @@ pgp = "0.20"
 # Stays on 0.8 because pgp 0.20 does: it takes an `R: Rng + CryptoRng` from
 # the rand_core 0.6 trait set for key signing / `set_password` / ESK
 # encryption, and we hand it our `OsRng` directly, so the two must agree.
-# rand 0.10 also drops `OsRng` outright. Re-evaluated 2026-07-31: pgp 0.20.0
+# rand 0.10 also drops `OsRng` outright. Re-evaluated 2026-08-09: pgp 0.20.0
 # still declares `rand ^0.8.6`, and ed25519-dalek-bip32 0.3.0 is still the
 # latest release. aes-gcm no longer holds this pin — it moved to 0.11 and its
 # one RNG call site now fills the nonce from `rand`'s OsRng directly rather
@@ -99,26 +103,26 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-trust-tasks-rs = "0.2"
-trust-tasks-capability-client = "0.1"
+trust-tasks-rs = "0.3"
+trust-tasks-capability-client = "0.2"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-# Floor is 0.20.24: `protocols::members::MemberVmcBody` grew a `request_id`
-# field there, so `members.rs`'s initializer no longer builds against anything
-# older.
-vta-sdk = { version = "0.20.24", features = [
+# The 0.21 line. It supersedes the 0.20.24 floor that
+# `protocols::members::MemberVmcBody`'s `request_id` field once set, and the
+# 0.20.6 floor the TSP leg set (see the `tsp` feature note below) — both
+# predate this major and neither can be un-met from here.
+vta-sdk = { version = "0.21.7", features = [
   "session",
   "client",
   "didcomm",
   "provision-client",
   # Routes the Trust-Task surface over TSP as a leg of the existing DIDComm
   # session (VTI #803 / #810) — no second socket, no second mediator connection.
-  # 0.20.6 is the floor: 0.20.2 first offered the leg (earlier 0.20.x only had
-  # `connect_tsp`, which opens its own websocket and is unusable for a client
-  # already holding a DIDComm session), 0.20.3 added the resolver-injection seam
-  # the discovery tests need (VTI #813), and 0.20.6 exports it from
-  # `provision_client` rather than only its inner `resolve` module (VTI #825).
+  # This arrived across 0.20.2–0.20.6 (the leg itself, then the
+  # resolver-injection seam the discovery tests need per VTI #813, then its
+  # export from `provision_client` rather than the inner `resolve` module per
+  # VTI #825); all of it is carried forward by the 0.21 line.
   "tsp",
   # DCQL credential selection + holder-bound OID4VP `vp_token` assembly
   # (`vta_sdk::vp`), for answering a VTC's `credential-exchange/query`.

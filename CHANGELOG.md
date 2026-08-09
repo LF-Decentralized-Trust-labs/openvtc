@@ -8,6 +8,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Refresh every dependency to its latest release** — `cargo update` across
+  the whole graph, plus the manifest bumps needed to cross a major boundary:
+  `vta-sdk` 0.20 → 0.21.7, `affinidi-messaging-sdk` 0.18 → 0.19.2,
+  `trust-tasks-rs` 0.2 → 0.3.0, `trust-tasks-capability-client` 0.1 → 0.2.0,
+  and the `vta-service` dev-dependency 0.13 → 0.14.16.
+
+  One source change was needed. `affinidi-messaging-core` 0.1.6 marks
+  `Protocol` `#[non_exhaustive]` and adds a `DIDCommV1` variant (Aries RFC
+  0019), so the inbound dispatcher's `match` in `didcomm.rs` no longer
+  compiles as written. It gained a wildcard arm that logs and drops: OpenVTC
+  speaks DIDComm v2.1 and TSP, neither listener it installs ever negotiates
+  v1, and nothing downstream of that match could read a v1 payload. The arm
+  is also what keeps the *next* variant from being a compile break.
+
+  Everything else rode the bump untouched — the join ceremony, the reciprocal
+  VMC exchange, and the TSP leg all dispatch on `vta_sdk::protocols`
+  constants rather than string literals. Verified with the full suite
+  including the `#[ignore]`d e2e tests, which are the ones that actually
+  exercise these crates: the in-process mediator transport round-trip, the
+  join/self-remove lifecycle, and the MockVta bootstrap against
+  `vta-service` 0.14.
+
+  Two pins survive re-evaluation and stay: `rand` 0.8 and `x25519-dalek` 2.x
+  are both still forced by `pgp` 0.20.0, which remains the latest release and
+  declares `rand ^0.8.6` / `x25519-dalek ^2.0.1`.
+
+  Known duplicate, upstream to fix: `did-git-sign` 0.4.1 still depends on
+  `vta-sdk` 0.19.28, so the binary links two vta-sdk majors. That belongs to
+  `verifiable-git-infrastructure`, not here.
+
+- **Drop two resolved advisory ignores from `deny.toml`** — RUSTSEC-2026-0215
+  (`smallstr` unmaintained) and RUSTSEC-2024-0370 (`proc-macro-error`
+  unmaintained). Both crates left the dependency graph with this refresh,
+  exactly as each ignore's comment predicted, and `cargo deny` now reports
+  them as unmatched. The remaining ignores still match and stay.
+
 - **Follow the VTC Trust Tasks onto the `spec/vtc` registry authority** —
   `vta-sdk` 0.20.0 → 0.20.1 (and `trust-tasks-rs` 0.2.26 → 0.2.38). The VTC's
   Trust Tasks have moved off the non-conformant
