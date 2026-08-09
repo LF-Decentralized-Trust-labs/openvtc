@@ -97,10 +97,11 @@ affinidi-messaging-test-mediator = "0.2"
 # In-process MockVta for the bootstrap e2e (VTI#406/#427 test-support seams).
 # `vta-service` is the VTA server crate; it carries the credential-vault
 # lifecycle tasks (receive/query/archive/delete/restore/purge) + the
-# `MockVta::start_provisionable` seams used by the e2e tests. 0.13 is the
-# line built against vta-sdk 0.20 — 0.11 still pulled the 0.19 line, which
-# calls an `acl_set` that the current affinidi-messaging-sdk no longer has.
-vta-service = { version = "0.13", default-features = false, features = ["test-support", "rest", "didcomm"] }
+# `MockVta::start_provisionable` seams used by the e2e tests. Track this with
+# the vta-sdk major: 0.14 is the line built against vta-sdk 0.21, as 0.13 was
+# against 0.20. An older line pulls an older sdk into the test build and the
+# two disagree about the wire types the e2e tests assert on.
+vta-service = { version = "0.14", default-features = false, features = ["test-support", "rest", "didcomm"] }
 base64 = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 secrecy = { workspace = true }

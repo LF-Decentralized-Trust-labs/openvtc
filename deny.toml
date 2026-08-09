@@ -18,16 +18,6 @@ no-default-features = false
 version = 2
 yanked = "deny"
 ignore = [
-    # RUSTSEC-2026-0215: smallstr is unmaintained. Not a vulnerability —
-    # no CVE, no known exploit; the crate is a `SmallVec`-backed string type
-    # and the advisory is purely a maintenance-status signal. Transitive and
-    # deep: smallstr <- json-syntax <- json-ld <- ssi-json-ld <-
-    # ssi-claims-core <- ssi-dids-core <- the affinidi DID resolver. Nothing
-    # here names it, and all versions are affected so there is nothing to
-    # upgrade to. The suggested replacements (compact_str, smol_str) are a
-    # change for the json-syntax / `ssi-*` maintainers. Drop this when
-    # json-syntax releases off smallstr and the `ssi-*` chain picks it up.
-    "RUSTSEC-2026-0215",
     # RUSTSEC-2023-0071: Marvin Attack — timing sidechannel in the `rsa`
     # crate's RSA key operations. There is no upstream patch yet; the
     # affected code is reachable only through `pgp`/`openpgp-card-rpgp`/
@@ -36,11 +26,6 @@ ignore = [
     # unlock and SSH key parsing — so the residual exposure is limited.
     # Re-evaluate when the `rsa` crate ships a constant-time implementation.
     "RUSTSEC-2023-0071",
-    # RUSTSEC-2024-0370: proc-macro-error is unmaintained. Pulled in
-    # transitively via the json-ld stack inside the affinidi DID resolver.
-    # Build-time only (proc macros), no runtime impact. Will fall off as
-    # the json-ld upstream migrates to proc-macro-error2 / manyhow.
-    "RUSTSEC-2024-0370",
     # RUSTSEC-2025-0134: rustls-pemfile is unmaintained. Pulled via both
     # reqwest 0.11 (1.x) and tonic (2.x) inside the affinidi messaging
     # stack. No security impact identified — purely a maintenance
