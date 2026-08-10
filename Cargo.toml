@@ -140,7 +140,10 @@ trust-tasks-capability-client = "0.3"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-# The 0.21 line, floored at 0.21.11: that release makes `BootstrapAsk`
+# The 0.21 line, floored at 0.21.12. Each floor below is a defect this repo had
+# no lever over, kept in order because none of them can be un-met from here.
+#
+# 0.21.11 makes `BootstrapAsk`
 # serialise the `provision/integration/0.2` camelCase ask tags
 # (`adminRotation` / `templateBootstrap`). Up to 0.21.10 it emitted the 0.1
 # PascalCase spellings while submitting under the 0.2 type URI, and the VTA's
@@ -156,7 +159,18 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # `protocols::members::MemberVmcBody`'s `request_id` field once set, and the
 # 0.20.6 floor the TSP leg set (see the `tsp` feature note below) — both
 # predate this major and neither can be un-met from here.
-vta-sdk = { version = "0.21.11", features = [
+#
+# 0.21.12 is the current floor, and it is the same class of defect one layer
+# down: `CreateKeyBody` serialized its unset members as `null`, and
+# `keys/create/0.1` types them `"string"`, so the VTA refused every key
+# creation over DIDComm and TSP (VTI #919). Joining a community mints a
+# persona's signing key first, so a join died on its first round-trip with
+# `malformedRequest … null is not of type "string"` and rolled back. REST was
+# unaffected — it serializes a different struct, which already skipped its
+# `None`s — so only the transports this CLI actually prefers were broken.
+# Nothing here had a lever over that either: the payload is built inside the
+# sdk's own `create_key`.
+vta-sdk = { version = "0.21.12", features = [
   "session",
   "client",
   "didcomm",
