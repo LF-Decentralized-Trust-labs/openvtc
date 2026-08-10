@@ -392,10 +392,10 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.21.10",
+ "vta-sdk",
 ]
 
 [[package]]
@@ -482,7 +482,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -2610,18 +2610,18 @@ dependencies = [
 
 [[package]]
 name = "did-git-sign"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cc080e47affe93f97a4442bd8757f379a88424a59432f48e49b6f0032d885cc"
+checksum = "23b0ed11ba6db5f3f320c39d48fb243c35395771c5d5e2ce0f850e508599073c"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "clap",
  "dialoguer",
  "dirs",
- "ed25519-dalek 2.2.0",
+ "ed25519-dalek 3.0.0",
  "hex",
  "keyring-core",
  "linux-keyutils-keyring-store",
@@ -2634,7 +2634,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vgi-core",
- "vta-sdk 0.19.28",
+ "vta-sdk",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -3750,27 +3750,6 @@ dependencies = [
  "cfg-if",
  "libc",
  "windows-link",
-]
-
-[[package]]
-name = "hpke"
-version = "0.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
-dependencies = [
- "aead 0.5.2",
- "aes-gcm 0.10.3",
- "chacha20poly1305 0.10.1",
- "digest 0.10.7",
- "generic-array",
- "hkdf 0.12.4",
- "hmac 0.12.1",
- "p256 0.13.2",
- "rand_core 0.9.5",
- "sha2 0.10.9",
- "subtle",
- "x25519-dalek 2.0.1",
- "zeroize",
 ]
 
 [[package]]
@@ -5384,7 +5363,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "windows-native-keyring-store",
  "x25519-dalek 2.0.1",
  "zeroize",
@@ -5440,10 +5419,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-capability-client",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vta-service",
  "wiremock",
  "x25519-dalek 2.0.1",
@@ -8247,7 +8226,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -8261,7 +8240,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -8280,7 +8259,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tower",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -8298,23 +8277,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.4.1",
-]
-
-[[package]]
-name = "trust-tasks-rs"
-version = "0.2.60"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07ccd66fc98764163006f59a23c0f6167cb64e1a19ea2f38e65b414200fa4f8f"
-dependencies = [
- "async-trait",
- "chrono",
- "jsonschema",
- "regress",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.20",
+ "trust-tasks-rs",
 ]
 
 [[package]]
@@ -8619,13 +8582,13 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vgi-core"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3ee216f6927fdcc11b16d9e1ce3b78a112ae5815d62c509a5fc855984687a4a"
+checksum = "480de55f70a39df6e0b6d3d395122a783c3af361f0559f55ad844423aa24ec3b"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
- "ed25519-dalek 2.2.0",
+ "base64 0.23.1",
+ "ed25519-dalek 3.0.0",
  "multibase",
  "serde_json",
  "sha2 0.11.0",
@@ -8645,7 +8608,7 @@ checksum = "eb5e1abb91d5393d5e094232fce0ad8e384167ce7e4b68359b96c4a87800a495"
 dependencies = [
  "tracing",
  "uuid",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -8670,7 +8633,7 @@ dependencies = [
  "vta-config",
  "vta-keys",
  "vta-keyspaces",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vta-support",
  "vti-common",
  "zeroize",
@@ -8698,7 +8661,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
  "x25519-dalek 3.0.0",
 ]
@@ -8713,7 +8676,7 @@ dependencies = [
  "serde_ignored",
  "toml",
  "tracing",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
 ]
@@ -8745,7 +8708,7 @@ dependencies = [
  "uuid",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
  "x25519-dalek 3.0.0",
@@ -8777,51 +8740,8 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.19.28"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7e5c6b5be45c551ee4f7bfcd1165125c04fc7cbd7485b266e197eb6467bcaa17"
-dependencies = [
- "affinidi-crypto",
- "affinidi-data-integrity",
- "affinidi-did-common",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
- "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-secrets-resolver",
- "affinidi-tdk",
- "affinidi-vc",
- "agent-names",
- "base64 0.22.1",
- "chrono",
- "ciborium",
- "curve25519-dalek 4.1.3",
- "didwebvh-rs",
- "ed25519-dalek 2.2.0",
- "futures-util",
- "getrandom 0.4.3",
- "hpke 0.13.0",
- "multibase",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "trust-tasks-rs 0.2.60",
- "url",
- "uuid",
- "x25519-dalek 2.0.1",
- "zeroize",
 ]
 
 [[package]]
@@ -8832,6 +8752,7 @@ checksum = "6456716fe80d4a904d17fb841698db36375d53a6a70e2544c433ca0c6d4648f7"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
+ "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
@@ -8842,6 +8763,7 @@ dependencies = [
  "affinidi-secrets-resolver",
  "affinidi-tdk",
  "affinidi-vc",
+ "agent-names",
  "base64 0.22.1",
  "chrono",
  "ciborium",
@@ -8850,7 +8772,7 @@ dependencies = [
  "ed25519-dalek 3.0.0",
  "futures-util",
  "getrandom 0.4.3",
- "hpke 0.14.0",
+ "hpke",
  "multibase",
  "reqwest",
  "rustls",
@@ -8860,7 +8782,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "url",
  "utoipa",
  "uuid",
@@ -8934,7 +8856,7 @@ dependencies = [
  "trust-tasks-didcomm",
  "trust-tasks-https",
  "trust-tasks-proof",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "url",
  "urlencoding",
  "utoipa",
@@ -8947,7 +8869,7 @@ dependencies = [
  "vta-keys",
  "vta-keyspaces",
  "vta-policy",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vta-support",
  "vta-sweepers",
  "vta-vault",
@@ -8978,7 +8900,7 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -9021,7 +8943,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vta-keyspaces",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -9038,7 +8960,7 @@ dependencies = [
  "tracing",
  "url",
  "vta-keyspaces",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "vti-common",
  "zeroize",
 ]
@@ -9076,12 +8998,12 @@ dependencies = [
  "tokio",
  "tracing",
  "trust-tasks-capability-client",
- "trust-tasks-rs 0.4.1",
+ "trust-tasks-rs",
  "url",
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.21.10",
+ "vta-sdk",
  "webauthn-rs",
  "zeroize",
 ]
