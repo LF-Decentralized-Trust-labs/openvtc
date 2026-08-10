@@ -55,7 +55,14 @@ affinidi-messaging-delivery = "0.1.12"
 # 0.1.5 the enum is exhaustively matched already and that arm is an
 # unreachable pattern, which `-D warnings` rejects.
 affinidi-messaging-core = "0.1.6"
-affinidi-messaging-sdk = "0.19.2"
+# Floor is 0.19.4 (affinidi-tdk-rs #694, shipped alongside VTI #917):
+# `live_stream_next*` held a read guard on `ws_channel_tx` across its wait while
+# `stop_websocket` needs the write guard, so an in-flight poll blocked shutdown
+# until the poll window elapsed. The delivery layer's window is 10s and its
+# inbound pump reads ahead after every frame, so quitting the TUI mid-window
+# paid the remainder. Left at `0.19.2` a clean checkout could resolve back onto
+# the stall.
+affinidi-messaging-sdk = "0.19.4"
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
 futures-util = "0.3"
 # Agent names (DID shortcuts). `agent-names` carries the parse /
@@ -133,7 +140,15 @@ trust-tasks-capability-client = "0.3"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-# The 0.21 line, floored at 0.21.10: that is the release that moved its own
+# The 0.21 line, floored at 0.21.11: that release makes `BootstrapAsk`
+# serialise the `provision/integration/0.2` camelCase ask tags
+# (`adminRotation` / `templateBootstrap`). Up to 0.21.10 it emitted the 0.1
+# PascalCase spellings while submitting under the 0.2 type URI, and the VTA's
+# payload-schema gate rejected every provisioning request — setup could not get
+# past "Provision integration DID + admin credential" (VTI #917). Nothing here
+# had a lever over that casing, so the floor is the fix.
+#
+# 0.21.10 remains the floor's other reason: it is the release that moved its own
 # `trust-tasks-rs` requirement to `^0.4`. An earlier 0.21.x still asks for
 # `^0.2.55`, which would resolve a second trust-tasks in the graph alongside
 # ours and break `TrustTask` type unification across the sdk boundary.
@@ -141,7 +156,7 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # `protocols::members::MemberVmcBody`'s `request_id` field once set, and the
 # 0.20.6 floor the TSP leg set (see the `tsp` feature note below) — both
 # predate this major and neither can be un-met from here.
-vta-sdk = { version = "0.21.10", features = [
+vta-sdk = { version = "0.21.11", features = [
   "session",
   "client",
   "didcomm",
