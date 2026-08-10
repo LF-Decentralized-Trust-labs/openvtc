@@ -161,14 +161,16 @@ pub struct VtaSetupState {
     /// `admin_did` becomes the new `credential_did` and the matching private
     /// key is what `challenge_response` re-authenticates with.
     pub admin_credential: Option<AdminCredentialReply>,
-    /// Transport the bootstrap actually used. `Some(Protocol::DidComm)` means
-    /// downstream calls must reuse DIDComm (the VTA may not advertise REST at
-    /// all); `Some(Protocol::Rest)` means REST. `None` until provisioning
-    /// completes.
+    /// Transport the bootstrap actually used. `Some(Protocol::Tsp)` /
+    /// `Some(Protocol::DidComm)` mean downstream calls must reuse that
+    /// transport — the VTA may advertise no REST service at all, in which case
+    /// there is no URL to fall back to; `Some(Protocol::Rest)` means REST.
+    /// `None` until provisioning completes.
     pub protocol: Option<Protocol>,
-    /// DIDComm mediator DID, captured from `VtaEvent::Connected` when the
-    /// chosen transport is DIDComm. Required to open further DIDComm sessions
-    /// post-bootstrap.
+    /// Mediator DID that carried the bootstrap, captured from
+    /// `VtaEvent::Connected`: the `#tsp` mediator when the chosen transport is
+    /// TSP, the `#DIDCommMessaging` one when it is DIDComm. Required to open
+    /// further sessions on either transport post-bootstrap; `None` on REST.
     pub mediator_did: Option<String>,
 }
 
