@@ -24,6 +24,42 @@ fn vta_url_override() -> Option<String> {
     normalize_url_override(std::env::var(VTA_URL_OVERRIDE_ENV).ok())
 }
 
+/// How the post-bootstrap `VtaClient` must authenticate, given the transport
+/// the bootstrap actually completed on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PostBootstrapAuth {
+    /// Reopen the mediator-backed session (TSP or DIDComm) as the rotated admin
+    /// DID. The session's proven sender identity *is* the authentication.
+    Session(Protocol),
+    /// REST challenge-response against the advertised base URL.
+    Rest,
+    /// REST with nothing to talk to — the VTA advertises no `#vta-rest`
+    /// service, so there is no base URL to authenticate against.
+    RestWithoutUrl,
+}
+
+/// Pure core of the post-bootstrap transport decision.
+///
+/// Deliberately matches `Protocol` exhaustively, with no wildcard arm: a
+/// wildcard is what silently routed the TSP bootstrap into REST auth, where the
+/// empty base URL became reqwest's opaque "builder error". Adding a transport
+/// upstream should break this build, not quietly fall back to REST.
+fn post_bootstrap_auth(protocol: Option<Protocol>, has_rest_url: bool) -> PostBootstrapAuth {
+    match protocol {
+        Some(Protocol::Tsp) => PostBootstrapAuth::Session(Protocol::Tsp),
+        Some(Protocol::DidComm) => PostBootstrapAuth::Session(Protocol::DidComm),
+        // `None` means provisioning never reported a transport. It only reaches
+        // here on the URL-direct override path, which is REST by construction.
+        Some(Protocol::Rest) | None => {
+            if has_rest_url {
+                PostBootstrapAuth::Rest
+            } else {
+                PostBootstrapAuth::RestWithoutUrl
+            }
+        }
+    }
+}
+
 /// Pure core of [`vta_url_override`]: trim and drop blank/whitespace-only
 /// values so an exported-but-empty env var reads as unset.
 fn normalize_url_override(raw: Option<String>) -> Option<String> {
@@ -304,27 +340,34 @@ pub(crate) async fn handle_vta_start_provision(
     state.setup.vta.mediator_did = connect_mediator_did;
 
     // Build the post-bootstrap VtaClient on the same transport the bootstrap
-    // chose. REST → challenge-response auth + bearer token. DIDComm → open a
-    // fresh DIDComm session as the rotated admin DID; the session itself is
-    // the auth, so no separate token round-trip is needed (and indeed there
-    // may be no REST endpoint at all on a DIDComm-only VTA).
-    let client = match connect_protocol {
-        Some(Protocol::DidComm) => {
+    // chose. TSP and DIDComm → open a fresh session as the rotated admin DID;
+    // the session itself is the auth (both carry a proven sender identity the
+    // VTA resolves straight to its ACL grant), so no separate token round-trip
+    // is needed. REST → challenge-response auth + bearer token.
+    //
+    // Both mediator-backed transports MUST be handled explicitly. Falling
+    // through to the REST arm on a VTA that advertises no `#vta-rest` service
+    // leaves `vta_url` empty, and the SDK's `format!("{base_url}/auth/challenge")`
+    // then yields the relative `/auth/challenge`, which reqwest rejects as an
+    // opaque "builder error" — the bootstrap succeeds and the very next step
+    // fails with no hint that the transport was the problem.
+    let client = match post_bootstrap_auth(connect_protocol, !state.setup.vta.vta_url.is_empty()) {
+        PostBootstrapAuth::Session(transport) => {
+            let label = transport.label();
             let mediator = match state.setup.vta.mediator_did.clone() {
                 Some(m) => m,
                 None => {
-                    state.setup.vta.messages.push(MessageType::Error(
-                        "DIDComm transport selected but no mediator DID was advertised."
-                            .to_string(),
-                    ));
+                    state.setup.vta.messages.push(MessageType::Error(format!(
+                        "{label} transport selected but no mediator DID was advertised."
+                    )));
                     state.setup.vta.completed = Completion::CompletedFail;
                     let _ = state_tx.send(state.clone());
                     return Ok(None);
                 }
             };
-            state.setup.vta.messages.push(MessageType::Info(
-                "Opening DIDComm session as rotated admin DID…".to_string(),
-            ));
+            state.setup.vta.messages.push(MessageType::Info(format!(
+                "Opening {label} session as rotated admin DID…"
+            )));
             let _ = state_tx.send(state.clone());
 
             let rest_fallback = if state.setup.vta.vta_url.is_empty() {
@@ -332,26 +375,37 @@ pub(crate) async fn handle_vta_start_provision(
             } else {
                 Some(state.setup.vta.vta_url.clone())
             };
-            match VtaClient::connect_didcomm(
-                &admin.admin_did,
-                &admin.admin_private_key_mb,
-                &vta_did,
-                &mediator,
-                rest_fallback,
-            )
-            .await
-            {
+            let opened = if transport == Protocol::Tsp {
+                VtaClient::connect_tsp(
+                    &admin.admin_did,
+                    &admin.admin_private_key_mb,
+                    &vta_did,
+                    &mediator,
+                    rest_fallback,
+                )
+                .await
+            } else {
+                VtaClient::connect_didcomm(
+                    &admin.admin_did,
+                    &admin.admin_private_key_mb,
+                    &vta_did,
+                    &mediator,
+                    rest_fallback,
+                )
+                .await
+            };
+            match opened {
                 Ok(c) => {
                     state.setup.vta.authenticated = true;
                     state.setup.vta.admin_credential = Some(admin.clone());
-                    state.setup.vta.messages.push(MessageType::Info(
-                        "DIDComm session established with VTA.".to_string(),
-                    ));
+                    state.setup.vta.messages.push(MessageType::Info(format!(
+                        "{label} session established with VTA."
+                    )));
                     c
                 }
                 Err(e) => {
                     state.setup.vta.messages.push(MessageType::Error(format!(
-                        "DIDComm session open failed: {e}"
+                        "{label} session open failed: {e}"
                     )));
                     state.setup.vta.completed = Completion::CompletedFail;
                     let _ = state_tx.send(state.clone());
@@ -359,7 +413,20 @@ pub(crate) async fn handle_vta_start_provision(
                 }
             }
         }
-        _ => {
+        PostBootstrapAuth::RestWithoutUrl => {
+            // Say this plainly rather than letting the SDK build a relative
+            // `/auth/challenge` and surface reqwest's "builder error", which
+            // names neither the URL nor the transport.
+            state.setup.vta.messages.push(MessageType::Error(
+                "REST transport selected but the VTA DID document advertises no \
+                 `#vta-rest` service, so there is no URL to authenticate against."
+                    .to_string(),
+            ));
+            state.setup.vta.completed = Completion::CompletedFail;
+            let _ = state_tx.send(state.clone());
+            return Ok(None);
+        }
+        PostBootstrapAuth::Rest => {
             state
                 .setup
                 .vta
@@ -507,7 +574,66 @@ pub(crate) async fn handle_vta_create_keys(
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_url_override;
+    use super::{PostBootstrapAuth, Protocol, normalize_url_override, post_bootstrap_auth};
+
+    /// The regression: a TSP bootstrap must reopen a TSP session, never fall
+    /// back to REST auth. It used to land in the REST arm, and on a VTA with no
+    /// `#vta-rest` service the empty base URL produced reqwest's "builder
+    /// error" at `/auth/challenge` immediately after provisioning succeeded.
+    #[test]
+    fn tsp_bootstrap_reopens_a_tsp_session() {
+        assert_eq!(
+            post_bootstrap_auth(Some(Protocol::Tsp), false),
+            PostBootstrapAuth::Session(Protocol::Tsp)
+        );
+    }
+
+    /// A mediator-backed transport is authenticated by the session itself, so
+    /// the presence of a REST URL must not divert it — the URL is only ever a
+    /// fallback handed to the client, never a reason to switch transports.
+    #[test]
+    fn an_advertised_rest_url_does_not_divert_a_session_transport() {
+        assert_eq!(
+            post_bootstrap_auth(Some(Protocol::Tsp), true),
+            PostBootstrapAuth::Session(Protocol::Tsp)
+        );
+        assert_eq!(
+            post_bootstrap_auth(Some(Protocol::DidComm), true),
+            PostBootstrapAuth::Session(Protocol::DidComm)
+        );
+    }
+
+    #[test]
+    fn didcomm_bootstrap_reopens_a_didcomm_session() {
+        assert_eq!(
+            post_bootstrap_auth(Some(Protocol::DidComm), false),
+            PostBootstrapAuth::Session(Protocol::DidComm)
+        );
+    }
+
+    #[test]
+    fn rest_uses_challenge_response_when_a_url_was_advertised() {
+        assert_eq!(
+            post_bootstrap_auth(Some(Protocol::Rest), true),
+            PostBootstrapAuth::Rest
+        );
+        // `None` is the URL-direct override path, REST by construction.
+        assert_eq!(post_bootstrap_auth(None, true), PostBootstrapAuth::Rest);
+    }
+
+    /// REST with no advertised URL is a distinct, nameable failure rather than
+    /// an attempt that dies inside reqwest.
+    #[test]
+    fn rest_without_a_url_is_its_own_outcome() {
+        assert_eq!(
+            post_bootstrap_auth(Some(Protocol::Rest), false),
+            PostBootstrapAuth::RestWithoutUrl
+        );
+        assert_eq!(
+            post_bootstrap_auth(None, false),
+            PostBootstrapAuth::RestWithoutUrl
+        );
+    }
 
     #[test]
     fn override_unset_is_none() {
