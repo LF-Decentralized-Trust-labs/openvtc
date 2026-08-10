@@ -19,8 +19,25 @@ repository = "https://github.com/LF-Decentralized-Trust-labs/openvtc"
 [workspace.dependencies]
 openvtc-core = { version = "0.2", path = "openvtc-core", default-features = false }
 
-# Decentralized Trust Graph Credentials
-dtg-credentials = "0.1"
+# Decentralized Trust Graph Credentials.
+#
+# 0.2 tracks DTG Core Credentials spec v1.0 Working Draft 01. Unlike
+# `trust-tasks-rs`, this one is safe to move ahead of the VTA/VTC (still on
+# 0.1.3): nothing in the vta-sdk graph depends on it, so there is no second
+# copy and no type that has to unify across the sdk boundary — openvtc and
+# openvtc-core are its only consumers.
+#
+# It is also wire-compatible with a 0.1.3 peer for the credentials we
+# actually exchange. The major's breaking changes are `new_vwc()`'s new
+# required `task_context` argument and strict `WitnessCredential`
+# deserialization; we call neither and handle no VWCs. The new `taskContext`
+# field is `skip_serializing_if = "Option::is_none"` with `default`, so
+# credentials we issue serialize to the same JCS bytes as before (a 0.1.3
+# VTC still verifies our proofs) and 0.1.3-issued VRC/VMC/VICs still parse.
+#
+# The crate's documented VWC `digest` divergence from WD-01 does not reach
+# us either — `digest_multibase()` / `verify_digest()` have no call sites here.
+dtg-credentials = "0.2"
 
 aes-gcm = "0.11"
 argon2 = "0.5"
@@ -103,16 +120,28 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-trust-tasks-rs = "0.3"
-trust-tasks-capability-client = "0.2"
+# Pinned to the line the VTA/VTC themselves build against, NOT the newest
+# release. `TrustTask` crosses the vta-sdk boundary in both directions — we
+# hand one to `submit`, and `capabilities` classifies the ones a VTC
+# advertises — so our copy has to be the same crate version vta-sdk resolves,
+# or the two are distinct types that do not unify. vta-sdk 0.21.10 declares
+# `trust-tasks-rs ^0.4` and verifiable-trust-infrastructure moved the whole
+# workspace to 0.4 in VTI #911. 0.5/0.6 are published but nothing in the
+# deployed stack speaks them yet; taking them here would desync us.
+trust-tasks-rs = "0.4"
+trust-tasks-capability-client = "0.3"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-# The 0.21 line. It supersedes the 0.20.24 floor that
+# The 0.21 line, floored at 0.21.10: that is the release that moved its own
+# `trust-tasks-rs` requirement to `^0.4`. An earlier 0.21.x still asks for
+# `^0.2.55`, which would resolve a second trust-tasks in the graph alongside
+# ours and break `TrustTask` type unification across the sdk boundary.
+# It supersedes the 0.20.24 floor that
 # `protocols::members::MemberVmcBody`'s `request_id` field once set, and the
 # 0.20.6 floor the TSP leg set (see the `tsp` feature note below) — both
 # predate this major and neither can be un-met from here.
-vta-sdk = { version = "0.21.7", features = [
+vta-sdk = { version = "0.21.10", features = [
   "session",
   "client",
   "didcomm",
