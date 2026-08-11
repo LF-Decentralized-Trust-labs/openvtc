@@ -2868,6 +2868,7 @@ mod key_handler_tests {
             is_inactive,
             is_pending,
             pending_unacknowledged: false,
+            submit_transport: None,
             archived: false,
             needs_attention: false,
             persona_did: "did:example:persona".to_string(),

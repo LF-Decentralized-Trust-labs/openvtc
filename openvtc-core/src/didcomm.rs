@@ -56,6 +56,7 @@ use affinidi_tdk::messaging::profiles::ATMProfile;
 use affinidi_tdk::secrets_resolver::SecretsResolver;
 use affinidi_tdk::secrets_resolver::secrets::Secret;
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -458,21 +459,26 @@ pub fn persona_listener_id(persona_did: &str) -> String {
 /// core (it is pure) so the protocol logic there can build its own messages.
 pub use crate::messaging::build_didcomm_message;
 
-/// Which transport carried an inbound frame.
+/// Which transport carried a message — inbound or outbound.
 ///
 /// A narrowed mirror of the messaging layer's `Protocol`, kept separate on
 /// purpose: `Protocol` is `#[non_exhaustive]` and grows upstream, whereas this
-/// only ever names transports OpenVTC actually decodes. A new `Protocol`
+/// only ever names transports OpenVTC actually speaks. A new `Protocol`
 /// variant is dropped at the pump and never reaches here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InboundTransport {
+///
+/// Serializable because it is also recorded on a `CommunityRecord`: a join that
+/// is never acknowledged needs to say *which* transport went unanswered, and
+/// that has to survive the restart you make to go looking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MessagingTransport {
     /// Authcrypted DIDComm message off the mediator socket.
     DidComm,
     /// TSP frame, arriving on that *same* socket — see the pump's comment.
     Tsp,
 }
 
-impl std::fmt::Display for InboundTransport {
+impl std::fmt::Display for MessagingTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::DidComm => "DIDComm",
@@ -497,7 +503,7 @@ pub enum DIDCommEvent {
         /// was wrong for every TSP frame, which is the transport this stack
         /// prefers. Carrying it costs one field and makes the log able to tell
         /// the truth.
-        transport: InboundTransport,
+        transport: MessagingTransport,
     },
     /// A trust-ping was received — state handler decides whether to respond.
     TrustPingReceived {
@@ -678,14 +684,14 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
         // same shape so everything below is transport-agnostic.
         let (message, transport) = match item.message.protocol {
             Protocol::DIDComm => match serde_json::from_slice::<Message>(&item.message.payload) {
-                Ok(message) => (message, InboundTransport::DidComm),
+                Ok(message) => (message, MessagingTransport::DidComm),
                 Err(e) => {
                     debug!(error = %e, "inbound DIDComm frame is not a Message — dropped");
                     continue;
                 }
             },
             Protocol::TSP => match tsp_frame_to_message(&item) {
-                Some(message) => (message, InboundTransport::Tsp),
+                Some(message) => (message, MessagingTransport::Tsp),
                 None => continue,
             },
             // A protocol OpenVTC does not speak — DIDComm v1 today, whatever

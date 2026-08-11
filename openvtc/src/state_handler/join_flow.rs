@@ -664,15 +664,20 @@ fn build_pending_record(
     persona_id: PersonaId,
     request_id: uuid::Uuid,
     now: chrono::DateTime<Utc>,
+    submit_transport: openvtc_core::didcomm::MessagingTransport,
 ) -> CommunityRecord {
-    CommunityRecord::new_pending(
+    let mut record = CommunityRecord::new_pending(
         vtc_did,
         display_name,
         sub_context_id,
         persona_id,
         request_id,
         now,
-    )
+    );
+    // Which transport carried the submit, so an unacknowledged join can name it
+    // rather than leaving every cause looking alike.
+    record.submit_transport = Some(submit_transport);
+    record
 }
 
 /// Run the automated mint → sub-context → join-submit → persist sequence.
@@ -718,6 +723,29 @@ async fn run_join_sequence(
         openvtc_core::agent_name::resolve_verified_name(tdk.did_resolver(), &vtc_did).await;
     config.set_cached_agent_name(&vtc_did, display_name.clone(), chrono::Utc::now());
     state.join.display_name = display_name.clone();
+
+    // 3. Preflight the community's transports, before anything is minted.
+    //
+    // A peer that advertises no messaging service cannot be joined at all, and
+    // discovering that after the persona mint leaves an orphaned identity
+    // attached to a request nobody could receive. This is a check on what the
+    // document *offers* — not on whether the peer can actually serve it, which
+    // no client can know before sending, and which is the peer's defect to fix
+    // rather than ours to route around.
+    let transports = openvtc_core::config::peer_messaging_transports(&vtc_did).await;
+    let Some(submit_transport) = transports.preferred() else {
+        state.join.fail(format!(
+            "This community advertises no messaging transport ({}). Its DID \
+             document offers neither a TSP nor a DIDComm service, so a join \
+             request cannot reach it. Nothing was created.",
+            state.join.display_name.as_deref().unwrap_or(&vtc_did)
+        ));
+        return;
+    };
+    state
+        .join
+        .info(format!("Community reachable over {submit_transport}."));
+    let _ = handler.state_tx.send(state.clone());
 
     let top_context_id = config.account.top_context_id.clone();
 
@@ -1090,6 +1118,7 @@ async fn run_join_sequence(
         persona_id,
         request_id,
         Utc::now(),
+        submit_transport,
     );
     config.account.add_membership(record.clone());
     if let Err(e) = save_config(config, profile) {
@@ -1299,12 +1328,18 @@ mod tests {
             persona,
             request_id,
             now,
+            openvtc_core::didcomm::MessagingTransport::Tsp,
         );
         assert_eq!(rec.vtc_did, "did:vtc:c");
         assert_eq!(rec.display_name.as_deref(), Some("Community"));
         assert_eq!(rec.sub_context_id, "top/slug");
         assert_eq!(rec.persona_ref, persona);
         assert_eq!(rec.requested_at, Some(now));
+        assert_eq!(
+            rec.submit_transport,
+            Some(openvtc_core::didcomm::MessagingTransport::Tsp),
+            "the record remembers which transport carried the submit"
+        );
         assert!(rec.is_live(), "a fresh Pending record is live");
         match rec.status {
             CommunityStatus::Pending { request_id: got } => {
@@ -1329,6 +1364,7 @@ mod tests {
             persona,
             uuid::Uuid::new_v4(),
             chrono::Utc::now(),
+            openvtc_core::didcomm::MessagingTransport::DidComm,
         );
         js.created_community = Some(rec);
         js.created_persona_did = Some("did:webvh:persona".to_string());

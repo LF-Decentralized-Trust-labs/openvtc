@@ -726,6 +726,87 @@ pub async fn peer_tsp_mediator(peer_did: &str) -> Option<String> {
     }
 }
 
+/// The messaging transports a peer's DID document actually offers us.
+///
+/// Both halves come from **one** resolve — `resolve_vta_with_resolver` returns
+/// the TSP mediator and the DIDComm mediator together — so asking about both
+/// costs no more than asking about TSP alone.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PeerTransports {
+    /// Mediator DID from a `#tsp` / `TSPTransport` service, if advertised.
+    pub tsp_mediator: Option<String>,
+    /// Mediator DID from a `DIDCommMessaging` service, if advertised.
+    pub didcomm_mediator: Option<String>,
+}
+
+impl PeerTransports {
+    /// Whether the peer offers any transport we can send a join over.
+    ///
+    /// A peer advertising neither cannot be joined at all, and finding that out
+    /// *before* minting a persona is the difference between a clear refusal and
+    /// an orphaned identity attached to a request nobody received.
+    #[must_use]
+    pub fn any(&self) -> bool {
+        self.tsp_mediator.is_some() || self.didcomm_mediator.is_some()
+    }
+
+    /// Which transport a send would actually choose, mirroring the stack's
+    /// prefer-TSP-then-DIDComm order.
+    #[must_use]
+    pub fn preferred(&self) -> Option<crate::didcomm::MessagingTransport> {
+        if self.tsp_mediator.is_some() {
+            Some(crate::didcomm::MessagingTransport::Tsp)
+        } else if self.didcomm_mediator.is_some() {
+            Some(crate::didcomm::MessagingTransport::DidComm)
+        } else {
+            None
+        }
+    }
+}
+
+/// Ask a peer's DID document which messaging transports it offers.
+///
+/// Deliberately *not* a reachability check. It reports what the document
+/// advertises, which is all a client can know before sending — a peer that
+/// advertises a transport its binary cannot decode looks identical from here,
+/// and is the peer's defect to fix, not ours to work around. What this buys is
+/// refusing the genuinely impossible case (a peer advertising nothing) early.
+pub async fn peer_messaging_transports(peer_did: &str) -> PeerTransports {
+    let Ok(resolver) = affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+        affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+    )
+    .await
+    else {
+        // Resolver init failure is not "the peer offers nothing" — say nothing
+        // rather than block a join on a local fault.
+        tracing::debug!(peer = %peer_did, "transport discovery resolver init failed");
+        return PeerTransports {
+            tsp_mediator: None,
+            didcomm_mediator: None,
+        };
+    };
+
+    match tokio::time::timeout(
+        TSP_DISCOVERY_TIMEOUT,
+        vta_sdk::provision_client::resolve_vta_with_resolver(peer_did, &resolver),
+    )
+    .await
+    {
+        Ok(Ok(resolved)) => PeerTransports {
+            tsp_mediator: resolved.tsp_mediator_did,
+            didcomm_mediator: resolved.mediator_did,
+        },
+        Ok(Err(e)) => {
+            tracing::debug!(peer = %peer_did, error = %e, "transport discovery failed");
+            PeerTransports::default()
+        }
+        Err(_) => {
+            tracing::debug!(peer = %peer_did, "transport discovery timed out");
+            PeerTransports::default()
+        }
+    }
+}
+
 /// What transport discovery decided about the TSP leg.
 ///
 /// Returned rather than logged-and-dropped so the decision is assertable. The
@@ -1393,5 +1474,56 @@ mod tests {
         assert_eq!(active_reverse.persona_id, active_forward.persona_id);
         assert_eq!(active_reverse.did, active_forward.did);
         assert_eq!(config_forward.persona_did(), config_reverse.persona_did());
+    }
+}
+
+#[cfg(test)]
+mod peer_transport_tests {
+    use super::*;
+    use crate::didcomm::MessagingTransport;
+
+    /// Preference order mirrors the stack's: TSP first, then DIDComm.
+    #[test]
+    fn tsp_is_preferred_when_both_are_advertised() {
+        let both = PeerTransports {
+            tsp_mediator: Some("did:web:tsp-mediator".into()),
+            didcomm_mediator: Some("did:web:didcomm-mediator".into()),
+        };
+        assert_eq!(both.preferred(), Some(MessagingTransport::Tsp));
+        assert!(both.any());
+    }
+
+    #[test]
+    fn didcomm_is_used_when_tsp_is_absent() {
+        let didcomm_only = PeerTransports {
+            tsp_mediator: None,
+            didcomm_mediator: Some("did:web:didcomm-mediator".into()),
+        };
+        assert_eq!(didcomm_only.preferred(), Some(MessagingTransport::DidComm));
+        assert!(didcomm_only.any());
+    }
+
+    /// The case the join preflight exists for: a document offering no messaging
+    /// service at all cannot be joined, and saying so before the persona mint is
+    /// the difference between a clear refusal and an orphaned identity.
+    #[test]
+    fn a_peer_advertising_nothing_is_not_joinable() {
+        let none = PeerTransports::default();
+        assert_eq!(none.preferred(), None);
+        assert!(!none.any());
+    }
+
+    /// A peer advertising only TSP is still "joinable" from here — whether it
+    /// can actually *decode* TSP is not knowable before sending, and is the
+    /// peer's defect rather than something to route around. Pinned so nobody
+    /// later turns this into a reachability probe.
+    #[test]
+    fn tsp_only_is_joinable_because_advertisement_is_all_we_can_see() {
+        let tsp_only = PeerTransports {
+            tsp_mediator: Some("did:web:tsp-mediator".into()),
+            didcomm_mediator: None,
+        };
+        assert_eq!(tsp_only.preferred(), Some(MessagingTransport::Tsp));
+        assert!(tsp_only.any());
     }
 }

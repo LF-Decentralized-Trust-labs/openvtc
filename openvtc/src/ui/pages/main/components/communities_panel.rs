@@ -126,9 +126,20 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         // healthily awaiting a decision. Surface it so a stuck join is visible
         // long before the 7-day Expired (D16).
         if c.pending_unacknowledged {
+            // Name the transport the submit went out over. "No response" alone
+            // reads identically whether the community ignored the request, the
+            // mediator dropped it, or the community could not decode the
+            // transport its own document advertises — and only the last of
+            // those is fixed somewhere other than here.
+            let over = c
+                .submit_transport
+                .as_deref()
+                .map_or(String::new(), |t| format!(" (sent over {t})"));
             lines.push(Line::from(Span::styled(
-                "    ⚠ no response from the community yet — the request may not have been received"
-                    .to_string(),
+                format!(
+                    "    ⚠ no response from the community yet{over} — the request may not have \
+                     been received"
+                ),
                 Style::new().fg(COLOR_ORANGE),
             )));
         }

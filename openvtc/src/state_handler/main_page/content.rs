@@ -312,6 +312,13 @@ pub struct CommunitySummary {
     /// grace window — the submit may have been dropped rather than healthily
     /// awaiting a decision. Drives a warning hint on the row (D16).
     pub pending_unacknowledged: bool,
+    /// Which transport carried the join submit, when the record knows.
+    ///
+    /// Only used to qualify the unacknowledged warning. Without it the warning
+    /// reads the same whether the community ignored us or could not decode the
+    /// transport it advertised, which is the ambiguity that made a real failure
+    /// take a night to find. `None` for records written before it was recorded.
+    pub submit_transport: Option<String>,
     /// Whether this community is archived (R-C-8); only shown when "show archived"
     /// is on, with a marker.
     pub archived: bool,

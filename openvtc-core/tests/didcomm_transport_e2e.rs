@@ -122,7 +122,7 @@ async fn an_openvtc_message_routes_through_the_production_transport() {
             // hardcode that label and so was wrong for every TSP frame.
             assert_eq!(
                 transport,
-                openvtc_core::didcomm::InboundTransport::DidComm,
+                openvtc_core::didcomm::MessagingTransport::DidComm,
                 "a DIDComm round trip reports DIDComm"
             );
             assert_eq!(
