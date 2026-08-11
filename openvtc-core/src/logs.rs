@@ -64,14 +64,31 @@ pub struct Logs {
     /// Log entries in insertion order (oldest first).
     pub messages: VecDeque<LogMessage>,
     /// Maximum number of entries to retain.
+    ///
+    /// **Not persisted**, deliberately. It is a policy constant — nothing sets
+    /// it but [`Default`] — and serializing it meant every config written
+    /// before a change pinned the *old* value forever: raising the default
+    /// would have silently done nothing for existing users, who are the only
+    /// ones with logs to lose. `skip` makes it come from code on every load.
+    ///
+    /// A stored `limit` in an older config is simply ignored (nothing here
+    /// denies unknown fields), so no migration is needed.
+    #[serde(skip, default = "default_limit")]
     pub limit: usize,
+}
+
+/// Retained-entry ceiling. Raised 100 → 200: at 100, a single busy session's
+/// inbound traffic could evict the community-lifecycle entries that are the
+/// reason to keep a log at all.
+fn default_limit() -> usize {
+    200
 }
 
 impl Default for Logs {
     fn default() -> Self {
         Self {
             messages: VecDeque::new(),
-            limit: 100,
+            limit: default_limit(),
         }
     }
 }
@@ -102,7 +119,7 @@ mod tests {
             logs.messages.is_empty(),
             "Default Logs should have no messages"
         );
-        assert_eq!(logs.limit, 100, "Default limit should be 100");
+        assert_eq!(logs.limit, 200, "Default limit should be 200");
     }
 
     #[test]
@@ -142,5 +159,33 @@ mod tests {
         assert_eq!(format!("{}", LogFamily::Contact), "CONTACT");
         assert_eq!(format!("{}", LogFamily::Task), "TASK");
         assert_eq!(format!("{}", LogFamily::Config), "CONFIG");
+        assert_eq!(format!("{}", LogFamily::Community), "COMMUNITY");
+    }
+
+    /// An existing config picks up the current ceiling rather than the one it
+    /// was written with.
+    ///
+    /// This is the whole reason `limit` is `skip`ped. It used to serialize, so
+    /// every config already on disk carried `"limit": 100` — and raising the
+    /// default would have changed nothing for exactly the users who had logs to
+    /// lose, while passing every test written against a fresh `Default`.
+    #[test]
+    fn a_stored_limit_does_not_pin_an_old_ceiling() {
+        let stored = r#"{"messages": [], "limit": 100}"#;
+        let logs: Logs = serde_json::from_str(stored).expect("an older config still parses");
+        assert_eq!(
+            logs.limit, 200,
+            "the ceiling comes from code, not from what the config was written with"
+        );
+    }
+
+    /// And it is no longer written back out, so this cannot regress.
+    #[test]
+    fn the_limit_is_not_persisted() {
+        let json = serde_json::to_value(Logs::default()).expect("serialises");
+        assert!(
+            json.get("limit").is_none(),
+            "limit is policy, not user data — persisting it is what caused the bug above"
+        );
     }
 }
