@@ -66,7 +66,15 @@ async fn main() -> Result<()> {
     //   OPENVTC_DEBUG_LOG=/tmp/openvtc.log cargo run -p openvtc
     // Log level defaults to "debug" but can be overridden with RUST_LOG.
     if let Ok(log_path) = env::var("OPENVTC_DEBUG_LOG") {
-        match std::fs::File::create(&log_path) {
+        // Append, never truncate. `File::create` truncated on every launch, so
+        // the evidence from a failed run was destroyed by the restart used to
+        // reproduce it — the exact workflow this variable exists to serve.
+        // Each run announces itself below, so runs stay separable in one file.
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+        {
             Ok(log_file) => {
                 let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                     .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("debug"));
@@ -75,7 +83,13 @@ async fn main() -> Result<()> {
                     .with_writer(std::sync::Mutex::new(log_file))
                     .with_ansi(false)
                     .init();
-                tracing::info!("Debug logging enabled → {log_path}");
+                // A run banner, because the file now spans runs: without a
+                // marker, two appended runs read as one continuous session and
+                // a restart becomes invisible in the middle of a trace.
+                tracing::info!(
+                    version = env!("CARGO_PKG_VERSION"),
+                    "───── openvtc run started ─────  (appending to {log_path})"
+                );
             }
             Err(e) => {
                 eprintln!(

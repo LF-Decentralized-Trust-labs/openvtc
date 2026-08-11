@@ -4,10 +4,10 @@ use openvtc_core::logs::{LogFamily, Logs};
 use std::collections::VecDeque;
 
 #[test]
-fn default_logs_is_empty_with_limit_100() {
+fn default_logs_is_empty_with_the_current_limit() {
     let logs = Logs::default();
     assert!(logs.messages.is_empty());
-    assert_eq!(logs.limit, 100);
+    assert_eq!(logs.limit, 200);
 }
 
 #[test]
