@@ -79,9 +79,81 @@ pub fn display_identifier<'a>(name: Option<&'a str>, did: &'a str, max_len: usiz
     }
 }
 
+/// A short, human-meaningful label for a message type URI.
+///
+/// The obvious implementation — take the last path segment — is wrong for every
+/// Trust Task, because a Trust Task URI *ends in its version*:
+///
+/// ```text
+/// https://trusttasks.org/spec/credential-exchange/issue/0.1
+///                                                      ^^^ last segment
+/// ```
+///
+/// The activity log did exactly that and rendered every inbound message as
+/// `Inbound: 0.1`. It went unnoticed because legacy DIDComm types end in the
+/// action (`…/relationship/1.0/request` → `request`), so the label only became
+/// useless once the stack moved to Trust Tasks — precisely when the log became
+/// worth reading.
+///
+/// This keeps the part that identifies the task, dropping the scheme, the host
+/// and the `spec/` prefix, so the example above renders as
+/// `credential-exchange/issue/0.1`.
+#[must_use]
+pub fn task_label(type_uri: &str) -> String {
+    // Canonical Trust Task shape: strip everything up to and including `/spec/`.
+    if let Some((_, tail)) = type_uri.split_once("/spec/")
+        && !tail.is_empty()
+    {
+        return tail.to_string();
+    }
+
+    // Anything else (legacy DIDComm types, bare strings): keep the last two
+    // segments, which is the action plus enough context to disambiguate it.
+    let segments: Vec<&str> = type_uri.rsplit('/').take(2).collect();
+    match segments.len() {
+        0 => type_uri.to_string(),
+        1 => segments[0].to_string(),
+        _ => format!("{}/{}", segments[1], segments[0]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The defect this exists for: a Trust Task URI ends in its version, so the
+    /// last-segment label named the version and nothing else.
+    #[test]
+    fn a_trust_task_label_names_the_task_not_its_version() {
+        assert_eq!(
+            task_label("https://trusttasks.org/spec/credential-exchange/issue/0.1"),
+            "credential-exchange/issue/0.1"
+        );
+        assert_eq!(
+            task_label("https://trusttasks.org/spec/keys/create/0.1"),
+            "keys/create/0.1"
+        );
+    }
+
+    /// Legacy DIDComm types end in the action, and still read correctly.
+    #[test]
+    fn a_legacy_didcomm_label_keeps_its_action() {
+        assert_eq!(
+            task_label("https://didcomm.org/trust-ping/2.0/ping"),
+            "2.0/ping"
+        );
+    }
+
+    /// No panics and no empty labels on degenerate input — this runs on
+    /// whatever a peer put in `typ`, which is not ours to trust.
+    #[test]
+    fn a_degenerate_type_still_produces_something() {
+        assert_eq!(task_label("bare"), "bare");
+        assert_eq!(task_label(""), "");
+        // A trailing `/spec/` with nothing after it falls through to the
+        // segment path rather than returning an empty label.
+        assert!(!task_label("https://trusttasks.org/spec/").is_empty());
+    }
 
     #[test]
     fn truncate_did_passes_through_short_input() {

@@ -458,6 +458,29 @@ pub fn persona_listener_id(persona_did: &str) -> String {
 /// core (it is pure) so the protocol logic there can build its own messages.
 pub use crate::messaging::build_didcomm_message;
 
+/// Which transport carried an inbound frame.
+///
+/// A narrowed mirror of the messaging layer's `Protocol`, kept separate on
+/// purpose: `Protocol` is `#[non_exhaustive]` and grows upstream, whereas this
+/// only ever names transports OpenVTC actually decodes. A new `Protocol`
+/// variant is dropped at the pump and never reaches here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InboundTransport {
+    /// Authcrypted DIDComm message off the mediator socket.
+    DidComm,
+    /// TSP frame, arriving on that *same* socket — see the pump's comment.
+    Tsp,
+}
+
+impl std::fmt::Display for InboundTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::DidComm => "DIDComm",
+            Self::Tsp => "TSP",
+        })
+    }
+}
+
 /// Events sent from DIDComm router handlers to the state handler main loop.
 #[derive(Debug)]
 pub enum DIDCommEvent {
@@ -466,6 +489,15 @@ pub enum DIDCommEvent {
         message: Box<Message>,
         #[allow(dead_code)]
         from: Option<String>,
+        /// Which transport actually carried this frame.
+        ///
+        /// The pump knows — it matches on `Protocol` to decode the payload —
+        /// but used to drop it here, so every consumer that wanted to say how a
+        /// message arrived had to guess. The activity log guessed "DIDComm" and
+        /// was wrong for every TSP frame, which is the transport this stack
+        /// prefers. Carrying it costs one field and makes the log able to tell
+        /// the truth.
+        transport: InboundTransport,
     },
     /// A trust-ping was received — state handler decides whether to respond.
     TrustPingReceived {
@@ -644,16 +676,16 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
         // payload is the `Message` JSON (`to_inbound` in the SDK adapter); a TSP
         // frame's is a bare Trust Task document, which is normalised into the
         // same shape so everything below is transport-agnostic.
-        let message = match item.message.protocol {
+        let (message, transport) = match item.message.protocol {
             Protocol::DIDComm => match serde_json::from_slice::<Message>(&item.message.payload) {
-                Ok(message) => message,
+                Ok(message) => (message, InboundTransport::DidComm),
                 Err(e) => {
                     debug!(error = %e, "inbound DIDComm frame is not a Message — dropped");
                     continue;
                 }
             },
             Protocol::TSP => match tsp_frame_to_message(&item) {
-                Some(message) => message,
+                Some(message) => (message, InboundTransport::Tsp),
                 None => continue,
             },
             // A protocol OpenVTC does not speak — DIDComm v1 today, whatever
@@ -688,6 +720,7 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
             DIDCommEvent::InboundMessage {
                 from,
                 message: Box::new(message),
+                transport,
             }
         } else if catch_all.is_match(&message.typ) {
             tracing::info!(
@@ -700,6 +733,7 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
             DIDCommEvent::InboundMessage {
                 from,
                 message: Box::new(message),
+                transport,
             }
         } else {
             // Pickup-status heartbeats and anything else: dropped, as the

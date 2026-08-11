@@ -1627,7 +1627,7 @@ impl StateHandler {
                 // DIDComm inbound message events
                 Some(event) = didcomm_event_rx.recv() => {
                     match event {
-                        didcomm::DIDCommEvent::InboundMessage { message, .. } => {
+                        didcomm::DIDCommEvent::InboundMessage { message, transport, .. } => {
                             // Capture message info before processing for detailed logging
                             let msg_type = message.typ.clone();
                             let msg_from = message.from.clone().unwrap_or_else(|| "unknown".into());
@@ -1671,12 +1671,11 @@ impl StateHandler {
                                         .await;
                                     }
                                     state.main_page.sync_from_config(&config);
-                                    // Extract short type name for summary
-                                    let short_type = msg_type.rsplit('/').next().unwrap_or(&msg_type);
+                                    let short_type = openvtc_core::display::task_label(&msg_type);
                                     state.main_page.log_detailed(
-                                        format!("Inbound: {short_type}"),
+                                        format!("Inbound {transport}: {short_type}"),
                                         format!(
-                                            "Inbound DIDComm Message\n\
+                                            "Inbound {transport} Message\n\
                                              ───────────────────────\n\
                                              Type:    {msg_type}\n\
                                              From:    {msg_from}\n\

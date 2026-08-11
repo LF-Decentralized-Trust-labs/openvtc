@@ -108,10 +108,22 @@ async fn an_openvtc_message_routes_through_the_production_transport() {
         .expect("event channel still open");
 
     match event {
-        DIDCommEvent::InboundMessage { message, from } => {
+        DIDCommEvent::InboundMessage {
+            message,
+            from,
+            transport,
+        } => {
             assert_eq!(
                 message.typ, OPENVTC_TYPE,
                 "the catch-all pattern routed this type"
+            );
+            // The reported transport is the one that actually carried the
+            // frame, not a guess. This leg is DIDComm; the activity log used to
+            // hardcode that label and so was wrong for every TSP frame.
+            assert_eq!(
+                transport,
+                openvtc_core::didcomm::InboundTransport::DidComm,
+                "a DIDComm round trip reports DIDComm"
             );
             assert_eq!(
                 from.as_deref(),

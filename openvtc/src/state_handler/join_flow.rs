@@ -20,6 +20,7 @@ use openvtc_core::config::{
     account::{CommunityRecord, PersonaId, VtcDid},
     context_path::build_sub_context_id,
 };
+use openvtc_core::logs::LogFamily;
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver};
 use tracing::debug;
 use vta_sdk::{client::VtaClient, protocols::did_management::create::WebvhPathMode};
@@ -1100,6 +1101,17 @@ async fn run_join_sequence(
 
     // 10. Success — refresh the communities panel and surface the relaunch prompt.
     state.main_page.sync_from_config(config);
+    // Durable, unlike the ceremony commentary in `state.join`, which is
+    // transient UI and gone on the next launch. A submitted join is the thing
+    // you most want a record of when it does not complete.
+    config.public.logs.insert(
+        LogFamily::Community,
+        format!(
+            "Join request submitted to ({}) as persona ({}) — Pending.",
+            state.join.display_name.as_deref().unwrap_or(&vtc_did),
+            persona_did
+        ),
+    );
     state
         .main_page
         .log("Join request submitted — Pending in your Communities list.");

@@ -20,6 +20,14 @@ pub enum LogFamily {
     Task,
     /// Configuration changes.
     Config,
+    /// Community membership lifecycle: join submitted, admitted, rejected,
+    /// withdrawn, left; the credentials that carry those transitions.
+    ///
+    /// Added because none of the families above covered the ceremony that
+    /// matters most. A join produced a detailed running commentary on the join
+    /// screen and *nothing* durable, so after a restart there was no record
+    /// that it had ever been attempted — which is exactly when you go looking.
+    Community,
 }
 
 impl Display for LogFamily {
@@ -29,6 +37,7 @@ impl Display for LogFamily {
             LogFamily::Contact => "CONTACT",
             LogFamily::Task => "TASK",
             LogFamily::Config => "CONFIG",
+            LogFamily::Community => "COMMUNITY",
         };
         write!(f, "{}", s)
     }

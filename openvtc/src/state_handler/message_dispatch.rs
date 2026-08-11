@@ -267,11 +267,32 @@ pub async fn process_inbound_message(
     // VEC as separate `credential-exchange/issue` messages. Store each on the
     // community and flip Pending -> Active when the membership credential lands.
     if message.typ == CREDENTIAL_ISSUE_TYPE {
-        return Ok(handle_credential_issue(
-            &mut config.account,
-            message,
-            &from_did,
-        ));
+        // Snapshot before, so the log can say what *changed* rather than that a
+        // message arrived. An issued membership credential is the moment a join
+        // completes — the single most consequential inbound message there is,
+        // and it used to be indistinguishable from any other in the log.
+        let was_active = config
+            .account
+            .memberships_for(&from_did)
+            .iter()
+            .any(|m| m.status.is_active());
+        let changed = handle_credential_issue(&mut config.account, message, &from_did);
+        if changed {
+            let now_active = config
+                .account
+                .memberships_for(&from_did)
+                .iter()
+                .any(|m| m.status.is_active());
+            config.public.logs.insert(
+                LogFamily::Community,
+                if now_active && !was_active {
+                    format!("Admitted to community ({from_did}) — membership is now Active.")
+                } else {
+                    format!("Credential received from community ({from_did}).")
+                },
+            );
+        }
+        return Ok(changed);
     }
 
     // VTC join-requests submit `#response`: the synchronous admission verdict in
