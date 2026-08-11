@@ -560,6 +560,7 @@ impl MainPageState {
                     openvtc_core::config::account::CommunityStatus::Pending { .. }
                 ),
                 pending_unacknowledged: c.pending_unacknowledged(now),
+                submit_transport: c.submit_transport.map(|t| t.to_string()),
                 archived: c.archived,
                 needs_attention: c.needs_attention(),
                 persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
@@ -1103,6 +1104,7 @@ mod tests {
                 vtc_did: vtc_did.to_string(),
                 display_name: display_name.map(str::to_owned),
                 sub_context_id: String::new(),
+                submit_transport: None,
                 persona_ref: persona_id,
                 status: CommunityStatus::Active,
                 favourite: false,

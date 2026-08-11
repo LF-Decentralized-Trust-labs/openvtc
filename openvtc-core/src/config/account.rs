@@ -213,6 +213,19 @@ pub struct CommunityRecord {
     /// surfaced in the UI so it isn't mistaken for a healthy wait (D16).
     #[serde(default)]
     pub receipt_at: Option<DateTime<Utc>>,
+    /// Which transport carried the join submit.
+    ///
+    /// Recorded so an unacknowledged join can say *which* transport went
+    /// unanswered. Without it the warning reads identically whether the VTC
+    /// ignored us, the mediator dropped the frame, or the peer could not
+    /// decode the transport it advertised — which is exactly the ambiguity
+    /// that cost a night of log-reading against a VTC advertising `#tsp` that
+    /// its binary could not speak.
+    ///
+    /// `None` on records written before this existed, and on any future path
+    /// that submits without going through the join flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit_transport: Option<crate::didcomm::MessagingTransport>,
     /// DIDComm relationships scoped to this community.
     #[serde(default)]
     pub relationships: Relationships,
@@ -269,6 +282,8 @@ struct CommunityRecordShadow {
     #[serde(default)]
     receipt_at: Option<DateTime<Utc>>,
     #[serde(default)]
+    submit_transport: Option<crate::didcomm::MessagingTransport>,
+    #[serde(default)]
     relationships: Relationships,
     #[serde(default)]
     tasks: Tasks,
@@ -324,6 +339,7 @@ impl From<CommunityRecordShadow> for CommunityRecord {
             member_since: shadow.member_since,
             requested_at: shadow.requested_at,
             receipt_at: shadow.receipt_at,
+            submit_transport: shadow.submit_transport,
             relationships: shadow.relationships,
             tasks: shadow.tasks,
             vrcs_issued: shadow.vrcs_issued,
@@ -371,6 +387,9 @@ impl CommunityRecord {
             member_since: None,
             requested_at: Some(now),
             receipt_at: None,
+            // Set by the join flow once it knows which transport carried the
+            // submit; `new_pending` itself is transport-agnostic.
+            submit_transport: None,
             relationships: Relationships::default(),
             tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
@@ -849,6 +868,7 @@ mod tests {
             vtc_did: vtc.to_string(),
             display_name: Some(vtc.to_string()),
             sub_context_id: format!("openvtc/{vtc}"),
+            submit_transport: None,
             persona_ref,
             status,
             favourite: false,

@@ -187,6 +187,7 @@ mod tests {
             vtc_did: vtc.into(),
             display_name: None,
             sub_context_id: format!("openvtc/{vtc}"),
+            submit_transport: None,
             persona_ref,
             status,
             favourite: false,
