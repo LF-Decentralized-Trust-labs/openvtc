@@ -733,7 +733,7 @@ async fn run_join_sequence(
     // no client can know before sending, and which is the peer's defect to fix
     // rather than ours to route around.
     let transports = openvtc_core::config::peer_messaging_transports(&vtc_did).await;
-    let Some(submit_transport) = transports.preferred() else {
+    let Some(peer_preferred) = transports.preferred() else {
         state.join.fail(format!(
             "This community advertises no messaging transport ({}). Its DID \
              document offers neither a TSP nor a DIDComm service, so a join \
@@ -742,9 +742,12 @@ async fn run_join_sequence(
         ));
         return;
     };
+    // What the community *offers* — not yet the wire the submit goes out on.
+    // That needs our own leg too, and is settled at step 8 once the persona (and
+    // so the mediator we post through) is known.
     state
         .join
-        .info(format!("Community reachable over {submit_transport}."));
+        .info(format!("Community reachable over {peer_preferred}."));
     let _ = handler.state_tx.send(state.clone());
 
     let top_context_id = config.account.top_context_id.clone();
@@ -1085,10 +1088,56 @@ async fn run_join_sequence(
         state.invitation_credential.as_ref(),
         linkage.as_ref(),
     );
-    // Does this community accept Trust Tasks over TSP? `None` — not advertised,
-    // or discovery could not answer — sends over DIDComm exactly as before, so a
-    // VTC that has not been flipped is unaffected.
-    let vtc_tsp_mediator = openvtc_core::config::peer_tsp_mediator(&vtc_did).await;
+    // Settle the wire. TSP needs **both** legs, which is the workspace rule that
+    // the protocol is the highest-preference one present in *both* parties'
+    // documents — and here it is not a formality. A TSP send posts the raw CESR
+    // frame to *our* mediator's `/inbound`; the community's advertised mediator
+    // is only the hop the routing layer is sealed to and never sees the request.
+    // A mediator without its `tsp` feature therefore rejects the frame as an
+    // unparseable DIDComm envelope, and does so while the error names the *other*
+    // mediator — an hour of debugging for a question answerable up front.
+    //
+    // `None` at either end sends over DIDComm exactly as before, so a community
+    // that has not been flipped is unaffected.
+    let vtc_tsp_mediator = match openvtc_core::config::peer_tsp_mediator(&vtc_did).await {
+        None => None,
+        Some(peer_mediator) => {
+            match openvtc_core::config::our_mediator_carries_tsp(&persona_mediator).await {
+                Some(true) => Some(peer_mediator),
+                // Our mediator does not carry TSP. Prefer DIDComm where the
+                // community offers it — a working join beats a correct-looking
+                // one. With TSP the community's *only* transport there is
+                // nothing to fall back to, so send it and let the mediator
+                // answer; refusing here would only replace one failure with
+                // another, minus the evidence.
+                Some(false) if transports.didcomm_mediator.is_some() => {
+                    state.join.info(
+                        "Your mediator does not carry TSP — submitting over DIDComm instead.",
+                    );
+                    let _ = handler.state_tx.send(state.clone());
+                    None
+                }
+                Some(false) => {
+                    state.join.info(
+                        "This community offers TSP only, and your mediator does not \
+                         advertise it — attempting the submit over TSP anyway.",
+                    );
+                    let _ = handler.state_tx.send(state.clone());
+                    Some(peer_mediator)
+                }
+                // Could not ask. Unknown is not "no": take the community's
+                // preference where it has an alternative, since DIDComm is the
+                // transport that worked before TSP existed.
+                None if transports.didcomm_mediator.is_some() => None,
+                None => Some(peer_mediator),
+            }
+        }
+    };
+    let submit_transport = if vtc_tsp_mediator.is_some() {
+        openvtc_core::didcomm::MessagingTransport::Tsp
+    } else {
+        openvtc_core::didcomm::MessagingTransport::DidComm
+    };
     let request_id = match openvtc_core::join::submit_join_request(
         atm,
         &persona_profile,

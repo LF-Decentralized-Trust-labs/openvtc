@@ -807,6 +807,123 @@ pub async fn peer_messaging_transports(peer_did: &str) -> PeerTransports {
     }
 }
 
+/// Whether **our own** mediator can carry a TSP frame at all.
+///
+/// The other half of the transport decision, and the half a peer's document
+/// cannot answer. A TSP send is an HTTP POST of raw CESR bytes to *our*
+/// mediator's `/inbound` (`affinidi_messaging_sdk::protocols::TspOps::send_raw`)
+/// — the peer's advertised mediator is only the hop the routing layer is sealed
+/// to, and never sees the request. A mediator built without its `tsp` cargo
+/// feature has no protocol sniff compiled in, so it hands the frame to the
+/// DIDComm JSON parser and answers `400 w.m.message.deserialize`, before the
+/// community is reached and with the peer's mediator named in the error.
+///
+/// [`TspCarriage::Unknown`] is kept distinct from [`TspCarriage::Absent`] for
+/// the same reason [`TspDiscovery`] keeps them apart (R6.4): "your mediator does
+/// not do TSP" is worth acting on, "we could not ask" is not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TspCarriage {
+    /// The mediator's own document advertises `TSPTransport` — it speaks TSP.
+    Serves,
+    /// Resolved fine; the mediator advertises no TSP transport. Not a fault of
+    /// ours, and the reason to stay on DIDComm.
+    Absent,
+    /// Could not determine (resolve error, or the bounded wait elapsed).
+    Unknown(String),
+}
+
+/// Ask a mediator's own DID document whether it carries TSP.
+///
+/// Split from applying the result so it is testable against a seeded resolver,
+/// exactly as [`discover_tsp_mediator`] is.
+///
+/// Deliberately **not** `resolve_vta_with_resolver`: that helper keeps a `#tsp`
+/// endpoint only when it is a DID, because a *peer's* `#tsp` advertises its
+/// mediator by DID. A mediator's own `#tsp` carries the transport URL instead
+/// (`https://mediator.example/mediator/v1`), so the VTA-shaped helper drops it
+/// and would report every mediator as TSP-less. `ServiceCapabilities` is the
+/// workspace's one service-type matcher and reads either shape — and matches on
+/// the service `type`, never the `#id` fragment.
+pub(crate) async fn mediator_tsp_carriage(
+    mediator_did: &str,
+    resolver: &affinidi_did_resolver_cache_sdk::DIDCacheClient,
+) -> TspCarriage {
+    let resolved =
+        match tokio::time::timeout(TSP_DISCOVERY_TIMEOUT, resolver.resolve(mediator_did)).await {
+            Ok(Ok(resolved)) => resolved,
+            Ok(Err(e)) => return TspCarriage::Unknown(e.to_string()),
+            Err(_) => {
+                return TspCarriage::Unknown(format!(
+                    "timed out after {}s",
+                    TSP_DISCOVERY_TIMEOUT.as_secs()
+                ));
+            }
+        };
+
+    let doc = match serde_json::to_value(&resolved.doc) {
+        Ok(doc) => doc,
+        Err(e) => return TspCarriage::Unknown(format!("could not re-serialize document: {e}")),
+    };
+
+    if vta_sdk::protocol::matching::ServiceCapabilities::from_did_document(&doc)
+        .tsp
+        .is_some()
+    {
+        TspCarriage::Serves
+    } else {
+        TspCarriage::Absent
+    }
+}
+
+/// Whether the mediator we would post through carries TSP.
+///
+/// `Some(true)` / `Some(false)` are answers; `None` means we could not ask, and
+/// a caller must not read it as either.
+///
+// Not an intra-doc link: `TspCarriage` is private, and a public item linking to
+// it fails `rustdoc -D warnings` — the same trap `peer_tsp_mediator` above
+// carries this note for.
+/// The three-way distinction it collapses lives on `TspCarriage`. Exposed
+/// publicly because the ceremony call sites live in the binary crate, matching
+/// [`peer_tsp_mediator`] beside it.
+pub async fn our_mediator_carries_tsp(mediator_did: &str) -> Option<bool> {
+    if mediator_did.is_empty() {
+        return None;
+    }
+    let resolver = match affinidi_did_resolver_cache_sdk::DIDCacheClient::new(
+        affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
+    )
+    .await
+    {
+        Ok(resolver) => resolver,
+        Err(e) => {
+            tracing::debug!(
+                mediator = %mediator_did,
+                "TSP carriage resolver init failed ({e})"
+            );
+            return None;
+        }
+    };
+    match mediator_tsp_carriage(mediator_did, &resolver).await {
+        TspCarriage::Serves => Some(true),
+        TspCarriage::Absent => {
+            tracing::debug!(
+                mediator = %mediator_did,
+                "our mediator advertises no TSPTransport — TSP sends would be rejected"
+            );
+            Some(false)
+        }
+        TspCarriage::Unknown(reason) => {
+            tracing::warn!(
+                mediator = %mediator_did,
+                reason = %reason,
+                "could not determine whether our mediator carries TSP"
+            );
+            None
+        }
+    }
+}
+
 /// What transport discovery decided about the TSP leg.
 ///
 /// Returned rather than logged-and-dropped so the decision is assertable. The
@@ -1125,6 +1242,105 @@ mod tsp_discovery_tests {
             discover_tsp_mediator(VTA, &resolver).await,
             TspDiscovery::NotAdvertised,
         );
+    }
+}
+
+/// Whether *our own* mediator carries TSP — the leg a peer's document cannot
+/// answer, and the one that actually refused a live join.
+///
+/// The failure these pin: a community advertising `#tsp` at a TSP-capable
+/// mediator, joined from a persona whose own mediator was built without the
+/// feature. The send posts to *our* mediator, which fed the CESR frame to its
+/// DIDComm JSON parser and answered `400 w.m.message.deserialize` — while the
+/// error named the community's mediator, which never saw the request.
+#[cfg(test)]
+mod mediator_tsp_carriage_tests {
+    use super::{TspCarriage, mediator_tsp_carriage};
+    use affinidi_did_resolver_cache_sdk::{DIDCacheClient, config::DIDCacheConfigBuilder};
+    use serde_json::json;
+
+    const MEDIATOR: &str = "did:web:mediator.example";
+
+    async fn resolver_serving(services: serde_json::Value) -> DIDCacheClient {
+        let mut client = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+        let doc = json!({
+            "@context": ["https://www.w3.org/ns/did/v1"],
+            "id": MEDIATOR,
+            "service": services,
+        });
+        client
+            .add_did_document(
+                MEDIATOR,
+                serde_json::from_value(doc).expect("fixture document"),
+            )
+            .await;
+        client
+    }
+
+    /// A mediator's own `#tsp` carries a transport **URL**, not a mediator DID —
+    /// the shape `resolve_vta_with_resolver` discards, and the reason this check
+    /// reads the document through `ServiceCapabilities` instead.
+    #[tokio::test]
+    async fn a_tsp_mediator_serves() {
+        let resolver = resolver_serving(json!([
+            { "id": format!("{MEDIATOR}#tsp"), "type": "TSPTransport", "serviceEndpoint": "https://mediator.example/mediator/v1" },
+            { "id": format!("{MEDIATOR}#service"), "type": ["DIDCommMessaging"], "serviceEndpoint": [{ "uri": "https://mediator.example/mediator/v1", "accept": ["didcomm/v2"] }] },
+        ]))
+        .await;
+
+        assert_eq!(
+            mediator_tsp_carriage(MEDIATOR, &resolver).await,
+            TspCarriage::Serves,
+        );
+    }
+
+    /// The live shape that broke the join: DIDComm and Authentication, no TSP.
+    /// `Absent` rather than `Unknown`, because the document answered — which is
+    /// what lets the caller downgrade to DIDComm instead of guessing.
+    #[tokio::test]
+    async fn a_didcomm_only_mediator_is_absent_not_unknown() {
+        let resolver = resolver_serving(json!([
+            { "id": format!("{MEDIATOR}#service"), "type": ["DIDCommMessaging"], "serviceEndpoint": [{ "uri": "https://mediator.example/mediator/v1", "accept": ["didcomm/v2"] }] },
+            { "id": format!("{MEDIATOR}#auth"), "type": ["Authentication"], "serviceEndpoint": "https://mediator.example/mediator/v1/authenticate" },
+        ]))
+        .await;
+
+        assert_eq!(
+            mediator_tsp_carriage(MEDIATOR, &resolver).await,
+            TspCarriage::Absent,
+        );
+    }
+
+    /// Matching is on the service `type`, never the `#id` fragment — the OWF
+    /// reference implementation names it `#tsp-transport` where ours says `#tsp`.
+    #[tokio::test]
+    async fn carriage_is_matched_on_type_not_id_fragment() {
+        let resolver = resolver_serving(json!([
+            { "id": format!("{MEDIATOR}#tsp-transport"), "type": "TSPTransport", "serviceEndpoint": "https://mediator.example/mediator/v1" },
+        ]))
+        .await;
+
+        assert_eq!(
+            mediator_tsp_carriage(MEDIATOR, &resolver).await,
+            TspCarriage::Serves,
+        );
+    }
+
+    /// A mediator we could not ask is `Unknown` — never `Absent`. Conflating
+    /// them would report "your mediator does not do TSP" about one we simply
+    /// failed to resolve, and silently downgrade a healthy TSP deployment.
+    #[tokio::test]
+    async fn an_unresolvable_mediator_is_unknown() {
+        let resolver = DIDCacheClient::new(DIDCacheConfigBuilder::default().build())
+            .await
+            .expect("local DID cache");
+
+        assert!(matches!(
+            mediator_tsp_carriage("did:example:nothing-seeded", &resolver).await,
+            TspCarriage::Unknown(_)
+        ));
     }
 }
 

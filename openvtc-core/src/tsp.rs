@@ -65,9 +65,18 @@ use crate::errors::OpenVTCError;
 /// # Errors
 ///
 /// Returns [`OpenVTCError`] if the document will not serialise, or if the
-/// mediator did not accept the frame. The message names both the peer and the
-/// mediator (R6.4), so an operator can tell a wrong advertised mediator from a
-/// refused send from an unreachable hop.
+/// mediator did not accept the frame. The message names the peer, the routing
+/// hop, **and the mediator the frame was actually posted to** (R6.4), so an
+/// operator can tell a wrong advertised mediator from a refused send from an
+/// unreachable hop.
+///
+/// Naming all three is not belt-and-braces. `send_routed` posts to the
+/// *profile's* mediator — `route[0]` is sealed into the frame, not dialled — so
+/// a rejection quoting only the advertised mediator sends an operator to inspect
+/// a host that never received the request. That happened: a mediator built
+/// without its `tsp` feature answered `400 w.m.message.deserialize` (it fed the
+/// CESR frame to the DIDComm JSON parser), under an error naming the peer's
+/// perfectly healthy TSP mediator.
 pub async fn send_trust_task(
     atm: &ATM,
     profile: &Arc<ATMProfile>,
@@ -83,8 +92,16 @@ pub async fn send_trust_task(
         .send_routed(profile, &route, &payload)
         .await
         .map_err(|e| {
+            // Best-effort: a profile that cannot name its own mediator is not a
+            // reason to lose the send error we actually have to report.
+            let our_mediator = profile
+                .dids()
+                .map(|(_, mediator)| mediator.to_string())
+                .unwrap_or_else(|_| "unknown".to_string());
             OpenVTCError::Config(format!(
-                "TSP send to {to_did} via advertised mediator {tsp_mediator_did}: {e}"
+                "TSP send to {to_did} (routed via its advertised mediator \
+                 {tsp_mediator_did}, posted through our own mediator \
+                 {our_mediator}): {e}"
             ))
         })
 }
