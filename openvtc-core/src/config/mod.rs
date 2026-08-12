@@ -878,8 +878,13 @@ pub(crate) async fn mediator_tsp_carriage(
 /// Whether the mediator we would post through carries TSP.
 ///
 /// `Some(true)` / `Some(false)` are answers; `None` means we could not ask, and
-/// a caller must not read it as either — see [`TspCarriage`]. Exposed publicly
-/// because the ceremony call sites live in the binary crate, matching
+/// a caller must not read it as either.
+///
+// Not an intra-doc link: `TspCarriage` is private, and a public item linking to
+// it fails `rustdoc -D warnings` — the same trap `peer_tsp_mediator` above
+// carries this note for.
+/// The three-way distinction it collapses lives on `TspCarriage`. Exposed
+/// publicly because the ceremony call sites live in the binary crate, matching
 /// [`peer_tsp_mediator`] beside it.
 pub async fn our_mediator_carries_tsp(mediator_did: &str) -> Option<bool> {
     if mediator_did.is_empty() {
