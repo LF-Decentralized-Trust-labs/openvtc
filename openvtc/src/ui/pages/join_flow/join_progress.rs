@@ -93,8 +93,14 @@ impl JoinProgress {
             }
             Completion::CompletedOK => {
                 lines.push(Line::default());
+                // "Sent", not "submitted" or "delivered". What completed is our
+                // half: the request left this client and our mediator accepted
+                // it. Whether the community received it is a separate, later
+                // fact, carried by the acknowledgement (`receipt_at`) — and
+                // wording this as an accomplished submit is what let a join that
+                // never reached its community read here as a success.
                 lines.push(Line::styled(
-                    "Join request submitted.",
+                    "Join request sent.",
                     Style::new().fg(COLOR_SUCCESS).bold(),
                 ));
                 if let Some(rec) = &state.created_community {
@@ -119,8 +125,21 @@ impl JoinProgress {
                     }
                     lines.push(Line::from(vec![
                         Span::styled("  Status:        ", Style::new().fg(COLOR_SUCCESS)),
-                        Span::styled("Pending", Style::new().fg(COLOR_ORANGE)),
+                        Span::styled(
+                            "Pending  ·  not yet acknowledged",
+                            Style::new().fg(COLOR_ORANGE),
+                        ),
                     ]));
+                    // Which wire carried it. When a join goes unanswered this is
+                    // the first thing worth knowing, and reading it off the
+                    // record means it names the transport actually used rather
+                    // than the one the community advertises.
+                    if let Some(transport) = &rec.submit_transport {
+                        lines.push(Line::from(vec![
+                            Span::styled("  Sent over:     ", Style::new().fg(COLOR_SUCCESS)),
+                            Span::styled(transport.to_string(), Style::new().fg(COLOR_SOFT_PURPLE)),
+                        ]));
+                    }
                     // Whether an invitation was actually presented (auto-admit
                     // path) or this is an open request (manual approval) — the
                     // distinction that determines what happens next.
@@ -162,6 +181,12 @@ impl JoinProgress {
                     "It's now in your Communities list, marked Pending — it will update \
                      there as the community responds.",
                     Style::new().fg(COLOR_SUCCESS),
+                ));
+                lines.push(Line::styled(
+                    "The community hasn't acknowledged it yet. That normally takes seconds; \
+                     if it doesn't arrive, the Communities list will flag the request as \
+                     possibly not received.",
+                    Style::new().fg(COLOR_DARK_GRAY),
                 ));
             }
             Completion::CompletedFail => {
