@@ -140,37 +140,25 @@ trust-tasks-capability-client = "0.3"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-# The 0.21 line, floored at 0.21.12. Each floor below is a defect this repo had
-# no lever over, kept in order because none of them can be un-met from here.
+# The 0.23 line. Moved off 0.21.12 for `CreateDidWebvhRequest.add_tsp_service`
+# (VTI #959), which is what lets a minted persona advertise `#tsp` at all — see
+# the call site in `setup_sequence/vta.rs`. Without it a persona's document
+# carries one `DIDCommMessaging` entry, so a peer's both-ends transport match
+# can never resolve to TSP however much TSP the rest of the stack speaks.
 #
-# 0.21.11 makes `BootstrapAsk`
-# serialise the `provision/integration/0.2` camelCase ask tags
-# (`adminRotation` / `templateBootstrap`). Up to 0.21.10 it emitted the 0.1
-# PascalCase spellings while submitting under the 0.2 type URI, and the VTA's
-# payload-schema gate rejected every provisioning request — setup could not get
-# past "Provision integration DID + admin credential" (VTI #917). Nothing here
-# had a lever over that casing, so the floor is the fix.
+# Two minors were crossed (0.22 and 0.23, each breaking under 0.x semver) and the only
+# thing that broke here was the new field itself: verified by building this
+# workspace against the unreleased sdk before the bump, where `add_tsp_service`
+# was the sole compile error and every test still passed.
 #
-# 0.21.10 remains the floor's other reason: it is the release that moved its own
-# `trust-tasks-rs` requirement to `^0.4`. An earlier 0.21.x still asks for
-# `^0.2.55`, which would resolve a second trust-tasks in the graph alongside
-# ours and break `TrustTask` type unification across the sdk boundary.
-# It supersedes the 0.20.24 floor that
-# `protocols::members::MemberVmcBody`'s `request_id` field once set, and the
-# 0.20.6 floor the TSP leg set (see the `tsp` feature note below) — both
-# predate this major and neither can be un-met from here.
-#
-# 0.21.12 is the current floor, and it is the same class of defect one layer
-# down: `CreateKeyBody` serialized its unset members as `null`, and
-# `keys/create/0.1` types them `"string"`, so the VTA refused every key
-# creation over DIDComm and TSP (VTI #919). Joining a community mints a
-# persona's signing key first, so a join died on its first round-trip with
-# `malformedRequest … null is not of type "string"` and rolled back. REST was
-# unaffected — it serializes a different struct, which already skipped its
-# `None`s — so only the transports this CLI actually prefers were broken.
-# Nothing here had a lever over that either: the payload is built inside the
-# sdk's own `create_key`.
-vta-sdk = { version = "0.21.12", features = [
+# The old 0.21.x floor notes are gone with the line. Each recorded a defect this
+# repo had no lever over — 0.21.10's `trust-tasks-rs` `^0.4` requirement (type
+# unification across the sdk boundary), 0.21.11's `provision/integration/0.2`
+# camelCase ask tags (VTI #917), 0.21.12's `CreateKeyBody` serialising unset
+# members as `null` and killing key creation over DIDComm and TSP (VTI #919).
+# All are below this floor by construction; they are kept in git history rather
+# than as a wall of satisfied constraints.
+vta-sdk = { version = "0.23", features = [
   "session",
   "client",
   "didcomm",

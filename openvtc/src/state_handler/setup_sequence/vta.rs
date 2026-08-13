@@ -297,6 +297,21 @@ pub async fn create_did_via_server(
             label: None,
             portable: true,
             add_mediator_service: true,
+            // Advertise `#tsp` at the same mediator, so a peer's both-ends
+            // transport match can actually resolve to TSP for this persona.
+            // Without it the document carries one `DIDCommMessaging` entry and
+            // the intersection is DIDComm however much TSP the rest of the
+            // stack speaks — which is what #211 diagnosed and could only work
+            // around by degrading.
+            //
+            // Safe to assert unconditionally from here, from both sides:
+            // ours, because a persona's inbound TSP arrives on the mediator
+            // socket `DidCommTransport` already owns and surfaces by protocol
+            // (see `openvtc_core::tsp`) — we can read what we advertise; and
+            // the VTA's, because it drops the entry unless it has `[services]
+            // tsp` on with a mediator configured, so a DIDComm-only VTA still
+            // mints exactly the document it minted before.
+            add_tsp_service: true,
             additional_services: None,
             pre_rotation_count: 1,
             did_document: None,
