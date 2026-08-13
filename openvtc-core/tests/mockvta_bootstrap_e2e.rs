@@ -156,6 +156,9 @@ async fn persona_did_webvh_mint_round_trips() {
             label: None,
             portable: false,
             add_mediator_service: false,
+            // This harness asserts the bootstrap round-trip, not document
+            // shape; no mediator service is requested, so no TSP entry either.
+            add_tsp_service: false,
             additional_services: None,
             pre_rotation_count: 0,
             did_document: None,
