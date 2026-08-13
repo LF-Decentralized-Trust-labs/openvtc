@@ -1177,7 +1177,23 @@ async fn run_join_sequence(
         return;
     }
 
-    // 10. Success — refresh the communities panel and surface the relaunch prompt.
+    // 10. Sent — refresh the communities panel and surface the relaunch prompt.
+    //
+    // "Sent", not "delivered". Every word below is deliberately about what this
+    // client actually witnessed: `submit_join_request` resolves `Ok` when *our
+    // own mediator* accepts the frame, which says nothing about whether the
+    // community's mediator received it or the community ever read it. Claiming
+    // otherwise is R1.1 — a send `Ok` is not a delivery — and it is the reason a
+    // join that died two hops away read here as an unqualified success while the
+    // community's log showed no trace of it.
+    //
+    // The acknowledgement is asynchronous and cannot be waited for here: the
+    // join flow's `select!` loop reads UI actions only, so the inbound dispatch
+    // that reconciles a receipt (`CommunityRecord::receipt_at`) does not run
+    // until this sequence returns. `pending_unacknowledged` flags the record in
+    // the communities panel if nothing arrives within `PENDING_ACK_GRACE_SECS`,
+    // so the honest thing to do here is name what is still outstanding and point
+    // at where the answer will show up.
     state.main_page.sync_from_config(config);
     // Durable, unlike the ceremony commentary in `state.join`, which is
     // transient UI and gone on the next launch. A submitted join is the thing
@@ -1185,20 +1201,23 @@ async fn run_join_sequence(
     config.public.logs.insert(
         LogFamily::Community,
         format!(
-            "Join request submitted to ({}) as persona ({}) — Pending.",
+            "Join request sent to ({}) as persona ({}) over {} — Pending, not yet acknowledged.",
             state.join.display_name.as_deref().unwrap_or(&vtc_did),
-            persona_did
+            persona_did,
+            submit_transport
         ),
     );
-    state
-        .main_page
-        .log("Join request submitted — Pending in your Communities list.");
+    state.main_page.log(format!(
+        "Join request sent over {submit_transport} — Pending in your Communities list, awaiting \
+         the community's acknowledgement."
+    ));
     state.join.created_community = Some(record);
     state.join.created_persona_did = Some(persona_did.clone());
     state.join.completed = Completion::CompletedOK;
-    state
-        .join
-        .info("Join request submitted — it's now Pending in your Communities list.");
+    state.join.info(format!(
+        "Join request sent over {submit_transport}. Waiting for the community to acknowledge it — \
+         it's Pending in your Communities list, which will flag it if no response arrives."
+    ));
 }
 
 /// Persist the config, abstracting over the openpgp-card touch prompt.
