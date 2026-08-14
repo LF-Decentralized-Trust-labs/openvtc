@@ -2609,9 +2609,9 @@ dependencies = [
 
 [[package]]
 name = "did-git-sign"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b0ed11ba6db5f3f320c39d48fb243c35395771c5d5e2ce0f850e508599073c"
+checksum = "05c7d4f2270e36b164ba833031677902fc9b114f7695db7ba46030d5c4688120"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -2633,7 +2633,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vgi-core",
- "vta-sdk 0.21.21",
+ "vta-sdk",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -5363,7 +5363,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "windows-native-keyring-store",
  "x25519-dalek 2.0.1",
  "zeroize",
@@ -5422,7 +5422,7 @@ dependencies = [
  "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vta-service",
  "wiremock",
  "x25519-dalek 2.0.1",
@@ -8582,9 +8582,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vgi-core"
-version = "0.4.2"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "480de55f70a39df6e0b6d3d395122a783c3af361f0559f55ad844423aa24ec3b"
+checksum = "ab130b8abbacb089e6be8edc6d74630f338bce193b92754cc7461a372968ae39"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -8608,7 +8608,7 @@ checksum = "a607f595cd391f9546e67c1ecf007c1f0094a6f809a646e3d3a25415046dd2cb"
 dependencies = [
  "tracing",
  "uuid",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -8633,7 +8633,7 @@ dependencies = [
  "vta-config",
  "vta-keys",
  "vta-keyspaces",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vta-support",
  "vti-common",
  "zeroize",
@@ -8661,7 +8661,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
  "x25519-dalek 3.0.0",
 ]
@@ -8676,7 +8676,7 @@ dependencies = [
  "serde_ignored",
  "toml",
  "tracing",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
 ]
@@ -8708,7 +8708,7 @@ dependencies = [
  "uuid",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
  "x25519-dalek 3.0.0",
@@ -8740,51 +8740,8 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.21.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "861c36c7fc542c08f97ae375c6186898188bafd377eb1eaec8fab2ec27f5b413"
-dependencies = [
- "affinidi-crypto",
- "affinidi-data-integrity",
- "affinidi-did-common",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
- "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-secrets-resolver",
- "affinidi-tdk",
- "affinidi-vc",
- "agent-names",
- "base64 0.22.1",
- "chrono",
- "ciborium",
- "curve25519-dalek 5.0.0",
- "didwebvh-rs",
- "ed25519-dalek 3.0.0",
- "futures-util",
- "getrandom 0.4.3",
- "hpke",
- "multibase",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "trust-tasks-rs",
- "url",
- "uuid",
- "x25519-dalek 3.0.0",
- "zeroize",
 ]
 
 [[package]]
@@ -8795,6 +8752,7 @@ checksum = "6b8d9df250173cc4f3793f84de441616ba885cc3c1423b926ef3c19232f15a18"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
+ "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
@@ -8805,6 +8763,7 @@ dependencies = [
  "affinidi-secrets-resolver",
  "affinidi-tdk",
  "affinidi-vc",
+ "agent-names",
  "base64 0.22.1",
  "chrono",
  "ciborium",
@@ -8910,7 +8869,7 @@ dependencies = [
  "vta-keys",
  "vta-keyspaces",
  "vta-policy",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vta-support",
  "vta-sweepers",
  "vta-vault",
@@ -8941,7 +8900,7 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -8984,7 +8943,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vta-keyspaces",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -9001,7 +8960,7 @@ dependencies = [
  "tracing",
  "url",
  "vta-keyspaces",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "vti-common",
  "zeroize",
 ]
@@ -9044,7 +9003,7 @@ dependencies = [
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.23.0",
+ "vta-sdk",
  "webauthn-rs",
  "zeroize",
 ]
