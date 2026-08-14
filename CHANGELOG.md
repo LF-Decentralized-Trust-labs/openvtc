@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Ask a community about a join it has not answered** — every way a `Pending`
+  join could previously resolve was the community volunteering something: a
+  verdict, a credential, a problem-report. If any of those was lost — a socket
+  down at the wrong moment, a mediator that dropped it, a decision a human took
+  days later when nothing was listening — the record sat `Pending` and this
+  client never asked. `join-requests/status/0.1` is the protocol's answer to
+  exactly that, and OpenVTC had implemented only the receiving half
+  (`handle_join_status_response` existed with nothing to trigger it).
+
+  A minute-by-minute tick now reconciles each pollable `Pending` join, starting
+  with an immediate poll at launch — a join still `Pending` when the app starts
+  is precisely the one whose answer may have been lost. Per record it then backs
+  off 1 → 2 → 4 → 8 minutes, capped at 15, with at most four polls per tick
+  across the account (R1.4), so a parked join is noticed promptly without this
+  client becoming a load source. Pacing is deliberately in memory: it is about
+  this process's politeness, and a stale on-disk backoff would suppress the poll
+  a fresh launch most wants to make. The poll takes the transport the submit took
+  — a TSP-only community would never see a DIDComm poll.
+
+- **Adopt the community's own request id when it first replies** — a join is
+  recorded against the id of the request document *we* sent, because that is the
+  only handle available until the VTC answers; the VTC mints its own and returns
+  it in the first correlated reply. The submit-receipt path already swapped the
+  id in, but a `refer` / `request_more` verdict carries `requestId` too and read
+  straight past it — correlation there is by `thid`, so nothing needed it.
+
+  A referred join is the one that then sits `Pending` for as long as a human
+  takes, so it is the one that most needs to be askable-about later, and without
+  the id there is no handle to ask with. `CommunityRecord::request_id_confirmed`
+  now records *whose* id a record holds, and is the gate on polling: quoting our
+  own placeholder would be asking about a request the community has never heard
+  of. Records written before this default to unconfirmed, which is the safe
+  reading — we cannot tell whose id they hold.
+
+  Note what this does **not** cover: a join that received *no* reply at all has
+  no confirmed id and cannot be polled. That case is not a gap here — it is
+  recovered by collecting the stored mail the reply is sitting in.
+
 ### Fixed
 
 - **Connect the applicant persona before submitting the join, not after** — a

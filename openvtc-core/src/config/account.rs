@@ -226,6 +226,21 @@ pub struct CommunityRecord {
     /// that submits without going through the join flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submit_transport: Option<crate::didcomm::MessagingTransport>,
+    /// Whether the `Pending` request id is the **community's** id rather than
+    /// our submit-time placeholder.
+    ///
+    /// A join is recorded against the id of the request document we sent,
+    /// because that is the only handle we have until the VTC answers; the VTC
+    /// mints its own (`Uuid::new_v4()`) and tells us in the first correlated
+    /// reply. Which of the two the record currently holds decides whether the
+    /// community can be *asked* about this join
+    /// ([`crate::join::poll_join_status`]) — a poll quoting our placeholder is
+    /// a request the VTC has never heard of, and is answered as such.
+    ///
+    /// `false` for a record written before this existed: those are never polled,
+    /// which is the safe reading (we cannot tell whose id they hold).
+    #[serde(default)]
+    pub request_id_confirmed: bool,
     /// DIDComm relationships scoped to this community.
     #[serde(default)]
     pub relationships: Relationships,
@@ -284,6 +299,8 @@ struct CommunityRecordShadow {
     #[serde(default)]
     submit_transport: Option<crate::didcomm::MessagingTransport>,
     #[serde(default)]
+    request_id_confirmed: bool,
+    #[serde(default)]
     relationships: Relationships,
     #[serde(default)]
     tasks: Tasks,
@@ -340,6 +357,7 @@ impl From<CommunityRecordShadow> for CommunityRecord {
             requested_at: shadow.requested_at,
             receipt_at: shadow.receipt_at,
             submit_transport: shadow.submit_transport,
+            request_id_confirmed: shadow.request_id_confirmed,
             relationships: shadow.relationships,
             tasks: shadow.tasks,
             vrcs_issued: shadow.vrcs_issued,
@@ -390,6 +408,10 @@ impl CommunityRecord {
             // Set by the join flow once it knows which transport carried the
             // submit; `new_pending` itself is transport-agnostic.
             submit_transport: None,
+            // `request_id` here is the id of the document we just sent. It only
+            // becomes the community's once a reply says so — see
+            // `confirm_request_id`.
+            request_id_confirmed: false,
             relationships: Relationships::default(),
             tasks: Tasks::default(),
             vrcs_issued: Vrcs::default(),
@@ -517,6 +539,36 @@ impl CommunityRecord {
         false
     }
 
+    /// Adopt the community's own request id for a still-`Pending` join, replacing
+    /// the submit-time placeholder.
+    ///
+    /// Every correlated VTC reply carries it — the submit-receipt, and the
+    /// verdict envelope (`VerdictResponse.requestId`) that a `refer` /
+    /// `request_more` arrives in. Adopting it from *whichever* lands first is
+    /// what makes a join that is parked for human review askable-about later:
+    /// the id is the only thing `join-requests/status` can name.
+    ///
+    /// Returns `true` if the record changed (the caller should persist). A no-op
+    /// once the id is confirmed and unchanged, and on a non-`Pending` record —
+    /// a terminal state has nothing left to poll for.
+    pub fn confirm_request_id(&mut self, request_id: Uuid) -> bool {
+        let CommunityStatus::Pending { request_id: held } = &self.status else {
+            return false;
+        };
+        if *held == request_id && self.request_id_confirmed {
+            return false;
+        }
+        self.status = CommunityStatus::Pending { request_id };
+        self.request_id_confirmed = true;
+        true
+    }
+
+    /// Whether the community can be asked about this join: still `Pending`, and
+    /// against the community's own request id rather than our placeholder.
+    pub fn is_pollable_pending(&self) -> bool {
+        self.request_id_confirmed && matches!(self.status, CommunityStatus::Pending { .. })
+    }
+
     /// Whether this is a `Pending` join the VTC has not acknowledged within
     /// [`PENDING_ACK_GRACE_SECS`] of submission — the signal that the submit may
     /// have been dropped (size limit / unhandled type) rather than healthily
@@ -529,6 +581,21 @@ impl CommunityRecord {
                 .requested_at
                 .is_some_and(|r| now - r >= TimeDelta::seconds(PENDING_ACK_GRACE_SECS))
     }
+}
+
+/// One `Pending` join that can be reconciled with its community, flattened out
+/// of the record so the poll can be driven without holding a `Config` borrow
+/// across the network I/O.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPoll {
+    pub vtc_did: VtcDid,
+    pub persona_ref: PersonaId,
+    /// The **community's** request id — never our submit-time placeholder; see
+    /// [`CommunityRecord::request_id_confirmed`].
+    pub request_id: Uuid,
+    /// The transport the submit used, so the poll takes the same route. A
+    /// community reachable only over TSP would never see a DIDComm poll.
+    pub submit_transport: Option<crate::didcomm::MessagingTransport>,
 }
 
 /// The account — the OpenVTC ↔ VTA relationship (State-A bootstrap) plus its
@@ -638,6 +705,29 @@ impl Account {
         self.communities.get_mut(vtc)?.iter_mut().find(
             |c| matches!(&c.status, CommunityStatus::Pending { request_id: r } if *r == request_id),
         )
+    }
+
+    /// Every `Pending` join the community can be asked about, as the tuple a
+    /// status poll needs: which community, which persona speaks to it, the
+    /// community's request id, and the transport the submit went out on.
+    ///
+    /// Read-only and cheap — the caller (a periodic reconcile) runs this on
+    /// every tick and expects an empty vector to be the normal answer.
+    pub fn pollable_pending(&self) -> Vec<PendingPoll> {
+        self.memberships()
+            .filter(|c| c.is_pollable_pending())
+            .filter_map(|c| {
+                let CommunityStatus::Pending { request_id } = c.status else {
+                    return None;
+                };
+                Some(PendingPoll {
+                    vtc_did: c.vtc_did.clone(),
+                    persona_ref: c.persona_ref,
+                    request_id,
+                    submit_transport: c.submit_transport,
+                })
+            })
+            .collect()
     }
 
     /// Add a new membership. Callers gate on [`Self::has_live_membership`] first
@@ -869,6 +959,7 @@ mod tests {
             display_name: Some(vtc.to_string()),
             sub_context_id: format!("openvtc/{vtc}"),
             submit_transport: None,
+            request_id_confirmed: false,
             persona_ref,
             status,
             favourite: false,
@@ -1300,6 +1391,61 @@ mod tests {
         let mut active = community("v", pid, CommunityStatus::Active);
         active.requested_at = Some(now - TimeDelta::days(1));
         assert!(!active.pending_unacknowledged(now));
+    }
+
+    #[test]
+    fn confirm_request_id_adopts_the_communitys_id_only_while_pending() {
+        let pid = PersonaId::new();
+        let real = Uuid::new_v4();
+
+        let mut c = community("v", pid, pending());
+        assert!(
+            !c.is_pollable_pending(),
+            "a record still holding our submit id has nothing the VTC can look up"
+        );
+        assert!(
+            c.confirm_request_id(real),
+            "adopting is a change to persist"
+        );
+        assert!(matches!(c.status, CommunityStatus::Pending { request_id } if request_id == real));
+        assert!(c.is_pollable_pending());
+        assert!(
+            !c.confirm_request_id(real),
+            "re-confirming the same id changes nothing, so it must not force a save"
+        );
+
+        // A terminal record has nothing left to poll for, so a late reply
+        // carrying an id must not resurrect it as pollable.
+        let mut rejected = community("v", pid, CommunityStatus::Rejected);
+        assert!(!rejected.confirm_request_id(real));
+        assert!(!rejected.is_pollable_pending());
+    }
+
+    #[test]
+    fn pollable_pending_lists_only_confirmed_pending_joins() {
+        let mut acct = Account::default();
+        let pid = PersonaId::new();
+        let real = Uuid::new_v4();
+
+        // Unconfirmed pending — not askable.
+        acct.add_membership(community("unconfirmed", pid, pending()));
+        // Active — nothing to ask.
+        acct.add_membership(community("active", pid, CommunityStatus::Active));
+        // Confirmed pending — the one case.
+        let mut confirmed = community("confirmed", pid, pending());
+        confirmed.confirm_request_id(real);
+        confirmed.submit_transport = Some(crate::didcomm::MessagingTransport::Tsp);
+        acct.add_membership(confirmed);
+
+        let pollable = acct.pollable_pending();
+        assert_eq!(pollable.len(), 1);
+        assert_eq!(pollable[0].vtc_did, "confirmed");
+        assert_eq!(pollable[0].request_id, real);
+        assert_eq!(
+            pollable[0].submit_transport,
+            Some(crate::didcomm::MessagingTransport::Tsp),
+            "the poll must take the transport the submit took"
+        );
     }
 
     #[test]
