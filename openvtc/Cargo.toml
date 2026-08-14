@@ -33,10 +33,21 @@ anyhow.workspace = true
 # own repo (OpenVTC/verifiable-git-infrastructure); openvtc is a downstream
 # consumer of the published crate.
 #
-# Floor is 0.4.2: that is the release built on vta-sdk 0.21.10 (and so on
-# trust-tasks-rs 0.4). 0.4.0/0.4.1 were built on vta-sdk ^0.19, which put a
-# second vta-sdk and a second trust-tasks in the openvtc binary.
-did-git-sign = "0.4.2"
+# Floor is 0.4.3: the first release built on vta-sdk 0.23, so it is what
+# finally leaves ONE vta-sdk in this binary. 0.4.2 requires `vta-sdk ^0.21`,
+# which is where the 0.21 copy came from once #213 took the workspace to 0.23 —
+# `cargo tree -i vta-sdk` reported 0.21.21 and 0.23.0 side by side, the former
+# reachable only through this crate. (#214 cleared the matching duplicate on the
+# `vta-service` dev-dependency; this clears the other half.) Two sdks are not
+# merely untidy: `vti-common` re-exports `vta_sdk::acl::{ActScope, ApproveScope,
+# ContextDirection}` as its own public API, so the copies carry types that
+# cannot unify.
+#
+# Earlier floors are below this one by construction and kept in git history
+# rather than as a wall of satisfied constraints — 0.4.2 was the release on
+# vta-sdk 0.21.10 (and so on trust-tasks-rs 0.4), where 0.4.0/0.4.1 were on
+# `^0.19` and put a second vta-sdk *and* a second trust-tasks in the binary.
+did-git-sign = "0.4.3"
 base64.workspace = true
 byteorder.workspace = true
 chrono.workspace = true
