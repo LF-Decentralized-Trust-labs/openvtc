@@ -114,29 +114,17 @@ impl StateHandler {
                         Action::JoinPasteVic(text) => {
                             // #3: a pasted invitation credential — validate it is a
                             // VIC and stash it so the join presents it (mirrors the
-                            // `--invitation <file>` launch flag).
-                            match serde_json::from_str::<serde_json::Value>(&text) {
-                                Ok(vic) => match openvtc_core::join::validate_invitation_credential(
-                                    &vic,
-                                ) {
-                                    Ok(()) => {
-                                        state.invitation_credential = Some(vic);
-                                        state.join.has_invitation = true;
-                                        state.join.vic_cleared = false;
-                                        state.join.messages.clear();
-                                    }
-                                    Err(why) => {
-                                        state.join.messages.push(MessageType::Error(format!(
-                                            "Pasted invitation is not usable: {why}"
-                                        )));
-                                    }
-                                },
-                                Err(e) => {
-                                    state.join.messages.push(MessageType::Error(format!(
-                                        "Pasted text is not valid JSON: {e}"
-                                    )));
-                                }
-                            }
+                            // `--invitation <file>` launch flag). On the entry page
+                            // the community isn't chosen yet, so only the credential
+                            // shape is checked; on the invitation step it is, so the
+                            // paste is also matched against it.
+                            let vtc = if state.join.page == JoinPage::InvitationChoice {
+                                state.join.pending_vtc.clone()
+                            } else {
+                                None
+                            };
+                            state.join.messages.clear();
+                            load_pasted_vic(state, &text, vtc.as_deref());
                             let _ = self.state_tx.send(state.clone());
                         }
                         Action::JoinClearVic => {
@@ -261,62 +249,64 @@ impl StateHandler {
                             let Some(persona_id) = state.join.reuse_confirm else {
                                 continue;
                             };
-                            let Some(vtc_did) = state.join.pending_vtc.clone() else {
+                            // The community DID stays parked in `pending_vtc`; the
+                            // invitation step is what launches the join now.
+                            if state.join.pending_vtc.is_none() {
                                 continue;
-                            };
+                            }
                             state.join.reuse_confirm = None;
-                            // Invitations bound to the chosen persona for this
-                            // community. With one or more, offer the invitation
-                            // choice; with none, join as an open request.
+                            // Invitations already known for the chosen persona:
+                            // this community's valid VICs whose subject is that
+                            // persona's DID.
                             let persona_did = config
                                 .account
                                 .personas
                                 .get(&persona_id)
                                 .map(|p| p.did.clone());
-                            let invitations: Vec<AvailableVic> = persona_did
-                                .map(|did| {
-                                    state
-                                        .join
-                                        .available_vics
-                                        .iter()
-                                        .filter(|v| v.subject.as_deref() == Some(did.as_str()))
-                                        .cloned()
-                                        .collect()
+                            // …plus one the operator loaded for this join by hand
+                            // (`--invitation` / a paste on the entry page) whatever
+                            // its subject. Filtering that by subject too was how a
+                            // deliberately supplied invitation could disappear
+                            // between the entry page and the submit; a subject that
+                            // is not the presenting persona is what
+                            // `build_linkage_proof` exists for, not a reason to
+                            // drop it.
+                            let loaded = state
+                                .invitation_credential
+                                .as_ref()
+                                .and_then(|v| openvtc_core::join::invitation_id(v))
+                                .map(str::to_string);
+                            let invitations: Vec<AvailableVic> = state
+                                .join
+                                .available_vics
+                                .iter()
+                                .filter(|v| {
+                                    (persona_did.is_some() && v.subject == persona_did)
+                                        || loaded.as_deref() == Some(v.id.as_str())
                                 })
-                                .unwrap_or_default();
-                            if invitations.is_empty() {
-                                state.invitation_credential = None;
-                                state.join.present_invitation = false;
-                                if let Some(interrupted) = self
-                                    .launch_join_sequence(
-                                        JoinIdentityChoice::Reuse(persona_id),
-                                        vtc_did,
-                                        interrupt_rx,
-                                        state,
-                                        tdk,
-                                        config,
-                                        admin_vta,
-                                        profile,
-                                    )
-                                    .await
-                                {
-                                    return Ok(JoinExit::Exit(interrupted));
-                                }
-                            } else {
-                                state.join.invitation_options = invitations;
-                                state.join.invitation_for_persona = Some(persona_id);
-                                state.join.invitation_use_selected = 0;
-                                state.join.page = JoinPage::InvitationChoice;
-                                let _ = self.state_tx.send(state.clone());
-                            }
+                                .cloned()
+                                .collect();
+                            // Always offer the choice, including with none found.
+                            // The step carries a paste row, so an empty list is a
+                            // question ("do you have one?") rather than a reason
+                            // to skip. It used to launch straight into an open
+                            // request here, which is why an operator holding an
+                            // invitation was never asked for it.
+                            state.join.invitation_options = invitations;
+                            state.join.invitation_for_persona = Some(persona_id);
+                            state.join.invitation_persona_did = persona_did;
+                            state.join.invitation_use_selected = 0;
+                            state.join.messages.clear();
+                            state.join.page = JoinPage::InvitationChoice;
+                            let _ = self.state_tx.send(state.clone());
                         }
                         Action::JoinReuseCancel => {
                             state.join.reuse_confirm = None;
                             let _ = self.state_tx.send(state.clone());
                         }
                         Action::JoinInvitationSelect(i) => {
-                            // Rows: 0..len select an invitation; len = "join without".
-                            let max = state.join.invitation_options.len();
+                            // Rows: 0..len an invitation, len = paste, len+1 = without.
+                            let max = state.join.invitation_without_row();
                             state.join.invitation_use_selected = i.min(max);
                             let _ = self.state_tx.send(state.clone());
                         }
@@ -327,6 +317,31 @@ impl StateHandler {
                             let Some(persona_id) = state.join.invitation_for_persona else {
                                 continue;
                             };
+                            // The paste row loads a VIC instead of launching: it is
+                            // the answer to "I have one, it just isn't in the
+                            // vault". Read the OS clipboard as a convenience; the
+                            // portable path is the terminal's own bracketed paste,
+                            // which arrives as `JoinPasteVic` from anywhere on this
+                            // page. Either way we stay on the step so the operator
+                            // sees the loaded invitation before committing to it.
+                            if state.join.invitation_use_selected
+                                == state.join.invitation_paste_row()
+                            {
+                                state.join.messages.clear();
+                                match crate::clipboard::read_clipboard() {
+                                    Ok(text) => {
+                                        load_pasted_vic(state, &text, Some(&vtc_did));
+                                    }
+                                    Err(why) => {
+                                        state.join.messages.push(MessageType::Error(format!(
+                                            "Could not read the clipboard ({why}). Paste the \
+                                             invitation JSON directly into this screen instead."
+                                        )));
+                                    }
+                                }
+                                let _ = self.state_tx.send(state.clone());
+                                continue;
+                            }
                             // A selected invitation row presents that VIC; the
                             // trailing row joins without one.
                             let sel = state.join.invitation_use_selected;
@@ -565,6 +580,83 @@ pub(crate) enum JoinExit {
     Returned(Option<JoinedSession>),
     /// Application is exiting (Exit / UXError / interrupt).
     Exit(Interrupted),
+}
+
+/// Accept a pasted / clipboard-read invitation credential (VIC).
+///
+/// `vtc_did` is `Some` only on the invitation step, where the community is
+/// already chosen: there the paste is additionally required to be *for* that
+/// community and unexpired, and lands as a new row on the step (selected, so the
+/// next Enter presents it). On the entry page the community is still unknown, so
+/// only the credential shape is checked and the VIC is stashed for
+/// [`collect_available_vics`] to match once a DID is entered.
+///
+/// Every rejection is reported into `join.messages` with its reason. An
+/// invitation that silently fails to load reads exactly like one that was never
+/// pasted, and the operator then submits an open request believing they
+/// presented a credential — which is the same failure, in miniature, as skipping
+/// the step altogether.
+fn load_pasted_vic(state: &mut State, text: &str, vtc_did: Option<&str>) {
+    let vic = match serde_json::from_str::<serde_json::Value>(text.trim()) {
+        Ok(v) => v,
+        Err(e) => {
+            state.join.messages.push(MessageType::Error(format!(
+                "Pasted text is not valid JSON: {e}"
+            )));
+            return;
+        }
+    };
+    if let Err(why) = openvtc_core::join::validate_invitation_credential(&vic) {
+        state.join.messages.push(MessageType::Error(format!(
+            "Pasted invitation is not usable: {why}"
+        )));
+        return;
+    }
+    let Some(vtc_did) = vtc_did else {
+        // Entry page: no community to match against yet.
+        state.invitation_credential = Some(vic);
+        state.join.has_invitation = true;
+        state.join.vic_cleared = false;
+        return;
+    };
+    if !openvtc_core::join::invitation_matches_community(&vic, vtc_did) {
+        state.join.messages.push(MessageType::Error(
+            "That invitation was issued by a different community, so this one will \
+             not accept it."
+                .to_string(),
+        ));
+        return;
+    }
+    if openvtc_core::join::invitation_is_expired(&vic, Utc::now()) {
+        state.join.messages.push(MessageType::Error(
+            "That invitation has expired. Ask the community for a new one, or join \
+             without it."
+                .to_string(),
+        ));
+        return;
+    }
+    let Some(av) = to_available_vic(&vic) else {
+        state.join.messages.push(MessageType::Error(
+            "That invitation has no `id`, so it cannot be presented.".to_string(),
+        ));
+        return;
+    };
+    // Re-pasting one already listed re-selects it rather than duplicating it.
+    let row = match state
+        .join
+        .invitation_options
+        .iter()
+        .position(|o| o.id == av.id)
+    {
+        Some(existing) => existing,
+        None => {
+            state.join.invitation_options.push(av);
+            state.join.invitation_options.len() - 1
+        }
+    };
+    state.join.invitation_use_selected = row;
+    state.join.has_invitation = true;
+    state.join.vic_cleared = false;
 }
 
 /// Validate the raw VTC DID the operator submitted on the EnterDid page.
@@ -1295,12 +1387,16 @@ mod tests {
 
     use super::race_against_interrupt;
     use super::{
-        build_pending_record, is_duplicate_membership, joined_session, validate_join_input,
+        build_pending_record, is_duplicate_membership, joined_session, load_pasted_vic,
+        validate_join_input,
     };
     use crate::Interrupted;
     use crate::state_handler::dispatch_util::test_config;
     use crate::state_handler::join::JoinState;
+    use crate::state_handler::setup_sequence::MessageType;
+    use crate::state_handler::state::State;
     use openvtc_core::config::account::{CommunityRecord, CommunityStatus, PersonaId};
+    use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::broadcast;
@@ -1499,5 +1595,109 @@ mod tests {
             matches!(outcome, Some(Interrupted::OsSigInt)),
             "the specific interrupt variant propagates: {outcome:?}"
         );
+    }
+
+    // ---- `load_pasted_vic`: the paste row on the invitation step ----
+
+    const COMMUNITY: &str = "did:webvh:example.com:community";
+
+    /// A complete, presentable VIC — every field `validate_invitation_credential`
+    /// requires, issued by [`COMMUNITY`] and not yet expired.
+    fn pasteable_vic(id: &str) -> serde_json::Value {
+        json!({
+            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            "id": id,
+            "type": ["VerifiableCredential", "InvitationCredential"],
+            "issuer": COMMUNITY,
+            "credentialSubject": { "id": "did:webvh:example.com:alice" },
+            "validUntil": "2099-01-01T00:00:00Z",
+            "credentialStatus": { "type": "BitstringStatusListEntry" },
+            "proof": { "type": "DataIntegrityProof" }
+        })
+    }
+
+    fn first_error(state: &State) -> Option<&str> {
+        state.join.messages.iter().find_map(|m| match m {
+            MessageType::Error(e) => Some(e.as_str()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn a_matching_paste_becomes_the_selected_invitation() {
+        let mut state = State::default();
+        load_pasted_vic(
+            &mut state,
+            &pasteable_vic("urn:uuid:one").to_string(),
+            Some(COMMUNITY),
+        );
+        assert_eq!(state.join.invitation_options.len(), 1);
+        assert_eq!(state.join.invitation_options[0].id, "urn:uuid:one");
+        // Selected, so the next Enter presents it rather than needing an arrow.
+        assert_eq!(state.join.invitation_use_selected, 0);
+        assert!(state.join.has_invitation);
+        assert_eq!(first_error(&state), None);
+    }
+
+    #[test]
+    fn re_pasting_the_same_invitation_reselects_rather_than_duplicates() {
+        let mut state = State::default();
+        let vic = pasteable_vic("urn:uuid:one").to_string();
+        load_pasted_vic(&mut state, &vic, Some(COMMUNITY));
+        load_pasted_vic(&mut state, &vic, Some(COMMUNITY));
+        assert_eq!(state.join.invitation_options.len(), 1);
+        assert_eq!(state.join.invitation_use_selected, 0);
+    }
+
+    /// Each rejection has to say *why*. A paste that silently fails to load is
+    /// indistinguishable from one that was never made, and the operator then
+    /// sends an open request believing they presented a credential.
+    #[test]
+    fn every_rejection_reports_its_reason() {
+        // Wrong community.
+        let mut other = pasteable_vic("urn:uuid:one");
+        other["issuer"] = json!("did:webvh:example.com:elsewhere");
+        // Expired.
+        let mut expired = pasteable_vic("urn:uuid:one");
+        expired["validUntil"] = json!("2000-01-01T00:00:00Z");
+        // Right shape, wrong document — not an InvitationCredential.
+        let not_a_vic = json!({ "id": "urn:uuid:one", "type": ["VerifiableCredential"] });
+
+        let cases: &[(&str, String, &str)] = &[
+            ("not JSON", "}{ not json".to_string(), "not valid JSON"),
+            ("not a VIC", not_a_vic.to_string(), "not usable"),
+            ("wrong community", other.to_string(), "different community"),
+            ("expired", expired.to_string(), "expired"),
+        ];
+        for (name, text, expect) in cases {
+            let mut state = State::default();
+            load_pasted_vic(&mut state, text, Some(COMMUNITY));
+            let err =
+                first_error(&state).unwrap_or_else(|| panic!("{name}: expected a reported reason"));
+            assert!(
+                err.contains(expect),
+                "{name}: reason should mention {expect:?}, got {err:?}"
+            );
+            assert!(
+                state.join.invitation_options.is_empty(),
+                "{name}: a rejected paste must not become a presentable row"
+            );
+        }
+    }
+
+    /// On the entry page the community is not chosen yet, so the paste is only
+    /// shape-checked and stashed — `collect_available_vics` matches it later.
+    #[test]
+    fn an_entry_page_paste_is_stashed_without_a_community_check() {
+        let mut state = State::default();
+        let mut elsewhere = pasteable_vic("urn:uuid:one");
+        elsewhere["issuer"] = json!("did:webvh:example.com:elsewhere");
+        load_pasted_vic(&mut state, &elsewhere.to_string(), None);
+        assert!(state.invitation_credential.is_some());
+        assert!(state.join.has_invitation);
+        assert!(!state.join.vic_cleared);
+        // No row is added: the invitation step has not been reached.
+        assert!(state.join.invitation_options.is_empty());
+        assert_eq!(first_error(&state), None);
     }
 }

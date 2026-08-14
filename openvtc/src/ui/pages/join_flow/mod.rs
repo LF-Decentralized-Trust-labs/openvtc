@@ -1,8 +1,10 @@
 //! The State-B "join a community" flow UI (R-A-5 Stage 4).
 //!
-//! A small two-page [`Component`] mirroring [`SetupFlow`](super::setup_flow):
-//! `VtcEnterDid` collects the community DID, then `JoinProgress` shows the
-//! automated mint + join sequence. The page selection is driven by
+//! A small multi-page [`Component`] mirroring [`SetupFlow`](super::setup_flow):
+//! `VtcEnterDid` collects the community DID, `IdentityChoice` picks the persona
+//! to present, `InvitationChoice` asks whether an invitation rides with it (on
+//! the reuse path — a freshly minted persona can hold none), then `JoinProgress`
+//! shows the automated mint + join sequence. The page selection is driven by
 //! [`JoinState.page`](crate::state_handler::join::JoinState::page); the VTC DID
 //! `Input` lives on this component (mirroring how `vta_enter_did` holds its
 //! input), and persists across re-renders via `move_with_state`.
@@ -104,18 +106,33 @@ impl Component for JoinFlow {
     }
 
     fn handle_paste_event(&mut self, text: &str) {
-        if self.props.state.page == JoinPage::EnterDid && !self.props.state.processing {
-            let trimmed = text.trim();
-            // A pasted JSON object is treated as an invitation credential (VIC):
-            // hand it to the state handler to validate + stash (#3). Anything
-            // else is the VTC DID being pasted into the input.
-            if trimmed.starts_with('{') {
+        if self.props.state.processing {
+            return;
+        }
+        let trimmed = text.trim();
+        match self.props.state.page {
+            JoinPage::EnterDid => {
+                // A pasted JSON object is treated as an invitation credential
+                // (VIC): hand it to the state handler to validate + stash (#3).
+                // Anything else is the VTC DID being pasted into the input.
+                if trimmed.starts_with('{') {
+                    let _ = self
+                        .action_tx
+                        .send(Action::JoinPasteVic(trimmed.to_string()));
+                } else {
+                    self.vtc_did = Input::new(trimmed.to_string());
+                }
+            }
+            // The invitation step has no text input, so anything pasted there is
+            // an invitation being offered. This is the portable half of the paste
+            // row — bracketed paste works over SSH, where reading the OS
+            // clipboard does not.
+            JoinPage::InvitationChoice => {
                 let _ = self
                     .action_tx
                     .send(Action::JoinPasteVic(trimmed.to_string()));
-            } else {
-                self.vtc_did = Input::new(trimmed.to_string());
             }
+            JoinPage::IdentityChoice | JoinPage::Progress => {}
         }
     }
 }

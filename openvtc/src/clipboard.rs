@@ -166,6 +166,23 @@ fn try_arboard(text: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Read the operator's clipboard, for the "paste an invitation" affordance on
+/// the join flow's invitation step.
+///
+/// Deliberately `arboard`-only, with no OSC 52 counterpart: OSC 52 *reads* need
+/// the terminal to answer back on stdin, which the TUI already owns for key
+/// events, and most terminals disable read for the obvious reason that it lets
+/// any program on a pipe exfiltrate the clipboard. So this succeeds locally and
+/// fails over SSH — which is fine, because the caller's fallback is the
+/// terminal's own bracketed paste (a real `Paste` event routed to
+/// `handle_paste_event`), and that is the path that works everywhere. This is
+/// the convenience, not the mechanism.
+pub fn read_clipboard() -> Result<String, String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.get_text())
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

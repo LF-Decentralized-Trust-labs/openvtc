@@ -1,11 +1,19 @@
 //! Join flow — invitation choice.
 //!
-//! Reached after the operator picks an identity that holds one or more valid
-//! invitations (VICs) for the community being joined. Each invitation is listed
+//! Reached whenever the operator picks an existing identity to present, whether
+//! or not an invitation (VIC) was found for it. Each known invitation is listed
 //! with its details (Issued / Expires); the operator presents one — auto-joining
-//! on a valid, trusted invitation — or chooses the trailing "join without it" row
-//! to send an open request the community approves manually. The default highlight
-//! is the first invitation, so Enter preserves the auto-join behaviour.
+//! on a valid, trusted invitation — pastes one the vault has never seen, or
+//! chooses the trailing "join without it" row to send an open request the
+//! community approves manually. The default highlight is the first invitation, so
+//! Enter preserves the auto-join behaviour.
+//!
+//! The step used to be skipped when no VIC was found for the chosen identity,
+//! which made "do you have an invitation?" a question the flow only asked when it
+//! already knew the answer. An operator holding one — sent by email, sitting in a
+//! file, issued to a different persona — was never given anywhere to put it and
+//! silently submitted an open request instead. Hence the paste row, and hence the
+//! step being unconditional: an empty list is a question, not a decision.
 
 use crate::colors::{
     COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
@@ -24,7 +32,7 @@ use ratatui::{
 };
 
 use crate::{
-    state_handler::{actions::Action, join::JoinState},
+    state_handler::{actions::Action, join::JoinState, main_page::shorten_did},
     ui::pages::join_flow::JoinFlow,
 };
 
@@ -49,8 +57,8 @@ impl InvitationChoice {
             return;
         }
         let selected = state.props.state.invitation_use_selected;
-        // The "join without it" row sits one past the invitations.
-        let without_row = state.props.state.invitation_options.len();
+        // The "join without it" row is the last one, so it is the clamp ceiling.
+        let without_row = state.props.state.invitation_without_row();
         match key.code {
             KeyCode::F(10) => {
                 let _ = state.action_tx.send(Action::Exit);
@@ -95,6 +103,16 @@ impl InvitationChoice {
             Line::default(),
         ];
 
+        // With nothing found, say so plainly rather than showing a bare list —
+        // the step is still worth asking, because the paste row below answers it.
+        if state.invitation_options.is_empty() {
+            lines.push(Line::styled(
+                "  No invitation found for this identity in your credential vault.",
+                Style::new().fg(COLOR_DARK_GRAY).italic(),
+            ));
+            lines.push(Line::default());
+        }
+
         // One selectable row per available invitation, with its details.
         for (i, vic) in state.invitation_options.iter().enumerate() {
             let is_sel = i == state.invitation_use_selected;
@@ -116,11 +134,44 @@ impl InvitationChoice {
                 ),
                 Style::new().fg(COLOR_DARK_GRAY),
             ));
+            // An invitation bound to a *different* DID is still presentable — the
+            // join builds a subject-linkage proof for it — but only if we hold
+            // that persona's key, so flag it rather than letting it look routine.
+            if let (Some(subject), Some(persona)) = (
+                vic.subject.as_deref(),
+                state.invitation_persona_did.as_deref(),
+            ) && subject != persona
+            {
+                lines.push(Line::styled(
+                    format!(
+                        "    Issued to {} — presented via a linkage proof",
+                        shorten_did(subject, 40)
+                    ),
+                    Style::new().fg(COLOR_ORANGE),
+                ));
+            }
         }
 
+        // The paste row: an invitation the vault has never seen.
+        let paste_row = state.invitation_paste_row();
+        let paste_sel = state.invitation_use_selected == paste_row;
+        let marker = if paste_sel { "▸ " } else { "  " };
+        let style = if paste_sel {
+            Style::new().fg(COLOR_SUCCESS).bold()
+        } else {
+            Style::new().fg(COLOR_SOFT_PURPLE)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}⎘ Paste an invitation credential (VIC)"),
+            style,
+        )));
+        lines.push(Line::styled(
+            "    [ENTER] to read your clipboard, or paste the JSON straight in.",
+            Style::new().fg(COLOR_DARK_GRAY),
+        ));
+
         // Trailing "join without it" row.
-        let without_row = state.invitation_options.len();
-        let without_sel = state.invitation_use_selected >= without_row;
+        let without_sel = state.invitation_use_selected >= state.invitation_without_row();
         let marker = if without_sel { "▸ " } else { "  " };
         let style = if without_sel {
             Style::new().fg(COLOR_SUCCESS).bold()
@@ -135,6 +186,18 @@ impl InvitationChoice {
             "    The community reviews and approves the request manually.",
             Style::new().fg(COLOR_DARK_GRAY),
         ));
+
+        // Why a paste was refused (bad JSON / wrong community / expired). Without
+        // this the row simply never appears and the paste looks like it worked.
+        for msg in &state.messages {
+            if let crate::state_handler::setup_sequence::MessageType::Error(err) = msg {
+                lines.push(Line::default());
+                lines.push(Line::styled(
+                    format!("ERROR: {err}"),
+                    Style::new().fg(crate::colors::COLOR_WARNING_ACCESSIBLE_RED),
+                ));
+            }
+        }
 
         lines.push(Line::default());
         lines.push(Line::from(vec![
@@ -196,8 +259,8 @@ mod tests {
     }
 
     #[test]
-    fn down_moves_toward_join_without_it() {
-        // One invitation (row 0) + the "without" row (row 1).
+    fn down_moves_toward_the_paste_row() {
+        // One invitation (row 0), the paste row (1), then "without" (2).
         let (mut flow, mut rx) = flow_with(|_| {});
         InvitationChoice::handle_key_event(&mut flow, press(KeyCode::Down));
         match rx.try_recv() {
@@ -208,12 +271,38 @@ mod tests {
 
     #[test]
     fn down_clamps_at_the_without_row() {
-        let (mut flow, mut rx) = flow_with(|js| js.invitation_use_selected = 1);
+        let (mut flow, mut rx) = flow_with(|js| js.invitation_use_selected = 2);
         InvitationChoice::handle_key_event(&mut flow, press(KeyCode::Down));
         match rx.try_recv() {
-            // len == 1, so the max row index is 1 (the "without" row).
+            // len == 1, so rows are 0 (the VIC), 1 (paste), 2 ("without").
+            Ok(Action::JoinInvitationSelect(2)) => {}
+            _ => panic!("expected JoinInvitationSelect(2)"),
+        }
+    }
+
+    #[test]
+    fn the_paste_row_is_reachable_with_no_invitations() {
+        // The empty-list case is the whole point of the step being unconditional:
+        // row 0 must be the paste row, not "join without it".
+        let (mut flow, mut rx) = flow_with(|js| js.invitation_options.clear());
+        assert_eq!(flow.props.state.invitation_paste_row(), 0);
+        assert_eq!(flow.props.state.invitation_without_row(), 1);
+        InvitationChoice::handle_key_event(&mut flow, press(KeyCode::Down));
+        match rx.try_recv() {
             Ok(Action::JoinInvitationSelect(1)) => {}
             _ => panic!("expected JoinInvitationSelect(1)"),
+        }
+    }
+
+    #[test]
+    fn a_pasted_credential_is_offered_as_an_invitation() {
+        // Bracketed paste on this page is the SSH-safe half of the paste row: it
+        // must reach the handler as a VIC, not be swallowed as a keystroke.
+        let (mut flow, mut rx) = flow_with(|_| {});
+        flow.handle_paste_event("  {\"id\":\"urn:uuid:two\"}  ");
+        match rx.try_recv() {
+            Ok(Action::JoinPasteVic(text)) => assert_eq!(text, "{\"id\":\"urn:uuid:two\"}"),
+            _ => panic!("expected JoinPasteVic"),
         }
     }
 

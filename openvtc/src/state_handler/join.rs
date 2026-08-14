@@ -18,9 +18,12 @@ pub enum JoinPage {
     /// Operator enters the community (VTC) DID.
     #[default]
     EnterDid,
-    /// Choose whether to present an available invitation (VIC) for this
-    /// community, or join as an open request. Shown only when a VIC is actually
-    /// available (loaded-and-matching or held in the vault); skipped otherwise.
+    /// Choose whether to present an invitation (VIC) for this community, or join
+    /// as an open request. Always shown on the reuse path, even with no VIC
+    /// found: the step carries a paste row, so "I have an invitation, it just
+    /// isn't in the vault yet" is answerable. Skipping it when the vault happened
+    /// to be empty meant an operator holding an invitation was never asked and
+    /// silently sent an open request instead.
     InvitationChoice,
     /// Choose the identity to present (R-B-3 / D1): reuse an existing persona or
     /// mint a fresh one. Skipped when the account has no personas yet.
@@ -138,9 +141,14 @@ pub struct JoinState {
     /// Which persona the invitation step is choosing for — the reuse target the
     /// join launches with once the invitation choice is made.
     pub invitation_for_persona: Option<PersonaId>,
-    /// Highlighted row on the invitation-choice page: `0..invitation_options.len()`
-    /// selects a specific invitation to present; `invitation_options.len()` is the
-    /// trailing "join without it" row.
+    /// The chosen persona's DID, kept alongside
+    /// [`invitation_for_persona`](Self::invitation_for_persona) so the invitation
+    /// step can tell a pasted VIC bound to *this* identity from one bound to
+    /// another (which needs a subject-linkage proof) and say so on the row.
+    pub invitation_persona_did: Option<String>,
+    /// Highlighted row on the invitation-choice page. See
+    /// [`invitation_paste_row`](Self::invitation_paste_row) and
+    /// [`invitation_without_row`](Self::invitation_without_row) for the layout.
     pub invitation_use_selected: usize,
     /// The committed invitation decision, read by the join sequence. `true`
     /// presents the chosen VIC (set into `State.invitation_credential`); `false`
@@ -163,6 +171,20 @@ impl JoinState {
     /// Whether the highlighted identity-choice row is the "mint new" row.
     pub fn mint_row_selected(&self) -> bool {
         self.identity_selected >= self.persona_options.len()
+    }
+
+    /// The index of the "paste an invitation" row on the invitation-choice page —
+    /// one past the listed invitations. Choosing it loads a VIC rather than
+    /// launching the join, so the step can be answered with an invitation the
+    /// vault has never seen.
+    pub fn invitation_paste_row(&self) -> usize {
+        self.invitation_options.len()
+    }
+
+    /// The index of the trailing "join without it" row — one past the paste row.
+    /// It is also the clamp ceiling for `invitation_use_selected`.
+    pub fn invitation_without_row(&self) -> usize {
+        self.invitation_options.len() + 1
     }
 
     /// Append an info message to the progress log.
@@ -218,5 +240,33 @@ mod tests {
         assert!(!js.mint_row_selected());
         js.identity_selected = 2;
         assert!(js.mint_row_selected());
+    }
+
+    #[test]
+    fn the_paste_row_precedes_join_without_it() {
+        let mut js = JoinState::default();
+        // The empty case is the one the flow used to skip entirely: there is
+        // still a paste row to answer with, and it must not be the "without" row.
+        assert_eq!(js.invitation_paste_row(), 0);
+        assert_eq!(js.invitation_without_row(), 1);
+
+        js.invitation_options = vec![
+            AvailableVic {
+                id: "urn:uuid:a".to_string(),
+                subject: None,
+                valid_from: String::new(),
+                valid_until: String::new(),
+                body: Value::Null,
+            },
+            AvailableVic {
+                id: "urn:uuid:b".to_string(),
+                subject: None,
+                valid_from: String::new(),
+                valid_until: String::new(),
+                body: Value::Null,
+            },
+        ];
+        assert_eq!(js.invitation_paste_row(), 2);
+        assert_eq!(js.invitation_without_row(), 3);
     }
 }
