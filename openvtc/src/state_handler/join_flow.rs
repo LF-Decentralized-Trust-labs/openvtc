@@ -1288,7 +1288,7 @@ async fn run_join_sequence(
     };
     // Last gate before the request goes out: the socket started above has had
     // the invitation + VP work to come up, so this is normally already true.
-    await_persona_online(handler, state, messaging, &applicant_did).await;
+    let applicant_online = await_persona_online(handler, state, messaging, &applicant_did).await;
 
     let request_id = match openvtc_core::join::submit_join_request(
         atm,
@@ -1362,13 +1362,26 @@ async fn run_join_sequence(
     // Durable, unlike the ceremony commentary in `state.join`, which is
     // transient UI and gone on the next launch. A submitted join is the thing
     // you most want a record of when it does not complete.
+    //
+    // Whether the applicant was connected is part of that record. A join
+    // submitted from an unconnected persona is still valid — the community
+    // admits, and `Messaging::pickup_stored` collects the reply when the socket
+    // comes up — but it is the one that takes the slow path, and an operator
+    // reading this log later cannot otherwise tell that from a community that
+    // never answered.
     config.public.logs.insert(
         LogFamily::Community,
         format!(
-            "Join request sent to ({}) as persona ({}) over {} — Pending, not yet acknowledged.",
+            "Join request sent to ({}) as persona ({}) over {} — Pending, not yet acknowledged.{}",
             state.join.display_name.as_deref().unwrap_or(&vtc_did),
             persona_did,
-            submit_transport
+            submit_transport,
+            if applicant_online {
+                ""
+            } else {
+                " The applicant was not connected at submit; a reply that arrives before it \
+                 connects is collected from the mediator rather than streamed."
+            }
         ),
     );
     state.main_page.log(format!(
@@ -1467,21 +1480,25 @@ async fn start_persona_listener(
 /// answer is normally already `Connected` and it returns at once. A persona with
 /// no listener at all (State-A, or an install that failed) is nothing to wait
 /// for, and the submit proceeds either way.
+/// Returns whether the applicant was live at the moment of the submit — which
+/// the durable join record then states, because "sent while offline" is the one
+/// fact that explains a join taking the slow (collect-on-connect) path, and it
+/// has to survive the relaunch you make to go looking.
 async fn await_persona_online(
     handler: &StateHandler,
     state: &mut State,
     messaging: Option<&Messaging>,
     applicant_did: &str,
-) {
+) -> bool {
     let Some(service) = messaging else {
-        return;
+        return false;
     };
     let listener_id = openvtc_core::didcomm::persona_listener_id(applicant_did);
     if !service.has_listener(&listener_id).await {
-        return;
+        return false;
     }
 
-    match service
+    let online = match service
         .wait_connected(&listener_id, PERSONA_CONNECT_TIMEOUT)
         .await
     {
@@ -1489,6 +1506,7 @@ async fn await_persona_online(
             state
                 .join
                 .info("Persona connected — ready to receive the community's reply.");
+            true
         }
         Err(e) => {
             // Installed but not up yet. The listener's own restart policy keeps
@@ -1498,9 +1516,11 @@ async fn await_persona_online(
                 "The persona's mediator session is still connecting — submitting now; the \
                  community's reply will be collected once it is up.",
             );
+            false
         }
-    }
+    };
     let _ = handler.state_tx.send(state.clone());
+    online
 }
 
 /// Persist the config, abstracting over the openpgp-card touch prompt.
