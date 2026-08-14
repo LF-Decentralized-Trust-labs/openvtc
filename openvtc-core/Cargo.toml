@@ -98,10 +98,19 @@ affinidi-messaging-test-mediator = "0.2"
 # `vta-service` is the VTA server crate; it carries the credential-vault
 # lifecycle tasks (receive/query/archive/delete/restore/purge) + the
 # `MockVta::start_provisionable` seams used by the e2e tests. Track this with
-# the vta-sdk major: 0.14 is the line built against vta-sdk 0.21, as 0.13 was
-# against 0.20. An older line pulls an older sdk into the test build and the
-# two disagree about the wire types the e2e tests assert on.
-vta-service = { version = "0.14", default-features = false, features = ["test-support", "rest", "didcomm"] }
+# the vta-sdk major: 0.15 is the line built against vta-sdk 0.23, as 0.14 was
+# against 0.21 and 0.13 against 0.20. An older line pulls an older sdk into the
+# test build and the two disagree about the wire types the e2e tests assert on.
+#
+# Moving to 0.15 is what collapses the *second* vta-sdk this workspace grew when
+# the runtime dependency went to 0.23 (#213): 0.14.37 asks for `vta-sdk ^0.21`,
+# so `cargo tree -i vta-sdk` reported both 0.21.12 and 0.23.0 and the dev-only
+# copy sat one major behind everything it is meant to test against. It is not
+# merely untidy — `vti-common` re-exports `vta_sdk::acl::{ActScope,
+# ApproveScope, ContextDirection}` as its own public API, so a graph holding two
+# sdks has two distinct `ApproveScope` types that do not unify. VTI republished
+# this crate for exactly this reason (see its Cargo.toml note on `publish`).
+vta-service = { version = "0.15", default-features = false, features = ["test-support", "rest", "didcomm"] }
 base64 = { workspace = true }
 ed25519-dalek-bip32 = { workspace = true }
 secrecy = { workspace = true }
