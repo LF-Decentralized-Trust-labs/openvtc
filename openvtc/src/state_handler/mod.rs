@@ -1310,6 +1310,7 @@ impl StateHandler {
                                 &mut config,
                                 admin_vta.as_ref(),
                                 self.profile.as_str(),
+                                Some(&didcomm_service),
                             )
                             .await
                         {
@@ -2805,6 +2806,12 @@ impl StateHandler {
                                     &mut ctx.config,
                                     ctx.admin_vta.as_ref(),
                                     ctx.profile.as_str(),
+                                    // State-A: messaging never started (or just
+                                    // failed to). The loop breaks `Joined` on a
+                                    // first join so `run()` restarts into the
+                                    // full pipeline, and startup registration
+                                    // brings the persona's listener up there.
+                                    None,
                                 )
                                 .await
                             {
@@ -3281,6 +3288,13 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
 /// proceeds under the listener's restart policy, and the `ListenerEvent::Connected`
 /// handler flips the session to `Connected`. Failures are non-fatal (a restart
 /// recovers the session) and surfaced to the activity log.
+///
+/// On the common path the listener is **already installed**: the join sequence
+/// brings the applicant online before it submits, so a reply that arrives during
+/// the submit is not stranded at the mediator (`join_flow::start_persona_listener`).
+/// This is then the step that binds the community's session to it. The install
+/// arm still matters — a State-A join, a listener that could not be opened before
+/// the submit, or a reused persona whose session was dropped all land here.
 /// Tear down a community's live session after it transitioned to an inactive
 /// status (rejected, expired) — the lifecycle twin of [`register_joined_session`]
 /// (R-S-3 / D15). Deregisters the session and, if its persona now serves no live
@@ -3358,16 +3372,20 @@ async fn register_joined_session(
                 if service.listener_state(&lid) == Some(openvtc_core::didcomm::ConnState::Connected)
                 {
                     session_manager.mark_connected(&lid);
+                    // "its persona's", not "the persona's existing": on a fresh
+                    // join this is usually the session the join sequence opened
+                    // moments ago, and calling that pre-existing reads as if the
+                    // operator had joined this community before.
                     state
                         .main_page
-                        .log("New community attached to the persona's existing live session.");
+                        .log("New community bound to its persona's live session.");
                 } else {
                     // The listener exists but isn't Running (Stopped/Failed): leave
                     // the session Connecting (as `register` set it) and let the
                     // restart policy / next launch bring it back — don't re-add it.
-                    state.main_page.log(
-                        "New community attached to the persona's existing session (reconnecting…).",
-                    );
+                    state
+                        .main_page
+                        .log("New community bound to its persona's session (reconnecting…).");
                 }
                 return;
             }
