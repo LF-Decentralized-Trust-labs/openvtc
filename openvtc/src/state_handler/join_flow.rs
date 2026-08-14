@@ -12,6 +12,8 @@
 //! is surfaced into the join log as a [`MessageType::Error`] — the loop never
 //! `?`-bubbles a sequence error in a way that would kill the app.
 
+use std::time::Duration;
+
 use affinidi_tdk::TDK;
 use anyhow::Result;
 use chrono::Utc;
@@ -20,6 +22,7 @@ use openvtc_core::config::{
     account::{CommunityRecord, PersonaId, VtcDid},
     context_path::build_sub_context_id,
 };
+use openvtc_core::didcomm::Messaging;
 use openvtc_core::logs::LogFamily;
 use tokio::sync::{broadcast, mpsc::UnboundedReceiver};
 use tracing::debug;
@@ -73,6 +76,13 @@ impl StateHandler {
     /// Mirrors `setup_wizard`'s loop shape. `admin_vta` is the always-on admin
     /// VTA session (threaded in from the caller); `config` is mutated in place
     /// and persisted by the sequence on success.
+    ///
+    /// `messaging` is the live DIDComm service when there is one, so the
+    /// sequence can bring the applicant persona's mediator socket up *before*
+    /// it submits (see [`start_persona_listener`]). The State-A degraded loop has
+    /// no service and passes `None`; the join still works there, it just cannot
+    /// receive the community's reply until the process restarts into the full
+    /// pipeline — which is what that path does anyway.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn join_flow(
         &self,
@@ -83,6 +93,7 @@ impl StateHandler {
         config: &mut Config,
         admin_vta: Option<&VtaClient>,
         profile: &str,
+        messaging: Option<&Messaging>,
     ) -> Result<JoinExit> {
         // Enter the flow on a fresh EnterDid page.
         state.join.reset();
@@ -193,6 +204,7 @@ impl StateHandler {
                                         config,
                                         admin_vta,
                                         profile,
+                                        messaging,
                                     )
                                     .await
                                 {
@@ -232,6 +244,7 @@ impl StateHandler {
                                         config,
                                         admin_vta,
                                         profile,
+                                        messaging,
                                     )
                                     .await
                                 {
@@ -362,6 +375,7 @@ impl StateHandler {
                                     config,
                                     admin_vta,
                                     profile,
+                                    messaging,
                                 )
                                 .await
                             {
@@ -394,6 +408,7 @@ impl StateHandler {
         config: &mut Config,
         admin_vta: Option<&VtaClient>,
         profile: &str,
+        messaging: Option<&Messaging>,
     ) -> Option<Interrupted> {
         // Move to the progress page and lock input.
         state.join.page = JoinPage::Progress;
@@ -412,6 +427,13 @@ impl StateHandler {
         // readable after the drop. A *reused* persona is never set here, so it is
         // never rolled back.
         let mut minted_persona: Option<PersonaId> = None;
+        // The listener [`start_persona_listener`] installed, for the same reason
+        // and by the same discipline as `minted_persona`: it is state the
+        // sequence created before the join was committed, and a cancel drops
+        // the future at whatever await it parked on, so the only place that can
+        // still tear it down is out here. Left behind, it is a mediator socket
+        // held open for a persona that was just rolled back.
+        let mut started_listener: Option<String> = None;
         // Captured before the mint so a rollback (cancel or failure) can restore
         // it — `mint_persona_into` overwrites `public.friendly_name` with the
         // attempted community's persona name.
@@ -427,10 +449,15 @@ impl StateHandler {
             choice,
             &mut minted_persona,
             &prior_friendly_name,
+            messaging,
+            &mut started_listener,
         );
         let interrupted = race_against_interrupt(sequence, interrupt_rx).await;
 
         if let Some(interrupted) = interrupted {
+            if let (Some(service), Some(listener_id)) = (messaging, started_listener.as_deref()) {
+                service.remove_listener(listener_id).await;
+            }
             if let Some(persona_id) = minted_persona
                 && !config.account.persona_referenced(&persona_id)
             {
@@ -793,6 +820,8 @@ async fn run_join_sequence(
     choice: JoinIdentityChoice,
     minted_persona: &mut Option<PersonaId>,
     prior_friendly_name: &str,
+    messaging: Option<&Messaging>,
+    started_listener: &mut Option<String>,
 ) {
     // Idempotency (R-B-9) was already enforced at submit, before the identity
     // choice — no re-check here.
@@ -1074,6 +1103,33 @@ async fn run_join_sequence(
             return;
         }
     };
+
+    // Open the applicant's mailbox before knocking on the door. The VTC decides
+    // a well-formed invited join in under a second and pushes the VMC + role VEC
+    // straight back, so the reply is in flight while this sequence is still
+    // running — and a mediator only *live-streams* a message whose recipient is
+    // connected at the instant it lands. Bringing the socket up after the
+    // sequence returned (which is what `register_joined_session` did alone) left
+    // a window as long as the operator's own reading speed, and a community
+    // reply that landed inside it was stored and never pushed: the VTC's outbox
+    // read "sent", the mediator held two messages, and the membership sat
+    // Pending with nothing in any log to say why. Connecting first closes the
+    // window at the only end we control.
+    //
+    // Started here, waited for at the submit ([`await_persona_online`]): the
+    // connect is I/O the invitation resolution and VP build below do not depend
+    // on, so overlapping them spends the connect out of work already being done
+    // rather than out of the operator's time.
+    *started_listener = start_persona_listener(
+        handler,
+        state,
+        messaging,
+        config,
+        tdk,
+        persona_id,
+        &applicant_did,
+    )
+    .await;
     // #2: resolve the VIC to present for THIS community. A VIC's issuer is the
     // community's VTC DID, so a presentable invitation must match `vtc_did` and
     // be unexpired — presenting a mismatched or expired one only earns a VTC
@@ -1230,6 +1286,10 @@ async fn run_join_sequence(
     } else {
         openvtc_core::didcomm::MessagingTransport::DidComm
     };
+    // Last gate before the request goes out: the socket started above has had
+    // the invitation + VP work to come up, so this is normally already true.
+    await_persona_online(handler, state, messaging, &applicant_did).await;
+
     let request_id = match openvtc_core::join::submit_join_request(
         atm,
         &persona_profile,
@@ -1246,6 +1306,12 @@ async fn run_join_sequence(
             state
                 .join
                 .fail(format!("Failed to submit join request: {e}"));
+            // Nothing was submitted, so nothing will reply — release the socket
+            // we opened for this attempt before the persona is rolled back, or
+            // it outlives the identity it speaks for.
+            if let (Some(service), Some(listener_id)) = (messaging, started_listener.take()) {
+                service.remove_listener(&listener_id).await;
+            }
             rollback_minted_persona(config, persona_id, state, profile, prior_friendly_name);
             return;
         }
@@ -1286,6 +1352,12 @@ async fn run_join_sequence(
     // the communities panel if nothing arrives within `PENDING_ACK_GRACE_SECS`,
     // so the honest thing to do here is name what is still outstanding and point
     // at where the answer will show up.
+    //
+    // What the pre-submit connect changed is *where* an early reply waits, not
+    // when it is read: the persona's socket is up, so a reply that arrives
+    // during this window is streamed and queued on the DIDComm event channel for
+    // the runtime loop to drain, rather than sitting unstreamed in a mailbox
+    // whose owner never connected.
     state.main_page.sync_from_config(config);
     // Durable, unlike the ceremony commentary in `state.join`, which is
     // transient UI and gone on the next launch. A submitted join is the thing
@@ -1310,6 +1382,125 @@ async fn run_join_sequence(
         "Join request sent over {submit_transport}. Waiting for the community to acknowledge it — \
          it's Pending in your Communities list, which will flag it if no response arrives."
     ));
+}
+
+/// How long the join sequence waits for the applicant persona's mediator socket
+/// before submitting anyway (R1.2: the wait is finite).
+///
+/// The connect is an authenticate + websocket upgrade + live-delivery toggle
+/// against a mediator that is, by definition, reachable — the same mediator this
+/// process is already talking to for the admin session. Ten seconds is generous
+/// for that and short enough that a mediator having a bad minute costs the
+/// operator a pause, not the join: the submit goes out either way.
+const PERSONA_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Install the applicant persona's mediator listener so its socket is coming up
+/// while the rest of the sequence runs. Paired with [`await_persona_online`],
+/// which does the waiting at the submit.
+///
+/// Returns the listener id **only when this call installed one** — that is the
+/// caller's handle for tearing it down if the join then fails or is cancelled.
+/// `None` covers every case where there is nothing to undo: no messaging service
+/// (State-A), a reused persona that is already live, or an install that failed.
+///
+/// Failure is never fatal. A join whose applicant could not connect is still a
+/// valid join: it is submitted, the community still admits, and the reply waits
+/// in the mailbox for the persona's listener to pick up — on the mediator's
+/// redelivery when the socket does come up, or on the next launch. So the
+/// outcome is reported and the sequence continues (R6.4: the operator is told
+/// what happened, not handed one generic hint).
+async fn start_persona_listener(
+    handler: &StateHandler,
+    state: &mut State,
+    messaging: Option<&Messaging>,
+    config: &Config,
+    tdk: &TDK,
+    persona_id: PersonaId,
+    applicant_did: &str,
+) -> Option<String> {
+    // State-A has no service to install into. The degraded loop restarts into
+    // the full pipeline after a first join, and startup registration brings the
+    // persona up there.
+    let service = messaging?;
+    let listener_id = openvtc_core::didcomm::persona_listener_id(applicant_did);
+
+    // A reused persona already serving another community has its socket — the
+    // one identity, one listener rule (D1/D11). Re-adding would error on the
+    // duplicate id, and it is not ours to claim: tearing it down on a cancelled
+    // join would take the other community's session with it.
+    if service.has_listener(&listener_id).await {
+        return None;
+    }
+
+    let Some(spec) =
+        openvtc_core::didcomm::persona_listener_config_for(config, tdk, persona_id).await
+    else {
+        // The mint wrote this identity moments ago, so this is unexpected — but
+        // it costs the join nothing, so log it and carry on.
+        debug!(
+            persona = %applicant_did,
+            "no listener config for the applicant persona; submitting without a live session"
+        );
+        return None;
+    };
+    if let Err(e) = openvtc_core::didcomm::add_listener(service, &spec).await {
+        state.join.info(format!(
+            "Couldn't open this persona's mediator session ({e}) — submitting anyway; the \
+             community's reply will be collected when it connects."
+        ));
+        let _ = handler.state_tx.send(state.clone());
+        return None;
+    }
+
+    state
+        .join
+        .info("Connecting the new persona to its mediator…");
+    let _ = handler.state_tx.send(state.clone());
+    Some(listener_id)
+}
+
+/// Wait — bounded — for the applicant persona's socket to be live, immediately
+/// before the join request goes out.
+///
+/// Split from [`start_persona_listener`] so the connect overlaps the invitation
+/// resolution and VP build rather than adding to them; by the time this runs the
+/// answer is normally already `Connected` and it returns at once. A persona with
+/// no listener at all (State-A, or an install that failed) is nothing to wait
+/// for, and the submit proceeds either way.
+async fn await_persona_online(
+    handler: &StateHandler,
+    state: &mut State,
+    messaging: Option<&Messaging>,
+    applicant_did: &str,
+) {
+    let Some(service) = messaging else {
+        return;
+    };
+    let listener_id = openvtc_core::didcomm::persona_listener_id(applicant_did);
+    if !service.has_listener(&listener_id).await {
+        return;
+    }
+
+    match service
+        .wait_connected(&listener_id, PERSONA_CONNECT_TIMEOUT)
+        .await
+    {
+        Ok(()) => {
+            state
+                .join
+                .info("Persona connected — ready to receive the community's reply.");
+        }
+        Err(e) => {
+            // Installed but not up yet. The listener's own restart policy keeps
+            // working on it, so this is a slow connect, not a dead one.
+            debug!(listener = %listener_id, error = %e, "applicant persona not connected before submit");
+            state.join.info(
+                "The persona's mediator session is still connecting — submitting now; the \
+                 community's reply will be collected once it is up.",
+            );
+        }
+    }
+    let _ = handler.state_tx.send(state.clone());
 }
 
 /// Persist the config, abstracting over the openpgp-card touch prompt.
@@ -1388,14 +1579,17 @@ mod tests {
     use super::race_against_interrupt;
     use super::{
         build_pending_record, is_duplicate_membership, joined_session, load_pasted_vic,
-        validate_join_input,
+        start_persona_listener, validate_join_input,
     };
     use crate::Interrupted;
     use crate::state_handler::dispatch_util::test_config;
     use crate::state_handler::join::JoinState;
     use crate::state_handler::setup_sequence::MessageType;
     use crate::state_handler::state::State;
+    use crate::state_handler::{StartingMode, StateHandler};
+    use affinidi_tdk::{TDK, common::config::TDKConfig};
     use openvtc_core::config::account::{CommunityRecord, CommunityStatus, PersonaId};
+    use openvtc_core::didcomm::Messaging;
     use serde_json::json;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1699,5 +1893,80 @@ mod tests {
         // No row is added: the invitation step has not been reached.
         assert!(state.join.invitation_options.is_empty());
         assert_eq!(first_error(&state), None);
+    }
+
+    // ---- Pre-submit persona connect ----
+    //
+    // What `start_persona_listener` returns is an *ownership claim*: the cancel
+    // and submit-failure paths remove whatever id they are handed, so handing
+    // back one this call did not install would tear down a socket serving
+    // something else. Both no-op paths are covered here; the install-and-connect
+    // path needs a live mediator and is covered by the messaging e2e suite.
+
+    /// Offline TDK — no environment load, no network.
+    async fn test_tdk() -> TDK {
+        TDK::new(
+            TDKConfig::builder()
+                .with_load_environment(false)
+                .build()
+                .expect("TDK config builds"),
+            None,
+        )
+        .await
+        .expect("TDK builds")
+    }
+
+    /// State-A runs with no messaging service at all. Nothing is installed, so
+    /// nothing is claimed — and a cancel has nothing to remove.
+    #[tokio::test]
+    async fn without_a_messaging_service_nothing_is_claimed() {
+        let (handler, _state_rx) = StateHandler::new("test", StartingMode::NotSet);
+        let mut state = State::default();
+        let config = test_config();
+        let tdk = test_tdk().await;
+
+        let claimed = start_persona_listener(
+            &handler,
+            &mut state,
+            None,
+            &config,
+            &tdk,
+            PersonaId::new(),
+            "did:webvh:example.com:applicant",
+        )
+        .await;
+
+        assert!(claimed.is_none(), "no service means no listener to own");
+    }
+
+    /// A persona the config cannot resolve to an identity yields no listener
+    /// config, so no listener is installed and none is claimed. The join carries
+    /// on regardless — an applicant that cannot connect still gets admitted.
+    #[tokio::test]
+    async fn an_unresolvable_persona_is_not_claimed() {
+        let (handler, _state_rx) = StateHandler::new("test", StartingMode::NotSet);
+        let mut state = State::default();
+        // `test_config` has no identities, so any persona id is unresolvable.
+        let config = test_config();
+        let tdk = test_tdk().await;
+        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let service = Messaging::start(event_tx);
+
+        let claimed = start_persona_listener(
+            &handler,
+            &mut state,
+            Some(&service),
+            &config,
+            &tdk,
+            PersonaId::new(),
+            "did:webvh:example.com:applicant",
+        )
+        .await;
+
+        assert!(
+            claimed.is_none(),
+            "an uninstalled listener must never be claimed"
+        );
+        service.shutdown().await;
     }
 }

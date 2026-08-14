@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Connect the applicant persona before submitting the join, not after** — a
+  join over an accepted invitation is auto-admitted in well under a second, and
+  the community pushes the membership credential (VMC) and role credential (VEC)
+  straight back. The persona's mediator socket, though, only came up once the
+  join flow had returned to the main page, so the reply arrived while its
+  recipient had no live stream. A mediator live-streams a message only if the
+  recipient is connected at the instant it lands: both credentials were stored
+  and never pushed, and nothing polled the mailbox afterwards.
+
+  It read as a failed join with clean logs at every hop — the community's outbox
+  said *sent*, the mediator held two messages, and the membership sat `Pending`
+  with no error anywhere. Observed with a ~29 s gap between the credentials
+  landing and the persona's websocket registering, which is simply how long the
+  operator spent on the confirmation screen.
+
+  `run_join_sequence` now installs the persona listener as soon as the applicant
+  identity exists and waits — bounded at 10 s — immediately before
+  `submit_join_request`, so the socket is live for the whole window in which a
+  reply can arrive and the connect is spent on the invitation resolution and VP
+  build rather than on the operator's time. The wait is finite and never fatal
+  (R1.2): a slow or failed connect says which it was (R6.4) and the submit goes
+  out regardless — the community still admits, and the reply is collected when
+  the listener does come up. `register_joined_session` already tolerated a
+  listener that exists, so it now binds to it rather than installing a second.
+
+  Cancel-safety is preserved on the pattern `minted_persona` established: the
+  listener id is returned only when *this* call installed it, and is held outside
+  the interruptible future so a Ctrl-C — or a failed submit — tears it down
+  instead of leaving a socket open for a persona that was just rolled back. A
+  reused persona already serving another community is never claimed, so its
+  session survives a cancelled join.
+
+  Independent of this, the mediator-side half of the same gap is fixed upstream
+  in `affinidi-messaging-mediator` 0.18.16: enabling live delivery now redelivers
+  what is already queued. Deployments want both — this change stops the reply
+  from being stranded, that one stops an already-stranded reply from staying
+  stranded.
+
 ### Changed
 
 - **Refresh every dependency to its latest release** — `cargo update` across
