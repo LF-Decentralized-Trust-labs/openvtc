@@ -6,6 +6,69 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-15
+
+A first-run join could go out and never be answerable. This fixes the state
+machine that caused it, and adds the command that would have found it in one
+step instead of five service logs.
+
+### Fixed
+
+- **A first-run join is answerable again.** Creating a persona and then joining
+  — the ordinary first-run order — left the client in the State-A degraded loop
+  instead of handing off to the runtime. That loop has no inbound arm, so the
+  community's reply was received by the SDK, acknowledged (and therefore deleted
+  at the mediator), and dropped before any handler saw it. The join stayed
+  `Pending` forever with a clean log on both sides, and no restart could recover
+  it: the mail was gone from the mediator, and `join-requests/status` polling is
+  gated on a request id that only arrives in a reply that was never processed.
+
+  The hand-off was gated on the join having minted the account's *first*
+  identity. It never was: the degraded loop mints personas too
+  (`CreatePersonaSubmit`), and `Config::active_identity()` reports `Some` for any
+  persona at all, so the guard was false exactly when a persona had been created
+  first. It is now gated on the join alone.
+
+- **A live listener can no longer outlive its consumer.** The degraded loop
+  re-checks `list_listeners()` each iteration and hands off whenever it holds
+  one, whatever opened it. A socket this loop owns is a mailbox nobody reads, so
+  the backstop is unconditional rather than specific to the join path — the
+  failure mode it prevents is silent, permanent message loss that looks like a
+  community which never answered.
+
+### Added
+
+- **`openvtc health [--vtc <did>] [--json]`** — resolve the messaging chain and
+  print the map. For every DID involved (each persona, the VTA, every mediator,
+  each VTC) it resolves the document, prints the `service` array verbatim —
+  including entries of types this build does not recognise, since a party
+  publishing one is indistinguishable from a party publishing nothing when read
+  through the capability matcher alone — and probes any transport URLs. It then
+  runs the same TSP > DIDComm > REST negotiation a real send performs, so the
+  reported transport is the one that would actually be used, and names every
+  party behind each mediator so a split-mediator topology is visible rather than
+  assumed away.
+
+  Read-only, and deliberately usable while things are broken: it takes no
+  process lock (so it runs against a profile a stuck TUI is holding), and account
+  details are best-effort (`--vtc` alone works with no account, and a config that
+  will not decrypt is reported as a finding rather than an abort). Exits non-zero
+  if any DID fails to resolve or any pair shares no transport.
+
+### Changed
+
+- **`trust-tasks-rs` 0.4 → 0.6, `trust-tasks-capability-client` 0.3 → 0.5,
+  floor `vta-sdk` at 0.23.3.** This is a follow, not a lead: vta-sdk 0.23.3
+  declares `trust-tasks-rs ^0.6` where 0.23.0 declared `^0.4`, so holding 0.4
+  stopped matching the stack and started splitting the type — a dependency
+  refresh alone put 0.4.1 and 0.6.5 in the same binary, which is precisely what
+  the pin exists to prevent. `cargo tree -d` showing two `trust-tasks-rs` rows
+  is the check that it has drifted again.
+
+- Dependency refresh: `affinidi-messaging-sdk` 0.19.5 → 0.19.7, `vta-sdk` 0.23.0
+  → 0.23.3, `vta-service` 0.15.0 → 0.15.3, `vti-common` 0.11.39 → 0.11.40, plus
+  transitive updates.
+
 ## [0.3.0] - 2026-08-15
 
 The first tagged release since 0.2.0 (21 May). 0.2.1 was version-bumped and

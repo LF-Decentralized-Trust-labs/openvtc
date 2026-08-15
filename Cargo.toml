@@ -7,7 +7,7 @@ resolver = "3"
 
 [workspace.package]
 description = "Open Verifiable Trust Community (OpenVTC) - First Person Protocol"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 publish = false
 authors = ["Glenn Gore <glenn@affinidi.com>"]
@@ -127,16 +127,24 @@ tokio-stream = "0.1"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Pinned to the line the VTA/VTC themselves build against, NOT the newest
-# release. `TrustTask` crosses the vta-sdk boundary in both directions — we
-# hand one to `submit`, and `capabilities` classifies the ones a VTC
-# advertises — so our copy has to be the same crate version vta-sdk resolves,
-# or the two are distinct types that do not unify. vta-sdk 0.21.10 declares
-# `trust-tasks-rs ^0.4` and verifiable-trust-infrastructure moved the whole
-# workspace to 0.4 in VTI #911. 0.5/0.6 are published but nothing in the
-# deployed stack speaks them yet; taking them here would desync us.
-trust-tasks-rs = "0.4"
-trust-tasks-capability-client = "0.3"
+# Pinned to the line the VTA/VTC themselves build against, NOT independently
+# chosen. `TrustTask` crosses the vta-sdk boundary in both directions — we hand
+# one to `submit`, and `capabilities` classifies the ones a VTC advertises — so
+# our copy has to be the same crate version vta-sdk resolves, or the two are
+# distinct types that do not unify.
+#
+# Moved 0.4 → 0.6 when vta-sdk did. This is a *follow*, not a lead: vta-sdk
+# 0.23.3 declares `trust-tasks-rs ^0.6` (0.23.0 was still on ^0.4), so holding
+# 0.4 here stopped matching the stack and started splitting the type — a
+# `cargo update` alone put 0.4.1 and 0.6.5 in the same binary, which is the
+# exact failure the paragraph above exists to prevent. `cargo tree -d` is the
+# check: two `trust-tasks-rs` rows means this pin has drifted from vta-sdk's
+# again, whichever direction it drifted.
+#
+# `trust-tasks-capability-client` moves with it (0.3 → 0.5) for the same reason
+# — it re-exports the same `TrustTask`.
+trust-tasks-rs = "0.6"
+trust-tasks-capability-client = "0.5"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
@@ -151,6 +159,10 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # workspace against the unreleased sdk before the bump, where `add_tsp_service`
 # was the sole compile error and every test still passed.
 #
+# Floor is 0.23.3 within the line: 0.23.0 declares `trust-tasks-rs ^0.4` and
+# 0.23.3 declares `^0.6`, so a checkout that resolved back to 0.23.0 while this
+# workspace is on 0.6 would put two `trust-tasks-rs` in the binary again.
+#
 # The old 0.21.x floor notes are gone with the line. Each recorded a defect this
 # repo had no lever over — 0.21.10's `trust-tasks-rs` `^0.4` requirement (type
 # unification across the sdk boundary), 0.21.11's `provision/integration/0.2`
@@ -158,7 +170,7 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # members as `null` and killing key creation over DIDComm and TSP (VTI #919).
 # All are below this floor by construction; they are kept in git history rather
 # than as a wall of satisfied constraints.
-vta-sdk = { version = "0.23", features = [
+vta-sdk = { version = "0.23.3", features = [
   "session",
   "client",
   "didcomm",
