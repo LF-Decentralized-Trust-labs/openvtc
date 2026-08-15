@@ -2763,10 +2763,25 @@ impl StateHandler {
     /// ordering note in `run`. The early load-failure callers pass `None`; they
     /// cannot join at all.
     ///
-    /// Returns [`DegradedOutcome::Joined`] when an in-session join mints the
-    /// account's first persona (State-A → member). The caller then installs the
-    /// remaining listeners without a restart (hot-start). All other exits
-    /// return [`DegradedOutcome::Exit`] after closing the admin session.
+    /// Returns [`DegradedOutcome::Joined`] when an in-session join succeeds
+    /// (State-A → member). The caller then installs the remaining listeners
+    /// without a restart (hot-start). All other exits return
+    /// [`DegradedOutcome::Exit`] after closing the admin session.
+    ///
+    /// # Invariant: this loop must never own a live listener across an iteration
+    ///
+    /// Its `select!` has exactly two arms — `action_rx` and `interrupt_rx`. There
+    /// is **no inbound arm**: nothing here drains the DIDComm event channel that
+    /// `dispatch_inbound` feeds. A listener opened here is therefore a socket
+    /// whose mail the SDK acknowledges (and the mediator then deletes) while no
+    /// consumer runs — inbound survives only as far as the channel's 256-slot
+    /// buffer, and only until the runtime loop drains it.
+    ///
+    /// So every path that opens a listener must exit via
+    /// [`DegradedOutcome::Joined`] in the same iteration. The `StartJoin` arm
+    /// enforces this for itself *and* re-checks `list_listeners()` as a backstop,
+    /// because the cost of getting it wrong is silent, permanent message loss
+    /// that looks like a community that never answered.
     async fn run_degraded_loop(
         &self,
         action_rx: &mut UnboundedReceiver<Action>,
@@ -2818,15 +2833,10 @@ impl StateHandler {
                         }
                     }
                     Action::StartJoin => {
-                        // Set when the join minted our first persona: the loop
-                        // then breaks `Joined` so `run()` can start messaging.
-                        let mut joined_with_identity = false;
+                        // Set when a join succeeded: the loop then breaks `Joined`
+                        // so `run()` can start messaging.
+                        let mut joined_a_community = false;
                         if let Some(ctx) = join_ctx.as_mut() {
-                            // A State-A account has no identity yet; a successful
-                            // join flips this None→Some. (An account that already
-                            // had one — the messaging-startup-failure path — never
-                            // transitions here.)
-                            let had_identity = ctx.config.active_identity().is_some();
                             match self
                                 .join_flow(
                                     action_rx,
@@ -2846,17 +2856,30 @@ impl StateHandler {
                                 )
                                 .await
                             {
-                                // The joined session is ignored here: a first join
-                                // from State A flips `joined_with_identity`, breaking
+                                // The joined session is ignored here: a join from
+                                // State A flips `joined_a_community`, breaking
                                 // `Joined` so `run()` restarts into the full pipeline,
                                 // whose startup registration (`IdentityRegistry`)
                                 // brings the new session up (R-B-5). Live in-loop
                                 // registration is only needed in the runtime loop.
-                                Ok(join_flow::JoinExit::Returned(_)) => {
+                                Ok(join_flow::JoinExit::Returned(joined)) => {
                                     // Back on the main page; resume the degraded loop.
                                     state.active_page = state::ActivePage::Main;
-                                    joined_with_identity =
-                                        !had_identity && ctx.config.active_identity().is_some();
+                                    // Gated on the *join*, never on whether it minted
+                                    // the account's first identity. This used to read
+                                    // `!had_identity && …`, on the assumption that the
+                                    // only way to already hold an identity here was the
+                                    // messaging-startup-failure path. It is not: the
+                                    // `CreatePersonaSubmit` arm below mints one in this
+                                    // very loop, and `active_identity()` falls back to
+                                    // the first persona in the map — so the ordinary
+                                    // first-run order (create persona, *then* join)
+                                    // left `had_identity` true, skipped the hand-off,
+                                    // and stranded the account in a loop that has no
+                                    // inbound arm. The community's reply was ACKed by
+                                    // the SDK, deleted at the mediator, and dropped.
+                                    joined_a_community =
+                                        joined.is_some() && ctx.config.active_identity().is_some();
                                 }
                                 Ok(join_flow::JoinExit::Exit(interrupted)) => {
                                     if let Err(e) = terminator.terminate(interrupted.clone()) {
@@ -2879,15 +2902,29 @@ impl StateHandler {
                         // Hot-start: the borrow on `join_ctx` has ended, so take
                         // the context and hand it back to `run()`, which brings up
                         // the new persona's DIDComm listener without a restart.
-                        if joined_with_identity {
-                            state
-                                .main_page
-                                .log("Joined — starting secure messaging…");
+                        //
+                        // `holds_listener` is the backstop for the same class of
+                        // bug the condition above fixes: this loop has no inbound
+                        // arm, so *any* live listener it owns is a mailbox nobody
+                        // reads. Whatever opened one — this join, or some future
+                        // arm — the only safe move is to hand off to the runtime
+                        // loop that drains the event channel. See the invariant on
+                        // `run_degraded_loop`.
+                        let holds_listener = match messaging {
+                            Some(m) => !m.list_listeners().await.is_empty(),
+                            None => false,
+                        };
+                        if must_hand_off(joined_a_community, holds_listener, join_ctx.is_some()) {
+                            state.main_page.log(if joined_a_community {
+                                "Joined — starting secure messaging…"
+                            } else {
+                                "Starting secure messaging…"
+                            });
                             let _ = self.state_tx.send(state.clone());
                             break DegradedOutcome::Joined(Box::new(
                                 join_ctx
                                     .take()
-                                    .expect("join_ctx present when join succeeded"),
+                                    .expect("join_ctx present, just checked is_some"),
                             ));
                         }
                     }
@@ -3366,6 +3403,26 @@ async fn deregister_inactive_community(
     }
 }
 
+/// Whether a degraded-loop iteration must hand its runtime context back to
+/// `run()` — see the invariant on [`StateHandler::run_degraded_loop`].
+///
+/// Two independent reasons, either sufficient:
+///
+/// - **`joined_a_community`** — a join succeeded, so a reply is coming to a loop
+///   that cannot receive it. Deliberately *not* "…and this was the account's
+///   first identity": that extra clause is what broke the ordinary first-run
+///   order (create persona → join), because `Config::active_identity()` reports
+///   `Some` for any persona at all, including one minted moments earlier by this
+///   same loop's `CreatePersonaSubmit` arm.
+/// - **`holds_listener`** — the messaging runtime owns a socket whatever opened
+///   it. A listener with no consumer loses mail permanently, so this is a
+///   hand-off condition in its own right.
+///
+/// `has_ctx` gates both: there is nothing to hand back without a runtime context.
+fn must_hand_off(joined_a_community: bool, holds_listener: bool, has_ctx: bool) -> bool {
+    (joined_a_community || holds_listener) && has_ctx
+}
+
 async fn register_joined_session(
     session_manager: &mut session_manager::SessionManager,
     service: &openvtc_core::didcomm::Messaging,
@@ -3482,6 +3539,51 @@ fn build_trust_pong(
 mod tests {
     use super::*;
     use crate::state_handler::main_page::menu::MainMenu;
+
+    /// The regression this function exists for.
+    ///
+    /// The degraded loop has no inbound arm, so a join made there must hand off
+    /// to the runtime loop or the community's reply is ACKed by the SDK, deleted
+    /// at the mediator, and dropped — leaving the join `Pending` forever with a
+    /// clean log on both sides.
+    ///
+    /// The old condition also required the join to have minted the account's
+    /// *first* identity. Creating a persona and then joining — the ordinary
+    /// first-run order, and both actions the degraded loop serves — made that
+    /// false and silently disabled the hand-off. Only the join matters.
+    #[test]
+    fn a_join_hands_off_even_when_a_persona_already_existed() {
+        assert!(
+            must_hand_off(true, false, true),
+            "a successful join must hand off; whether a persona already existed \
+             (CreatePersonaSubmit ran first) is irrelevant — requiring it to be \
+             the first identity is the bug this test pins"
+        );
+    }
+
+    /// The backstop: a live listener is a mailbox with no reader, whatever
+    /// opened it.
+    #[test]
+    fn a_live_listener_alone_forces_the_hand_off() {
+        assert!(
+            must_hand_off(false, true, true),
+            "a listener this loop cannot drain must force the hand-off even with \
+             no join, so a future arm that opens one cannot silently lose mail"
+        );
+    }
+
+    /// Nothing open, nothing joined: stay in the loop.
+    #[test]
+    fn an_idle_iteration_stays_in_the_degraded_loop() {
+        assert!(!must_hand_off(false, false, true));
+    }
+
+    /// No runtime context, nothing to hand back — must not break out (the
+    /// `join_ctx.take().expect(..)` below would panic).
+    #[test]
+    fn no_context_never_hands_off() {
+        assert!(!must_hand_off(true, true, false));
+    }
 
     /// Lifecycle log lines name the listener by its verified agent name. These
     /// showed raw `did:webvh:` strings because the logger task is detached and
