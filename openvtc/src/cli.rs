@@ -36,6 +36,43 @@ pub fn cli() -> Command {
                 ),
         ])
         .subcommand(Command::new("setup").about("Initial configuration of the openvtc tool"))
+        .subcommand(
+            Command::new("health")
+                .about(
+                    "Resolve the messaging chain (personas, VTA, mediators, VTCs) and \
+                     report what each DID advertises, which transport each pair would \
+                     negotiate, and whether the hosts answer",
+                )
+                .long_about(
+                    "Map the messaging path between this client and a community.\n\n\
+                     For every DID involved — each persona, the VTA, every mediator, and \
+                     each VTC — this resolves the DID document, prints its service \
+                     definitions verbatim, and probes any transport URLs. It then runs \
+                     the same TSP > DIDComm > REST negotiation a real send performs, so \
+                     the reported transport is the one that would actually be used.\n\n\
+                     Parties may sit behind different mediators; that is supported and \
+                     is reported rather than assumed away.\n\n\
+                     Read-only: nothing is sent, so it is safe to run against a live \
+                     deployment while a join is stuck. Exits non-zero if any DID fails \
+                     to resolve or any pair shares no transport.",
+                )
+                .args([
+                    Arg::new("vtc")
+                        .long("vtc")
+                        .value_name("DID")
+                        .action(clap::ArgAction::Append)
+                        .help(
+                            "A community VTC DID to include. Repeatable. Communities \
+                             already in the account are included automatically; use this \
+                             to check one before joining, or when the account cannot be \
+                             loaded.",
+                        ),
+                    Arg::new("json")
+                        .long("json")
+                        .action(clap::ArgAction::SetTrue)
+                        .help("Emit the report as JSON instead of a rendered map"),
+                ]),
+        )
 }
 
 #[cfg(feature = "openpgp-card")]
