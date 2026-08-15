@@ -220,10 +220,14 @@ impl HealthReport {
 
 /// A step the report is taking, emitted as it starts and as it finishes.
 ///
+// Not an intra-doc link: `STEP_TIMEOUT` is private, and a public item linking
+// to it fails `rustdoc -D warnings` — the same trap `config::peer_tsp_mediator`
+// carries a note for.
 /// The report is mostly waiting on the network — a `did:webvh` resolution is an
-/// HTTPS fetch and each probe is bounded at [`STEP_TIMEOUT`], so a chain with a
-/// few mediators and one dead host can sit silent for the better part of a
-/// minute. Silence during that is indistinguishable from a hang, and the step
+/// HTTPS fetch and each probe is bounded by the module's per-step timeout, so a
+/// chain with a few mediators and one dead host can sit silent for the better
+/// part of a minute. Silence during that is indistinguishable from a hang, and
+/// the step
 /// that is slow is itself a finding: a resolution that takes nine seconds and
 /// then succeeds says something a report listing only the outcome does not.
 ///
