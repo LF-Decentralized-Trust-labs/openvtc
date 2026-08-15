@@ -8,6 +8,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Collect the messages the mediator is holding, instead of waiting to be
+  pushed** — every inbound message OpenVTC has ever received arrived by live
+  delivery. A mediator live-streams a message only to a recipient connected at
+  the instant it lands; everything else is stored, and a stored inbox is
+  redelivered **only** when a new websocket *displaces* an existing one for the
+  same DID (`websocket_streaming.rs`, `if replacing`). Enabling live delivery
+  drains nothing. So a listener that connects for the first time — the applicant
+  persona during a join, a community's session after a restart, any identity
+  whose socket was down when a reply arrived — was never told what was already
+  waiting for it, and nothing in this client ever asked.
+
+  That is the join that sits `Pending` while the community's outbox reports
+  `Sent`, and it is why relaunching the app appeared to fix it: the new process's
+  socket displaced the old one, and *that* is what made the mediator redelivery
+  fire. The recovery was a side effect of how the previous process happened to
+  exit.
+
+  `Messaging::pickup_stored` now collects a listener's stored mail over
+  message-pickup 3.0 and hands each message to the state handler on the same
+  channel a live frame uses, and `pickup_on_connect` runs it on every connect —
+  first connect and reconnect alike, since a reconnect is exactly when something
+  may have landed with nobody attached. Messages are acknowledged **after**
+  handoff, never before, the same discipline the delivery layer's own dispatcher
+  follows; a frame that could not be unsealed, mapped, or queued is deliberately
+  *not* acked, so nothing is deleted unread. Bounded at 200 messages per connect
+  (R1.4), with the remainder logged rather than silently dropped.
+
+  Classification is shared with the live dispatcher rather than copied
+  (`classify_inbound`), so the two paths cannot drift into admitting different
+  message types — and the authcrypt sender binding is applied to a collected
+  message too, because these carry membership decisions and credentials and must
+  not be the one path where a spoofed `from` is believed.
+
+  Delivery is at-least-once by design (a message may also arrive live); the
+  runtime loop's `SeenMessages` is what makes that harmless.
+
+- **Start messaging before the first join, not after it** — a State-A account
+  (no persona yet) ran its join with no messaging runtime at all, so the
+  applicant had no socket for the entire ceremony. A community auto-admitting an
+  invited join answers in under a second, so its reply was stored rather than
+  streamed — and since the hot-start's listener was a *first* connect, the
+  mediator never redelivered it either. The first join a new operator makes was
+  the one join with no live recipient.
+
+  The runtime now comes up **before** the State-A branch and empty
+  (`start_empty_service`; `Messaging::start` runs its dispatcher before the first
+  transport exists, so this is a supported state, not a stub), and the degraded
+  loop hands it to `join_flow`. A State-A join therefore connects its applicant
+  before submitting, exactly as the runtime-loop join already does.
+  `install_listeners` then adds whatever is missing, skipping any the join
+  already brought up — one websocket per DID.
+
+  The durable join record also now states whether the applicant was connected at
+  submit. A join sent from an unconnected persona is still valid, but it is the
+  one that takes the collect-on-connect path, and an operator reading the log
+  later could not otherwise tell that from a community that never answered.
+
 - **Connect the applicant persona before submitting the join, not after** — a
   join over an accepted invitation is auto-admitted in well under a second, and
   the community pushes the membership credential (VMC) and role credential (VEC)

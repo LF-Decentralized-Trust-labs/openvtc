@@ -189,6 +189,133 @@ async fn an_unrelated_message_type_reaches_no_handler() {
     );
 }
 
+/// A message that arrived while its recipient had **no listener at all** is
+/// collected when one comes up.
+///
+/// This is the join that sits `Pending` forever, reduced to its essentials. A
+/// mediator live-streams only to a recipient connected at the instant the
+/// message lands; everything else is stored, and a stored inbox is redelivered
+/// *only* to a socket that displaces an existing one for the same DID. Bob here
+/// has never connected, so there is nothing to displace: without
+/// `pickup_stored`, this message is unreachable until some future process
+/// happens to replace a socket, which is why relaunching the app "fixed" it.
+///
+/// Deliberately sends **before** bob has any transport — not merely before he is
+/// connected — so no amount of live-stream timing luck can make it pass.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: spawns a real mediator (~1s)"]
+async fn a_message_stored_before_the_listener_existed_is_collected_on_connect() {
+    init_test_tracing();
+    let mediator = MockMediator::start().await.expect("mediator start");
+    let alice = mediator.profile("alice").expect("alice");
+    let bob = mediator.profile("bob").expect("bob");
+    let alice_did = alice.did.clone();
+    let bob_did = bob.did.clone();
+
+    // Sender only. Bob has no service, no transport, no socket.
+    let (alice_tx, _alice_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (alice_service, alice_listener) = start_production_service(alice, &bob_did, alice_tx).await;
+    alice_service
+        .wait_connected(&alice_listener, Duration::from_secs(20))
+        .await
+        .expect("alice listener connects");
+
+    let message = Message::build(
+        Uuid::new_v4().to_string(),
+        OPENVTC_TYPE.to_string(),
+        serde_json::json!({ "hello": "stored" }),
+    )
+    .from(alice_did.clone())
+    .to(bob_did.clone())
+    .finalize();
+
+    send_message_via(&alice_service, &message, &alice_listener, &bob_did)
+        .await
+        .expect("production send delivers to the mediator");
+
+    // Let the mediator finish storing it with no recipient attached. Without
+    // this the send and the connect are milliseconds apart, and the frame is
+    // simply live-delivered to a socket that came up while it was still in
+    // flight — which passes whether or not anything collects stored mail.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Now bring bob up. The connect transition is what triggers the pickup.
+    let (bob_tx, mut bob_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (bob_service, bob_listener) = start_production_service(bob, &alice_did, bob_tx).await;
+    bob_service
+        .wait_connected(&bob_listener, Duration::from_secs(20))
+        .await
+        .expect("bob listener connects");
+
+    let event = tokio::time::timeout(Duration::from_secs(20), bob_rx.recv())
+        .await
+        .expect("bob collects the stored message within 20s")
+        .expect("event channel still open");
+
+    match event {
+        DIDCommEvent::InboundMessage {
+            message,
+            from,
+            transport,
+        } => {
+            assert_eq!(message.typ, OPENVTC_TYPE);
+            assert_eq!(
+                transport,
+                openvtc_core::didcomm::MessagingTransport::DidComm,
+                "a collected DIDComm message still reports DIDComm"
+            );
+            // The anti-spoof binding survives the pickup path: `from` is the DID
+            // that authcrypted the envelope, not the plaintext header. A
+            // collected message carries membership decisions and credentials, so
+            // this must not be the one path where that check is skipped.
+            assert_eq!(
+                from.as_deref(),
+                Some(alice_did.as_str()),
+                "the cryptographically-bound sender survives collection"
+            );
+            assert_eq!(
+                message.body.get("hello").and_then(|v| v.as_str()),
+                Some("stored"),
+            );
+        }
+        other => panic!("expected InboundMessage, got {other:?}"),
+    }
+
+    // A collected message is acknowledged, so it is gone from the mailbox. Were
+    // it not, every connect would re-deliver it — and the *next* connect is a
+    // replacement, which is exactly when the mediator redelivers the whole
+    // undelivered inbox. Replacing bob's transport and hearing nothing is the
+    // assertion that the ack landed.
+    //
+    // The ack is issued after the handoff this test just observed, so tearing
+    // the transport down the instant the event arrives would cancel the ack
+    // in flight and assert a race rather than the behaviour. Give the round trip
+    // room against an in-process mediator.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    bob_service.remove_listener(&bob_listener).await;
+    let (bob_tx2, mut bob_rx2) = mpsc::channel::<DIDCommEvent>(16);
+    let (bob_service2, bob_listener2) =
+        start_production_service(mediator.profile("bob").expect("bob"), &alice_did, bob_tx2).await;
+    bob_service2
+        .wait_connected(&bob_listener2, Duration::from_secs(20))
+        .await
+        .expect("bob reconnects");
+
+    // Anything the *mediator* says about the swap is expected and irrelevant —
+    // replacing a socket earns a `w.websocket.duplicate-channel` problem-report
+    // addressed to the terminated one. The claim is only that the collected
+    // message itself does not come back.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while let Ok(Some(event)) = tokio::time::timeout_at(deadline, bob_rx2.recv()).await {
+        if let DIDCommEvent::InboundMessage { message, .. } = event {
+            assert_ne!(
+                message.typ, OPENVTC_TYPE,
+                "an already-collected message must not be delivered a second time"
+            );
+        }
+    }
+}
+
 /// The supervisor must leave a **healthy** transport alone.
 ///
 /// A rebuild tears the websocket down and builds a new one, so a supervisor that
