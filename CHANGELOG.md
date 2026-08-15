@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-15
+
+The first tagged release since 0.2.0 (21 May). 0.2.1 was version-bumped and
+written up but never tagged or published, so everything under it ships here too.
+
+The theme is the join ceremony's asynchronous half: a community's reply now
+reaches the applicant whether or not it happened to be connected when the reply
+was sent, and a join left unresolved is reconciled by asking rather than by
+waiting.
+
 ### Added
 
 - **Ask a community about a join it has not answered** — every way a `Pending`
