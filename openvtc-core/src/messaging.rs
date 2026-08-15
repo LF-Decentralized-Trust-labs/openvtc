@@ -20,7 +20,7 @@ use vta_sdk::protocols::join_requests::{
 };
 
 use crate::config::Config;
-use crate::config::account::{Account, CommunityStatus, PersonaId};
+use crate::config::account::{Account, PersonaId};
 use crate::relationships::{RelationshipState, Relationships};
 use crate::tasks::{TaskType, Tasks};
 
@@ -201,9 +201,9 @@ pub fn handle_join_submit_receipt(
         );
         return false;
     };
-    record.status = CommunityStatus::Pending {
-        request_id: body.request_id,
-    };
+    // Adopt the VTC's id in place of our placeholder — and record that it *is*
+    // the VTC's, which is what makes this join askable-about later.
+    record.confirm_request_id(body.request_id);
     // The receipt is the VTC's acknowledgement that the submit arrived.
     record.mark_acknowledged(chrono::Utc::now());
     info!(
@@ -404,7 +404,15 @@ pub fn handle_join_verdict(
         VerdictEffect::Refer => {
             // The VTC responded — submit acknowledged — but the decision is
             // deferred to human review; stays Pending.
-            let changed = record.mark_acknowledged(chrono::Utc::now());
+            //
+            // The verdict envelope carries the VTC's own `requestId`, which this
+            // used to read past: correlation is by `thid`, so nothing needed it.
+            // A referred join is precisely the one that then sits Pending for as
+            // long as a human takes, and without adopting the id here there is
+            // no handle to ask about it with — the answer arrives only if the
+            // VTC volunteers it.
+            let changed = record.confirm_request_id(body.request_id)
+                | record.mark_acknowledged(chrono::Utc::now());
             info!(
                 vtc = %from_did,
                 queue = body.verdict.with.queue.as_deref().unwrap_or(""),
@@ -417,8 +425,10 @@ pub fn handle_join_verdict(
         }
         VerdictEffect::RequestMore => {
             // The VTC responded — submit acknowledged — but needs more evidence;
-            // stays Pending.
-            let changed = record.mark_acknowledged(chrono::Utc::now());
+            // stays Pending. Adopt its request id for the same reason `Refer`
+            // does: this join outlives the exchange that produced it.
+            let changed = record.confirm_request_id(body.request_id)
+                | record.mark_acknowledged(chrono::Utc::now());
             info!(
                 vtc = %from_did,
                 needs = ?body.verdict.with.needs,
@@ -858,6 +868,10 @@ pub fn create_finalize_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Asserted on throughout, but no longer named by the handlers themselves:
+    // they go through `CommunityRecord`'s transitions rather than assigning a
+    // status directly.
+    use crate::config::account::CommunityStatus;
 
     fn msg(id: &str, created: Option<u64>, expires: Option<u64>) -> Message {
         let mut m =
@@ -1271,6 +1285,78 @@ mod tests {
         let rec = only(&acct, vtc);
         assert!(matches!(rec.status, CommunityStatus::Pending { .. }));
         assert!(rec.receipt_at.is_some(), "the VTC responded — acknowledged");
+    }
+
+    /// A verdict that leaves the join `Pending` is the one case where the
+    /// community's own request id matters later: the join outlives the exchange
+    /// that produced it, and the id is the only handle
+    /// `join-requests/status` can name it by. Correlation here is by `thid`, so
+    /// nothing *needed* the id — which is exactly why it used to be read past.
+    #[test]
+    fn a_verdict_that_stays_pending_adopts_the_communitys_request_id() {
+        for effect in ["refer", "request_more"] {
+            let vtc = "did:webvh:example:vtc";
+            let placeholder = Uuid::new_v4();
+            let vtc_request_id = Uuid::new_v4();
+            let mut acct = pending_account(vtc, placeholder);
+            assert!(
+                !only(&acct, vtc).is_pollable_pending(),
+                "{effect}: before any reply we hold our own id, which the VTC has never seen"
+            );
+
+            let message = Message::build(
+                Uuid::new_v4().to_string(),
+                vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RESPONSE_TYPE.to_string(),
+                serde_json::json!({
+                    "requestId": vtc_request_id,
+                    "verdict": { "effect": effect, "with": {} },
+                }),
+            )
+            .from(vtc.to_string())
+            .thid(placeholder.to_string())
+            .finalize();
+
+            let out = handle_join_verdict(&mut acct, &message, vtc);
+            assert!(
+                out.changed,
+                "{effect}: adopting the id is a change to persist"
+            );
+
+            let rec = only(&acct, vtc);
+            match &rec.status {
+                CommunityStatus::Pending { request_id } => assert_eq!(
+                    *request_id, vtc_request_id,
+                    "{effect}: the record now names the join the way the community does"
+                ),
+                other => panic!("{effect}: expected still-Pending, got {other:?}"),
+            }
+            assert!(
+                rec.is_pollable_pending(),
+                "{effect}: with the community's id, this join can now be asked about"
+            );
+        }
+    }
+
+    /// The submit-receipt path already adopted the id; what is new is recording
+    /// that it *is* the community's, which is what the poll gates on.
+    #[test]
+    fn a_submit_receipt_makes_the_join_pollable() {
+        let vtc = "did:webvh:example:vtc";
+        let placeholder = Uuid::new_v4();
+        let real = Uuid::new_v4();
+        let mut acct = pending_account(vtc, placeholder);
+
+        let message = Message::build(
+            Uuid::new_v4().to_string(),
+            vta_sdk::protocols::join_requests::JOIN_REQUEST_SUBMIT_RECEIPT_TYPE.to_string(),
+            serde_json::json!({ "requestId": real, "status": "pending" }),
+        )
+        .from(vtc.to_string())
+        .thid(placeholder.to_string())
+        .finalize();
+
+        assert!(handle_join_submit_receipt(&mut acct, &message, vtc));
+        assert!(only(&acct, vtc).is_pollable_pending());
     }
 
     #[test]

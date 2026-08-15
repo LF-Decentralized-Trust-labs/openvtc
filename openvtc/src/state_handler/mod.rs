@@ -151,6 +151,7 @@ mod dispatch_util;
 mod inbox_actions;
 pub mod join;
 mod join_flow;
+mod join_status_poll;
 pub mod main_page;
 mod message_dispatch;
 mod relationship_actions;
@@ -768,6 +769,14 @@ impl StateHandler {
         // `agent_name_refresh_targets` finds uncached/stale DIDs, and the resolver
         // caches keep repeat sweeps quiet.
         let mut agent_name_tick = tokio::time::interval(std::time::Duration::from_secs(300));
+        // Reconcile Pending joins with their communities. The first tick fires
+        // immediately, which is the point: a join still Pending at launch is the
+        // one whose answer may have been lost, and asking is how we find out
+        // rather than waiting to be told again. Per-record backoff lives in the
+        // pacer, so a minute-by-minute tick does not mean a minute-by-minute
+        // poll; ticks over an account with no Pending join do no work at all.
+        let mut join_status_tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut join_status_pacer = join_status_poll::PollPacer::default();
 
         let result = loop {
             tokio::select! {
@@ -1917,6 +1926,29 @@ impl StateHandler {
                             if expired.len() == 1 { "" } else { "s" },
                         ));
                         let _ = self.state_tx.send(state.clone());
+                    }
+                },
+                _ = join_status_tick.tick() => {
+                    // Ask each community about a join it has not resolved.
+                    // Only joins recorded against the *community's* request id
+                    // are askable — see `join_status_poll` — so a join that
+                    // never got any reply is not covered here; that one is
+                    // recovered by collecting the mail its reply is sitting in.
+                    //
+                    // Spawned detached rather than through `background_dispatch`:
+                    // there is no outcome to apply on the loop thread (the reply
+                    // arrives on the persona's listener and goes through inbound
+                    // dispatch like any other), and the pacer already prevents
+                    // pile-up by marking a record polled before the send.
+                    let candidates = config.account.pollable_pending();
+                    if !candidates.is_empty()
+                        && let Some(atm) = tdk.atm.clone()
+                    {
+                        let due = join_status_pacer.due(candidates, std::time::Instant::now());
+                        let polls = join_status_poll::build(&config, due);
+                        if !polls.is_empty() {
+                            tokio::spawn(join_status_poll::send_all(atm, polls));
+                        }
                     }
                 },
                 _ = agent_name_tick.tick() => {

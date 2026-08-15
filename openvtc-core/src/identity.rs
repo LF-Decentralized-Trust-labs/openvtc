@@ -188,6 +188,7 @@ mod tests {
             display_name: None,
             sub_context_id: format!("openvtc/{vtc}"),
             submit_transport: None,
+            request_id_confirmed: false,
             persona_ref,
             status,
             favourite: false,

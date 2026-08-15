@@ -28,7 +28,8 @@ use serde_json::Value;
 use trust_tasks_rs::TrustTask;
 use uuid::Uuid;
 use vta_sdk::protocols::join_requests::{
-    JOIN_REQUEST_SUBMIT_TYPE, JoinRequestSubmitBody, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
+    JOIN_REQUEST_STATUS_TYPE, JOIN_REQUEST_SUBMIT_TYPE, JoinRequestStatusBody,
+    JoinRequestSubmitBody, MEMBER_SELF_REMOVE_TYPE, SelfRemoveBody,
 };
 
 use crate::errors::OpenVTCError;
@@ -94,6 +95,83 @@ pub async fn submit_join_request(
     Ok(request_id)
 }
 
+/// Ask a VTC what became of a join request we already have its id for
+/// (`join-requests/status/0.1`).
+///
+/// The applicant is proven the same way `submit` proves it — the authcrypt
+/// sender over DIDComm, the sender VID over TSP — so no holder-binding
+/// signature rides along (the VTC's `status_inner` takes `signature_hex = None`
+/// on this path). The reply is a `#response` document threaded on this
+/// message, handled asynchronously by
+/// [`crate::messaging::handle_join_status_response`]; nothing is awaited here.
+///
+/// `request_id` **must** be the community's own id, not our submit-time
+/// placeholder: the VTC looks the request up by it and answers "not found" for
+/// anything else. [`CommunityRecord::request_id_confirmed`] is the gate.
+///
+/// [`CommunityRecord::request_id_confirmed`]: crate::config::account::CommunityRecord::request_id_confirmed
+pub async fn poll_join_status(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    persona_did: &str,
+    vtc_did: &str,
+    mediator_did: &str,
+    request_id: Uuid,
+    tsp_mediator_did: Option<&str>,
+) -> Result<(), OpenVTCError> {
+    let document_id = format!("urn:uuid:{}", Uuid::new_v4());
+    let payload = JoinRequestStatusBody { request_id };
+    let body = build_trust_task_document(
+        JOIN_REQUEST_STATUS_TYPE,
+        persona_did,
+        vtc_did,
+        &document_id,
+        payload,
+    )?;
+
+    match tsp_mediator_did {
+        Some(tsp_mediator) => {
+            crate::tsp::send_trust_task(atm, profile, &body, vtc_did, tsp_mediator).await?;
+        }
+        None => {
+            let now = Utc::now().timestamp().max(0) as u64;
+            let msg = Message::build(document_id, JOIN_REQUEST_STATUS_TYPE.to_string(), body)
+                .from(persona_did.to_string())
+                .to(vtc_did.to_string())
+                .created_time(now)
+                .finalize();
+            crate::pack_and_send(atm, profile, &msg, persona_did, vtc_did, mediator_did).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Wrap `payload` in the Trust Task *document* every VTC verb is dispatched
+/// from: the required `id` + `type`, plus the audience-binding `issuer` (us) and
+/// `recipient` (the community).
+///
+/// Generalised out of [`build_join_submit_document`], which had these five lines
+/// inline. The VTC rejects a bare payload as `malformedRequest` ("missing field
+/// `id`"), so this shape is not optional for any verb — a second verb writing
+/// its own copy is how one of them ends up subtly different.
+fn build_trust_task_document<T: serde::Serialize>(
+    type_uri: &str,
+    issuer_did: &str,
+    recipient_did: &str,
+    document_id: &str,
+    payload: T,
+) -> Result<Value, OpenVTCError> {
+    let type_uri = type_uri
+        .parse()
+        .map_err(|e| OpenVTCError::Config(format!("trust task type URI parse: {e}")))?;
+    let mut doc = TrustTask::new(document_id.to_string(), type_uri, payload);
+    doc.issuer = Some(issuer_did.to_string());
+    doc.recipient = Some(recipient_did.to_string());
+    doc.issued_at = Some(Utc::now());
+    serde_json::to_value(&doc)
+        .map_err(|e| OpenVTCError::Config(format!("trust task document serialize: {e}")))
+}
+
 /// Build the DIDComm body for a join-request submit: a Trust Task *document*
 /// (`trust_tasks_rs::TrustTask`) wrapping the [`JoinRequestSubmitBody`] payload.
 ///
@@ -115,18 +193,16 @@ fn build_join_submit_document(
         registry_consent: false,
         extensions: Value::Null,
     };
-    let type_uri = JOIN_REQUEST_SUBMIT_TYPE
-        .parse()
-        .map_err(|e| OpenVTCError::Config(format!("join submit type URI parse: {e}")))?;
-    // Supplied rather than minted here: on the DIDComm path this same id is the
-    // message id, which is what makes the two transports' reply threading agree
-    // (see [`submit_join_request`]).
-    let mut doc = TrustTask::new(document_id.to_string(), type_uri, payload);
-    doc.issuer = Some(persona_did.to_string());
-    doc.recipient = Some(vtc_did.to_string());
-    doc.issued_at = Some(Utc::now());
-    serde_json::to_value(&doc)
-        .map_err(|e| OpenVTCError::Config(format!("join submit document serialize: {e}")))
+    // `document_id` is supplied rather than minted here: on the DIDComm path this
+    // same id is the message id, which is what makes the two transports' reply
+    // threading agree (see [`submit_join_request`]).
+    build_trust_task_document(
+        JOIN_REQUEST_SUBMIT_TYPE,
+        persona_did,
+        vtc_did,
+        document_id,
+        payload,
+    )
 }
 
 /// Send a member self-removal (`MEMBER_SELF_REMOVE`) to a VTC over DIDComm to
@@ -406,6 +482,60 @@ pub fn validate_invitation_credential(vic: &Value) -> Result<(), String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The document a status poll puts on the wire. The VTC dispatches on the
+    /// document, not the payload — a bare payload is rejected as
+    /// `malformedRequest` ("missing field `id`"), which is exactly how the join
+    /// submit failed before #138 — so the envelope members are the contract:
+    /// `id`, `type`, and the audience binding (`issuer` = us, `recipient` = the
+    /// community). The `requestId` must be the community's, and must ride in
+    /// `payload` where `parse_payload` reads it.
+    #[test]
+    fn a_status_poll_is_a_well_formed_trust_task_document() {
+        let request_id = Uuid::new_v4();
+        let doc = build_trust_task_document(
+            JOIN_REQUEST_STATUS_TYPE,
+            "did:webvh:example.com:alice",
+            "did:webvh:example.com:community",
+            "urn:uuid:doc-1",
+            JoinRequestStatusBody { request_id },
+        )
+        .expect("the status document builds");
+
+        assert_eq!(doc["id"], json!("urn:uuid:doc-1"));
+        assert_eq!(doc["type"], json!(JOIN_REQUEST_STATUS_TYPE));
+        assert_eq!(doc["issuer"], json!("did:webvh:example.com:alice"));
+        assert_eq!(doc["recipient"], json!("did:webvh:example.com:community"));
+        assert_eq!(
+            doc["payload"]["requestId"],
+            json!(request_id),
+            "the community looks the join up by this id"
+        );
+    }
+
+    /// The submit document is built through the same helper, so its shape must
+    /// not have moved: the payload still nests under `payload`, and the supplied
+    /// document id is used verbatim (it doubles as the DIDComm message id, which
+    /// is what makes DIDComm and TSP reply threading agree).
+    #[test]
+    fn the_submit_document_keeps_its_shape_through_the_shared_builder() {
+        let doc = build_join_submit_document(
+            "did:webvh:example.com:alice",
+            "did:webvh:example.com:community",
+            json!({ "type": ["VerifiablePresentation"] }),
+            "urn:uuid:submit-1",
+        )
+        .expect("the submit document builds");
+
+        assert_eq!(doc["id"], json!("urn:uuid:submit-1"));
+        assert_eq!(doc["type"], json!(JOIN_REQUEST_SUBMIT_TYPE));
+        assert_eq!(doc["issuer"], json!("did:webvh:example.com:alice"));
+        assert_eq!(doc["recipient"], json!("did:webvh:example.com:community"));
+        assert_eq!(
+            doc["payload"]["vp"]["type"],
+            json!(["VerifiablePresentation"])
+        );
+    }
 
     fn sample_vic() -> Value {
         json!({
