@@ -77,13 +77,47 @@ pub struct ServiceEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "status", rename_all = "lowercase")]
 pub enum Probe {
-    /// The host answered. Any status is reachability — a 404 from a mediator's
-    /// base path still proves DNS, TLS and routing all work, which is the thing
-    /// being tested. Reporting it as a failure would send an operator hunting a
-    /// network fault that isn't there.
+    /// The host answered. **Any** status counts as the host being up — a 404 or
+    /// 405 from a mediator's base path proves DNS, TLS and routing all work,
+    /// which is what is being tested; those endpoints take POSTs and websockets,
+    /// not bare GETs. Calling that a failure would send an operator hunting a
+    /// network fault that is not there.
+    ///
+    /// The status is still classified for display ([`Self::grade`]) because
+    /// "reachable (HTTP 404)" read as a contradiction: the word promised health
+    /// and the number said otherwise, and a reader cannot be expected to know
+    /// which one to believe. A 5xx *is* worth flagging — the host is up and its
+    /// application is broken, which is a different thing from both.
     Reachable { url: String, http_status: u16 },
     /// No answer: DNS, TLS, connection or timeout.
     Unreachable { url: String, error: String },
+}
+
+/// How to read a probe's status code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeGrade {
+    /// 2xx/3xx — the endpoint served the request.
+    Ok,
+    /// 4xx — the host answered and declined, which is the normal answer from an
+    /// endpoint that takes POSTs or websockets rather than GETs.
+    Responding,
+    /// 5xx — the host is up and its application is failing. Worth surfacing.
+    ServerError,
+}
+
+impl Probe {
+    /// Classify a reachable probe's status; `None` when nothing answered.
+    #[must_use]
+    pub fn grade(&self) -> Option<ProbeGrade> {
+        match self {
+            Probe::Reachable { http_status, .. } => Some(match http_status {
+                200..=399 => ProbeGrade::Ok,
+                400..=499 => ProbeGrade::Responding,
+                _ => ProbeGrade::ServerError,
+            }),
+            Probe::Unreachable { .. } => None,
+        }
+    }
 }
 
 /// A resolved party.
@@ -184,6 +218,65 @@ impl HealthReport {
     }
 }
 
+/// A step the report is taking, emitted as it starts and as it finishes.
+///
+// Not an intra-doc link: `STEP_TIMEOUT` is private, and a public item linking
+// to it fails `rustdoc -D warnings` — the same trap `config::peer_tsp_mediator`
+// carries a note for.
+/// The report is mostly waiting on the network — a `did:webvh` resolution is an
+/// HTTPS fetch and each probe is bounded by the module's per-step timeout, so a
+/// chain with a few mediators and one dead host can sit silent for the better
+/// part of a minute. Silence during that is indistinguishable from a hang, and
+/// the step
+/// that is slow is itself a finding: a resolution that takes nine seconds and
+/// then succeeds says something a report listing only the outcome does not.
+///
+/// Each `…ing` variant is emitted *before* the wait so the operator sees what is
+/// being waited on, and each result variant carries the `elapsed` it actually
+/// took. Deliberately structured rather than pre-formatted strings: the CLI owns
+/// presentation, and `--json` consumers can ignore the stream entirely.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum Step {
+    /// Bringing up the DID resolver (cheap, but it can fail and that failure
+    /// stops everything).
+    ResolverStarting,
+    /// About to resolve a party.
+    Resolving {
+        role: Role,
+        label: String,
+        did: String,
+    },
+    /// A party resolved.
+    Resolved {
+        label: String,
+        services: usize,
+        transports: Vec<Protocol>,
+        elapsed: Duration,
+    },
+    /// A party did not resolve. Not fatal — the report records the dead end.
+    ResolveFailed {
+        label: String,
+        error: String,
+        elapsed: Duration,
+    },
+    /// Moving on to the mediators discovered from the parties above.
+    FollowingMediators { count: usize },
+    /// About to probe a transport URL.
+    Probing { url: String },
+    /// A probe finished.
+    Probed { probe: Probe, elapsed: Duration },
+    /// Resolution done; negotiating transports (local, fast).
+    Negotiating { pairs: usize },
+    /// The whole report is built.
+    Finished { elapsed: Duration },
+}
+
+/// Where [`build_report_with_progress`] reports to. `&dyn` rather than a
+/// generic so threading it through the helpers costs no monomorphisation and no
+/// type parameter on every signature.
+pub type ProgressFn<'a> = &'a (dyn Fn(Step) + Send + Sync);
+
 /// A DID to include in the report, with the provenance to label it by.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subject {
@@ -211,6 +304,19 @@ impl Subject {
 /// would report what we believe rather than what is published. That difference
 /// is one of the things this command exists to expose.
 pub async fn build_report(subjects: &[Subject]) -> HealthReport {
+    build_report_with_progress(subjects, &|_| {}).await
+}
+
+/// [`build_report`], reporting each step to `progress` as it happens.
+///
+/// The work is almost entirely network waits, so a caller that shows nothing
+/// until the end shows nothing for most of the run. See [`Step`].
+pub async fn build_report_with_progress(
+    subjects: &[Subject],
+    progress: ProgressFn<'_>,
+) -> HealthReport {
+    let started = std::time::Instant::now();
+    progress(Step::ResolverStarting);
     let resolver = match DIDCacheClient::new(
         affinidi_did_resolver_cache_sdk::config::DIDCacheConfigBuilder::default().build(),
     )
@@ -242,7 +348,7 @@ pub async fn build_report(subjects: &[Subject]) -> HealthReport {
         if parties.iter().any(|p| p.did == subject.did) {
             continue;
         }
-        parties.push(resolve_party(&resolver, http.as_ref(), subject).await);
+        parties.push(resolve_party(&resolver, http.as_ref(), subject, progress).await);
     }
 
     // Second pass: every mediator any resolved party routes through, resolved
@@ -252,16 +358,22 @@ pub async fn build_report(subjects: &[Subject]) -> HealthReport {
     // that it also carries that party's DIDComm and that a second party is
     // behind the same host.
     let referenced = mediator_references(&parties);
-    for (did, users) in referenced {
-        if parties.iter().any(|p| p.did == did) {
-            continue;
-        }
+    let fresh: Vec<(String, String)> = referenced
+        .into_iter()
+        .filter(|(did, _)| !parties.iter().any(|p| p.did == *did))
+        .collect();
+    progress(Step::FollowingMediators { count: fresh.len() });
+    for (did, users) in fresh {
         let subject = Subject::new(Role::Mediator, format!("mediator of {users}"), did);
-        parties.push(resolve_party(&resolver, http.as_ref(), &subject).await);
+        parties.push(resolve_party(&resolver, http.as_ref(), &subject, progress).await);
     }
 
     let links = negotiate_links(&parties);
+    progress(Step::Negotiating { pairs: links.len() });
     let notes = collect_notes(&parties, &links);
+    progress(Step::Finished {
+        elapsed: started.elapsed(),
+    });
     HealthReport {
         parties,
         links,
@@ -321,13 +433,28 @@ async fn resolve_party(
     resolver: &DIDCacheClient,
     http: Option<&reqwest::Client>,
     subject: &Subject,
+    progress: ProgressFn<'_>,
 ) -> Party {
-    let fail = |error: String| Party {
+    let started = std::time::Instant::now();
+    progress(Step::Resolving {
         role: subject.role,
         label: subject.label.clone(),
         did: subject.did.clone(),
-        resolved: None,
-        error: Some(error),
+    });
+
+    let fail = |error: String| {
+        progress(Step::ResolveFailed {
+            label: subject.label.clone(),
+            error: error.clone(),
+            elapsed: started.elapsed(),
+        });
+        Party {
+            role: subject.role,
+            label: subject.label.clone(),
+            did: subject.did.clone(),
+            resolved: None,
+            error: Some(error),
+        }
     };
 
     let resolved = match tokio::time::timeout(STEP_TIMEOUT, resolver.resolve(&subject.did)).await {
@@ -347,19 +474,38 @@ async fn resolve_party(
 
     let caps = ServiceCapabilities::from_did_document(&doc);
     let services = service_entries(&doc);
+    progress(Step::Resolved {
+        label: subject.label.clone(),
+        services: services.len(),
+        transports: caps.advertised(),
+        elapsed: started.elapsed(),
+    });
 
-    // Probe only endpoints that are URLs. A DID endpoint is a mediator, which
-    // becomes its own party and is probed there — following it here would probe
-    // the same host once per party that names it.
+    // Probe only endpoints that are URLs *and* routable. A DID endpoint is a
+    // mediator, which becomes its own party and is probed there — following it
+    // here would probe the same host once per party that names it. And a
+    // non-routable entry (see `is_routable`) is served by the DID host we just
+    // resolved through, so probing it re-tests what resolution already proved
+    // and reports a 404 for a path that was never meant to answer a bare GET.
     let mut probes = Vec::new();
     if let Some(client) = http {
         let urls: BTreeSet<&str> = services
             .iter()
+            .filter(|s| is_routable(s))
             .map(|s| s.endpoint.as_str())
             .filter(|e| e.starts_with("http://") || e.starts_with("https://"))
             .collect();
         for url in urls {
-            probes.push(probe(client, url).await);
+            progress(Step::Probing {
+                url: url.to_string(),
+            });
+            let probe_started = std::time::Instant::now();
+            let result = probe(client, url).await;
+            progress(Step::Probed {
+                probe: result.clone(),
+                elapsed: probe_started.elapsed(),
+            });
+            probes.push(result);
         }
     }
 
@@ -376,6 +522,31 @@ async fn resolve_party(
         }),
         error: None,
     }
+}
+
+/// DID-document service types that are **not** routes: entries describing where
+/// the document and its attachments live, rather than somewhere a message goes.
+///
+/// `relativeRef` (`#files`) and `LinkedVerifiablePresentation` (`#whois`) are
+/// both served by the same DID host we just fetched `did.jsonl` from, so
+/// resolving the DID has already proven that host answers. Probing them again
+/// only re-tests a working host and reports a 404 for a path that never serves a
+/// bare GET — `#files` points at the *directory*, not `…/did.jsonl`. Four such
+/// lines per party drowned the transport probes that do carry information.
+const NON_ROUTABLE_SERVICE_TYPES: [&str; 2] = ["relativeRef", "LinkedVerifiablePresentation"];
+
+/// Whether a service entry names somewhere a message or request actually goes.
+///
+/// A skip-list rather than an allow-list, deliberately: a transport type this
+/// build has never heard of should still be probed (the whole point of printing
+/// services verbatim is that unknown types matter), whereas the two
+/// document-adjacent types are a closed set defined by the DID spec and the
+/// webvh hosting convention.
+fn is_routable(service: &ServiceEntry) -> bool {
+    !service
+        .types
+        .iter()
+        .any(|t| NON_ROUTABLE_SERVICE_TYPES.contains(&t.as_str()))
 }
 
 /// Read the `service` array verbatim.
@@ -520,22 +691,57 @@ fn collect_notes(parties: &[Party], links: &[Link]) -> Vec<String> {
             ));
         }
         for probe in &resolved.probes {
-            if let Probe::Unreachable { url, error } = probe {
-                notes.push(format!("{}: {url} is unreachable ({error}).", party.label));
+            match probe {
+                Probe::Unreachable { url, error } => {
+                    notes.push(format!("{}: {url} is unreachable ({error}).", party.label));
+                }
+                // A 5xx is the case a bare "reachable" hid: the host is up and
+                // its application is failing, which no other line in the report
+                // would reveal. 4xx is not flagged — that is the expected answer
+                // from a POST/websocket endpoint asked for a GET.
+                Probe::Reachable { url, http_status }
+                    if probe.grade() == Some(ProbeGrade::ServerError) =>
+                {
+                    notes.push(format!(
+                        "{}: {url} answered HTTP {http_status} — the host is up but the \
+                         service behind it is failing.",
+                        party.label
+                    ));
+                }
+                Probe::Reachable { .. } => {}
             }
         }
     }
 
     for link in links {
         match &link.outcome {
-            LinkOutcome::NoCommonProtocol { ours, theirs } => notes.push(format!(
-                "{} and {} share no transport: we offer [{}], they offer [{}]. A message \
-                 between them cannot be sent until one side adds the other's.",
-                link.from,
-                link.to,
-                join_protocols(ours),
-                join_protocols(theirs),
-            )),
+            LinkOutcome::NoCommonProtocol { ours, theirs } => {
+                let mut note = format!(
+                    "{} and {} share no transport: we offer [{}], they offer [{}]. A message \
+                     between them cannot be sent until one side adds the other's.",
+                    link.from,
+                    link.to,
+                    join_protocols(ours),
+                    join_protocols(theirs),
+                );
+                // The specific case this keeps catching, and the one an operator
+                // cannot diagnose from the sets alone: a persona minted before
+                // the client requested `#tsp` can never reach a TSP-only
+                // community, and nothing about it will change on its own — the
+                // service is written at mint time and old documents are not
+                // revisited. Saying only "no shared transport" leaves the reader
+                // to guess whether to change the community, the persona, or the
+                // client.
+                if ours.as_slice() == [Protocol::Didcomm] && theirs.as_slice() == [Protocol::Tsp] {
+                    note.push_str(
+                        " This persona's document predates `#tsp` being requested at mint \
+                         time, so it advertises DIDComm only; a persona minted by a current \
+                         client carries both. Re-minting a persona for this community is the \
+                         fix — the existing document will not gain the service on its own.",
+                    );
+                }
+                notes.push(note);
+            }
             LinkOutcome::Unknown { reason } => notes.push(format!(
                 "{} → {}: transport could not be determined ({reason}).",
                 link.from, link.to
@@ -804,6 +1010,179 @@ mod tests {
             label, "persona joy-ahead (TSP, DIDComm), VTC acme (DIDComm)",
             "both parties, and TSP before DIDComm (negotiation order, not \
              alphabetical): {label}"
+        );
+    }
+
+    /// `#files` and `#whois` live on the DID host we just resolved through, so
+    /// probing them re-tests a host already proven and reports a 404 for a path
+    /// that never serves a bare GET. Four such lines per party buried the
+    /// transport probes that carry information.
+    #[test]
+    fn document_adjacent_services_are_not_probed() {
+        let files = ServiceEntry {
+            id: "#files".into(),
+            types: vec!["relativeRef".into()],
+            endpoint: "https://webvh.storm.ws/army-provide".into(),
+        };
+        let whois = ServiceEntry {
+            id: "#whois".into(),
+            types: vec!["LinkedVerifiablePresentation".into()],
+            endpoint: "https://webvh.storm.ws/army-provide/whois.vp".into(),
+        };
+        assert!(
+            !is_routable(&files),
+            "#files is the document host, not a route"
+        );
+        assert!(
+            !is_routable(&whois),
+            "#whois is not somewhere a message goes"
+        );
+    }
+
+    /// The skip-list must not swallow transports — including one this build has
+    /// never heard of, which is exactly the case worth probing.
+    #[test]
+    fn transports_and_unknown_types_are_still_probed() {
+        for types in [
+            vec!["TSPTransport".to_string()],
+            vec!["DIDCommMessaging".to_string()],
+            vec!["Authentication".to_string()],
+            vec!["SomeFutureTransport".to_string()],
+        ] {
+            let entry = ServiceEntry {
+                id: "#x".into(),
+                types: types.clone(),
+                endpoint: "https://example/x".into(),
+            };
+            assert!(
+                is_routable(&entry),
+                "{types:?} names a route (or might); it must be probed"
+            );
+        }
+    }
+
+    /// "reachable (HTTP 404)" read as a contradiction. The grade is what lets
+    /// the word agree with the number.
+    #[test]
+    fn probe_status_is_graded_not_flattened() {
+        let at = |status| Probe::Reachable {
+            url: "https://m/x".into(),
+            http_status: status,
+        };
+        assert_eq!(at(200).grade(), Some(ProbeGrade::Ok));
+        assert_eq!(
+            at(405).grade(),
+            Some(ProbeGrade::Responding),
+            "a POST/websocket endpoint declining a GET is the host working"
+        );
+        assert_eq!(at(404).grade(), Some(ProbeGrade::Responding));
+        assert_eq!(
+            at(503).grade(),
+            Some(ProbeGrade::ServerError),
+            "host up, application failing — the case a flat `reachable` hid"
+        );
+        assert_eq!(
+            Probe::Unreachable {
+                url: "https://m/x".into(),
+                error: "dns".into()
+            }
+            .grade(),
+            None
+        );
+    }
+
+    /// A 5xx earns a finding; a 4xx does not.
+    #[test]
+    fn only_a_server_error_becomes_a_finding() {
+        let with_probe = |probe: Probe| {
+            let mut party = resolved_party(
+                Role::Mediator,
+                "mediator",
+                "did:webvh:m",
+                &json!({"service": [{
+                    "id": "#tsp", "type": "TSPTransport",
+                    "serviceEndpoint": "https://m/x",
+                }]}),
+            );
+            party.resolved.as_mut().expect("resolved").probes = vec![probe];
+            collect_notes(&[party], &[])
+        };
+
+        let five_hundred = with_probe(Probe::Reachable {
+            url: "https://m/x".into(),
+            http_status: 502,
+        });
+        assert!(
+            five_hundred.iter().any(|n| n.contains("502")),
+            "a 5xx must surface: {five_hundred:?}"
+        );
+
+        let four_oh_four = with_probe(Probe::Reachable {
+            url: "https://m/x".into(),
+            http_status: 404,
+        });
+        assert!(
+            four_oh_four.is_empty(),
+            "a 4xx on a non-GET endpoint is normal and must stay quiet: {four_oh_four:?}"
+        );
+    }
+
+    /// The stranded-persona case: DIDComm-only against TSP-only. The sets alone
+    /// don't tell an operator which side to change, so the note must.
+    #[test]
+    fn a_didcomm_only_persona_is_told_why_it_cannot_reach_a_tsp_community() {
+        let didcomm_only = json!({"service": [{
+            "id": "#vta-didcomm", "type": "DIDCommMessaging",
+            "serviceEndpoint": [{"uri": "did:webvh:m"}],
+        }]});
+        let tsp_only = json!({"service": [{
+            "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:webvh:m",
+        }]});
+        let parties = vec![
+            resolved_party(
+                Role::Persona,
+                "persona hello-fury",
+                "did:webvh:p",
+                &didcomm_only,
+            ),
+            resolved_party(Role::Vtc, "VTC first-vtc", "did:webvh:v", &tsp_only),
+        ];
+        let links = negotiate_links(&parties);
+        let notes = collect_notes(&parties, &links);
+        let note = notes
+            .iter()
+            .find(|n| n.contains("share no transport"))
+            .expect("disjoint pair must be reported");
+        assert!(
+            note.contains("predates") && note.contains("Re-minting"),
+            "the note must say why this persona is stuck and what fixes it, not \
+             just list the two sets: {note}"
+        );
+    }
+
+    /// The added guidance is specific to that one direction — a TSP-only *us*
+    /// against a DIDComm-only *them* is a different problem with a different fix.
+    #[test]
+    fn the_remint_advice_is_not_given_for_the_reverse_mismatch() {
+        let didcomm_only = json!({"service": [{
+            "id": "#dc", "type": "DIDCommMessaging",
+            "serviceEndpoint": [{"uri": "did:webvh:m"}],
+        }]});
+        let tsp_only = json!({"service": [{
+            "id": "#tsp", "type": "TSPTransport", "serviceEndpoint": "did:webvh:m",
+        }]});
+        let parties = vec![
+            resolved_party(Role::Persona, "persona", "did:webvh:p", &tsp_only),
+            resolved_party(Role::Vtc, "VTC", "did:webvh:v", &didcomm_only),
+        ];
+        let notes = collect_notes(&parties, &negotiate_links(&parties));
+        let note = notes
+            .iter()
+            .find(|n| n.contains("share no transport"))
+            .expect("still reported");
+        assert!(
+            !note.contains("Re-minting"),
+            "re-minting our persona does not fix a DIDComm-only community: {note}"
         );
     }
 

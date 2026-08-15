@@ -237,21 +237,62 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
             .bold(),
         );
     } else {
-        let archived_hint = if state.show_archived {
-            "v: hide archived"
-        } else {
-            "v: show archived"
-        };
-        lines.push(
-            Line::from(format!(
-                "↑/↓ navigate   ⏎ open   f: ★   a: acknowledge   m: issue VMC   c: capabilities   \
-                 l: leave   c: cancel   x: archive   d: delete   j: join   {archived_hint}"
-            ))
-            .fg(COLOR_DARK_GRAY),
-        );
+        lines.push(Line::from(key_hints(state)).fg(COLOR_DARK_GRAY));
     }
 
     lines
+}
+
+/// The key hints for the selected row, gated exactly as the key handler gates
+/// the keys themselves (`ui::pages::main::handle_communities_key`).
+///
+/// This used to be one unconditional string listing every binding, which
+/// advertised `c` twice — `c: capabilities` and `c: cancel` — and read as a
+/// collision. It never was one: `c` is capabilities on an Active row and cancel
+/// on a Pending one, and the two states are mutually exclusive. The footer was
+/// simply describing a keymap that does not exist.
+///
+/// `c` was the visible symptom; every state-gated key had the same defect.
+/// `l`/`m` do nothing on a Pending or Inactive row and `x`/`d` do nothing on an
+/// Active one, yet all four were offered on all three. Showing what the current
+/// row actually accepts fixes the duplicate and the four silent no-ops together,
+/// which is why this is gated per row rather than by special-casing `c`.
+///
+/// The two ungated keys (`j: join`, `v: show/hide archived`) are always listed:
+/// they act on the panel, not the selection, and stay available when nothing is
+/// selected at all.
+fn key_hints(state: &CommunitiesState) -> String {
+    let selected = state.items.get(state.selected_index);
+    let mut hints = vec!["↑/↓ navigate".to_string()];
+
+    if let Some(community) = selected {
+        hints.push("⏎ open".to_string());
+        hints.push("f: ★".to_string());
+        hints.push("a: acknowledge".to_string());
+        if community.is_active {
+            hints.push("m: issue VMC".to_string());
+            hints.push("c: capabilities".to_string());
+            hints.push("l: leave".to_string());
+        }
+        if community.is_pending {
+            hints.push("c: cancel".to_string());
+        }
+        if community.is_inactive {
+            hints.push("x: archive".to_string());
+            hints.push("d: delete".to_string());
+        }
+    }
+
+    hints.push("j: join".to_string());
+    hints.push(
+        if state.show_archived {
+            "v: hide archived"
+        } else {
+            "v: show archived"
+        }
+        .to_string(),
+    );
+    hints.join("   ")
 }
 
 /// Empty state (R-C-5): a welcoming nudge to go find a community, not a dry
@@ -274,4 +315,120 @@ fn render_empty(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(Line::from("Press  j  to join your first community.").fg(COLOR_ORANGE));
     lines
+}
+
+#[cfg(test)]
+mod key_hint_tests {
+    use super::*;
+    use crate::state_handler::main_page::content::CommunitySummary;
+    use std::sync::Arc;
+
+    fn row(is_active: bool, is_inactive: bool, is_pending: bool) -> CommunitySummary {
+        CommunitySummary {
+            display_name: "acme".to_string(),
+            status_label: String::new(),
+            persona_label: String::new(),
+            member_since: String::new(),
+            favourite: false,
+            is_active,
+            is_inactive,
+            is_pending,
+            pending_unacknowledged: false,
+            submit_transport: None,
+            archived: false,
+            needs_attention: false,
+            persona_did: String::new(),
+            persona_agent_name: None,
+            vtc_did: String::new(),
+            vtc_agent_name: None,
+            sub_context_id: String::new(),
+            request_id: String::new(),
+            has_membership_credential: false,
+            has_role_credential: false,
+        }
+    }
+
+    fn hints_for(community: CommunitySummary) -> String {
+        key_hints(&CommunitiesState {
+            items: Arc::from(vec![community]),
+            selected_index: 0,
+            ..CommunitiesState::default()
+        })
+    }
+
+    /// The reported bug: the footer advertised `c` twice. It can never be
+    /// ambiguous now, because the two meanings live on mutually exclusive row
+    /// states and the footer follows the state.
+    #[test]
+    fn c_is_never_offered_twice() {
+        for (active, inactive, pending) in [
+            (true, false, false),
+            (false, true, false),
+            (false, false, true),
+        ] {
+            let hints = hints_for(row(active, inactive, pending));
+            assert_eq!(
+                hints.matches("c: ").count(),
+                usize::from(active || pending),
+                "`c` must appear at most once, and only where it does something: {hints}"
+            );
+        }
+    }
+
+    /// An Active row: capabilities, not cancel — and the leave/VMC pair that
+    /// only Active accepts.
+    #[test]
+    fn an_active_row_offers_capabilities_and_leave() {
+        let hints = hints_for(row(true, false, false));
+        assert!(hints.contains("c: capabilities"), "{hints}");
+        assert!(hints.contains("l: leave"), "{hints}");
+        assert!(hints.contains("m: issue VMC"), "{hints}");
+        assert!(!hints.contains("c: cancel"), "{hints}");
+        assert!(
+            !hints.contains("x: archive") && !hints.contains("d: delete"),
+            "archive/delete are inactive-only and would be silent no-ops here: {hints}"
+        );
+    }
+
+    /// A Pending row: `c` is cancel, and capabilities is gone.
+    #[test]
+    fn a_pending_row_offers_cancel_not_capabilities() {
+        let hints = hints_for(row(false, false, true));
+        assert!(hints.contains("c: cancel"), "{hints}");
+        assert!(!hints.contains("c: capabilities"), "{hints}");
+        assert!(!hints.contains("l: leave"), "{hints}");
+    }
+
+    /// An Inactive row: archive/delete, and none of the Active-only keys.
+    #[test]
+    fn an_inactive_row_offers_archive_and_delete() {
+        let hints = hints_for(row(false, true, false));
+        assert!(
+            hints.contains("x: archive") && hints.contains("d: delete"),
+            "{hints}"
+        );
+        assert!(!hints.contains("c: "), "{hints}");
+        assert!(!hints.contains("l: leave"), "{hints}");
+    }
+
+    /// `j` and `v` act on the panel rather than the selection, so they survive
+    /// an empty list — where every selection-gated key must be absent.
+    #[test]
+    fn panel_level_keys_survive_an_empty_selection() {
+        let hints = key_hints(&CommunitiesState::default());
+        assert!(hints.contains("j: join"), "{hints}");
+        assert!(hints.contains("v: show archived"), "{hints}");
+        assert!(!hints.contains("⏎ open"), "nothing is selected: {hints}");
+        assert!(!hints.contains("c: "), "nothing is selected: {hints}");
+    }
+
+    /// The archived toggle reflects the current state, as it did before.
+    #[test]
+    fn the_archived_hint_tracks_the_toggle() {
+        let hints = key_hints(&CommunitiesState {
+            show_archived: true,
+            ..CommunitiesState::default()
+        });
+        assert!(hints.contains("v: hide archived"), "{hints}");
+    }
 }
