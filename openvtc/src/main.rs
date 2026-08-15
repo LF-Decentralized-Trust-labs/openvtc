@@ -24,8 +24,94 @@ use tokio::sync::broadcast;
 mod cli;
 mod clipboard;
 mod colors;
+mod health_cmd;
 mod state_handler;
 mod ui;
+
+/// Load the full account for `openvtc health`, or `None` if it cannot be had.
+///
+/// Every failure here is soft. A profile that does not exist, will not decrypt,
+/// or whose VTA is unreachable still leaves a useful report to run against the
+/// `--vtc` DIDs — and "the account would not load" is itself a finding worth
+/// printing rather than an error worth aborting on. The reason is surfaced on
+/// stderr so it is not swallowed.
+///
+/// The admin VTA session `load_step2` hands back is shut down immediately: this
+/// command reads DID documents, and holding a live mediator connection open for
+/// that would add a second socket for the profile the running TUI may already
+/// own.
+async fn load_config_for_health(profile: &str, unlock_code_arg: Option<&str>) -> Option<Config> {
+    let deferred = match load_fast(profile, unlock_code_arg) {
+        Ok(deferred) => deferred,
+        Err(OpenVTCError::ConfigNotFound(_, _)) => return None,
+        Err(e) => {
+            eprintln!(
+                "{} {}",
+                style("Account not loaded:").color256(CLI_ORANGE),
+                redact_paths(&e.to_string()),
+            );
+            return None;
+        }
+    };
+
+    let mut tdk = match affinidi_tdk::TDK::new(
+        affinidi_tdk::common::config::TDKConfig::builder()
+            .with_load_environment(false)
+            .build()
+            .ok()?,
+        None,
+    )
+    .await
+    {
+        Ok(tdk) => tdk,
+        Err(e) => {
+            eprintln!(
+                "{} {e}",
+                style("Account not loaded (TDK init failed):").color256(CLI_ORANGE)
+            );
+            return None;
+        }
+    };
+
+    #[cfg(feature = "openpgp-card")]
+    struct TouchPrompt;
+    #[cfg(feature = "openpgp-card")]
+    impl openvtc_core::config::TokenInteractions for TouchPrompt {
+        fn touch_notify(&self) {
+            eprintln!("Touch your security token to continue…");
+        }
+        fn touch_completed(&self) {}
+    }
+
+    match Config::load_step2(
+        &mut tdk,
+        profile,
+        deferred.public_config,
+        deferred.unlock_passphrase.as_ref(),
+        #[cfg(feature = "openpgp-card")]
+        &deferred.user_pin,
+        #[cfg(feature = "openpgp-card")]
+        &TouchPrompt,
+        None,
+    )
+    .await
+    {
+        Ok((config, admin_session)) => {
+            if let Some(session) = admin_session {
+                session.shutdown().await;
+            }
+            Some(config)
+        }
+        Err(e) => {
+            eprintln!(
+                "{} {}",
+                style("Account not loaded:").color256(CLI_ORANGE),
+                redact_paths(&e.to_string()),
+            );
+            None
+        }
+    }
+}
 
 /// Register the platform-specific keyring-core credential store as the
 /// process default. Must run before any `keyring_core::Entry::new` call.
@@ -178,6 +264,23 @@ async fn main() -> Result<()> {
             style(&profile).color256(CLI_ORANGE)
         );
         bail!("Profile name may only contain [A-Za-z0-9._-] and must not contain '..'");
+    }
+
+    // `health` runs before the duplicate-instance check and never takes the
+    // lock. The report is read-only, and the moment you most want it is while a
+    // TUI is sitting on a join that never came back — refusing to run because
+    // that TUI holds the profile would deny the diagnosis to the one situation
+    // it exists for. Account details are best-effort for the same reason (see
+    // `health_cmd::run`): a locked or undecryptable profile degrades the report
+    // rather than aborting it.
+    if let Some(("health", health_args)) = matches.subcommand() {
+        let vtc_dids: Vec<String> = health_args
+            .get_many::<String>("vtc")
+            .map(|values| values.cloned().collect())
+            .unwrap_or_default();
+        let as_json = health_args.get_flag("json");
+        let config = load_config_for_health(&profile, unlock_code_arg.as_deref()).await;
+        return health_cmd::run(config.as_ref(), &vtc_dids, as_json).await;
     }
 
     // Check if profile is currently active elsewhere?

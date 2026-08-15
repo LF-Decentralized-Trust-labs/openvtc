@@ -26,6 +26,7 @@ pub mod config;
 pub mod didcomm;
 pub mod display;
 pub mod errors;
+pub mod health;
 pub mod identity;
 pub mod join;
 pub mod logs;
