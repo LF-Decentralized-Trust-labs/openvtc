@@ -465,7 +465,7 @@ impl Messaging {
     /// could not be unsealed, mapped, or queued is deliberately **not** acked:
     /// it stays in the mailbox rather than being deleted unread, and the drain
     /// stops there (a stuck frame at the head of the queue would otherwise be
-    /// re-fetched forever). Bounded at [`PICKUP_MAX`] messages per call (R1.4);
+    /// re-fetched forever). Bounded at `PICKUP_MAX` messages per call (R1.4);
     /// the remainder is left for the next connect and logged rather than
     /// silently dropped.
     ///
