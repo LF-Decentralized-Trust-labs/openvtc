@@ -558,18 +558,42 @@ impl StateHandler {
         // Enter. Dismissing the loading screen (Enter) reveals the main page.
         state.loading_complete = true;
 
+        // The messaging runtime comes up HERE, before the State-A branch, and
+        // empty: `Messaging::start` runs its dispatcher before the first
+        // transport exists, so a service with no listeners is a supported state.
+        //
+        // The ordering is the point. A State-A join used to run with no messaging
+        // at all, so the applicant persona had no socket while the community
+        // decided — and a community auto-admitting an invited join answers in
+        // under a second. Its reply was therefore stored, not streamed, and the
+        // mediator only ever redelivers a stored inbox to a socket that
+        // *displaces* another one, so the hot-start below never heard about it.
+        // That is the first join a new operator makes, which is the worst
+        // possible place for it. Starting the runtime first lets `join_flow`
+        // connect the applicant before it submits, exactly as the runtime-loop
+        // join already does.
+        //
+        // Bounded so a misbehaving mediator can't grow our memory without limit;
+        // overflows surface as `try_send` warnings and the message is left in the
+        // mailbox for `Messaging::pickup_stored` to collect on the next connect.
+        let (didcomm_event_tx, mut didcomm_event_rx) =
+            mpsc::channel(didcomm::DIDCOMM_EVENT_CHANNEL_CAPACITY);
+        let shutdown_token = tokio_util::sync::CancellationToken::new();
+        let didcomm_service =
+            didcomm::start_empty_service(didcomm_event_tx.clone(), shutdown_token.clone());
+
         // A State-A account has no persona/community yet (R-A-5): there is no
-        // DID to open a DIDComm session for. Skip the persona listener entirely
-        // and run the responsive degraded loop so the user can still navigate,
-        // open the Communities page, and start a join.
+        // DID to open a DIDComm session for *yet*. Run the responsive degraded
+        // loop so the user can still navigate, open the Communities page, and
+        // start a join — with the live (empty) messaging runtime, so a join made
+        // there gets its applicant socket up before submitting.
         //
         // Hot-start: if the user *joins* a community in the degraded loop, the
         // join mints a persona into `config.identities` (so `active_identity()`
         // flips None→Some). The degraded loop detects that and hands the runtime
         // context back as `DegradedOutcome::Joined` instead of looping, so we
-        // fall through to the messaging setup below and bring up the persona
-        // listener immediately — no process restart needed to receive the
-        // approval credential.
+        // fall through to the messaging setup below — no process restart needed
+        // to receive the approval credential.
         let (tdk, mut config, admin_vta) = if config.active_identity().is_none() {
             state.connection.status = state::MediatorStatus::NoActiveCommunity;
             let _ = self.state_tx.send(state.clone());
@@ -590,10 +614,16 @@ impl StateHandler {
                     &mut terminator,
                     &mut state,
                     Some(join_ctx),
+                    Some(&didcomm_service),
                 )
                 .await?
             {
-                DegradedOutcome::Exit(interrupted) => return Ok(interrupted),
+                DegradedOutcome::Exit(interrupted) => {
+                    // Drop every socket the State-A join may have opened, rather
+                    // than leaving one racing the next process for the same DID.
+                    shutdown_token.cancel();
+                    return Ok(interrupted);
+                }
                 DegradedOutcome::Joined(ctx) => {
                     state.main_page.sync_from_config(&ctx.config);
                     (ctx.tdk, ctx.config, ctx.admin_vta)
@@ -620,50 +650,10 @@ impl StateHandler {
         state.connection.status = state::MediatorStatus::Connecting;
         let _ = self.state_tx.send(state.clone());
 
-        // Start the DIDComm service (connection lifecycle, message dispatch, sending).
-        // Bounded so a misbehaving mediator can't grow our memory without limit;
-        // overflows surface as `try_send` warnings and the message is dropped
-        // (the mediator pickup protocol will redeliver once we drain).
-        let (didcomm_event_tx, mut didcomm_event_rx) =
-            mpsc::channel(didcomm::DIDCOMM_EVENT_CHANNEL_CAPACITY);
-        let shutdown_token = tokio_util::sync::CancellationToken::new();
-
-        let didcomm_service = match didcomm::start_service(
-            &config,
-            &tdk,
-            didcomm_event_tx.clone(),
-            shutdown_token.clone(),
-        )
-        .await
-        {
-            Ok(svc) => svc,
-            Err(e) => {
-                state.connection.status =
-                    state::MediatorStatus::Failed(format!("DIDComm service: {e:#}"));
-                state
-                    .main_page
-                    .log_error("DIDComm service failed to start", &e);
-                let _ = self.state_tx.send(state.clone());
-                // Messaging is down but the admin VTA session may still be live;
-                // hand it to the degraded loop so the user can still join a
-                // community (State-B path). The loop closes the session on exit.
-                let join_ctx = DegradedJoinContext {
-                    tdk,
-                    config,
-                    admin_vta,
-                    profile: self.profile.clone(),
-                };
-                return self
-                    .run_degraded_loop_terminal(
-                        &mut action_rx,
-                        &mut interrupt_rx,
-                        &mut terminator,
-                        &mut state,
-                        Some(join_ctx),
-                    )
-                    .await;
-            }
-        };
+        // Install this account's listeners on the runtime started above. Skips
+        // any that already exist, so a State-A join's own persona listener is
+        // bound to rather than duplicated (one websocket per DID).
+        didcomm::install_listeners(&didcomm_service, &config, &tdk).await;
 
         // Process-lifetime LRU of inbound message IDs. Backstop for replay
         // and mediator-pickup duplicates beyond what the TDK already filters.
@@ -2766,9 +2756,16 @@ impl StateHandler {
     /// load-failure callers have no loaded config, so they pass `None` and
     /// `StartJoin` is a no-op there.
     ///
+    /// `messaging` is the live (initially listener-less) DIDComm runtime, so a
+    /// join started here can bring the applicant persona's socket up **before**
+    /// it submits. Without it the first join an account ever makes is also the
+    /// one join with no live recipient while the community decides — see the
+    /// ordering note in `run`. The early load-failure callers pass `None`; they
+    /// cannot join at all.
+    ///
     /// Returns [`DegradedOutcome::Joined`] when an in-session join mints the
-    /// account's first persona (State-A → member). The caller then brings up the
-    /// persona's DIDComm listener without a restart (hot-start). All other exits
+    /// account's first persona (State-A → member). The caller then installs the
+    /// remaining listeners without a restart (hot-start). All other exits
     /// return [`DegradedOutcome::Exit`] after closing the admin session.
     async fn run_degraded_loop(
         &self,
@@ -2777,6 +2774,7 @@ impl StateHandler {
         terminator: &mut Terminator,
         state: &mut State,
         mut join_ctx: Option<DegradedJoinContext>,
+        messaging: Option<&didcomm::Messaging>,
     ) -> Result<DegradedOutcome> {
         // R11: the degraded loop persists only via `remove_community` (State-A
         // community withdrawal); `join_flow` saves itself synchronously. Coalesce
@@ -2838,12 +2836,13 @@ impl StateHandler {
                                     &mut ctx.config,
                                     ctx.admin_vta.as_ref(),
                                     ctx.profile.as_str(),
-                                    // State-A: messaging never started (or just
-                                    // failed to). The loop breaks `Joined` on a
-                                    // first join so `run()` restarts into the
-                                    // full pipeline, and startup registration
-                                    // brings the persona's listener up there.
-                                    None,
+                                    // The live runtime, so the applicant persona
+                                    // is connected before the submit goes out and
+                                    // an auto-admitted join's reply is streamed
+                                    // rather than stored unread. `None` only for
+                                    // the early load-failure callers, which
+                                    // cannot reach a join anyway.
+                                    messaging,
                                 )
                                 .await
                             {
@@ -2978,10 +2977,11 @@ impl StateHandler {
         Ok(result)
     }
 
-    /// Run the degraded loop for a path that cannot hot-start (no loaded config,
-    /// or messaging already failed for an existing member), collapsing the
-    /// outcome to an [`Interrupted`]. `DegradedOutcome::Joined` is unreachable
-    /// for these callers — only the State-A entry can transition None→Some.
+    /// Run the degraded loop for a path that cannot hot-start (no loaded config),
+    /// collapsing the outcome to an [`Interrupted`]. `DegradedOutcome::Joined` is
+    /// unreachable for these callers — only the State-A entry can transition
+    /// None→Some. They have no messaging runtime either, and no config to build
+    /// one from.
     async fn run_degraded_loop_terminal(
         &self,
         action_rx: &mut UnboundedReceiver<Action>,
@@ -2991,7 +2991,7 @@ impl StateHandler {
         join_ctx: Option<DegradedJoinContext>,
     ) -> Result<Interrupted> {
         match self
-            .run_degraded_loop(action_rx, interrupt_rx, terminator, state, join_ctx)
+            .run_degraded_loop(action_rx, interrupt_rx, terminator, state, join_ctx, None)
             .await?
         {
             DegradedOutcome::Exit(interrupted) => Ok(interrupted),

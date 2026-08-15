@@ -46,6 +46,9 @@ use affinidi_messaging_delivery::{
     Delivery, InMemoryOutboxStore, MessagingService, OutboxStore, drain_loop_via,
 };
 use affinidi_messaging_sdk::DidCommTransport;
+/// A picked-up frame, tagged by protocol — the stored-mail counterpart of the
+/// live stream's `Protocol`-tagged `Inbound`.
+use affinidi_messaging_sdk::protocols::message_pickup::InboundFrame;
 use affinidi_tdk::common::TDKSharedState;
 use affinidi_tdk::common::config::TDKConfig;
 use affinidi_tdk::common::profiles::TDKProfile;
@@ -191,6 +194,17 @@ const REBUILD_BACKOFF_CAP: std::time::Duration = std::time::Duration::from_secs(
 /// How often the supervisor evaluates transports.
 const SUPERVISOR_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How many stored messages one pickup round asks the mediator for. The SDK
+/// caps a delivery-request at 100; 50 keeps a single `delivery` response small
+/// while still clearing a normal mailbox in one round trip.
+const PICKUP_PAGE: usize = 50;
+
+/// Ceiling on one pickup's total (R1.4 — a loop over a peer's data is bounded).
+/// A mailbox larger than this is a pathology, not a backlog; the remainder stays
+/// stored and is collected on the next connect rather than flooding the event
+/// channel in one go.
+const PICKUP_MAX: usize = 200;
+
 /// Backoff before the `attempts`-th consecutive rebuild: 5 s, 10 s, 20 s, 40 s,
 /// then capped at 60 s. `attempts == 0` (none yet) is no wait.
 fn rebuild_backoff(attempts: u32) -> std::time::Duration {
@@ -238,6 +252,11 @@ struct DownSince {
 /// hid this behind `send_message(listener_id, …)`.
 struct IdentityWire {
     atm: ATM,
+    /// The ATM profile the wire speaks through. Held because message-pickup is a
+    /// profile-scoped operation (`send_delivery_request_frames`,
+    /// `send_messages_received`), and the transport does not surface the profile
+    /// it was bound to.
+    profile: Arc<ATMProfile>,
     did: String,
     /// Kept so the supervisor can rebuild this identity's wire from scratch.
     ///
@@ -292,6 +311,14 @@ struct MessagingInner {
     /// `affinidi-messaging-delivery` 0.1.12).
     outbox: Arc<dyn OutboxStore>,
     identities: tokio::sync::RwLock<HashMap<String, IdentityWire>>,
+    /// Where [`Messaging::pickup_stored`] hands a stored message off. The live
+    /// dispatcher owns its own clone; this one exists because a pickup emits the
+    /// *same* events by the *same* route, so a consumer cannot tell (and must
+    /// not have to) whether a message was streamed or collected.
+    event_tx: mpsc::Sender<DIDCommEvent>,
+    /// Listener ids with a pickup currently running, so a flapping socket
+    /// cannot stack overlapping drains of the same mailbox.
+    pickup_in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Dispatcher + per-identity drains, aborted on [`Messaging::shutdown`].
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -311,6 +338,8 @@ impl Messaging {
             status_tx: status_tx.clone(),
             outbox,
             identities: tokio::sync::RwLock::new(HashMap::new()),
+            event_tx: event_tx.clone(),
+            pickup_in_flight: std::sync::Mutex::new(std::collections::HashSet::new()),
             tasks: std::sync::Mutex::new(Vec::new()),
         });
 
@@ -325,12 +354,13 @@ impl Messaging {
         let messaging = Self { inner };
         let supervised = messaging.clone();
         let supervisor = tokio::spawn(async move { supervise_transports(supervised).await });
-        messaging
-            .inner
-            .tasks
-            .lock()
-            .expect("tasks mutex")
-            .push(supervisor);
+        let collecting = messaging.clone();
+        let collector = tokio::spawn(async move { pickup_on_connect(collecting).await });
+        {
+            let mut tasks = messaging.inner.tasks.lock().expect("tasks mutex");
+            tasks.push(supervisor);
+            tasks.push(collector);
+        }
 
         messaging
     }
@@ -403,6 +433,153 @@ impl Messaging {
                 _ => tokio::time::sleep(std::time::Duration::from_millis(50)).await,
             }
         }
+    }
+
+    /// Collect the messages the mediator is **holding** for `listener_id` and
+    /// hand them to the state handler on the same channel a live frame uses.
+    /// Returns how many were handed off.
+    ///
+    /// ## Why this exists
+    ///
+    /// A mediator live-streams a message only to a recipient that is connected
+    /// at the instant it lands. Everything else is stored — and stored is where
+    /// it stays: the mediator redelivers a stored inbox **only** when a new
+    /// socket *displaces* an existing one for the same DID
+    /// (`websocket_streaming.rs`, `if replacing`), and enabling live delivery
+    /// does not drain anything. So a listener that connects for the first time —
+    /// the applicant persona during a join, a community's session coming up
+    /// after a restart, any identity whose socket was down when a reply arrived
+    /// — hears nothing about what is already waiting for it.
+    ///
+    /// That is the shape of the join that sits `Pending` with the community's
+    /// outbox reporting `Sent`, and it is why relaunching the app "fixes" it:
+    /// the new process's socket displaces the old one and the mediator finally
+    /// redelivers. Collecting explicitly makes that recovery ours rather than a
+    /// side effect of how the previous process happened to exit.
+    ///
+    /// ## Contract
+    ///
+    /// Message-pickup 3.0 delivery-request, then `messages-received` for what
+    /// was handed off — ack **after** handoff, never before, which is the same
+    /// discipline the delivery layer's own dispatcher follows. A frame that
+    /// could not be unsealed, mapped, or queued is deliberately **not** acked:
+    /// it stays in the mailbox rather than being deleted unread, and the drain
+    /// stops there (a stuck frame at the head of the queue would otherwise be
+    /// re-fetched forever). Bounded at `PICKUP_MAX` messages per call (R1.4);
+    /// the remainder is left for the next connect and logged rather than
+    /// silently dropped.
+    ///
+    /// Delivery is at-least-once by design: a message may also arrive live. The
+    /// runtime loop's `SeenMessages` is what makes that harmless.
+    pub async fn pickup_stored(&self, listener_id: &str) -> Result<usize, MessagingError> {
+        let (atm, profile) = {
+            let identities = self.inner.identities.read().await;
+            let wire = identities
+                .get(listener_id)
+                .ok_or_else(|| MessagingError::UnknownListener(listener_id.to_string()))?;
+            (wire.atm.clone(), wire.profile.clone())
+        };
+        let fail = |reason: String| MessagingError::Listener {
+            listener_id: listener_id.to_string(),
+            reason,
+        };
+
+        let mut handed_off = 0usize;
+        while handed_off < PICKUP_MAX {
+            let batch = atm
+                .message_pickup()
+                .send_delivery_request_frames(&profile, Some(PICKUP_PAGE), true)
+                .await
+                .map_err(|e| fail(format!("delivery-request failed: {e}")))?;
+            if batch.is_empty() {
+                break;
+            }
+            let requested = batch.len();
+
+            let mut acks: Vec<String> = Vec::with_capacity(requested);
+            for (frame, attachment_id) in batch {
+                // An attachment the mediator could not hand over: there is
+                // nothing to deliver, but it must still be acked or every future
+                // pickup re-fetches the same dead entry.
+                let Some(frame) = frame else {
+                    acks.push(attachment_id);
+                    continue;
+                };
+                let Some((message, transport, from)) =
+                    frame_to_message(&atm, &profile, frame).await
+                else {
+                    continue;
+                };
+                let events = classify_inbound(message, transport, from, listener_id.to_string());
+                // An unroutable type is *handled* — the live path drops it too —
+                // so ack it rather than leaving it to be re-fetched forever.
+                if events.is_empty() {
+                    acks.push(attachment_id);
+                    continue;
+                }
+                let mut queued = true;
+                for event in events {
+                    if let Err(e) = self.inner.event_tx.try_send(event) {
+                        tracing::warn!(
+                            error = %e,
+                            "DIDComm event channel saturated during pickup — leaving the message stored"
+                        );
+                        queued = false;
+                        break;
+                    }
+                }
+                if queued {
+                    handed_off += 1;
+                    acks.push(attachment_id);
+                }
+            }
+
+            if !acks.is_empty() {
+                let acked = acks.len();
+                if let Err(e) = atm
+                    .message_pickup()
+                    // `wait_for_response`: the reply is the mediator's status
+                    // after the delete, so waiting is what makes a failed ack
+                    // visible here instead of showing up as the same messages
+                    // arriving again on the next connect.
+                    .send_messages_received(&profile, &acks, true)
+                    .await
+                {
+                    // The messages are already with the state handler; failing to
+                    // ack only means the mediator serves them again, which
+                    // `SeenMessages` absorbs. Not worth failing the pickup over.
+                    tracing::warn!(
+                        listener = %crate::display::truncate_did(listener_id, 32),
+                        acked,
+                        error = %e,
+                        "could not acknowledge picked-up messages; they will be offered again"
+                    );
+                }
+            }
+
+            // Only continue once a *whole* full page was accounted for. A frame
+            // left unacked stays at the head of the queue, so another round would
+            // fetch the same page again — this is what makes the loop terminate
+            // without ever deleting something we could not read.
+            if acks.len() < requested || requested < PICKUP_PAGE {
+                break;
+            }
+        }
+
+        if handed_off >= PICKUP_MAX {
+            tracing::warn!(
+                listener = %crate::display::truncate_did(listener_id, 32),
+                limit = PICKUP_MAX,
+                "stored-message pickup hit its per-connect limit; the rest stays in the mailbox"
+            );
+        } else if handed_off > 0 {
+            tracing::info!(
+                listener = %crate::display::truncate_did(listener_id, 32),
+                count = handed_off,
+                "collected messages the mediator was holding"
+            );
+        }
+        Ok(handed_off)
     }
 
     /// Stop every drain and the dispatcher, and drop all transports.
@@ -629,7 +806,7 @@ pub async fn add_listener(service: &Messaging, spec: &ListenerSpec) -> Result<()
         .await
         .map_err(|e| fail(format!("mediator connect: {e}")))?;
     let transport: Arc<dyn MessageTransport> = Arc::new(
-        DidCommTransport::new(atm.clone(), profile)
+        DidCommTransport::new(atm.clone(), profile.clone())
             .await
             .map_err(|e| fail(format!("transport bind: {e}")))?,
     );
@@ -642,6 +819,7 @@ pub async fn add_listener(service: &Messaging, spec: &ListenerSpec) -> Result<()
         spec.id.clone(),
         IdentityWire {
             atm,
+            profile,
             did: spec.did.clone(),
             spec: spec.clone(),
         },
@@ -667,14 +845,6 @@ pub async fn add_listener(service: &Messaging, spec: &ListenerSpec) -> Result<()
 /// `vtc-service` made when it cut over. Acking is **not** done here: the service's
 /// own dispatcher acks after handoff, never before.
 async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender<DIDCommEvent>) {
-    let catch_all = match regex::Regex::new(&format!("^(?:{OPENVTC_CATCH_ALL_PATTERN})$")) {
-        Ok(re) => re,
-        Err(e) => {
-            tracing::error!(error = %e, "catch-all pattern failed to compile — inbound dispatch is dead");
-            return;
-        }
-    };
-
     let mut inbound = service.subscribe();
     while let Some(item) = inbound.next().await {
         // Both protocols arrive on this one stream — `DidCommTransport` owns the
@@ -707,51 +877,160 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
         // The transport authenticated the sender; the plaintext `from` header is
         // sender-controlled. Prefer the cryptographically-bound one.
         let from = item.message.sender.clone().or_else(|| message.from.clone());
-        let listener_id = item.message.recipient.clone();
 
-        let event = if message.typ == TRUST_PING_TYPE {
-            // Not auto-answered: the state handler pongs only after checking the
-            // sender has a relationship.
-            DIDCommEvent::TrustPingReceived {
-                from,
-                listener_id,
-                message_id: message.id.clone(),
+        for event in classify_inbound(message, transport, from, item.message.recipient.clone()) {
+            if let Err(e) = event_tx.try_send(event) {
+                tracing::warn!(error = %e, "DIDComm event channel saturated — dropping inbound message");
             }
-        } else if message.typ == TRUST_PONG_TYPE {
-            // Forwarded as both: InboundMessage drives task removal, the pong
-            // event drives the activity log.
-            let _ = event_tx
-                .try_send(DIDCommEvent::TrustPongReceived { from: from.clone() })
-                .inspect_err(|e| tracing::warn!(error = %e, "dropping trust-pong log event"));
-            DIDCommEvent::InboundMessage {
-                from,
-                message: Box::new(message),
-                transport,
-            }
-        } else if catch_all.is_match(&message.typ) {
-            tracing::info!(
-                listener = %crate::display::truncate_did(&item.message.recipient, 32),
-                msg_type = %message.typ,
-                from = ?from.as_deref().map(|d| crate::display::truncate_did(d, 32)),
-                thid = ?message.thid,
-                "inbound OpenVTC message received"
-            );
-            DIDCommEvent::InboundMessage {
-                from,
-                message: Box::new(message),
-                transport,
-            }
-        } else {
-            // Pickup-status heartbeats and anything else: dropped, as the
-            // framework's ignore-handler and fallback did.
-            debug!(typ = %message.typ, "unhandled message type — dropped");
-            continue;
-        };
-
-        if let Err(e) = event_tx.try_send(event) {
-            tracing::warn!(error = %e, "DIDComm event channel saturated — dropping inbound message");
         }
     }
+}
+
+/// Unseal one picked-up frame into the shape [`classify_inbound`] takes, with
+/// the cryptographically-bound sender the live path would have carried.
+///
+/// The live stream arrives pre-mapped by the SDK's transport adapter; a frame
+/// collected from storage has not been through it, so the same two unsealings
+/// happen here — DIDComm was already unpacked by the delivery-request handler
+/// (which is where the metadata comes from), TSP is unsealed by `atm.tsp()`,
+/// exactly as `tsp_to_inbound` does on the live path.
+async fn frame_to_message(
+    atm: &ATM,
+    profile: &Arc<ATMProfile>,
+    frame: InboundFrame,
+) -> Option<(Message, MessagingTransport, Option<String>)> {
+    match frame {
+        InboundFrame::DidComm(message, meta) => {
+            let from = authenticated_sender(&message, &meta);
+            Some((*message, MessagingTransport::DidComm, from))
+        }
+        InboundFrame::Tsp(packed) => {
+            // `unpack` authenticates the sender VID (resolve + verify), so
+            // `sender` here is proven, not self-asserted — the same guarantee
+            // the live path's `Inbound.message.sender` carries.
+            let (payload, sender) = match atm.tsp().unpack(profile, &packed).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error = %e, "could not unpack a stored TSP frame — leaving it in the mailbox");
+                    return None;
+                }
+            };
+            // The mediator keys a stored TSP frame on `sha256(packed)`, which is
+            // the id the live path falls back to when the document carries none.
+            let fallback_id = {
+                use sha2::{Digest, Sha256};
+                hex::encode(Sha256::digest(packed.as_bytes()))
+            };
+            let recipient = profile.inner.did.clone();
+            let message =
+                tsp_document_to_message(&payload, Some(&sender), &recipient, &fallback_id)?;
+            Some((message, MessagingTransport::Tsp, Some(sender)))
+        }
+        // `InboundFrame` is `#[non_exhaustive]`: a protocol OpenVTC does not
+        // speak. Left in the mailbox rather than acked — the same handling the
+        // live dispatcher gives an unsupported `Protocol`, minus the deletion.
+        other => {
+            debug!(frame = ?std::mem::discriminant(&other), "picked-up frame on an unsupported protocol — left stored");
+            None
+        }
+    }
+}
+
+/// The DID that actually authcrypted a picked-up DIDComm message, or `None`
+/// when there is none.
+///
+/// A mirror of the SDK transport adapter's `authenticated_sender`, which is
+/// private to that crate. The plaintext `from` header is sender-controlled: an
+/// attacker can authcrypt with their own key (so `authenticated` is true) while
+/// claiming a victim's `from`, and only the `from == DID(encrypted_from_kid)`
+/// check rejects that. The live path gets this for free; a picked-up message
+/// must not be the one place where it is skipped, because these messages carry
+/// membership decisions and credentials.
+///
+/// Belongs upstream on `InboundFrame` rather than here — see the note in
+/// [`Messaging::pickup_stored`].
+fn authenticated_sender(
+    message: &Message,
+    meta: &affinidi_messaging_sdk::messages::compat::UnpackMetadata,
+) -> Option<String> {
+    if !meta.authenticated || meta.anonymous_sender {
+        return None;
+    }
+    let kid = meta.encrypted_from_kid.as_deref()?;
+    let key_did = kid.split_once('#').map(|(did, _)| did).unwrap_or(kid);
+    match message.from.as_deref() {
+        Some(from) if from == key_did => Some(from.to_string()),
+        _ => None,
+    }
+}
+
+/// The routing gate, compiled once and shared by the live dispatcher and the
+/// stored-message pickup so the two admit **exactly** the same set.
+///
+/// It used to be compiled inside `dispatch_inbound`, where a compile failure
+/// silently killed inbound dispatch for the process. The pattern is a `const`
+/// covered by `catch_all_tests`, so a failure is a build-time bug; treating it
+/// as one here is what lets both call sites share a single compiled regex
+/// without either carrying an unreachable error path.
+static CATCH_ALL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(&format!("^(?:{OPENVTC_CATCH_ALL_PATTERN})$"))
+        .expect("OPENVTC_CATCH_ALL_PATTERN is a constant, and `catch_all_tests` compiles it")
+});
+
+/// Classify one already-decoded inbound message into the events the state
+/// handler consumes. Returns **zero or more**: an unroutable type yields none, a
+/// trust-pong yields two (the log event and the message itself).
+///
+/// Peeled out of [`dispatch_inbound`] so [`Messaging::pickup_stored`] admits the
+/// same messages by the same rules. A message the mediator stored while nobody
+/// was listening is not a different kind of message, and a second copy of this
+/// decision would be free to drift from the live one — which is the failure that
+/// is invisible until a specific reply type stops arriving on one path only.
+fn classify_inbound(
+    message: Message,
+    transport: MessagingTransport,
+    from: Option<String>,
+    listener_id: String,
+) -> Vec<DIDCommEvent> {
+    if message.typ == TRUST_PING_TYPE {
+        // Not auto-answered: the state handler pongs only after checking the
+        // sender has a relationship.
+        return vec![DIDCommEvent::TrustPingReceived {
+            from,
+            listener_id,
+            message_id: message.id.clone(),
+        }];
+    }
+    if message.typ == TRUST_PONG_TYPE {
+        // Forwarded as both: InboundMessage drives task removal, the pong
+        // event drives the activity log.
+        return vec![
+            DIDCommEvent::TrustPongReceived { from: from.clone() },
+            DIDCommEvent::InboundMessage {
+                from,
+                message: Box::new(message),
+                transport,
+            },
+        ];
+    }
+    if CATCH_ALL.is_match(&message.typ) {
+        tracing::info!(
+            listener = %crate::display::truncate_did(&listener_id, 32),
+            msg_type = %message.typ,
+            from = ?from.as_deref().map(|d| crate::display::truncate_did(d, 32)),
+            thid = ?message.thid,
+            "inbound OpenVTC message received"
+        );
+        return vec![DIDCommEvent::InboundMessage {
+            from,
+            message: Box::new(message),
+            transport,
+        }];
+    }
+    // Pickup-status heartbeats and anything else: dropped, as the framework's
+    // ignore-handler and fallback did.
+    debug!(typ = %message.typ, "unhandled message type — dropped");
+    Vec::new()
 }
 
 /// Normalise an inbound TSP frame into the [`Message`] shape the dispatcher and
@@ -782,7 +1061,31 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
 /// warning rather than guessed at: unlike DIDComm there is no envelope to fall
 /// back on, and inventing a type would route it to the wrong handler.
 fn tsp_frame_to_message(item: &affinidi_messaging_core::transport::Inbound) -> Option<Message> {
-    let doc: serde_json::Value = match serde_json::from_slice(&item.message.payload) {
+    tsp_document_to_message(
+        &item.message.payload,
+        item.message.sender.as_deref(),
+        &item.message.recipient,
+        &item.message.id,
+    )
+}
+
+/// The mapping itself, over an already-unsealed TSP payload.
+///
+/// Split from [`tsp_frame_to_message`] because the two ways a TSP frame reaches
+/// us differ only in *who* unsealed it: the live stream arrives as an `Inbound`
+/// the SDK's transport adapter already unpacked, while a frame picked up from
+/// storage ([`Messaging::pickup_stored`]) is unsealed by this crate. The
+/// document-to-`Message` rules above must not be written twice.
+///
+/// `fallback_id` is the frame hash — the id the SDK substitutes when the
+/// document carries none.
+fn tsp_document_to_message(
+    payload: &[u8],
+    sender: Option<&str>,
+    recipient: &str,
+    fallback_id: &str,
+) -> Option<Message> {
+    let doc: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(doc) => doc,
         Err(e) => {
             tracing::warn!(error = %e, "inbound TSP frame is not JSON — dropped");
@@ -803,7 +1106,7 @@ fn tsp_frame_to_message(item: &affinidi_messaging_core::transport::Inbound) -> O
     let id = doc
         .get("id")
         .and_then(|i| i.as_str())
-        .unwrap_or(&item.message.id)
+        .unwrap_or(fallback_id)
         .to_string();
 
     let mut builder = Message::build(id, typ.to_string(), doc.clone());
@@ -814,10 +1117,10 @@ fn tsp_frame_to_message(item: &affinidi_messaging_core::transport::Inbound) -> O
     if let Some(thid) = doc.get("threadId").and_then(|t| t.as_str()) {
         builder = builder.thid(thid.to_string());
     }
-    if let Some(sender) = item.message.sender.as_deref() {
+    if let Some(sender) = sender {
         builder = builder.from(sender.to_string());
     }
-    Some(builder.to(item.message.recipient.clone()).finalize())
+    Some(builder.to(recipient.to_string()).finalize())
 }
 
 /// Catch-all pattern for OpenVTC protocol messages + VTC Trust-Task
@@ -1140,6 +1443,59 @@ pub fn spawn_lifecycle_logger(
 ///
 /// A rebuild **removes before it adds**, because the mediator permits one websocket
 /// per DID and rejects a second with `duplicate-channel`.
+/// Collect a listener's stored mail every time its socket comes up.
+///
+/// Subscribes to the same connection transitions the session manager and the
+/// activity log read, so "connected" means the one thing here it means
+/// everywhere else. Every connect qualifies, not just the first: a reconnect is
+/// exactly when a message may have landed with nobody attached.
+///
+/// Each pickup runs detached — the drain is network I/O and must not hold up the
+/// next transition — and at most one per listener is in flight, so a flapping
+/// socket cannot stack overlapping drains of the same mailbox.
+async fn pickup_on_connect(service: Messaging) {
+    let mut transitions = service.subscribe();
+    loop {
+        let listener_id = match transitions.recv().await {
+            Ok(ListenerStatus::Connected { listener_id }) => listener_id,
+            Ok(ListenerStatus::Disconnected { .. }) => continue,
+            // Lagged: transitions were missed, not the mailbox. The next connect
+            // collects whatever accumulated, and a listener that is up *now* is
+            // covered by the supervisor's own reconnect path.
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        };
+
+        {
+            let mut in_flight = service.inner.pickup_in_flight.lock().expect("pickup mutex");
+            if !in_flight.insert(listener_id.clone()) {
+                continue;
+            }
+        }
+
+        let collector = service.clone();
+        tokio::spawn(async move {
+            if let Err(e) = collector.pickup_stored(&listener_id).await {
+                // Never fatal: the socket is up and live delivery is on, so this
+                // costs only what was already waiting. Named rather than
+                // generic (R6.4) so an operator can tell an unreachable mediator
+                // from a listener that was torn down mid-pickup.
+                tracing::warn!(
+                    listener = %crate::display::truncate_did(&listener_id, 32),
+                    error = %e,
+                    "could not collect stored messages after connect"
+                );
+            }
+            collector
+                .inner
+                .pickup_in_flight
+                .lock()
+                .expect("pickup mutex")
+                .remove(&listener_id);
+        });
+    }
+}
+
 async fn supervise_transports(service: Messaging) {
     let mut down: HashMap<String, DownSince> = HashMap::new();
 
@@ -1307,22 +1663,24 @@ pub async fn start_service(
     event_tx: mpsc::Sender<DIDCommEvent>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<Messaging, MessagingError> {
-    let service = Messaging::start(event_tx);
+    let service = start_empty_service(event_tx, shutdown);
+    install_listeners(&service, config, tdk).await;
+    Ok(service)
+}
 
-    // Listeners are installed one at a time rather than handed over as a set: each
-    // is an independent mediator connect, and one persona whose mediator is down
-    // must not stop the others coming up. A failure is logged and skipped — the
-    // panel reports per-listener state, so a missing one is visible rather than
-    // silent, and `reconnect_persona_listener_io` is the recovery path.
-    for spec in build_listener_configs(config, tdk).await {
-        if let Err(e) = add_listener(&service, &spec).await {
-            tracing::warn!(
-                listener = %crate::display::truncate_did(&spec.id, 32),
-                error = %e,
-                "listener failed to come up; continuing without it"
-            );
-        }
-    }
+/// Stand the runtime up with **no** listeners, honouring `shutdown`.
+///
+/// Separated from [`start_service`] because a State-A account has no identity to
+/// install a listener for, yet still needs the runtime live: the join flow can
+/// then bring the applicant persona's socket up *before* it submits, which is
+/// the whole of what stops a fast community reply from being stored unread.
+/// `Messaging::start` is built for this — its dispatcher runs before the first
+/// transport exists — so an empty service is a supported state, not a stub.
+pub fn start_empty_service(
+    event_tx: mpsc::Sender<DIDCommEvent>,
+    shutdown: tokio_util::sync::CancellationToken,
+) -> Messaging {
+    let service = Messaging::start(event_tx);
 
     // The framework owned the shutdown token; now it is ours to honour. Dropping
     // every transport on cancel is what stops a stale socket racing the next
@@ -1333,7 +1691,34 @@ pub async fn start_service(
         on_cancel.shutdown().await;
     });
 
-    Ok(service)
+    service
+}
+
+/// Install every listener `config` describes that is not already running.
+///
+/// Idempotent by listener id, because it is called after a path that may have
+/// installed one already: a State-A join brings its own persona up mid-ceremony,
+/// and re-adding that id would error on the duplicate (and, worse, race a second
+/// socket against the live one for the same DID).
+///
+/// Listeners are installed one at a time rather than handed over as a set: each
+/// is an independent mediator connect, and one persona whose mediator is down
+/// must not stop the others coming up. A failure is logged and skipped — the
+/// panel reports per-listener state, so a missing one is visible rather than
+/// silent, and `reconnect_persona_listener_io` is the recovery path.
+pub async fn install_listeners(service: &Messaging, config: &Config, tdk: &affinidi_tdk::TDK) {
+    for spec in build_listener_configs(config, tdk).await {
+        if service.has_listener(&spec.id).await {
+            continue;
+        }
+        if let Err(e) = add_listener(service, &spec).await {
+            tracing::warn!(
+                listener = %crate::display::truncate_did(&spec.id, 32),
+                error = %e,
+                "listener failed to come up; continuing without it"
+            );
+        }
+    }
 }
 
 /// Produce a short, collision-resistant identifier from a DID for listener IDs.
