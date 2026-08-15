@@ -6,6 +6,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **`openvtc health` reports progress as it works.** The command is almost
+  entirely network waits — a `did:webvh` resolution is an HTTPS fetch and each
+  probe is bounded at 10s — so a chain with a few mediators could sit silent for
+  most of a run that took 14 seconds. Each step now announces itself *before* the
+  wait and reports the time it actually took, which makes the slow step visible
+  while it is slow rather than inferable afterwards (it isn't: the finished
+  report has no timings). Progress goes to stderr and the report to stdout, so
+  `openvtc health --json > report.json` still pipes cleanly while showing the
+  operator what is being waited on.
+
+### Changed
+
+- **`openvtc health` no longer probes `#files` and `#whois`.** Both are served by
+  the DID host the report just fetched `did.jsonl` from, so resolving the DID had
+  already proven that host answers — and `#files` points at the directory rather
+  than the document, so the probe reported a 404 for a path that never serves a
+  bare GET. Four such lines per party buried the transport probes that carry
+  information. Implemented as a skip-list of the two document-adjacent service
+  types rather than an allow-list of known transports, so a transport type this
+  build has never heard of is still probed.
+
+- **A probe's verdict now agrees with its status code.** "reachable (HTTP 404)"
+  read as a contradiction — the word claimed health, the number denied it, and
+  nothing told the reader which to believe. Statuses are graded: 2xx/3xx is `ok`,
+  4xx is `responding` (the normal answer from an endpoint that takes POSTs and
+  websockets rather than GETs), and 5xx is `server error`. Only the last is
+  raised as a finding, which is a case the flat "reachable" actively hid: the
+  host is up and the service behind it is failing.
+
+- **A DIDComm-only persona against a TSP-only community now says what to do.**
+  The advertised sets alone (`we offer [didcomm], they offer [tsp]`) do not tell
+  an operator which side to change. A persona minted before the client requested
+  `#tsp` cannot reach a TSP-only community and will never gain the service on its
+  own — the document is written at mint time and not revisited — so the finding
+  now says that, and that re-minting is the fix. Scoped to that one direction:
+  re-minting our persona does not fix a DIDComm-only community.
+
+### Fixed
+
+- **The Communities footer no longer advertises `c` twice.** It listed every
+  binding unconditionally, so `c: capabilities` and `c: cancel` appeared side by
+  side and read as a collision. It never was one — `c` is capabilities on an
+  Active row and cancel on a Pending one, and the states are mutually exclusive.
+  The footer now shows what the selected row actually accepts, which also removes
+  four silent no-ops it was advertising: `l`/`m` on a Pending or Inactive row and
+  `x`/`d` on an Active one. The two panel-level keys (`j`, `v`) stay listed
+  always, including when nothing is selected.
+
 ## [0.3.1] - 2026-08-15
 
 A first-run join could go out and never be answerable. This fixes the state
