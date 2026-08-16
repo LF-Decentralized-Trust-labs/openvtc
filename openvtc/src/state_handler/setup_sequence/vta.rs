@@ -266,6 +266,17 @@ pub async fn list_webvh_servers(client: &VtaClient) -> Result<Vec<WebvhServerRec
 
 /// Create a DID via a WebVH server
 /// Returns (PersonaDIDKeys, did, Document, mnemonic)
+///
+/// # Callers must surface the TSP warning
+///
+/// This requests `#tsp` unconditionally, but the VTA drops it unless it has
+/// `[services] tsp` configured with a mediator — silently, and the resulting
+/// persona looks entirely healthy while being unable to reach a TSP-only
+/// community. A `warn!` is emitted here so the log always carries it, but the
+/// operator is looking at a TUI, not a log. Pass the returned `Document` to
+/// [`tsp_advertisement_warning`] and show what it returns.
+///
+/// [`tsp_advertisement_warning`]: openvtc_core::config::did::tsp_advertisement_warning
 pub async fn create_did_via_server(
     client: &VtaClient,
     tdk: &TDK,
@@ -394,6 +405,22 @@ pub async fn create_did_via_server(
         .resolve(&did)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to resolve created DID: {e}"))?;
+
+    // We asked for `#tsp` above; the VTA is entitled to refuse (it drops the
+    // entry unless it has `[services] tsp` on with a mediator). Record here,
+    // once, whether it actually granted it — this is the only place every mint
+    // passes through, so a caller cannot forget to look. The user-facing half is
+    // each caller's activity log, via `tsp_advertisement_warning`.
+    if openvtc_core::config::did::advertises_tsp(&resolved.doc) {
+        tracing::debug!(%did, "minted persona advertises #tsp");
+    } else {
+        tracing::warn!(
+            %did,
+            "minted persona has no #tsp service — the VTA did not grant the one we \
+             requested (needs `[services] tsp` with a mediator). This persona cannot \
+             reach a TSP-only community and the document will not gain the service later."
+        );
+    }
 
     Ok((persona_keys, did, resolved.doc, mnemonic))
 }

@@ -52,6 +52,53 @@ pub fn mediator_from_document(doc: &Document) -> Option<String> {
         .filter(|m| !m.is_empty())
 }
 
+/// Whether a freshly-minted persona document actually advertises `#tsp`.
+///
+/// Matched on the service `type` (`TSPTransport`), never the `#id` fragment —
+/// the fragment is an arbitrary label and the OWF reference implementation names
+/// it `#tsp-transport` where this stack names it `#tsp`.
+pub fn advertises_tsp(document: &Document) -> bool {
+    document.service.iter().any(|s| {
+        s.type_
+            .iter()
+            .any(|t| t == vta_sdk::protocol::matching::TSP_SERVICE_TYPE)
+    })
+}
+
+/// The warning to show when a minted persona did **not** get its `#tsp`
+/// service, or `None` when it did.
+///
+/// OpenVTC always asks for it — `create_did_via_server` sets
+/// `add_tsp_service: true` unconditionally, on every one of the three paths that
+/// mint a persona. The VTA is entitled to refuse: it drops the entry unless it
+/// has `[services] tsp` enabled with a mediator configured, which is a
+/// deliberate accommodation for a DIDComm-only deployment.
+///
+/// What was wrong is that it refused **silently**. A persona minted against such
+/// a VTA looks completely healthy — it resolves, it has a mediator, it messages
+/// DIDComm peers fine — and is simply unable to reach a TSP-only community,
+/// which surfaces much later as a join that goes out and is never answered.
+/// Since the service is written at mint time and the document is never revisited,
+/// that persona will not recover on its own; the only fix is to mint another one
+/// once the VTA is configured, and the moment to say so is now, while the
+/// operator is still looking at the screen that created it.
+///
+/// Returns the message rather than logging it so the one wording is shared by
+/// all three call sites (setup wizard, join flow, and the persona manager) —
+/// three copies would drift, and this is the sentence that has to be right.
+pub fn tsp_advertisement_warning(document: &Document) -> Option<String> {
+    if advertises_tsp(document) {
+        return None;
+    }
+    Some(
+        "Note: this persona advertises DIDComm only — the VTA did not add a TSP \
+         service. It cannot join a TSP-only community, and the DID cannot gain \
+         the service later. Enable `[services] tsp` on the VTA (with a mediator \
+         configured) and mint a new persona if you need one."
+            .to_string(),
+    )
+}
+
 /// Creates a new `did:webvh` DID with key pre-rotation enabled.
 ///
 /// This builds a full DID Document containing three verification methods:
@@ -408,6 +455,76 @@ mod tests {
         let parsed = Url::parse(&normalized).expect("parse url");
         let webvh = WebVHURL::parse_url(&parsed).expect("webvh parse");
         webvh.to_did_base()
+    }
+
+    /// Build a document with the given service types, via the same
+    /// `ServiceBuilder` the minting path uses.
+    fn doc_with_services(types: &[&str]) -> Document {
+        let did = "did:webvh:QmScid:example.com:persona";
+        let mut document = Document::new(did).expect("new document");
+        for (i, type_) in types.iter().enumerate() {
+            let endpoint = Endpoint::Map(json!([{
+                "accept": ["didcomm/v2"],
+                "uri": "did:webvh:QmScid:example.com:mediator",
+            }]));
+            let id = Url::parse(&format!("{did}#svc-{i}")).expect("service id");
+            document
+                .service
+                .push(ServiceBuilder::new(*type_, endpoint).id_url(id).build());
+        }
+        document
+    }
+
+    /// The service is matched on `type`, never the `#id` fragment — the OWF
+    /// reference implementation names it `#tsp-transport` where this stack names
+    /// it `#tsp`, and both are `TSPTransport`.
+    #[test]
+    fn tsp_is_detected_by_type_not_id() {
+        assert!(advertises_tsp(&doc_with_services(&["TSPTransport"])));
+        assert!(advertises_tsp(&doc_with_services(&[
+            "DIDCommMessaging",
+            "TSPTransport"
+        ])));
+    }
+
+    /// The case this exists for: the VTA granted DIDComm and declined TSP. That
+    /// persona resolves, has a mediator, and messages DIDComm peers fine — it is
+    /// only unable to reach a TSP-only community, which is invisible until a
+    /// join goes unanswered.
+    #[test]
+    fn a_didcomm_only_mint_is_warned_about() {
+        let document = doc_with_services(&["DIDCommMessaging"]);
+        assert!(!advertises_tsp(&document));
+
+        let warning = tsp_advertisement_warning(&document).expect("must warn");
+        assert!(
+            warning.contains("TSP-only community"),
+            "the consequence must be named, not just the missing service: {warning}"
+        );
+        assert!(
+            warning.contains("cannot gain the service later"),
+            "a persona does not recover on its own — the document is written at \
+             mint time and never revisited, and an operator who thinks it will \
+             heal is the reason this warning exists: {warning}"
+        );
+        assert!(
+            warning.contains("[services] tsp"),
+            "the fix is a VTA setting; naming it is what makes this actionable: {warning}"
+        );
+    }
+
+    /// A healthy mint must stay silent. A warning shown on every persona is a
+    /// warning nobody reads by the third one.
+    #[test]
+    fn a_tsp_capable_mint_says_nothing() {
+        let document = doc_with_services(&["DIDCommMessaging", "TSPTransport"]);
+        assert_eq!(tsp_advertisement_warning(&document), None);
+    }
+
+    /// A document with no services at all is the same defect, not a special case.
+    #[test]
+    fn a_serviceless_document_is_warned_about_too() {
+        assert!(tsp_advertisement_warning(&doc_with_services(&[])).is_some());
     }
 
     #[test]

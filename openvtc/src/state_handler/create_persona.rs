@@ -67,6 +67,14 @@ pub(crate) async fn mint_standalone_persona(
     )
     .await?;
 
+    // The VTA may have declined the `#tsp` service we asked for. Report it
+    // through the same progress channel the caller is already showing, so a
+    // persona that cannot reach a TSP-only community says so at mint time rather
+    // than months later as a join nobody answers.
+    if let Some(warning) = openvtc_core::config::did::tsp_advertisement_warning(&document) {
+        progress(&warning);
+    }
+
     // The persona's mediator is the account's VTA mediator: the DID minted via
     // the VTA's webvh server advertises that mediator, so the persona listener
     // must use the same one (mirrors the join flow).
