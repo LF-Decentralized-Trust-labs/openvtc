@@ -105,9 +105,13 @@ pub async fn submit_join_request(
 /// message, handled asynchronously by
 /// [`crate::messaging::handle_join_status_response`]; nothing is awaited here.
 ///
-/// `request_id` **must** be the community's own id, not our submit-time
-/// placeholder: the VTC looks the request up by it and answers "not found" for
-/// anything else. [`CommunityRecord::request_id_confirmed`] is the gate.
+/// `request_id` is the community's own id when we hold it. Pass `None` when we
+/// do not: that asks "what is my open request?", which the community answers
+/// from the authenticated applicant, and the reply carries the id.
+///
+/// Never pass our submit-time placeholder — the VTC has never heard of it and
+/// answers "not found". An unconfirmed record has nothing worth quoting, so it
+/// asks id-less instead; see [`CommunityRecord::request_id_confirmed`].
 ///
 /// [`CommunityRecord::request_id_confirmed`]: crate::config::account::CommunityRecord::request_id_confirmed
 pub async fn poll_join_status(
@@ -116,7 +120,7 @@ pub async fn poll_join_status(
     persona_did: &str,
     vtc_did: &str,
     mediator_did: &str,
-    request_id: Uuid,
+    request_id: Option<Uuid>,
     tsp_mediator_did: Option<&str>,
 ) -> Result<(), OpenVTCError> {
     let document_id = format!("urn:uuid:{}", Uuid::new_v4());
@@ -498,7 +502,9 @@ mod tests {
             "did:webvh:example.com:alice",
             "did:webvh:example.com:community",
             "urn:uuid:doc-1",
-            JoinRequestStatusBody { request_id },
+            JoinRequestStatusBody {
+                request_id: Some(request_id),
+            },
         )
         .expect("the status document builds");
 

@@ -563,10 +563,28 @@ impl CommunityRecord {
         true
     }
 
-    /// Whether the community can be asked about this join: still `Pending`, and
-    /// against the community's own request id rather than our placeholder.
+    /// Whether the community can be asked about this join. Any `Pending` record
+    /// qualifies.
+    ///
+    /// This used to also require [`Self::request_id_confirmed`], because the
+    /// poll had to quote the community's own id and our placeholder would be
+    /// answered `not found`. That made the mechanism unusable in the one case it
+    /// exists for: a join whose first correlated reply was lost is exactly the
+    /// join whose id we never learned, so it could never be asked about and sat
+    /// `Pending` for good. The other recovery — collecting stored mail — is
+    /// empty once that mail has been acked and deleted, so both failed together
+    /// (#221).
+    ///
+    /// The community now answers an id-less poll from the authenticated
+    /// applicant (`join-requests/status/0.1` with no `requestId`), and its reply
+    /// carries the id, so an unconfirmed record repairs itself on the first
+    /// answer. `request_id_confirmed` still decides *what we send* — see
+    /// [`Account::pollable_pending`] — it just no longer decides whether we may
+    /// ask at all.
+    ///
+    /// [`Account::pollable_pending`]: crate::config::account::Account::pollable_pending
     pub fn is_pollable_pending(&self) -> bool {
-        self.request_id_confirmed && matches!(self.status, CommunityStatus::Pending { .. })
+        matches!(self.status, CommunityStatus::Pending { .. })
     }
 
     /// Whether this is a `Pending` join the VTC has not acknowledged within
@@ -590,9 +608,15 @@ impl CommunityRecord {
 pub struct PendingPoll {
     pub vtc_did: VtcDid,
     pub persona_ref: PersonaId,
-    /// The **community's** request id — never our submit-time placeholder; see
-    /// [`CommunityRecord::request_id_confirmed`].
-    pub request_id: Uuid,
+    /// The **community's** request id when we hold it, `None` when we still
+    /// hold our own submit-time placeholder (see
+    /// [`CommunityRecord::request_id_confirmed`]).
+    ///
+    /// `None` is not a degraded poll — it asks the community "what is my open
+    /// request?", which it answers from the authenticated applicant, and the
+    /// answer carries the id. So the record repairs itself on the first reply
+    /// and every later poll quotes the real id.
+    pub request_id: Option<Uuid>,
     /// The transport the submit used, so the poll takes the same route. A
     /// community reachable only over TSP would never see a DIDComm poll.
     pub submit_transport: Option<crate::didcomm::MessagingTransport>,
@@ -709,7 +733,8 @@ impl Account {
 
     /// Every `Pending` join the community can be asked about, as the tuple a
     /// status poll needs: which community, which persona speaks to it, the
-    /// community's request id, and the transport the submit went out on.
+    /// community's request id **if we know it**, and the transport the submit
+    /// went out on.
     ///
     /// Read-only and cheap — the caller (a periodic reconcile) runs this on
     /// every tick and expects an empty vector to be the normal answer.
@@ -723,7 +748,11 @@ impl Account {
                 Some(PendingPoll {
                     vtc_did: c.vtc_did.clone(),
                     persona_ref: c.persona_ref,
-                    request_id,
+                    // Only the community's own id is worth quoting. Our
+                    // placeholder names a document the VTC has never heard of
+                    // and is answered `not found`; omitting it asks the
+                    // question that can actually be answered.
+                    request_id: c.request_id_confirmed.then_some(request_id),
                     submit_transport: c.submit_transport,
                 })
             })
@@ -1400,8 +1429,9 @@ mod tests {
 
         let mut c = community("v", pid, pending());
         assert!(
-            !c.is_pollable_pending(),
-            "a record still holding our submit id has nothing the VTC can look up"
+            c.is_pollable_pending(),
+            "a record still holding our submit id is exactly the one worth asking \
+             about — it asks id-less, and the answer carries the id"
         );
         assert!(
             c.confirm_request_id(real),
@@ -1421,28 +1451,53 @@ mod tests {
         assert!(!rejected.is_pollable_pending());
     }
 
+    /// Every `Pending` join is askable; only what we *quote* differs.
+    ///
+    /// This used to list confirmed records only, which meant the joins most in
+    /// need of reconciling — the ones whose reply was lost, so whose id we never
+    /// learned — were the exact ones never polled (#221).
     #[test]
-    fn pollable_pending_lists_only_confirmed_pending_joins() {
+    fn pollable_pending_covers_unconfirmed_joins_and_omits_their_id() {
         let mut acct = Account::default();
         let pid = PersonaId::new();
         let real = Uuid::new_v4();
 
-        // Unconfirmed pending — not askable.
         acct.add_membership(community("unconfirmed", pid, pending()));
         // Active — nothing to ask.
         acct.add_membership(community("active", pid, CommunityStatus::Active));
-        // Confirmed pending — the one case.
         let mut confirmed = community("confirmed", pid, pending());
         confirmed.confirm_request_id(real);
         confirmed.submit_transport = Some(crate::didcomm::MessagingTransport::Tsp);
         acct.add_membership(confirmed);
 
         let pollable = acct.pollable_pending();
-        assert_eq!(pollable.len(), 1);
-        assert_eq!(pollable[0].vtc_did, "confirmed");
-        assert_eq!(pollable[0].request_id, real);
         assert_eq!(
-            pollable[0].submit_transport,
+            pollable.len(),
+            2,
+            "both pending joins are askable: {pollable:?}"
+        );
+
+        let unconfirmed = pollable
+            .iter()
+            .find(|p| p.vtc_did == "unconfirmed")
+            .expect("the unconfirmed join must be polled");
+        assert_eq!(
+            unconfirmed.request_id, None,
+            "our placeholder names a document the VTC has never heard of; omitting \
+             it is what makes the poll answerable"
+        );
+
+        let confirmed = pollable
+            .iter()
+            .find(|p| p.vtc_did == "confirmed")
+            .expect("the confirmed join is still polled");
+        assert_eq!(
+            confirmed.request_id,
+            Some(real),
+            "quote the community's own id"
+        );
+        assert_eq!(
+            confirmed.submit_transport,
             Some(crate::didcomm::MessagingTransport::Tsp),
             "the poll must take the transport the submit took"
         );

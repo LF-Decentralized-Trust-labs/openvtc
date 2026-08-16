@@ -1300,9 +1300,13 @@ mod tests {
             let vtc_request_id = Uuid::new_v4();
             let mut acct = pending_account(vtc, placeholder);
             assert!(
-                !only(&acct, vtc).is_pollable_pending(),
+                !only(&acct, vtc).request_id_confirmed,
                 "{effect}: before any reply we hold our own id, which the VTC has never seen"
             );
+            // Askable regardless — it just cannot quote an id yet, so it asks
+            // "what is my open request?". Adopting the id below is what lets
+            // every later poll name the join the way the community does.
+            assert!(only(&acct, vtc).is_pollable_pending());
 
             let message = Message::build(
                 Uuid::new_v4().to_string(),

@@ -21,6 +21,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   listening at all. Lockfile only — the requirement was already `0.1.12`, so
   nothing but resolution moves. Verified against a live test mediator: all four
   `didcomm_transport_e2e` cases pass, including the stored-mail pickup path.
+- **A join whose reply was lost can be reconciled again.** `join_status_poll`
+  exists to ask a community what became of a join it never answered, but it was
+  gated on `request_id_confirmed` — and the id it needed is the community's,
+  learned from the first correlated reply. A join that never got one held only
+  its own placeholder, which the VTC answers `not found` for, so the mechanism
+  worked whenever it wasn't needed and failed whenever it was. The other
+  recovery, collecting stored mail, is empty once that mail has been acked and
+  deleted, so both failed together and the record sat `Pending` for good.
+
+  A poll now omits the id when we don't hold the community's, which asks "what
+  is my open request?" — resolved from the authenticated applicant
+  (VTI#985). The reply carries the id, and `handle_join_status_response`
+  already adopts it, so an unconfirmed record repairs itself on the first answer
+  and quotes the real id from then on. `request_id_confirmed` still decides what
+  we send; it no longer decides whether we may ask.
+
+  Requires `vta-sdk` 0.24.
 
 - **Inbound messages are no longer dropped when the event channel fills.** The
   DIDComm event channel was a 256-slot bounded channel whose overflow behaviour
