@@ -93,7 +93,6 @@ pub(crate) async fn mint_standalone_persona(
         webvh_address: crate::state_handler::setup_sequence::WebVHAddress {
             did: did.clone(),
             document,
-            ..Default::default()
         },
         ..Default::default()
     };

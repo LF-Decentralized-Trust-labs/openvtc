@@ -50,6 +50,15 @@ impl VtcEnterDid {
             KeyCode::Esc => {
                 let _ = state.action_tx.send(Action::JoinCancel);
             }
+            // Ctrl+V: the explicit "paste an invitation" affordance. Intercepted
+            // ahead of the input handler so it loads a VIC rather than typing
+            // into the DID field. Bracketed paste still works and is the path
+            // that survives SSH; this is the discoverable one.
+            KeyCode::Char('v') | KeyCode::Char('V')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                let _ = state.action_tx.send(Action::JoinPasteFromClipboard);
+            }
             // Ctrl+L: clear a loaded invitation and join without it. Ctrl-modified
             // so it never collides with typing the VTC DID into the input field.
             KeyCode::Char('l') | KeyCode::Char('L')
@@ -203,18 +212,20 @@ fn invitation_lines(state: &JoinState, width: usize) -> Vec<Line<'static>> {
                 ),
             ]));
         }
-        lines.extend(wrapped(
-            "[Ctrl+L] join without it   ·   paste a different VIC to replace it",
+        lines.push(key_row(
+            "[Ctrl+V]",
+            " replace it from the clipboard   ·   [Ctrl+L] join without it",
+            " replace   ·   [Ctrl+L] join without it",
             width,
-            Style::new().fg(COLOR_DARK_GRAY).italic(),
         ));
     } else if state.vic_cleared {
         lines.extend(wrapped(
             "Invitation cleared — joining without a credential; the community may \
-             require manual approval. Paste an invitation credential (VIC) to load one.",
+             require manual approval.",
             width,
             Style::new().fg(COLOR_ORANGE),
         ));
+        lines.push(paste_row(width));
     } else {
         // The lead-in gets its own line: hanging it off a narrowed first line
         // wraps the body into a ragged column on small terminals.
@@ -223,14 +234,49 @@ fn invitation_lines(state: &JoinState, width: usize) -> Vec<Line<'static>> {
             Style::new().fg(COLOR_BORDER).bold(),
         ));
         lines.extend(wrapped(
-            "Paste the invitation credential (VIC) JSON here — it fills in the \
-             community DID for you and rides along with the join request.",
+            "Load the invitation credential (VIC) JSON — it fills in the community \
+             DID for you and rides along with the join request.",
             width,
             Style::new().fg(COLOR_TEXT_DEFAULT),
         ));
+        lines.push(paste_row(width));
     }
     lines.push(Line::default());
     lines
+}
+
+/// The explicit "paste an invitation" row.
+///
+/// The reason issue #29 was filed at all: bracketed paste worked the whole
+/// time, but nothing on screen said so, and an affordance nobody can see is not
+/// an affordance. A named key is discoverable in the way "just paste" is not —
+/// and it still degrades to bracketed paste over SSH, where reading the OS
+/// clipboard cannot work.
+fn paste_row(width: usize) -> Line<'static> {
+    key_row(
+        "[Ctrl+V]",
+        " paste an invitation from the clipboard, or paste the JSON straight in",
+        " paste an invitation",
+        width,
+    )
+}
+
+/// A `[Key] description` row, keys highlighted, falling back to `short` when
+/// the long form would not fit `width`.
+///
+/// These rows are single `Line`s in a block sized by line count, so they clip
+/// rather than wrap — a key row that loses its tail on a narrow terminal is
+/// exactly the affordance this page is trying to make visible.
+fn key_row(key: &str, long: &str, short: &str, width: usize) -> Line<'static> {
+    let desc = if key.len() + long.chars().count() <= width {
+        long
+    } else {
+        short
+    };
+    Line::from(vec![
+        Span::styled(key.to_string(), Style::new().fg(COLOR_SOFT_PURPLE).bold()),
+        Span::styled(desc.to_string(), Style::new().fg(COLOR_TEXT_DEFAULT)),
+    ])
 }
 
 /// Hard-wrap `text` to `width` and style each resulting line.
@@ -299,6 +345,80 @@ mod tests {
         rows.iter()
             .position(|r| r.contains(needle))
             .unwrap_or_else(|| panic!("{needle:?} not drawn in:\n{}", rows.join("\n")))
+    }
+
+    /// The explicit paste key is named on screen in every invitation state.
+    /// Bracketed paste worked all along; nothing said so, which is why the
+    /// issue was filed as "I cannot find anywhere to import a VIC".
+    #[test]
+    fn the_paste_key_is_named_in_every_state() {
+        let states = [
+            ("none", JoinState::default()),
+            (
+                "cleared",
+                JoinState {
+                    vic_cleared: true,
+                    ..JoinState::default()
+                },
+            ),
+            (
+                "loaded",
+                JoinState {
+                    has_invitation: true,
+                    invitation_issuer: Some(ISSUER.to_string()),
+                    ..JoinState::default()
+                },
+            ),
+        ];
+        for (name, state) in states {
+            for width in [60, 100] {
+                let drawn = rows(&state, "", width).join("\n");
+                assert!(
+                    drawn.contains("[Ctrl+V]"),
+                    "{name} at width {width} should name the paste key:\n{drawn}"
+                );
+            }
+        }
+    }
+
+    /// Ctrl+V loads a VIC instead of typing a `v` into the DID field.
+    #[test]
+    fn ctrl_v_asks_for_the_clipboard_rather_than_typing() {
+        use crate::ui::component::Component;
+        use crate::{state_handler::state::State, ui::pages::join_flow::JoinFlow};
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (tx, mut rx) = unbounded_channel();
+        let mut flow = JoinFlow::new(&State::default(), tx);
+        VtcEnterDid::handle_key_event(
+            &mut flow,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+        );
+        assert!(
+            matches!(rx.try_recv(), Ok(Action::JoinPasteFromClipboard)),
+            "expected JoinPasteFromClipboard"
+        );
+        assert_eq!(flow.vtc_did.value(), "", "the key must not reach the input");
+    }
+
+    /// A plain `v` is still just a character — the guard is on the modifier.
+    #[test]
+    fn a_bare_v_still_types() {
+        use crate::ui::component::Component;
+        use crate::{state_handler::state::State, ui::pages::join_flow::JoinFlow};
+        use tokio::sync::mpsc::unbounded_channel;
+
+        let (tx, mut rx) = unbounded_channel();
+        let mut flow = JoinFlow::new(&State::default(), tx);
+        VtcEnterDid::handle_key_event(
+            &mut flow,
+            KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "no action for an ordinary keystroke"
+        );
+        assert_eq!(flow.vtc_did.value(), "v");
     }
 
     /// The paste affordance is the thing an operator holding a VIC needs to

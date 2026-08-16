@@ -23,34 +23,6 @@ pub enum SetupEvent {
     // VtaProvisioning
     VtaAuthCompleted,
 
-    // WebvhServerSelect
-    UseWebvhServer {
-        server_id: String,
-        path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode,
-    },
-    CreateManually,
-
-    // VtaKeysFetch
-    VtaKeysReady,
-
-    // WebvhServerProgress
-    WebvhDIDCreated,
-
-    // DIDKeysShow
-    DIDKeysViewed,
-
-    // DidKeysExportAsk / DidKeysExportShow
-    SkipExport,
-    StartExport,
-    ExportComplete,
-
-    // DidGitSignAsk
-    DidGitSignAccept,
-    DidGitSignSkip,
-
-    // DidGitSignSetup
-    DidGitSignDone,
-
     // Token pages (cfg-gated)
     #[cfg(feature = "openpgp-card")]
     TokenSkipped,
@@ -73,21 +45,6 @@ pub enum SetupEvent {
     },
     ReturnToSetCode,
     AcceptNoCodeRisk,
-
-    // Mediator
-    UseDefaultMediator,
-    UseCustomMediator,
-    CustomMediatorSet {
-        mediator_did: String,
-    },
-
-    // UserName
-    UsernameSet {
-        username: String,
-    },
-
-    // WebVHAddress
-    WebVHComplete,
 
     // FinalPage
     SetupDone,
@@ -118,44 +75,11 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         SetupEvent::ImportConfig => NavResult::GoTo(SetupPage::ConfigImport),
 
         // === VtaProvisioning ===
-        // R-A-5: setup is now State A (account bootstrap) only. Once the admin
+        // R-A-5: setup is State A (account bootstrap) only. Once the admin
         // credential is issued, go straight to protection then create the
-        // account — minting a persona / did:webvh moves to the State-B join flow
-        // (Stage 4). The persona-minting arms below are unreachable from this
-        // flow and will be reused by the join flow.
+        // account — minting a persona / did:webvh belongs to the State-B join
+        // flow, which drives it itself rather than through wizard pages.
         SetupEvent::VtaAuthCompleted => NavResult::GoTo(protection_entry()),
-
-        // === WebvhServerSelect ===
-        SetupEvent::UseWebvhServer {
-            server_id,
-            path_mode,
-        } => NavResult::SendAction(Action::WebvhServerCreateDid(server_id, path_mode)),
-        SetupEvent::CreateManually => NavResult::SendAction(Action::VtaCreateKeys),
-
-        // === VtaKeysFetch ===
-        SetupEvent::VtaKeysReady => NavResult::GoTo(SetupPage::DIDKeysShow),
-
-        // === WebvhServerProgress ===
-        SetupEvent::WebvhDIDCreated => NavResult::GoTo(SetupPage::DIDKeysShow),
-
-        // === DIDKeysShow ===
-        SetupEvent::DIDKeysViewed => NavResult::GoTo(SetupPage::DidKeysExportAsk),
-
-        // === DidKeysExportAsk ===
-        // Both skip and complete land on the git-signing prompt — the
-        // operator chooses there whether to actually run the install.
-        SetupEvent::SkipExport => NavResult::GoTo(SetupPage::DidGitSignAsk),
-        SetupEvent::StartExport => NavResult::GoTo(SetupPage::DidKeysExportInputs),
-
-        // === DidKeysExportShow ===
-        SetupEvent::ExportComplete => NavResult::GoTo(SetupPage::DidGitSignAsk),
-
-        // === DidGitSignAsk ===
-        SetupEvent::DidGitSignAccept => NavResult::SendAction(Action::DidGitSignInstall),
-        SetupEvent::DidGitSignSkip => NavResult::GoTo(protection_entry()),
-
-        // === DidGitSignSetup ===
-        SetupEvent::DidGitSignDone => NavResult::GoTo(protection_entry()),
 
         // === Token pages ===
         #[cfg(feature = "openpgp-card")]
@@ -186,25 +110,6 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         SetupEvent::ReturnToSetCode => NavResult::GoTo(SetupPage::UnlockCodeSet),
         SetupEvent::AcceptNoCodeRisk => NavResult::CompleteSetup,
 
-        // === Mediator ===
-        SetupEvent::UseDefaultMediator => NavResult::GoTo(SetupPage::UserName),
-        SetupEvent::UseCustomMediator => NavResult::GoTo(SetupPage::MediatorCustom),
-        SetupEvent::CustomMediatorSet { mediator_did } => {
-            NavResult::SendAction(Action::SetCustomMediator(mediator_did))
-        }
-
-        // === UserName ===
-        SetupEvent::UsernameSet { username } => {
-            if state.vta.use_webvh_server {
-                NavResult::SendActionThenCompleteSetup(Action::SetUsername(username))
-            } else {
-                NavResult::SendAction(Action::SetUsername(username))
-            }
-        }
-
-        // === WebVHAddress ===
-        SetupEvent::WebVHComplete => NavResult::CompleteSetup,
-
         // === FinalPage ===
         SetupEvent::SetupDone => NavResult::SendAction(Action::ActivateMainMenu),
     }
@@ -212,7 +117,7 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
 
 /// Entry point into the config-protection sub-flow (token setup on openpgp-card
 /// builds, otherwise the unlock-code prompt). Reached straight after VTA
-/// provisioning in State-A setup, and after key export in the persona flow.
+/// provisioning.
 fn protection_entry() -> SetupPage {
     #[cfg(feature = "openpgp-card")]
     {
@@ -268,12 +173,6 @@ mod tests {
         SetupState::default()
     }
 
-    fn webvh_state() -> SetupState {
-        let mut s = SetupState::default();
-        s.vta.use_webvh_server = true;
-        s
-    }
-
     fn matches_goto(result: &NavResult, expected: SetupPage) -> bool {
         matches!(result, NavResult::GoTo(p) if std::mem::discriminant(p) == std::mem::discriminant(&expected))
     }
@@ -308,60 +207,6 @@ mod tests {
         // (then State-A account creation) — no persona-minting pages.
         let r = navigate(SetupEvent::VtaAuthCompleted, &empty_state());
         assert!(matches_goto(&r, protection_entry()));
-    }
-
-    #[test]
-    fn use_webvh_server_emits_create_did_action() {
-        let r = navigate(
-            SetupEvent::UseWebvhServer {
-                server_id: "id".to_string(),
-                path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode::WellKnown,
-            },
-            &empty_state(),
-        );
-        assert!(is_send_action(&r));
-    }
-
-    #[test]
-    fn vta_keys_ready_routes_to_did_keys_show() {
-        let r = navigate(SetupEvent::VtaKeysReady, &empty_state());
-        assert!(matches_goto(&r, SetupPage::DIDKeysShow));
-    }
-
-    #[test]
-    fn webvh_did_created_routes_to_did_keys_show() {
-        let r = navigate(SetupEvent::WebvhDIDCreated, &empty_state());
-        assert!(matches_goto(&r, SetupPage::DIDKeysShow));
-    }
-
-    #[test]
-    fn did_keys_viewed_routes_to_export_ask() {
-        let r = navigate(SetupEvent::DIDKeysViewed, &empty_state());
-        assert!(matches_goto(&r, SetupPage::DidKeysExportAsk));
-    }
-
-    #[test]
-    fn skip_export_lands_on_did_git_sign_ask() {
-        let r = navigate(SetupEvent::SkipExport, &empty_state());
-        assert!(matches_goto(&r, SetupPage::DidGitSignAsk));
-    }
-
-    #[test]
-    fn start_export_routes_to_export_inputs() {
-        let r = navigate(SetupEvent::StartExport, &empty_state());
-        assert!(matches_goto(&r, SetupPage::DidKeysExportInputs));
-    }
-
-    #[test]
-    fn export_complete_lands_on_did_git_sign_ask() {
-        let r = navigate(SetupEvent::ExportComplete, &empty_state());
-        assert!(matches_goto(&r, SetupPage::DidGitSignAsk));
-    }
-
-    #[test]
-    fn did_git_sign_accept_emits_install_action() {
-        let r = navigate(SetupEvent::DidGitSignAccept, &empty_state());
-        assert!(is_send_action(&r));
     }
 
     #[test]
@@ -402,65 +247,8 @@ mod tests {
     }
 
     #[test]
-    fn use_default_mediator_routes_to_username() {
-        let r = navigate(SetupEvent::UseDefaultMediator, &empty_state());
-        assert!(matches_goto(&r, SetupPage::UserName));
-    }
-
-    #[test]
-    fn use_custom_mediator_routes_to_custom_form() {
-        let r = navigate(SetupEvent::UseCustomMediator, &empty_state());
-        assert!(matches_goto(&r, SetupPage::MediatorCustom));
-    }
-
-    #[test]
-    fn custom_mediator_set_emits_action() {
-        let r = navigate(
-            SetupEvent::CustomMediatorSet {
-                mediator_did: "did:web:test".to_string(),
-            },
-            &empty_state(),
-        );
-        assert!(is_send_action(&r));
-    }
-
-    #[test]
-    fn username_set_in_webvh_state_completes_setup() {
-        let r = navigate(
-            SetupEvent::UsernameSet {
-                username: "alice".to_string(),
-            },
-            &webvh_state(),
-        );
-        assert!(is_send_then_complete(&r));
-    }
-
-    #[test]
-    fn username_set_in_manual_state_only_sends_action() {
-        let r = navigate(
-            SetupEvent::UsernameSet {
-                username: "alice".to_string(),
-            },
-            &empty_state(),
-        );
-        assert!(is_send_action(&r));
-    }
-
-    #[test]
-    fn webvh_complete_completes_setup() {
-        let r = navigate(SetupEvent::WebVHComplete, &empty_state());
-        assert!(is_complete(&r));
-    }
-
-    #[test]
     fn setup_done_emits_activate_main_menu() {
         let r = navigate(SetupEvent::SetupDone, &empty_state());
-        assert!(is_send_action(&r));
-    }
-
-    #[test]
-    fn create_manually_emits_create_keys_action() {
-        let r = navigate(SetupEvent::CreateManually, &empty_state());
         assert!(is_send_action(&r));
     }
 }

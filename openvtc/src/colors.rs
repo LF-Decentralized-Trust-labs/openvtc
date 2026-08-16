@@ -31,6 +31,3 @@ pub const COLOR_DARK_GRAY: Color = Color::DarkGray;
 /// Copy/Export actions and sensitive data shortcuts (\[C\], \[C1\], \[C2\], \[C3\])
 /// Soft Purple to distinguish special operations
 pub const COLOR_SOFT_PURPLE: Color = Color::Rgb(189, 147, 249); // #BD93F9
-
-/// Darker purple shade for better accessibility
-pub const COLOR_DARK_PURPLE: Color = Color::Rgb(156, 112, 231); // #9C70E7 - Darker Purple

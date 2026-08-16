@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 #[cfg(feature = "openpgp-card")]
 use openpgp_card::{Card, state::Open};
-use openvtc_core::config::PersonaDIDKeys;
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
 #[cfg(feature = "openpgp-card")]
@@ -15,7 +14,7 @@ use crate::{
         main_page::{MainPanel, menu::MainMenu},
         setup_sequence::{ConfigProtection, SetupPage},
     },
-    ui::pages::setup_flow::{SetupFlow, did_keys_export_inputs::DIDKeysExportInputs},
+    ui::pages::setup_flow::SetupFlow,
 };
 
 // ============================================================================
@@ -287,6 +286,15 @@ pub enum Action {
     /// credential (VIC) JSON — validated + stashed into the join flow.
     JoinPasteVic(String),
 
+    /// Load an invitation credential (VIC) from the OS clipboard on the join
+    /// entry page — the explicit affordance behind `[Ctrl+V]`.
+    ///
+    /// A discoverable action, unlike bracketed paste, which is invisible until
+    /// you already know it works. Reading the clipboard is arboard-only and so
+    /// fails over SSH; the terminal's own paste still arrives as
+    /// [`JoinPasteVic`](Self::JoinPasteVic) there, and the failure says so.
+    JoinPasteFromClipboard,
+
     /// Clear the loaded invitation credential on the join entry page so the
     /// join proceeds without a VIC (explicit "ignore it" choice).
     JoinClearVic,
@@ -479,19 +487,6 @@ pub enum Action {
     /// 2. The next page to render
     SetProtection(ConfigProtection, SetupPage),
 
-    /// Sets the DID Persona Keys.
-    // Handled by the setup wizard, but no page constructs it under the current
-    // online provisioning flow; retained for the manual key-set setup path.
-    #[allow(dead_code)]
-    SetDIDKeys(Box<PersonaDIDKeys>),
-
-    /// Export DID Private keys as PGP Armored file
-    ExportDIDKeys(DIDKeysExportInputs),
-
-    /// Auto-configure did-git-sign for the freshly-provisioned persona.
-    /// Fired on entry to the `DidGitSignSetup` page.
-    DidGitSignInstall,
-
     // ************************************************************************
     // VTA Actions
     /// Submit the VTA DID. Triggers URL resolution + ephemeral setup-key mint
@@ -503,9 +498,6 @@ pub enum Action {
     /// context id the operator typed on the AclInstructions screen so it
     /// matches what they ran `pnm contexts create --id …` with.
     VtaStartProvision(String),
-
-    /// Create keys via VTA service
-    VtaCreateKeys,
 
     // ************************************************************************
     // PGP Hardware token Specific Actions
@@ -533,28 +525,6 @@ pub enum Action {
     /// Write Keys
     #[cfg(feature = "openpgp-card")]
     TokenWriteKeys(Option<Arc<Mutex<Card<Open>>>>),
-
-    // ************************************************************************
-    /// Create a DID via a WebVH server (server_id, path mode)
-    WebvhServerCreateDid(
-        String,
-        vta_sdk::protocols::did_management::create::WebvhPathMode,
-    ),
-
-    /// Using a custom mediator DID
-    SetCustomMediator(String),
-
-    /// What username to be known as
-    SetUsername(String),
-
-    /// Creates the initial WebVH DID
-    CreateWebVHDID(String),
-
-    /// Resets the state of the WebVH DID
-    ResetWebVHDID,
-
-    /// Attempts to resolve a WebVH DID
-    ResolveWebVHDID(String),
 
     /// Final setup step completed, sends the whole setup flow
     SetupCompleted(Box<SetupFlow>),

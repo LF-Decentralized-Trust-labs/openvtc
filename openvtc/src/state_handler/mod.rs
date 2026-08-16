@@ -158,8 +158,6 @@ mod relationship_actions;
 mod save_coalesce;
 mod session_manager;
 mod settings_actions;
-mod setup_did_actions;
-mod setup_did_git_sign_actions;
 pub mod setup_sequence;
 mod setup_token_actions;
 mod setup_vta_actions;
@@ -260,7 +258,7 @@ impl StateHandler {
                 .await?;
 
                 match self
-                    .setup_wizard(&mut action_rx, &mut interrupt_rx, &mut state, &tdk)
+                    .setup_wizard(&mut action_rx, &mut interrupt_rx, &mut state)
                     .await
                 {
                     Ok(SetupWizardExit::Config(mut config)) => {

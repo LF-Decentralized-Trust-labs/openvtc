@@ -468,27 +468,6 @@ pub(crate) async fn handle_vta_start_provision(
         }
     };
 
-    // Discover available WebVH servers (context is already known, so skip
-    // the ACL-based context discovery path). The SDK's list_webvh_servers
-    // routes through the chosen transport automatically.
-    match vta::list_webvh_servers(&client).await {
-        Ok(servers) => {
-            if !servers.is_empty() {
-                state.setup.vta.messages.push(MessageType::Info(format!(
-                    "Found {} WebVH server(s) available for DID hosting.",
-                    servers.len()
-                )));
-            }
-            state.setup.vta.webvh_servers = servers;
-        }
-        Err(e) => {
-            state.setup.vta.messages.push(MessageType::Info(format!(
-                "Could not list WebVH servers: {e}"
-            )));
-            state.setup.vta.webvh_servers = vec![];
-        }
-    }
-
     state.setup.vta.completed = Completion::CompletedOK;
     // Stay on VtaProvisioning so the operator can see the admin DID rotation
     // result (ephemeral setup DID → long-term admin DID) before advancing on
@@ -499,77 +478,6 @@ pub(crate) async fn handle_vta_start_provision(
     // for the key/DID-creation steps (one mediator connection for the whole
     // flow), then shut down once when setup ends.
     Ok(Some(client))
-}
-
-/// Handle the `VtaCreateKeys` action: create persona keys and WebVH update keys via VTA.
-/// Returns `true` if the caller should `continue`.
-pub(crate) async fn handle_vta_create_keys(
-    state: &mut State,
-    state_tx: &watch::Sender<State>,
-    client: Option<&VtaClient>,
-) -> anyhow::Result<bool> {
-    use crate::state_handler::setup_sequence::vta;
-
-    state.setup.vta.messages.clear();
-    state.setup.vta.completed = Completion::NotFinished;
-    state.setup.active_page = SetupPage::VtaKeysFetch;
-    state.setup.vta.messages.push(MessageType::Info(
-        "Creating persona keys via VTA...".to_string(),
-    ));
-    let _ = state_tx.send(state.clone());
-
-    // Reuse the single admin session the wizard opened at provisioning — no fresh
-    // VTA WebSocket per step (which churns the mediator and drops responses).
-    let Some(client) = client else {
-        state.setup.vta.messages.push(MessageType::Error(
-            "VTA admin session unavailable — restart provisioning.".to_string(),
-        ));
-        state.setup.vta.completed = Completion::CompletedFail;
-        return Ok(true);
-    };
-
-    // Create persona keys (signing, authentication, encryption)
-    let context_id = state.setup.vta.context_id.as_deref();
-    match vta::create_persona_keys(client, context_id).await {
-        Ok(persona_keys) => {
-            state.setup.vta.messages.push(MessageType::Info(
-                "Persona keys created successfully.".to_string(),
-            ));
-            let _ = state_tx.send(state.clone());
-
-            // Create WebVH update keys
-            state.setup.vta.messages.push(MessageType::Info(
-                "Creating WebVH update keys...".to_string(),
-            ));
-            let _ = state_tx.send(state.clone());
-
-            match vta::create_update_keys(client, context_id).await {
-                Ok((update_secret, next_update_secret)) => {
-                    state.setup.vta.update_secret = Some(update_secret);
-                    state.setup.vta.next_update_secret = Some(next_update_secret);
-                    state.setup.vta.messages.push(MessageType::Info(
-                        "WebVH update keys created successfully.".to_string(),
-                    ));
-                    state.setup.vta.completed = Completion::CompletedOK;
-                    state.setup.did_keys = Some(persona_keys);
-                }
-                Err(e) => {
-                    state.setup.vta.messages.push(MessageType::Error(format!(
-                        "Failed to create update keys: {e}"
-                    )));
-                    state.setup.vta.completed = Completion::CompletedFail;
-                }
-            }
-        }
-        Err(e) => {
-            state.setup.vta.messages.push(MessageType::Error(format!(
-                "Failed to create persona keys: {e}"
-            )));
-            state.setup.vta.completed = Completion::CompletedFail;
-        }
-    }
-    // No shutdown here — the wizard owns the shared admin session.
-    Ok(false)
 }
 
 #[cfg(test)]

@@ -5,13 +5,11 @@ use crate::{
     state_handler::{
         SetupWizardExit, StateHandler,
         actions::Action,
-        setup_did_actions, setup_did_git_sign_actions,
         setup_sequence::{Completion, MessageType, SetupPage, config::ConfigExtension},
         setup_vta_actions,
         state::{ActivePage, State},
     },
 };
-use affinidi_tdk::TDK;
 use anyhow::Result;
 use openvtc_core::config::Config;
 use secrecy::SecretString;
@@ -23,7 +21,6 @@ impl StateHandler {
         action_rx: &mut UnboundedReceiver<Action>,
         interrupt_rx: &mut broadcast::Receiver<Interrupted>,
         state: &mut State,
-        tdk: &TDK,
     ) -> Result<SetupWizardExit> {
         state.active_page = ActivePage::Setup;
 
@@ -87,10 +84,6 @@ impl StateHandler {
                     state.setup.protection = protection;
                     state.setup.active_page = next_page;
                 },
-                Action::SetDIDKeys(keys) => {
-                    state.setup.did_keys = Some(*keys);
-                    state.setup.active_page = SetupPage::DIDKeysShow;
-                },
                 Action::VtaSubmitDid(vta_did) => {
                     setup_vta_actions::handle_vta_submit_did(state, &self.state_tx, vta_did).await?;
                 },
@@ -116,17 +109,6 @@ impl StateHandler {
                         }
                     }
                 },
-                Action::VtaCreateKeys
-                    if setup_vta_actions::handle_vta_create_keys(state, &self.state_tx, admin_client.as_ref()).await? =>
-                {
-                    continue;
-                },
-                Action::ExportDIDKeys(export_inputs) => {
-                    setup_did_actions::handle_export_did_keys(state, &self.state_tx, export_inputs).await;
-                },
-                Action::DidGitSignInstall => {
-                    setup_did_git_sign_actions::handle_did_git_sign_install(state, &self.state_tx).await?;
-                },
                 #[cfg(feature = "openpgp-card")]
                 Action::GetTokens => {
                     setup_token_actions::handle_get_tokens(state);
@@ -151,51 +133,8 @@ impl StateHandler {
                 Action::SetTokenName(token, name) => {
                     setup_token_actions::handle_set_token_name(state, &self.state_tx, token, &name);
                 },
-                Action::WebvhServerCreateDid(server_id, path_mode) => {
-                    // Cannot move owned bound vars into a match guard, so the
-                    // collapsible_match form clippy suggests doesn't compile.
-                    #[allow(clippy::collapsible_match)]
-                    if setup_did_actions::handle_webvh_server_create_did(state, &self.state_tx, tdk, admin_client.as_ref(), server_id, path_mode).await? {
-                        continue;
-                    }
-                },
-                Action::SetCustomMediator(mediator_did) => {
-                    state.setup.custom_mediator = Some(mediator_did.clone());
-                    if state.setup.vta.use_webvh_server {
-                        if setup_did_actions::handle_custom_mediator_webvh(state, &self.state_tx, tdk, admin_client.as_ref()).await? {
-                            continue;
-                        }
-                    } else {
-                        state.setup.active_page = SetupPage::UserName;
-                    }
-                },
-                Action::SetUsername(username) => {
-                    state.setup.username = username;
-                    if state.setup.vta.use_webvh_server {
-                        state.setup.active_page = SetupPage::FinalPage;
-                    } else {
-                        state.setup.active_page = SetupPage::WebVHAddress;
-                    }
-                },
-                Action::CreateWebVHDID(webvh_address) => {
-                    #[allow(clippy::collapsible_match)]
-                    if setup_did_actions::handle_create_webvh_did(state, &self.profile, webvh_address).await? {
-                        continue;
-                    }
-                },
-                Action::ResetWebVHDID => {
-                    state.setup.webvh_address.messages.clear();
-                    state.setup.webvh_address.completed = Completion::NotFinished;
-                },
-                Action::ResolveWebVHDID(did) => {
-                    setup_did_actions::handle_resolve_webvh_did(state, tdk, did).await;
-                },
                 Action::SetupCompleted(_setup_flow) => {
                     state.setup.active_page = SetupPage::FinalPage;
-                    // The armored private-key block is no longer needed once we
-                    // leave the export page; drop it so it stops being cloned
-                    // out on every state broadcast.
-                    state.setup.did_keys_export.exported = None;
                     state.setup.final_page.messages.push(MessageType::Info("Creating your account configuration...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Securing sensitive data for storage...".to_string()));
                     state.setup.final_page.messages.push(MessageType::Info("Your device may prompt for authentication to access OS secure storage.".to_string()));
