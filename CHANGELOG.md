@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Take `affinidi-messaging-delivery` 0.1.14, which stops the layer acking a
+  message no consumer received.** An ack is a delete at the mediator, and the
+  dispatcher acked unconditionally — including when its subscriber broadcast had
+  just reported that nobody was listening. Those messages were destroyed: no
+  subscriber is installed for a moment at startup and again on the way down, and
+  what arrives in that window is whatever the peer happened to send.
+
+  This is the layer-side half of the same defect as the unbounded event channel
+  below. That change stopped *this* client discarding messages the mediator had
+  already deleted; this one stops them being deleted before this client is
+  listening at all. Lockfile only — the requirement was already `0.1.12`, so
+  nothing but resolution moves. Verified against a live test mediator: all four
+  `didcomm_transport_e2e` cases pass, including the stored-mail pickup path.
+
 - **Inbound messages are no longer dropped when the event channel fills.** The
   DIDComm event channel was a 256-slot bounded channel whose overflow behaviour
   was log-and-drop, on the reasoning that a pathological mediator should not grow
