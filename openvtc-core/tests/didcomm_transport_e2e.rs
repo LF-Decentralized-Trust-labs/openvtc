@@ -46,7 +46,7 @@ const OPENVTC_TYPE: &str = "https://linuxfoundation.org/openvtc/test/1.0/ping";
 async fn start_production_service(
     profile: common::TestProfile,
     remote_did: &str,
-    event_tx: mpsc::Sender<DIDCommEvent>,
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
 ) -> (Messaging, String) {
     let listener = relationship_listener_config_from_secrets(
         &profile.did,
@@ -75,14 +75,14 @@ async fn an_openvtc_message_routes_through_the_production_transport() {
     let bob_did = bob.did.clone();
 
     // Receiver first: a listener that is not yet polling would miss the frame.
-    let (bob_tx, mut bob_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (bob_tx, mut bob_rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (bob_service, bob_listener) = start_production_service(bob, &alice_did, bob_tx).await;
     bob_service
         .wait_connected(&bob_listener, Duration::from_secs(20))
         .await
         .expect("bob listener connects");
 
-    let (alice_tx, _alice_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (alice_tx, _alice_rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (alice_service, alice_listener) = start_production_service(alice, &bob_did, alice_tx).await;
     alice_service
         .wait_connected(&alice_listener, Duration::from_secs(20))
@@ -154,14 +154,14 @@ async fn an_unrelated_message_type_reaches_no_handler() {
     let alice_did = alice.did.clone();
     let bob_did = bob.did.clone();
 
-    let (bob_tx, mut bob_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (bob_tx, mut bob_rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (bob_service, bob_listener) = start_production_service(bob, &alice_did, bob_tx).await;
     bob_service
         .wait_connected(&bob_listener, Duration::from_secs(20))
         .await
         .expect("bob listener connects");
 
-    let (alice_tx, _alice_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (alice_tx, _alice_rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (alice_service, alice_listener) = start_production_service(alice, &bob_did, alice_tx).await;
     alice_service
         .wait_connected(&alice_listener, Duration::from_secs(20))
@@ -213,7 +213,7 @@ async fn a_message_stored_before_the_listener_existed_is_collected_on_connect() 
     let bob_did = bob.did.clone();
 
     // Sender only. Bob has no service, no transport, no socket.
-    let (alice_tx, _alice_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (alice_tx, _alice_rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (alice_service, alice_listener) = start_production_service(alice, &bob_did, alice_tx).await;
     alice_service
         .wait_connected(&alice_listener, Duration::from_secs(20))
@@ -240,7 +240,7 @@ async fn a_message_stored_before_the_listener_existed_is_collected_on_connect() 
     tokio::time::sleep(Duration::from_secs(3)).await;
 
     // Now bring bob up. The connect transition is what triggers the pickup.
-    let (bob_tx, mut bob_rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (bob_tx, mut bob_rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (bob_service, bob_listener) = start_production_service(bob, &alice_did, bob_tx).await;
     bob_service
         .wait_connected(&bob_listener, Duration::from_secs(20))
@@ -293,7 +293,7 @@ async fn a_message_stored_before_the_listener_existed_is_collected_on_connect() 
     // room against an in-process mediator.
     tokio::time::sleep(Duration::from_secs(3)).await;
     bob_service.remove_listener(&bob_listener).await;
-    let (bob_tx2, mut bob_rx2) = mpsc::channel::<DIDCommEvent>(16);
+    let (bob_tx2, mut bob_rx2) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (bob_service2, bob_listener2) =
         start_production_service(mediator.profile("bob").expect("bob"), &alice_did, bob_tx2).await;
     bob_service2
@@ -335,7 +335,7 @@ async fn the_supervisor_does_not_churn_a_healthy_transport() {
     let alice = mediator.profile("alice").expect("alice");
     let bob_did = mediator.profile("bob").expect("bob").did;
 
-    let (tx, _rx) = mpsc::channel::<DIDCommEvent>(16);
+    let (tx, _rx) = mpsc::unbounded_channel::<DIDCommEvent>();
     let (service, listener_id) = start_production_service(alice, &bob_did, tx).await;
     service
         .wait_connected(&listener_id, Duration::from_secs(20))

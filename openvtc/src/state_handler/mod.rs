@@ -576,8 +576,7 @@ impl StateHandler {
         // Bounded so a misbehaving mediator can't grow our memory without limit;
         // overflows surface as `try_send` warnings and the message is left in the
         // mailbox for `Messaging::pickup_stored` to collect on the next connect.
-        let (didcomm_event_tx, mut didcomm_event_rx) =
-            mpsc::channel(didcomm::DIDCOMM_EVENT_CHANNEL_CAPACITY);
+        let (didcomm_event_tx, mut didcomm_event_rx) = mpsc::unbounded_channel();
         let shutdown_token = tokio_util::sync::CancellationToken::new();
         let didcomm_service =
             didcomm::start_empty_service(didcomm_event_tx.clone(), shutdown_token.clone());
