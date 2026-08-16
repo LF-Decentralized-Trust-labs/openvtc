@@ -125,6 +125,15 @@ pub struct JoinState {
     /// from [`has_invitation`](Self::has_invitation), which reflects what was
     /// *loaded* on the entry page before community matching.
     pub presented_invitation: Option<PresentedInvitation>,
+    /// The community (VTC) DID that issued the invitation loaded on the entry
+    /// page. For an `InvitationCredential` the issuer *is* the community, so a
+    /// pasted VIC already names the community it is for: the entry page shows it
+    /// alongside the "invitation loaded" line and prefills the DID input with it,
+    /// rather than making the operator find and retype a DID the credential in
+    /// hand already carries. Prefilled, not auto-submitted — a VIC arrives from
+    /// someone else, so the community it points at stays visible and editable
+    /// before Enter commits to joining it.
+    pub invitation_issuer: Option<String>,
     /// True when the operator explicitly cleared a loaded VIC on the entry page,
     /// so the status text reads "joining without an invitation" rather than the
     /// generic "no VIC" tip. Distinguishes a deliberate clear from never having

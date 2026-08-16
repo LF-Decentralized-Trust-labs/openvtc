@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A pasted invitation now fills in the community it is for, and Enter says
+  something either way.** On the join entry page a pasted VIC was routed to the
+  invitation slot and nothing else: the DID input stayed empty, so Enter — which
+  swallowed the keypress on an empty field, with no message — did nothing at
+  all. The credential in hand names its community (a VIC's issuer *is* the VTC),
+  so the operator was being asked to go and find a DID they already had, and got
+  a screen that looked frozen when they didn't.
+
+  A paste now records the issuer and prefills the input with it, and the loaded
+  invitation says which community it came from. Prefilled, not auto-submitted:
+  an invitation arrives from someone else, so the community stays visible and
+  editable before Enter commits to joining it. Anything typed by hand wins over
+  the credential, and a redraw never overwrites an edit. Enter on an empty field
+  now reports why nothing happened. (vti-setup#29)
+- **The invitation prompt is legible, and sits where it is needed.** It was dark
+  grey italic — the dimmest text on the page — below the input and below the
+  brighter examples block, and read as decoration; the reporter could not find
+  anywhere to import a VIC at all. The invitation status and any error now sit
+  directly above the input in full-contrast colours, and all of it wraps to the
+  terminal width rather than clipping its tail. (vti-setup#29)
+- **The setup wizard no longer advertises a step it will never run.** R-A-5
+  ended setup at profile security — a persona is minted later by the join flow —
+  but the breadcrumb still listed a fourth "Digital Identity" step (or "Display
+  Name" on the webvh-server path) that could never become active, so the wizard
+  appeared to skip a step on the way to Setup Complete. Setup is now shown as
+  the four steps it actually has. (vti-setup#31)
+
 - **Take `affinidi-messaging-delivery` 0.1.14, which stops the layer acking a
   message no consumer received.** An ack is a delete at the mediator, and the
   dispatcher acked unconditionally — including when its subscriber broadcast had

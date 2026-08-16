@@ -1986,7 +1986,7 @@ fn edit_text(code: KeyCode, current: &str) -> Option<String> {
 ///
 /// The hard split matters because these messages carry DIDs and JSON, which
 /// contain no spaces to break on.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
+pub(crate) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
     }
