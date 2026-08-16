@@ -144,12 +144,23 @@ impl StateHandler {
                             // the entry page shows "joining without an invitation".
                             state.invitation_credential = None;
                             state.join.has_invitation = false;
+                            state.join.invitation_issuer = None;
                             state.join.vic_cleared = true;
                             state.join.messages.clear();
                             let _ = self.state_tx.send(state.clone());
                         }
                         Action::JoinSubmitVtc(vtc_did) => {
                             let Some(vtc_did) = validate_join_input(&vtc_did) else {
+                                // Say why nothing happened. A keypress that
+                                // cannot proceed must not be a silent no-op —
+                                // that reads as a frozen screen (issue #29).
+                                state.join.messages.push(MessageType::Error(
+                                    "Enter the community's DID or agent name \
+                                     first — or paste an invitation credential \
+                                     (VIC) to fill it in."
+                                        .to_string(),
+                                ));
+                                let _ = self.state_tx.send(state.clone());
                                 continue;
                             };
                             // Accept an agent name (`example.com/@acme`) in place
@@ -640,7 +651,13 @@ fn load_pasted_vic(state: &mut State, text: &str, vtc_did: Option<&str>) {
         return;
     }
     let Some(vtc_did) = vtc_did else {
-        // Entry page: no community to match against yet.
+        // Entry page: no community to match against yet. The VIC's issuer *is*
+        // the community, and `validate_invitation_credential` has already
+        // guaranteed one is extractable, so record it — the page shows it and
+        // prefills the DID input from it instead of asking for a DID the
+        // credential already carries.
+        state.join.invitation_issuer =
+            openvtc_core::join::invitation_issuer(&vic).map(str::to_string);
         state.invitation_credential = Some(vic);
         state.join.has_invitation = true;
         state.join.vic_cleared = false;
@@ -1922,6 +1939,42 @@ mod tests {
         // No row is added: the invitation step has not been reached.
         assert!(state.join.invitation_options.is_empty());
         assert_eq!(first_error(&state), None);
+    }
+
+    /// The entry-page paste records the VIC's issuer, which *is* the community
+    /// being joined. The entry page prefills its DID input from this, so an
+    /// operator holding an invitation never has to find and retype a DID the
+    /// credential already carries (issue #29).
+    #[test]
+    fn an_entry_page_paste_records_the_issuing_community() {
+        let mut state = State::default();
+        load_pasted_vic(&mut state, &pasteable_vic("urn:uuid:one").to_string(), None);
+        assert_eq!(state.join.invitation_issuer.as_deref(), Some(COMMUNITY));
+    }
+
+    /// `issuer` also has an object form; both must yield the community DID, or
+    /// the prefill silently stops working for half the issuers out there.
+    #[test]
+    fn an_object_form_issuer_is_recorded_too() {
+        let mut state = State::default();
+        let mut vic = pasteable_vic("urn:uuid:one");
+        vic["issuer"] = json!({ "id": COMMUNITY, "name": "Example Community" });
+        load_pasted_vic(&mut state, &vic.to_string(), None);
+        assert_eq!(state.join.invitation_issuer.as_deref(), Some(COMMUNITY));
+    }
+
+    /// A rejected paste must not leave an issuer behind: the entry page would
+    /// prefill a community DID from a credential it refused to load, and the
+    /// operator would join without the invitation they thought they presented.
+    #[test]
+    fn a_rejected_entry_page_paste_records_no_issuer() {
+        let not_a_vic = json!({ "id": "urn:uuid:one", "type": ["VerifiableCredential"] });
+        for text in ["}{ not json", &not_a_vic.to_string()] {
+            let mut state = State::default();
+            load_pasted_vic(&mut state, text, None);
+            assert_eq!(state.join.invitation_issuer, None, "for paste {text:?}");
+            assert!(!state.join.has_invitation);
+        }
     }
 
     // ---- Pre-submit persona connect ----

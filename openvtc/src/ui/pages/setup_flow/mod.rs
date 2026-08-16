@@ -356,10 +356,18 @@ impl ComponentRender<()> for SetupFlow {
 pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
     let mut line1 = Line::default();
 
-    // WebVH-server flow: Get Started → DID & Keys → Profile Security → Display Name → Setup Complete
-    // Normal flow:       Get Started → Key Management → Profile Security → Digital Identity → Setup Complete
+    // WebVH-server flow: Get Started → DID & Keys → Profile Security → Setup Complete
+    // Normal flow:       Get Started → Key Management → Profile Security → Setup Complete
+    //
+    // R-A-5 ended setup at protection (`UnlockCode*` → `FinalPage`): the persona
+    // pages (`MediatorAsk`/`MediatorCustom`/`UserName`/`WebVHAddress`) are no
+    // longer reachable from State-A setup — a persona is minted later by the
+    // State-B join flow, which draws its own progress. The breadcrumb kept
+    // advertising a "Digital Identity" / "Display Name" step that could never
+    // become active, so the wizard read as skipping a step. If those pages are
+    // ever revived here, add their step back to both label lists.
     let use_server = state.vta.use_webvh_server;
-    let total_step: usize = 5;
+    let total_step: usize = 4;
 
     // Determine which step we're on
     let active = state.active_page;
@@ -399,14 +407,6 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
                 | SetupPage::TokenSetCardholderName
         );
 
-    let is_identity = matches!(
-        active,
-        SetupPage::MediatorAsk
-            | SetupPage::MediatorCustom
-            | SetupPage::UserName
-            | SetupPage::WebVHAddress
-    );
-
     let is_final = matches!(active, SetupPage::FinalPage);
 
     // Step labels for each flow
@@ -415,7 +415,6 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
             "Get Started",
             "DID & Keys",
             "Profile Security",
-            "Display Name",
             "Setup Complete",
         ]
     } else {
@@ -423,7 +422,6 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
             "Get Started",
             "Key Management",
             "Profile Security",
-            "Digital Identity",
             "Setup Complete",
         ]
     };
@@ -435,10 +433,8 @@ pub fn render_setup_header(frame: &mut Frame, rect: Rect, state: &SetupState) {
         1
     } else if is_profile_security {
         2
-    } else if is_identity {
-        3
     } else if is_final {
-        4
+        3
     } else {
         0
     };
