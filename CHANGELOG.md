@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Inbound messages are no longer dropped when the event channel fills.** The
+  DIDComm event channel was a 256-slot bounded channel whose overflow behaviour
+  was log-and-drop, on the reasoning that a pathological mediator should not grow
+  memory without bound. That missed what a dropped event costs: by the time an
+  event reaches this channel the delivery layer has already acked the message,
+  and an ack is a delete at the mediator. A dropped event was therefore not a
+  deferred message but a **permanently destroyed** one — carrying membership
+  credentials and join verdicts — with one `warn!` line as the only record.
+
+  Backpressure was never actually on offer. Blocking on a full channel would
+  stall the consumer, the delivery layer's subscriber broadcast would overflow
+  instead, and its `subscribe()` stream swallows that as `Lagged` **silently** —
+  strictly worse than the warned drop. The only real choice was where the loss
+  happens, so the channel is now unbounded and the answer is nowhere.
+
+  `pickup_stored` keeps its ack-after-handoff ordering: a message that cannot be
+  taken stays stored at the mediator and is offered again.
+
 ### Added
 
 - **A persona minted without TSP now says so, at mint time.** OpenVTC always

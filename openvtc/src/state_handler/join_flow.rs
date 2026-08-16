@@ -1978,7 +1978,7 @@ mod tests {
         // `test_config` has no identities, so any persona id is unresolvable.
         let config = test_config();
         let tdk = test_tdk().await;
-        let (event_tx, _event_rx) = tokio::sync::mpsc::channel(1);
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
         let service = Messaging::start(event_tx);
 
         let claimed = start_persona_listener(

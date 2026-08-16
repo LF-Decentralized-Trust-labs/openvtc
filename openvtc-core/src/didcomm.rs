@@ -315,7 +315,7 @@ struct MessagingInner {
     /// dispatcher owns its own clone; this one exists because a pickup emits the
     /// *same* events by the *same* route, so a consumer cannot tell (and must
     /// not have to) whether a message was streamed or collected.
-    event_tx: mpsc::Sender<DIDCommEvent>,
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
     /// Listener ids with a pickup currently running, so a flapping socket
     /// cannot stack overlapping drains of the same mailbox.
     pickup_in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
@@ -329,7 +329,7 @@ impl Messaging {
     /// Listeners are added with [`add_listener`]; starting empty is what lets the
     /// dispatcher be running before the first transport connects, so no inbound
     /// frame is missed on a listener that comes up quickly.
-    pub fn start(event_tx: mpsc::Sender<DIDCommEvent>) -> Self {
+    pub fn start(event_tx: mpsc::UnboundedSender<DIDCommEvent>) -> Self {
         let outbox: Arc<dyn OutboxStore> = Arc::new(InMemoryOutboxStore::new());
         let service = Arc::new(MessagingService::empty(outbox.clone()));
         let (status_tx, _) = tokio::sync::broadcast::channel(LISTENER_STATUS_CAPACITY);
@@ -517,12 +517,16 @@ impl Messaging {
                     acks.push(attachment_id);
                     continue;
                 }
+                // Ack only after the handoff succeeds, so a message we could not
+                // take stays stored at the mediator and is offered again. The
+                // channel is unbounded, so the only failure left is a departed
+                // receiver (shutdown) — in which case leaving it stored is
+                // exactly right: the next run collects it.
                 let mut queued = true;
                 for event in events {
-                    if let Err(e) = self.inner.event_tx.try_send(event) {
-                        tracing::warn!(
-                            error = %e,
-                            "DIDComm event channel saturated during pickup — leaving the message stored"
+                    if self.inner.event_tx.send(event).is_err() {
+                        tracing::debug!(
+                            "state handler has gone away during pickup — leaving the message stored"
                         );
                         queued = false;
                         break;
@@ -694,11 +698,38 @@ pub enum DIDCommEvent {
     TrustPongReceived { from: Option<String> },
 }
 
-/// Capacity of the DIDComm event channel. Backpressure target: a
-/// pathological mediator pushing messages faster than the state handler
-/// can drain them gets `try_send` failures (logged + dropped), instead
-/// of growing memory without bound. 256 is enough headroom that normal
-/// operator activity doesn't ever overflow.
+/// The DIDComm event channel is **unbounded**, deliberately.
+///
+/// It used to be a 256-slot bounded channel whose overflow behaviour was
+/// `try_send` → log → drop, on the reasoning that a pathological mediator should
+/// not be able to grow memory without bound. That reasoning missed what a
+/// dropped event costs here.
+///
+/// By the time an event reaches this channel the delivery layer has already
+/// acked the message — `run_dispatcher` in `affinidi-messaging-delivery` acks
+/// immediately after handing off to its subscriber broadcast — and an ack is a
+/// delete at the mediator. So a dropped event is not a deferred message, it is a
+/// **permanently destroyed** one, with a single `warn!` line as the only record.
+/// These carry membership credentials and join verdicts; #221 is what that looks
+/// like from the outside, and it took four services' logs to find.
+///
+/// Backpressure was never really available anyway. Blocking on a full channel
+/// would stall this consumer, the layer's broadcast buffer would overflow
+/// instead, and `subscribe()` swallows that as `Lagged` **silently** — strictly
+/// worse than the warned drop it replaced. The only choice actually on offer is
+/// where the loss happens, so we choose nowhere.
+///
+/// The memory concern is bounded in practice by the mediator: events arrive only
+/// as fast as it delivers, the consumer is the state handler's `select!` (always
+/// draining unless mid-await), and the payloads are small. Unbounded growth
+/// requires a consumer stalled indefinitely, which is a bug that would strand the
+/// UI too — visible, unlike the silent credential loss this replaces.
+///
+/// Kept as a named constant for the historical record and for anyone who goes
+/// looking for the old capacity; nothing reads it.
+#[deprecated(
+    note = "the event channel is unbounded; this value is retained only to document what it was"
+)]
 pub const DIDCOMM_EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// Reason string included in a "Reconnect failed" log entry, plus the
@@ -844,7 +875,10 @@ pub async fn add_listener(service: &Messaging, spec: &ListenerSpec) -> Result<()
 /// dispatch — a consumer matches on the message itself — which is the same move
 /// `vtc-service` made when it cut over. Acking is **not** done here: the service's
 /// own dispatcher acks after handoff, never before.
-async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender<DIDCommEvent>) {
+async fn dispatch_inbound(
+    service: Arc<MessagingService>,
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
+) {
     let mut inbound = service.subscribe();
     while let Some(item) = inbound.next().await {
         // Both protocols arrive on this one stream — `DidCommTransport` owns the
@@ -879,8 +913,14 @@ async fn dispatch_inbound(service: Arc<MessagingService>, event_tx: mpsc::Sender
         let from = item.message.sender.clone().or_else(|| message.from.clone());
 
         for event in classify_inbound(message, transport, from, item.message.recipient.clone()) {
-            if let Err(e) = event_tx.try_send(event) {
-                tracing::warn!(error = %e, "DIDComm event channel saturated — dropping inbound message");
+            // Unbounded: `send` fails only when the receiver is gone, which means
+            // the state handler has shut down and there is nothing left to
+            // deliver to. It can no longer fail because the channel is full —
+            // see `DIDCOMM_EVENT_CHANNEL_CAPACITY` for why dropping there was
+            // destroying messages the mediator had already deleted.
+            if event_tx.send(event).is_err() {
+                tracing::debug!("state handler has gone away — ending inbound dispatch");
+                return;
             }
         }
     }
@@ -1660,7 +1700,7 @@ pub async fn persona_listener_config_for(
 pub async fn start_service(
     config: &Config,
     tdk: &affinidi_tdk::TDK,
-    event_tx: mpsc::Sender<DIDCommEvent>,
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Result<Messaging, MessagingError> {
     let service = start_empty_service(event_tx, shutdown);
@@ -1677,7 +1717,7 @@ pub async fn start_service(
 /// `Messaging::start` is built for this — its dispatcher runs before the first
 /// transport exists — so an empty service is a supported state, not a stub.
 pub fn start_empty_service(
-    event_tx: mpsc::Sender<DIDCommEvent>,
+    event_tx: mpsc::UnboundedSender<DIDCommEvent>,
     shutdown: tokio_util::sync::CancellationToken,
 ) -> Messaging {
     let service = Messaging::start(event_tx);
