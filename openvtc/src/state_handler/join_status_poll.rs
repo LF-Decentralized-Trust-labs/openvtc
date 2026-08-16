@@ -10,12 +10,26 @@
 //!
 //! ## What can be polled
 //!
-//! Only a join whose request id is the **community's** — see
-//! [`CommunityRecord::request_id_confirmed`]. The VTC mints its own id and tells
-//! us in the first correlated reply; until one arrives we hold the id of the
-//! document we sent, which the VTC has never heard of. So a join that never got
-//! *any* reply cannot be polled at all, and is not this module's case: it is
-//! recovered by collecting the stored mail the reply is sitting in.
+//! Every `Pending` join, including one that never got *any* reply.
+//!
+//! That used to be untrue, and the exception swallowed the rule. The VTC mints
+//! its own request id and tells us in the first correlated reply; until one
+//! arrives we hold the id of the document we sent, which the VTC has never heard
+//! of and answers `not found` for. So the only joins this module could ask about
+//! were the ones that had already been answered once — and a join that never got
+//! a reply, the case it exists for, could not be polled at all.
+//!
+//! The fallback named here was collecting the stored mail the reply is sitting
+//! in. That is empty whenever the mail was acked and deleted before anything
+//! consumed it, which is the same failure. Both recoveries had one blind spot and
+//! shared it (#221): the record sat `Pending` for good, and the only way out was
+//! editing the id into the config by hand.
+//!
+//! A poll now omits the id when we do not hold the community's, which asks
+//! "what is my open request?" — resolved from the authenticated applicant, and
+//! answered with the id. So the record repairs itself on the first reply and
+//! quotes the real id from then on. [`CommunityRecord::request_id_confirmed`]
+//! still decides *what we send*; it no longer decides whether we may ask.
 //!
 //! ## Pacing
 //!
@@ -133,7 +147,9 @@ pub(crate) struct Poll {
     profile: std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
     mediator_did: String,
     vtc_did: String,
-    request_id: uuid::Uuid,
+    /// The community's id when we hold it; `None` asks "what is my open
+    /// request?" — the only form available to a join whose first reply was lost.
+    request_id: Option<uuid::Uuid>,
     /// The submit went out over TSP, so the poll must too — a community
     /// reachable only over TSP would never see a DIDComm poll.
     over_tsp: bool,
@@ -197,12 +213,12 @@ pub(crate) async fn send_all(atm: ATM, polls: Vec<Poll>) {
         {
             Ok(()) => debug!(
                 vtc = %poll.vtc_did,
-                request_id = %poll.request_id,
+                request_id = ?poll.request_id,
                 "asked the community about a pending join"
             ),
             Err(e) => debug!(
                 vtc = %poll.vtc_did,
-                request_id = %poll.request_id,
+                request_id = ?poll.request_id,
                 error = %e,
                 "could not ask the community about a pending join; will retry after the backoff"
             ),
@@ -219,7 +235,7 @@ mod tests {
         PendingPoll {
             vtc_did: vtc.to_string(),
             persona_ref: PersonaId::new(),
-            request_id: Uuid::new_v4(),
+            request_id: Some(Uuid::new_v4()),
             submit_transport: Some(MessagingTransport::DidComm),
         }
     }
