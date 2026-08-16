@@ -170,7 +170,7 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # members as `null` and killing key creation over DIDComm and TSP (VTI #919).
 # All are below this floor by construction; they are kept in git history rather
 # than as a wall of satisfied constraints.
-vta-sdk = { version = "0.23.3", features = [
+vta-sdk = { version = "0.24", features = [
   "session",
   "client",
   "didcomm",
