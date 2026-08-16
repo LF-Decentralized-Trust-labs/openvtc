@@ -13,10 +13,8 @@ use std::sync::Arc;
 #[cfg(feature = "openpgp-card")]
 use tokio::sync::Mutex;
 use vta_sdk::provision_client::{AdminCredentialReply, DiagEntry, EphemeralSetupKey, Protocol};
-use vta_sdk::webvh::WebvhServerRecord;
 
 pub mod config;
-pub mod did_keys;
 #[cfg(feature = "openpgp-card")]
 pub mod openpgp_card;
 pub mod vta;
@@ -33,15 +31,6 @@ pub enum SetupPage {
     VtaAclInstructions,
     /// Live diagnostics list while `provision_client::run_connection_test` runs.
     VtaProvisioning,
-    VtaKeysFetch,
-    DIDKeysShow,
-    DidKeysExportAsk,
-    DidKeysExportInputs,
-    DidKeysExportShow,
-    /// Asks whether to configure did-git-sign before running the install.
-    DidGitSignAsk,
-    /// Auto-configures did-git-sign for the freshly-provisioned persona.
-    DidGitSignSetup,
 
     /// Optional PGP Token setup occurs here
     #[cfg(feature = "openpgp-card")]
@@ -58,19 +47,17 @@ pub enum SetupPage {
     UnlockCodeAsk,
     UnlockCodeSet,
     UnlockCodeWarn,
-    // R-A-5: persona-minting pages. Unreachable from State-A setup (which ends at
-    // protection → account creation); reconstructed by the State-B join flow
-    // (Stage 4). `#[allow(dead_code)]` until then.
-    #[allow(dead_code)]
-    MediatorAsk,
-    MediatorCustom,
-    #[allow(dead_code)]
-    WebvhServerSelect,
-    WebvhServerProgress,
-    UserName,
-    WebVHAddress,
     FinalPage,
 }
+
+// R-A-5 moved persona minting out of setup and into the State-B join flow, which
+// drives it headlessly from `JoinProgress` rather than through wizard pages. The
+// pages that used to walk an operator through it — mediator choice, display name,
+// webvh address/server, DID-key display and export, did-git-sign install — were
+// left behind unreachable, and stayed that way long enough to start reading as
+// live code. They are gone; `SetupState` keeps the *fields* they wrote, because
+// the join flow now fills the same struct itself before calling
+// `Config::mint_persona_into`.
 
 // ****************************************************************************
 // State Management for the Setup Sequence
@@ -87,14 +74,11 @@ pub struct SetupState {
     /// VTA setup state
     pub vta: VtaSetupState,
 
-    /// Result of the auto-configured did-git-sign install.
-    pub did_git_sign: DidGitSignSetupState,
-
-    /// DID Keys
+    /// Persona DID keys minted for the identity currently being created.
+    ///
+    /// Written by the State-B join flow / standalone persona mint, then read by
+    /// `Config::mint_persona_into`. Setup itself no longer fills this in.
     pub did_keys: Option<PersonaDIDKeys>,
-
-    /// Contains the PGP formatted export of DID keys if user selected to export
-    pub did_keys_export: DIDKeysExportState,
 
     /// How is the config protected?
     pub protection: ConfigProtection,
@@ -114,9 +98,6 @@ pub struct SetupState {
     /// Hardware Cardholder Name
     #[cfg(feature = "openpgp-card")]
     pub token_cardholder_name: TokenSetCardholderName,
-
-    /// WebVH server DID creation state
-    pub webvh_server: WebvhServerState,
 
     /// Has the user selected to use a custom Mediator?
     pub custom_mediator: Option<String>,
@@ -146,10 +127,6 @@ pub struct VtaSetupState {
     pub context_id: Option<String>,
     pub update_secret: Option<Secret>,
     pub next_update_secret: Option<Secret>,
-    /// WebVH servers available from this VTA
-    pub webvh_servers: Vec<WebvhServerRecord>,
-    /// Whether user chose to use a webvh-server for DID hosting
-    pub use_webvh_server: bool,
     /// Ephemeral did:key minted at VtaEnterDid; used as the admin DID the
     /// operator authorises via `pnm contexts create --admin-did …`.
     /// `Arc` because `EphemeralSetupKey` isn't `Clone` and `SetupState`
@@ -196,8 +173,6 @@ impl fmt::Debug for VtaSetupState {
                 "next_update_secret",
                 &self.next_update_secret.as_ref().map(|_| "<redacted>"),
             )
-            .field("webvh_servers", &self.webvh_servers)
-            .field("use_webvh_server", &self.use_webvh_server)
             .field(
                 "setup_key",
                 &self
@@ -266,35 +241,6 @@ pub struct ConfigImport {
     pub messages: Vec<MessageType>,
 }
 
-/// Result of the automatic did-git-sign install during setup.
-#[derive(Clone, Default, Debug)]
-pub struct DidGitSignSetupState {
-    pub completed: Completion,
-    pub messages: Vec<MessageType>,
-    pub config_path: Option<String>,
-    pub ssh_public_key: Option<String>,
-    /// `Some(prev)` when a `--global` `user.signingKey` was shadowed by
-    /// the local install; surfaced to the operator so it isn't a surprise.
-    pub overridden_global_signing_key: Option<String>,
-}
-
-/// Update messages as the Key export works through
-#[derive(Clone, Default)]
-pub struct DIDKeysExportState {
-    pub messages: Vec<String>,
-    /// PGP-armored private key block — must never appear in Debug output
-    pub exported: Option<String>,
-}
-
-impl fmt::Debug for DIDKeysExportState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DIDKeysExportState")
-            .field("messages", &self.messages)
-            .field("exported", &self.exported.as_ref().map(|_| "[REDACTED]"))
-            .finish()
-    }
-}
-
 /// State relating to detecting attached hardware tokens
 #[cfg(feature = "openpgp-card")]
 #[derive(Clone, Default)]
@@ -341,25 +287,10 @@ pub struct TokenSetCardholderName {
     pub messages: Vec<MessageType>,
 }
 
-/// State for creating a DID via a WebVH server
-#[derive(Clone, Default, Debug)]
-pub struct WebvhServerState {
-    pub completed: Completion,
-    pub messages: Vec<MessageType>,
-    pub selected_server_id: String,
-    /// Chosen WebVH path mode: `.well-known` root, an explicit label, or
-    /// server auto-assignment.
-    pub path_mode: vta_sdk::protocols::did_management::create::WebvhPathMode,
-    pub did: String,
-    pub document: Document,
-    pub mnemonic: String,
-}
-
-/// WebVH DID State
+/// The `did:webvh` minted for the persona currently being created — filled in
+/// by the join flow / standalone mint, read by `Config::mint_persona_into`.
 #[derive(Clone, Default, Debug)]
 pub struct WebVHAddress {
-    pub completed: Completion,
-    pub messages: Vec<MessageType>,
     pub did: String,
     pub document: Document,
 }

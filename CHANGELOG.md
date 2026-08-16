@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **An explicit `[Ctrl+V]` "paste an invitation" action on the join entry
+  page.** Bracketed paste worked the whole time, but nothing on screen said so —
+  which is why the issue behind it was filed as "I cannot find anywhere to
+  import a VIC". The key is named in every invitation state, and the terminal's
+  own paste still works and remains the path that survives SSH, where reading
+  the OS clipboard cannot. (vti-setup#29)
+
+### Removed
+
+- **Thirteen setup-wizard pages that had become unreachable.** R-A-5 moved
+  persona minting out of setup and into the State-B join flow, which drives it
+  from `JoinProgress` rather than through wizard pages. The pages it left behind
+  — mediator choice, display name, webvh address and webvh-server selection, DID
+  key display and PGP export, and did-git-sign install — had no inbound
+  navigation from any reachable page, and had sat that way long enough to start
+  reading as live code. Tracing from `StartAsk` confirmed the whole subgraph was
+  orphaned: `MediatorAsk` and `WebvhServerSelect` had no callers at all, and
+  everything else hung off one of those two.
+
+  Gone with them: `Action::SetDIDKeys` (never sent by anything),
+  `VtaCreateKeys`, `ExportDIDKeys`, `DidGitSignInstall`, `WebvhServerCreateDid`,
+  `SetCustomMediator`, `SetUsername`, `CreateWebVHDID`, `ResetWebVHDID`,
+  `ResolveWebVHDID`; sixteen `SetupEvent` variants; `SetupState.did_git_sign`,
+  `.did_keys_export`, `.webvh_server` and `vta.use_webvh_server` /
+  `.webvh_servers`; and the webvh-server probe provisioning ran to fill a list
+  nothing read. `SetupState` keeps the fields the deleted pages *wrote* —
+  `did_keys`, `webvh_address`, `custom_mediator`, `username` — because the join
+  flow and the standalone persona mint now fill the same struct themselves
+  before calling `Config::mint_persona_into`. Roughly 3,800 lines. (vti-setup#31)
+
+  Note for anyone who wanted the git-signing setup: installing did-git-sign was
+  only ever offered by one of these pages, so it has been unreachable since
+  R-A-5 regardless. The main page still *detects* an existing did-git-sign
+  config; re-offering the install needs a new entry point.
+
 ### Fixed
 
 - **A pasted invitation now fills in the community it is for, and Enter says
