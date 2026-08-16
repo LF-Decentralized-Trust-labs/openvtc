@@ -968,6 +968,15 @@ async fn run_join_sequence(
             .await
             {
                 Ok((keys, did, document, _mnemonic)) => {
+                    // A persona the VTA minted without `#tsp` can never reach a
+                    // TSP-only community — and this join may be to one. Say so
+                    // here rather than letting it surface later as a request
+                    // that goes out and is never answered.
+                    if let Some(warning) =
+                        openvtc_core::config::did::tsp_advertisement_warning(&document)
+                    {
+                        state.join.info(warning);
+                    }
                     state.setup.did_keys = Some(keys);
                     state.setup.webvh_address.did = did;
                     state.setup.webvh_address.document = document;

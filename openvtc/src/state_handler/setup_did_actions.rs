@@ -186,6 +186,17 @@ async fn apply_server_create_result(
                 .webvh_server
                 .messages
                 .push(MessageType::Info(format!("DID created: {}", did)));
+            // Surfaced on the wizard's own message list, beside "DID created":
+            // a persona minted without `#tsp` is unable to reach a TSP-only
+            // community, and this is the last screen where the operator is still
+            // looking at the thing that created it.
+            if let Some(warning) = openvtc_core::config::did::tsp_advertisement_warning(&document) {
+                state
+                    .setup
+                    .webvh_server
+                    .messages
+                    .push(MessageType::Info(warning));
+            }
             state.setup.webvh_server.did = did.clone();
             state.setup.webvh_server.document = document.clone();
             state.setup.webvh_server.mnemonic = mnemonic;

@@ -8,6 +8,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **A persona minted without TSP now says so, at mint time.** OpenVTC always
+  requests the `#tsp` service — `create_did_via_server` sets
+  `add_tsp_service: true` on every one of the three paths that mint a persona —
+  but the VTA drops it unless it has `[services] tsp` enabled with a mediator
+  configured. That refusal was silent, and the resulting persona looks entirely
+  healthy: it resolves, it has a mediator, it messages DIDComm peers fine. It is
+  only unable to reach a TSP-only community, which surfaces much later as a join
+  that goes out and is never answered.
+
+  Since the service is written at mint time and the document is never revisited,
+  such a persona never recovers on its own — so the warning names the
+  consequence, says the DID cannot gain the service later, and names the VTA
+  setting that fixes it. Emitted as a `warn!` at the single mint point (so the
+  log always has it) and surfaced on all three user-facing surfaces: the setup
+  wizard's message list, the join flow's status line, and the persona manager's
+  progress channel. A healthy mint stays silent.
+
 - **`openvtc health` reports progress as it works.** The command is almost
   entirely network waits — a `did:webvh` resolution is an HTTPS fetch and each
   probe is bounded at 10s — so a chain with a few mediators could sit silent for
