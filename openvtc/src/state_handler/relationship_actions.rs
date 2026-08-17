@@ -273,6 +273,10 @@ async fn create_relationship_keys(
     info!("creating Ed25519 signing key via VTA...");
     let sign_resp = vta::vta_retry("create relationship signing key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,
@@ -295,6 +299,10 @@ async fn create_relationship_keys(
     info!("creating X25519 encryption key via VTA...");
     let enc_resp = vta::vta_retry("create relationship encryption key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::X25519,
             derivation_path: None,
             key_id: None,

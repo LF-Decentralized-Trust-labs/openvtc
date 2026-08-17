@@ -98,6 +98,10 @@ pub async fn create_persona_keys(
     // Signing key (Ed25519)
     let sign_resp = vta_retry("create persona signing key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,
@@ -131,6 +135,10 @@ pub async fn create_persona_keys(
     // Authentication key (Ed25519)
     let auth_resp = vta_retry("create persona authentication key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,
@@ -164,6 +172,10 @@ pub async fn create_persona_keys(
     // Encryption key (X25519)
     let enc_resp = vta_retry("create persona encryption key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::X25519,
             derivation_path: None,
             key_id: None,
@@ -210,6 +222,10 @@ pub async fn create_update_keys(
     // Update key (Ed25519)
     let update_resp = vta_retry("create WebVH update key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,
@@ -233,6 +249,10 @@ pub async fn create_update_keys(
     // Next update key (Ed25519)
     let next_update_resp = vta_retry("create WebVH next-update key", || {
         client.create_key(CreateKeyRequest {
+            // Absent is today's behaviour. `Some(true)` mints a
+            // non-extractable key that cannot be recovered from
+            // the mnemonic or any backup — never a default.
+            internal: None,
             key_type: KeyType::Ed25519,
             derivation_path: None,
             key_id: None,
