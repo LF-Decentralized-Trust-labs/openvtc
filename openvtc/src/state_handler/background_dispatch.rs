@@ -164,7 +164,8 @@ pub(crate) enum DispatchOutcome {
     /// advertises, or the reason the probe could not tell. Display-only — it
     /// touches no `Config`, so it never marks the config dirty.
     VtaTransports(crate::state_handler::main_page::content::AdvertisedTransports),
-    /// A VIC list refresh finished. [`VicRefreshOutcome::apply`] swaps in the
+    /// A VIC list refresh finished. [`VicRefreshOutcome::apply`](crate::state_handler::vic::VicRefreshOutcome::apply)
+    /// swaps in the
     /// listing (or logs why it could not be read); display-only, so it touches
     /// no `Config` and never marks it dirty.
     Vic(crate::state_handler::vic::VicRefreshOutcome),

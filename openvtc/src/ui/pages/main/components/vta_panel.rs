@@ -328,7 +328,7 @@ pub fn render(state: &VtaState, panel_focused: bool) -> Vec<Line<'static>> {
 /// Three states, not two: the list has the keyboard, the *other* list has it
 /// (Tab switches between them), or the content panel is not focused at all — in
 /// which case Tab does not reach these lists and the operator needs the panel
-/// first. Collapsing the last two into "[Tab] focus" pointed at the wrong key.
+/// first. Collapsing the last two into "\[Tab\] focus" pointed at the wrong key.
 fn focus_hint(focused: bool, panel_focused: bool) -> &'static str {
     match (focused, panel_focused) {
         (true, _) => "   ◀ focus",
