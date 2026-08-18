@@ -45,6 +45,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The VTA Service panel stops feeling frozen.** Tab into the Invitation
+  Credentials list ran a credential-vault query *before* the focus change, and
+  the state handler services actions one at a time — so a two-line in-memory
+  focus move waited on a network round-trip with a 30-second timeout, and
+  nothing on screen explained the pause. The listing now runs off the loop:
+  focus moves immediately, the panel says a query is in flight, and "No
+  invitation credentials" is only claimed once the vault has actually answered.
+  A refresh asked for while one is running is deferred rather than dropped, so a
+  just-archived credential is never left rendered as active.
+- **`g` opens the agent-name manager whichever list is focused.** It was bound
+  only to the Context Identities list, so pressing it after a Tab produced
+  nothing at all — no action, no message — which is indistinguishable from a
+  dead keyboard and had people restarting the app. Two more silent no-ops
+  behind the same report are fixed with it: a persona selection left pointing
+  past the end of a rebuilt list disabled every key scoped to that list (and
+  restarting "fixed" it only because the selection resets to the first row), and
+  both lists drew a "◀ focus" marker from their own focus alone — so a panel the
+  keyboard could not reach still claimed focus and advertised keys that were
+  being discarded. It now points at the key that gets you there.
+- **A claimed agent name is no longer reported as no name at all.** When the
+  claim succeeded but the read-back that follows it failed, the overlay rendered
+  "No agent names yet." directly above "Applied, but could not reload the list"
+  — the prominent half saying the opposite of what had happened, for a name the
+  DID document already carried. A registry that could not be read is now shown
+  as unknown rather than empty.
+
 - **A pasted invitation now fills in the community it is for, and Enter says
   something either way.** On the join entry page a pasted VIC was routed to the
   invitation slot and nothing else: the DID input stayed empty, so Enter — which
