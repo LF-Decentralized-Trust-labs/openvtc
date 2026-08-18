@@ -65,42 +65,106 @@ pub(crate) fn community_label(
 /// used as an identity — it is a map key for cycling detection and reconnect
 /// matching, and DIDs sharing a trailing path segment across hosts would
 /// collide if it were shortened.
+/// A lifecycle line for the activity log: what the operator reads, plus the
+/// diagnostic detail behind `Enter`.
+pub(crate) struct LifecycleLine {
+    /// The one-line summary.
+    pub summary: String,
+    /// Identifying detail, when there is a listener to identify.
+    pub detail: Option<String>,
+}
+
+/// Render a listener lifecycle event for the activity log.
+///
+/// The summary names the listener the way the rest of the UI names identities —
+/// alias, else verified agent name, else truncated DID — but a name **alone is
+/// not an identity**. `resolve_did_to_display` is many-to-one: an alias or an
+/// agent name can stand for more than one listener, and a relationship R-DID
+/// resolves through to its peer's name. Two different listeners could therefore
+/// produce byte-identical lines, and did: a report of one listener "cycling"
+/// turned out to be indistinguishable, on screen, from several listeners
+/// reconnecting on their own schedules.
+///
+/// So every line that names a listener also carries the listener id it resolved
+/// from — abbreviated in the summary when a name was substituted, in full in the
+/// detail. The id is what correlates with the mediator's logs; the name is only
+/// what makes the line readable.
 pub(crate) fn format_lifecycle_log(
     config: &openvtc_core::config::Config,
     event: &didcomm::LifecycleLog,
-) -> String {
+) -> LifecycleLine {
     use didcomm::LifecycleLog;
-    match event {
-        LifecycleLog::Connected { listener_id } => {
-            format!(
-                "Listener '{}' connected",
-                resolve_did_to_display(config, listener_id)
-            )
+
+    /// `'name' (did:webvh:Qm…)` — the parenthetical only when a name was
+    /// actually substituted, so an unnamed listener is not printed twice.
+    fn who(config: &openvtc_core::config::Config, listener_id: &str) -> String {
+        let display = resolve_did_to_display(config, listener_id);
+        let truncated = log_did(listener_id);
+        if display == truncated {
+            format!("'{display}'")
+        } else {
+            format!("'{display}' ({truncated})")
         }
+    }
+
+    fn detail_for(config: &openvtc_core::config::Config, listener_id: &str) -> String {
+        format!(
+            "listener id: {listener_id}\ndisplayed as: {}",
+            resolve_did_to_display(config, listener_id)
+        )
+    }
+
+    match event {
+        LifecycleLog::Connected { listener_id } => LifecycleLine {
+            summary: format!("Listener {} connected", who(config, listener_id)),
+            detail: Some(detail_for(config, listener_id)),
+        },
         LifecycleLog::Disconnected { listener_id, error } => {
-            let who = resolve_did_to_display(config, listener_id);
-            match error {
-                Some(e) => format!("Listener '{who}' disconnected: {e}"),
-                None => format!("Listener '{who}' disconnected"),
+            // An absent error is not the same as an unexplained drop, and the
+            // line used to render both as a bare "disconnected". Saying which
+            // one it was is the difference between "the peer closed the socket"
+            // and "we lost it and do not know why" (VTI R6.4).
+            let reason = match error {
+                Some(e) => format!(": {e}"),
+                None => " (no transport error reported)".to_string(),
+            };
+            LifecycleLine {
+                summary: format!("Listener {} disconnected{reason}", who(config, listener_id)),
+                detail: Some(match error {
+                    Some(e) => format!("{}\nerror: {e}", detail_for(config, listener_id)),
+                    None => format!(
+                        "{}\nerror: none reported — the connection closed without a transport \
+                         error",
+                        detail_for(config, listener_id)
+                    ),
+                }),
             }
         }
-        LifecycleLog::CyclingRapidly { listener_id } => {
-            format!(
-                "WARNING: Listener '{}' cycling rapidly — possible duplicate connection",
-                resolve_did_to_display(config, listener_id)
-            )
-        }
+        LifecycleLog::CyclingRapidly { listener_id } => LifecycleLine {
+            summary: format!(
+                "WARNING: Listener {} cycling rapidly — possible duplicate connection",
+                who(config, listener_id)
+            ),
+            detail: Some(format!(
+                "{}\nthis listener dropped twice within the cycling window",
+                detail_for(config, listener_id)
+            )),
+        },
         LifecycleLog::Restarting {
             listener_id,
             attempt,
             delay,
-        } => {
-            format!(
-                "Listener '{}' restarting (attempt {attempt}, backoff {delay:?})",
-                resolve_did_to_display(config, listener_id)
-            )
-        }
-        LifecycleLog::Missed { count } => format!("Missed {count} lifecycle event(s)"),
+        } => LifecycleLine {
+            summary: format!(
+                "Listener {} restarting (attempt {attempt}, backoff {delay:?})",
+                who(config, listener_id)
+            ),
+            detail: Some(detail_for(config, listener_id)),
+        },
+        LifecycleLog::Missed { count } => LifecycleLine {
+            summary: format!("Missed {count} lifecycle event(s)"),
+            detail: None,
+        },
     }
 }
 
@@ -1834,7 +1898,11 @@ impl StateHandler {
                 Some(event) = lifecycle_log_rx.recv() => {
                     // Formatted here, not in the logger task: naming a listener
                     // needs `config`, which only this thread holds.
-                    state.main_page.log(format_lifecycle_log(&config, &event));
+                    let line = format_lifecycle_log(&config, &event);
+                    match line.detail {
+                        Some(detail) => state.main_page.log_detailed(line.summary, detail),
+                        None => state.main_page.log(line.summary),
+                    }
                 },
                 // Typed listener lifecycle events → drive the connection status
                 // asynchronously (phase 2). The persona listener connecting flips
@@ -3666,11 +3734,12 @@ mod tests {
         assert!(!must_hand_off(true, true, false));
     }
 
-    /// Lifecycle log lines name the listener by its verified agent name. These
-    /// showed raw `did:webvh:` strings because the logger task is detached and
-    /// has no `Config` to resolve with.
+    /// Lifecycle log lines name the listener by its verified agent name — and
+    /// carry the listener id it resolved from, because a name is not an
+    /// identity: `resolve_did_to_display` is many-to-one, so without the id two
+    /// different listeners can produce byte-identical lines.
     #[test]
-    fn lifecycle_log_shows_the_verified_agent_name() {
+    fn lifecycle_log_shows_the_agent_name_and_the_listener_id() {
         const DID: &str = "did:webvh:QmScidAAAAAAAAAAAAAAAAAAAAAAAA:webvh.storm.ws:magic-depart";
 
         let mut config = crate::state_handler::dispatch_util::test_config();
@@ -3686,7 +3755,22 @@ mod tests {
                 listener_id: DID.to_string(),
             },
         );
-        assert_eq!(line, "Listener 'webvh.storm.ws/@magic-depart' connected");
+        assert!(
+            line.summary.contains("'webvh.storm.ws/@magic-depart'"),
+            "{}",
+            line.summary
+        );
+        assert!(
+            line.summary.contains("did:webvh:QmScid"),
+            "the name must not be the only identifier: {}",
+            line.summary
+        );
+        assert!(line.summary.ends_with(" connected"), "{}", line.summary);
+        assert!(
+            line.detail.as_deref().is_some_and(|d| d.contains(DID)),
+            "the full id belongs in the detail: {:?}",
+            line.detail
+        );
 
         // The error detail survives, alongside the resolved name.
         let line = format_lifecycle_log(
@@ -3696,9 +3780,78 @@ mod tests {
                 error: Some("connection reset".into()),
             },
         );
-        assert_eq!(
-            line,
-            "Listener 'webvh.storm.ws/@magic-depart' disconnected: connection reset"
+        assert!(
+            line.summary.ends_with("disconnected: connection reset"),
+            "{}",
+            line.summary
+        );
+    }
+
+    /// Two listeners that render under the same name still produce
+    /// distinguishable lines. This is the reported failure: a relationship
+    /// R-DID resolves through to its peer's agent name, so a persona and an
+    /// R-DID pointed at that same peer both read as `host/@name` — and a log
+    /// full of one name gives no way to tell one listener reconnecting in a
+    /// loop from several reconnecting on their own schedules.
+    #[test]
+    fn two_listeners_sharing_a_name_are_still_told_apart() {
+        const PERSONA: &str = "did:webvh:QmScidAAAAAAAAAAAAAAAAAAAAAAAA:example.com:alice";
+        const OTHER: &str = "did:webvh:QmScidZZZZZZZZZZZZZZZZZZZZZZZZ:example.com:alice-two";
+
+        let mut config = crate::state_handler::dispatch_util::test_config();
+        let now = chrono::Utc::now();
+        config.set_cached_agent_name(PERSONA, Some("example.com/@alice".into()), now);
+        config.set_cached_agent_name(OTHER, Some("example.com/@alice".into()), now);
+
+        let one = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Disconnected {
+                listener_id: PERSONA.to_string(),
+                error: None,
+            },
+        );
+        let two = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Disconnected {
+                listener_id: OTHER.to_string(),
+                error: None,
+            },
+        );
+
+        assert_ne!(
+            one.summary, two.summary,
+            "distinct listeners must not render identically"
+        );
+        assert_ne!(one.detail, two.detail);
+    }
+
+    /// A drop with no transport error is reported as such. It used to render as
+    /// a bare "disconnected", identical to a drop whose error was simply not
+    /// captured — so "the socket closed cleanly" and "we lost it and cannot say
+    /// why" were the same line.
+    #[test]
+    fn a_drop_without_an_error_says_so() {
+        const DID: &str = "did:webvh:QmScidCCCCCCCCCCCCCCCCCCCCCCCC:example.com:quiet";
+        let config = crate::state_handler::dispatch_util::test_config();
+
+        let line = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Disconnected {
+                listener_id: DID.to_string(),
+                error: None,
+            },
+        );
+        assert!(
+            line.summary.contains("no transport error reported"),
+            "{}",
+            line.summary
+        );
+        assert!(
+            line.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("none reported")),
+            "{:?}",
+            line.detail
         );
     }
 
@@ -3714,17 +3867,23 @@ mod tests {
             &didcomm::LifecycleLog::Connected {
                 listener_id: DID.to_string(),
             },
-        );
+        )
+        .summary;
         assert!(line.starts_with("Listener '"), "{line}");
         assert!(line.ends_with("' connected"), "{line}");
         assert!(
             !line.contains("@"),
             "no name exists, so none may appear: {line}"
         );
+        // With no name substituted there is nothing to disambiguate, so the id
+        // is not repeated in parentheses.
+        assert!(!line.contains(") connected"), "id printed twice: {line}");
 
-        assert_eq!(
-            format_lifecycle_log(&config, &didcomm::LifecycleLog::Missed { count: 3 }),
-            "Missed 3 lifecycle event(s)"
+        let missed = format_lifecycle_log(&config, &didcomm::LifecycleLog::Missed { count: 3 });
+        assert_eq!(missed.summary, "Missed 3 lifecycle event(s)");
+        assert!(
+            missed.detail.is_none(),
+            "a lagged-stream notice identifies no listener"
         );
     }
 
