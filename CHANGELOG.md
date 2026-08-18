@@ -70,6 +70,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   — the prominent half saying the opposite of what had happened, for a name the
   DID document already carried. A registry that could not be read is now shown
   as unknown rather than empty.
+- **Listener log lines identify the listener, not just its name.** A name is not
+  an identity: aliases and verified agent names are many-to-one, and a
+  relationship R-DID resolves through to its peer's name — so two different
+  listeners could produce byte-identical activity-log lines. Once names resolved
+  a few minutes after launch, a log that had been readable as distinct listeners
+  collapsed into one repeated name, and "one listener reconnecting in a loop"
+  became indistinguishable from "several reconnecting on their own schedules".
+  Every line that names a listener now carries the listener id it resolved from
+  — abbreviated beside the name, in full behind `Enter` — because the id is what
+  correlates with the mediator's own logs.
+- **A disconnect with no transport error says so.** It rendered as a bare
+  "disconnected", identical to a drop whose cause was simply not captured, so a
+  socket that closed cleanly and one that was lost for unknown reasons read the
+  same.
 
 - **A pasted invitation now fills in the community it is for, and Enter says
   something either way.** On the join entry page a pasted VIC was routed to the
