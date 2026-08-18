@@ -1380,18 +1380,19 @@ impl StateHandler {
                         .await;
                     },
                     Action::VicRefresh => {
-                        self.refresh_vics(&mut state, admin_vta.as_ref(), Some(&config))
-                            .await;
+                        // Off the loop: this is Tab into the VIC list, and the
+                        // focus change queued behind it must not wait on a vault
+                        // round-trip.
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     },
                     Action::VicToggleInactive => {
                         state.main_page.content_panel.vta.vic_show_inactive =
                             !state.main_page.content_panel.vta.vic_show_inactive;
-                        self.refresh_vics(&mut state, admin_vta.as_ref(), Some(&config))
-                            .await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     },
                     Action::AddVicSubmit => {
-                        self.run_add_vic(&mut state, admin_vta.as_ref(), Some(&config))
-                            .await;
+                        self.run_add_vic(&mut state, admin_vta.as_ref()).await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     },
                     Action::VicArchive(i)
                     | Action::VicUnarchive(i)
@@ -1401,11 +1402,11 @@ impl StateHandler {
                         self.run_vic_lifecycle(
                             &mut state,
                             admin_vta.as_ref(),
-                            Some(&config),
                             &action,
                             i,
                         )
                         .await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     },
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
@@ -1822,6 +1823,12 @@ impl StateHandler {
                         &mut in_flight,
                         outcome,
                     );
+                    // A refresh asked for while the vault was busy is re-issued
+                    // here, now that the domain is free — see `vic_refresh_queued`.
+                    if state.main_page.content_panel.vta.vic_refresh_queued {
+                        state.main_page.content_panel.vta.vic_refresh_queued = false;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
+                    }
                 },
                 // Lifecycle log messages from the Messaging
                 Some(event) = lifecycle_log_rx.recv() => {
@@ -2216,6 +2223,13 @@ impl StateHandler {
             .get(index)
             .cloned()
         else {
+            // No persona under the selection: the account has none yet, or the
+            // index outlived the row it pointed at. Either way say so — an
+            // unexplained no-op here is what makes `g` look broken.
+            state
+                .main_page
+                .log("No persona selected — create or select a persona DID first.");
+            let _ = self.state_tx.send(state.clone());
             return;
         };
         state.main_page.agent_names = Some(AgentNameManagerState {
@@ -2237,11 +2251,16 @@ impl StateHandler {
         };
         match agent_name_manage::list_names(admin_vta, &persona.did).await {
             Ok(names) => self.apply_agent_name_list(state, names, AgentNameManagerPhase::Ready),
-            Err(e) => self.set_agent_name_message(
-                state,
-                AgentNameManagerPhase::Ready,
-                format!("Could not load agent names: {e:#}"),
-            ),
+            Err(e) => {
+                if let Some(o) = state.main_page.agent_names.as_mut() {
+                    o.list_stale = true;
+                }
+                self.set_agent_name_message(
+                    state,
+                    AgentNameManagerPhase::Ready,
+                    format!("Could not load agent names: {e:#}"),
+                )
+            }
         }
     }
 
@@ -2414,11 +2433,18 @@ impl StateHandler {
                 state.main_page.sync_from_config(config);
                 self.apply_agent_name_list(state, names, AgentNameManagerPhase::Ready);
             }
-            Err(e) => self.set_agent_name_message(
-                state,
-                AgentNameManagerPhase::Ready,
-                format!("Applied, but could not reload the list: {e:#}"),
-            ),
+            Err(e) => {
+                // The mutation landed — only the read-back failed. Mark the list
+                // unknown so the overlay stops presenting it as the registry.
+                if let Some(o) = state.main_page.agent_names.as_mut() {
+                    o.list_stale = true;
+                }
+                self.set_agent_name_message(
+                    state,
+                    AgentNameManagerPhase::Ready,
+                    format!("Applied, but could not reload the list: {e:#}"),
+                )
+            }
         }
     }
 
@@ -2482,6 +2508,7 @@ impl StateHandler {
             o.selected = o.selected.min(o.names.len().saturating_sub(1));
             o.phase = phase;
             o.message = None;
+            o.list_stale = false;
         }
         let _ = self.state_tx.send(state.clone());
     }
@@ -2500,49 +2527,11 @@ impl StateHandler {
         let _ = self.state_tx.send(state.clone());
     }
 
-    /// (Re)load the VIC list from the VTA credential vault into the VTA panel,
-    /// honouring the "show inactive" toggle. Best-effort: a query failure logs
-    /// and leaves the previous list in place. Called when the operator focuses
-    /// the VIC list, toggles inactive, and after every mutation.
-    ///
-    /// `config` (when available) supplies the verified agent names for the
-    /// issuer DIDs: the vault descriptors carry only DIDs, so the freshly loaded
-    /// list is annotated here rather than waiting for the next
-    /// `sync_from_config`.
-    async fn refresh_vics(
-        &self,
-        state: &mut State,
-        admin_vta: Option<&vta_sdk::client::VtaClient>,
-        config: Option<&Config>,
-    ) {
-        let Some(admin_vta) = admin_vta else { return };
-        let include_inactive = state.main_page.content_panel.vta.vic_show_inactive;
-        match vic::list_vics(admin_vta, include_inactive).await {
-            Ok(list) => {
-                let vta = &mut state.main_page.content_panel.vta;
-                vta.vic_selected_index = vta.vic_selected_index.min(list.len().saturating_sub(1));
-                vta.vics = list.into();
-                if let Some(config) = config {
-                    state.main_page.sync_vic_agent_names(config);
-                }
-            }
-            Err(e) => {
-                state
-                    .main_page
-                    .log_error("Listing invitation credentials failed", &e);
-            }
-        }
-        let _ = self.state_tx.send(state.clone());
-    }
-
-    /// Validate + store the pasted VIC from the add-VIC overlay, then refresh the
-    /// list. Mirrors `run_create_persona`'s phase handling.
-    async fn run_add_vic(
-        &self,
-        state: &mut State,
-        admin_vta: Option<&vta_sdk::client::VtaClient>,
-        config: Option<&Config>,
-    ) {
+    /// Validate + store the pasted VIC from the add-VIC overlay. Mirrors
+    /// `run_create_persona`'s phase handling. The caller re-lists the vault
+    /// afterwards — see [`spawn_vic_refresh`], which owns every load so a stale
+    /// in-flight query can never overwrite a fresh one.
+    async fn run_add_vic(&self, state: &mut State, admin_vta: Option<&vta_sdk::client::VtaClient>) {
         use crate::state_handler::main_page::content::AddVicPhase;
 
         let json = match state.main_page.add_vic.as_ref() {
@@ -2578,7 +2567,6 @@ impl StateHandler {
                     o.messages.push("Invitation credential stored.".to_string());
                 }
                 state.main_page.log("Stored an invitation credential.");
-                self.refresh_vics(state, Some(admin_vta), config).await;
             }
             Err(e) => {
                 // A validation error keeps the operator on the input phase so they
@@ -2596,13 +2584,13 @@ impl StateHandler {
     }
 
     /// Run a VIC lifecycle verb (archive / unarchive / restore / soft-delete /
-    /// purge) against the selected VIC, clearing any confirmation arm, then
-    /// refresh the list. `index` is into the displayed VIC list.
+    /// purge) against the selected VIC, clearing any confirmation arm. `index`
+    /// is into the displayed VIC list. The caller re-lists the vault afterwards
+    /// (see [`spawn_vic_refresh`]).
     async fn run_vic_lifecycle(
         &self,
         state: &mut State,
         admin_vta: Option<&vta_sdk::client::VtaClient>,
-        config: Option<&Config>,
         action: &Action,
         index: usize,
     ) {
@@ -2638,7 +2626,6 @@ impl StateHandler {
                 .main_page
                 .log_error(format!("VIC {} failed", verb.to_lowercase()), &e),
         }
-        self.refresh_vics(state, Some(admin_vta), config).await;
     }
 
     /// Remove the community at `index` in the Communities display list: withdraw
@@ -2792,6 +2779,15 @@ impl StateHandler {
         // community withdrawal); `join_flow` saves itself synchronously. Coalesce
         // here too and force-flush on every exit path so a withdrawal isn't lost.
         let mut save = save_coalesce::SaveScheduler::new(self.profile.clone());
+        // State A reaches the VTA panel too (an account with no community still
+        // manages personas and VICs there), so it needs the same off-loop path
+        // for the vault query — otherwise Tab is responsive after the first join
+        // and sluggish before it, on the very screen a new account lives in.
+        // Only the VIC domain is dispatched here; every other network action is
+        // inert in this loop.
+        let (dispatch_tx, mut dispatch_rx) =
+            tokio::sync::mpsc::unbounded_channel::<background_dispatch::DispatchOutcome>();
+        let mut in_flight = background_dispatch::InFlight::default();
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
@@ -2947,20 +2943,18 @@ impl StateHandler {
                     }
                     Action::VicRefresh => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
-                        self.refresh_vics(state, av, cfg).await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
                     }
                     Action::VicToggleInactive => {
                         state.main_page.content_panel.vta.vic_show_inactive =
                             !state.main_page.content_panel.vta.vic_show_inactive;
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
-                        self.refresh_vics(state, av, cfg).await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
                     }
                     Action::AddVicSubmit => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
-                        self.run_add_vic(state, av, cfg).await;
+                        self.run_add_vic(state, av).await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
                     }
                     Action::VicArchive(i)
                     | Action::VicUnarchive(i)
@@ -2968,8 +2962,8 @@ impl StateHandler {
                     | Action::DeleteVic(i)
                     | Action::PurgeVic(i) => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        let cfg = join_ctx.as_ref().map(|c| &*c.config);
-                        self.run_vic_lifecycle(state, av, cfg, &action, i).await;
+                        self.run_vic_lifecycle(state, av, &action, i).await;
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
                     }
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
@@ -2991,6 +2985,28 @@ impl StateHandler {
                     // catch-all with now go through `handle_nav_action` above.
                     _ => {}
                 },
+                Some(outcome) = dispatch_rx.recv() => {
+                    // Applying needs the config the outcome is annotated against.
+                    // It lives in `join_ctx`, which is `take`n on hand-off to the
+                    // runtime loop — a listing that lands in that window has
+                    // nowhere to go, but its domain must still be freed or the
+                    // guard stays set for the life of the loop.
+                    match join_ctx.as_mut() {
+                        Some(ctx) => background_dispatch::apply_outcome(
+                            state,
+                            &mut ctx.config,
+                            &mut save,
+                            &mut in_flight,
+                            outcome,
+                        ),
+                        None => in_flight.finish(outcome.domain()),
+                    }
+                    if state.main_page.content_panel.vta.vic_refresh_queued {
+                        state.main_page.content_panel.vta.vic_refresh_queued = false;
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
+                    }
+                }
                 Ok(interrupted) = interrupt_rx.recv() => {
                     break DegradedOutcome::Exit(interrupted);
                 }
@@ -3124,6 +3140,74 @@ fn apply_capability_replies(
             }
         }
     }
+}
+
+/// Record what a refresh request does to the panel, and answer whether the
+/// caller should actually start a job. Split out from [`spawn_vic_refresh`]
+/// so the guard rules are testable without a live `VtaClient`.
+///
+/// The three outcomes, and why each is what it is, are documented on
+/// [`spawn_vic_refresh`].
+fn begin_vic_refresh(
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    has_session: bool,
+) -> bool {
+    if !has_session {
+        state.main_page.content_panel.vta.vic_loading = false;
+        return false;
+    }
+    if !in_flight.try_begin(background_dispatch::DispatchDomain::Vic) {
+        state.main_page.content_panel.vta.vic_refresh_queued = true;
+        return false;
+    }
+    state.main_page.content_panel.vta.vic_loading = true;
+    true
+}
+
+/// Start a background VIC-list refresh, shared by both loops.
+///
+/// The vault query is a trust task with a 30 s SDK timeout. It used to run
+/// inline in the action arm, which meant the `VicFocusToggle` queued behind it
+/// — a two-line in-memory change — could not be applied until the network
+/// answered: Tab into the Invitation Credentials list took as long as the round
+/// trip, with nothing on screen to say why. Here the loop only *starts* the
+/// query, so the focus change lands on the next frame and the list fills in
+/// when it arrives.
+///
+/// Guarding rules, in the order they apply:
+///
+/// * **No session, no query.** Without the always-on admin VTA session there is
+///   no vault to read; the loading flag is cleared so the panel doesn't claim a
+///   query is running.
+/// * **One in flight per domain** ([`background_dispatch::InFlight`]), so
+///   leaning on Tab cannot open an unbounded fan of vault queries (VTI R1.4).
+/// * **Rejected means deferred, not dropped.** The in-flight query was issued
+///   before whatever prompted this one (a lifecycle mutation, an `i` filter
+///   flip), so its result is already stale. The request is remembered in
+///   `vic_refresh_queued` and re-issued by the dispatch arm once the domain
+///   frees — silently discarding it would leave, say, a just-archived VIC
+///   rendered as active until the operator refreshed by hand.
+fn spawn_vic_refresh(
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<background_dispatch::DispatchOutcome>,
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+) {
+    if !begin_vic_refresh(in_flight, state, admin_vta.is_some()) {
+        return;
+    }
+    let admin_vta = admin_vta.expect("checked by begin_vic_refresh").clone();
+    let include_inactive = state.main_page.content_panel.vta.vic_show_inactive;
+    background_dispatch::spawn_dispatch(
+        dispatch_tx.clone(),
+        background_dispatch::DispatchDomain::Vic,
+        async move {
+            background_dispatch::DispatchOutcome::Vic(
+                vic::VicRefreshOutcome::run(admin_vta, include_inactive).await,
+            )
+        },
+    );
 }
 
 /// Apply a pure navigation action to `state`, shared by the runtime loop and the
@@ -3945,5 +4029,43 @@ mod tests {
             &Action::CloseCommunitySwitcher
         ));
         assert!(state.main_page.switcher.is_none());
+    }
+
+    /// The refresh guard's three outcomes.
+    ///
+    /// The middle one is the interesting one: a request that arrives while the
+    /// vault is busy is *deferred*, not dropped. The in-flight query was issued
+    /// before whatever prompted this request — a lifecycle mutation, or an `i`
+    /// filter flip — so its answer is already stale, and discarding the new
+    /// request would leave, say, a just-archived VIC rendered as active until
+    /// someone refreshed by hand.
+    #[test]
+    fn vic_refresh_guard_defers_rather_than_drops() {
+        let mut state = State::default();
+        let mut in_flight = background_dispatch::InFlight::default();
+
+        // No admin session: nothing to query, and the panel must not be left
+        // claiming a load is under way.
+        state.main_page.content_panel.vta.vic_loading = true;
+        assert!(!begin_vic_refresh(&mut in_flight, &mut state, false));
+        assert!(!state.main_page.content_panel.vta.vic_loading);
+        assert!(!in_flight.is_busy(background_dispatch::DispatchDomain::Vic));
+
+        // First request with a session: claims the domain and starts loading.
+        assert!(begin_vic_refresh(&mut in_flight, &mut state, true));
+        assert!(state.main_page.content_panel.vta.vic_loading);
+        assert!(in_flight.is_busy(background_dispatch::DispatchDomain::Vic));
+
+        // Second while that one is in flight: not started, but remembered.
+        assert!(!begin_vic_refresh(&mut in_flight, &mut state, true));
+        assert!(
+            state.main_page.content_panel.vta.vic_refresh_queued,
+            "a rejected refresh must be re-issued once the domain frees"
+        );
+
+        // Once the outcome lands the domain is free and the queued request runs.
+        in_flight.finish(background_dispatch::DispatchDomain::Vic);
+        state.main_page.content_panel.vta.vic_refresh_queued = false;
+        assert!(begin_vic_refresh(&mut in_flight, &mut state, true));
     }
 }

@@ -496,7 +496,18 @@ impl MainPageState {
             })
             .collect();
         context_dids.sort_by(|a, b| a.did.cmp(&b.did));
-        self.content_panel.vta.context_dids = context_dids.into();
+        // Clamp the selection to the rebuilt list. Nothing else does: the list is
+        // rebuilt wholesale on every sync, so deleting a persona (or loading a
+        // profile with fewer than the last one had) could leave the index past
+        // the end — where the panel draws no cursor and every list-scoped key
+        // (`d`, and until it moved, `g`) silently does nothing, since each is
+        // guarded on `did_selected < did_count`. Restarting "fixed" it only
+        // because the index starts at 0.
+        let vta = &mut self.content_panel.vta;
+        vta.did_selected_index = vta
+            .did_selected_index
+            .min(context_dids.len().saturating_sub(1));
+        vta.context_dids = context_dids.into();
 
         // The VIC list is not derived from `Config` (it comes from the VTA
         // credential vault), so it is annotated rather than rebuilt here.
@@ -1621,6 +1632,30 @@ mod tests {
         assert_eq!(row.agent_name.as_deref(), Some("example.com/@alice"));
         assert_eq!(row.did, ALICE_DID);
         assert_eq!(row.label, "Work me");
+    }
+
+    /// A selection left pointing past the end of a shrunken persona list is
+    /// clamped back onto a real row.
+    ///
+    /// Nothing else did this: the list is rebuilt wholesale on every sync, and a
+    /// stale index disables every list-scoped key (each is guarded on
+    /// `did_selected < did_count`) while drawing no cursor to show why — a
+    /// keyboard that looks broken until the next restart resets the index to 0.
+    #[test]
+    fn syncing_clamps_a_stale_persona_selection() {
+        let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
+        let config = config_with_membership(ALICE_DID, Some("Work me"), vtc_did, None);
+
+        let mut page = MainPageState::default();
+        // What a deletion (or a smaller profile) leaves behind.
+        page.content_panel.vta.did_selected_index = 4;
+        page.sync_from_config(&config);
+
+        assert_eq!(page.content_panel.vta.context_dids.len(), 1);
+        assert_eq!(
+            page.content_panel.vta.did_selected_index, 0,
+            "the selection must land on a row that exists"
+        );
     }
 
     // --- VTA panel key counts ---

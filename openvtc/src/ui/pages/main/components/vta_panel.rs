@@ -31,12 +31,20 @@ impl Panel for VtaPanel {
         state: &ContentPanelState,
         _connection: &ConnectionState,
     ) -> Vec<Line<'static>> {
-        render(&state.vta)
+        render(&state.vta, state.selected)
     }
 }
 
 /// Render the VTA service information panel.
-pub fn render(state: &VtaState) -> Vec<Line<'static>> {
+///
+/// `panel_focused` is whether the *content panel* holds keyboard focus (as
+/// opposed to the menu on the left). Both lists here draw a focus affordance,
+/// and without this they drew it from `state.focus` alone — so a panel the
+/// keyboard could not reach still announced "◀ focus" and advertised its verbs.
+/// Every one of those keys is dropped in that state (content keys are only
+/// routed when the content panel is selected), which is exactly the "the key
+/// does nothing" report.
+pub fn render(state: &VtaState, panel_focused: bool) -> Vec<Line<'static>> {
     let label_style = Style::new().fg(COLOR_TEXT_DEFAULT);
     let value_style = Style::new().fg(COLOR_SOFT_PURPLE);
 
@@ -194,7 +202,7 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         // Same focus affordance the VIC section carries. Without it this list
         // showed a `▸` selection cursor and a key-hint row with no indication
         // that it was the focused list — the two lists looked equally live.
-        let focused = state.focus == VtaFocus::Dids;
+        let focused = panel_focused && state.focus == VtaFocus::Dids;
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
             Span::styled(
@@ -206,11 +214,7 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
                 },
             ),
             Span::styled(
-                if focused {
-                    "   ◀ focus"
-                } else {
-                    "   [Tab] focus"
-                },
+                focus_hint(focused, panel_focused),
                 Style::new().fg(COLOR_DARK_GRAY),
             ),
         ]));
@@ -314,9 +318,23 @@ pub fn render(state: &VtaState) -> Vec<Line<'static>> {
         );
     }
 
-    render_vics(state, &mut lines);
+    render_vics(state, panel_focused, &mut lines);
 
     lines
+}
+
+/// The focus affordance for one of the two manageable lists.
+///
+/// Three states, not two: the list has the keyboard, the *other* list has it
+/// (Tab switches between them), or the content panel is not focused at all — in
+/// which case Tab does not reach these lists and the operator needs the panel
+/// first. Collapsing the last two into "\[Tab\] focus" pointed at the wrong key.
+fn focus_hint(focused: bool, panel_focused: bool) -> &'static str {
+    match (focused, panel_focused) {
+        (true, _) => "   ◀ focus",
+        (false, true) => "   [Tab] focus",
+        (false, false) => "   [→] focus the panel",
+    }
 }
 
 /// Push a labelled identity as one row: the verified agent name as the value,
@@ -456,8 +474,8 @@ fn render_transports(state: &VtaState, lines: &mut Vec<Line<'static>>) {
 
 /// Render the "Invitation Credentials" (VIC) manager section: the held VICs with
 /// their lifecycle state, the confirm gates, and the focus-aware key hints.
-fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
-    let focused = state.focus == VtaFocus::Vics;
+fn render_vics(state: &VtaState, panel_focused: bool, lines: &mut Vec<Line<'static>>) {
+    let focused = panel_focused && state.focus == VtaFocus::Vics;
     let header_style = if focused {
         Style::new().fg(COLOR_SUCCESS).bold()
     } else {
@@ -471,10 +489,18 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
             header_style,
         ),
         Span::styled(
-            if focused {
-                "   ◀ focus"
+            focus_hint(focused, panel_focused),
+            Style::new().fg(COLOR_DARK_GRAY),
+        ),
+        // The vault query runs off the loop now, so the list can be visibly
+        // mid-load. Saying so is the difference between "you hold no VICs" and
+        // "we haven't heard back yet" — the panel used to render both as the
+        // empty state, and the load was only ever noticed as a frozen Tab.
+        Span::styled(
+            if state.vic_loading {
+                "   loading…"
             } else {
-                "   [Tab] focus"
+                ""
             },
             Style::new().fg(COLOR_DARK_GRAY),
         ),
@@ -483,8 +509,12 @@ fn render_vics(state: &VtaState, lines: &mut Vec<Line<'static>>) {
 
     if state.vics.is_empty() {
         lines.push(
-            Line::from("No invitation credentials.   a: import a VIC   ·   i: show inactive")
-                .fg(COLOR_DARK_GRAY),
+            Line::from(if state.vic_loading {
+                "Reading the credential vault…"
+            } else {
+                "No invitation credentials.   a: import a VIC   ·   i: show inactive"
+            })
+            .fg(COLOR_DARK_GRAY),
         );
         return;
     }
@@ -658,7 +688,7 @@ mod tests {
     /// "we talk to the VTA over HTTPS".
     #[test]
     fn transport_row_names_the_transport_in_use() {
-        let out = joined(&render(&vta_managed(None)));
+        let out = joined(&render(&vta_managed(None), true));
         assert!(out.contains("Transport:"), "{out}");
         assert!(out.contains("DIDComm"), "{out}");
         assert!(out.contains("(in use)"), "{out}");
@@ -669,30 +699,36 @@ mod tests {
     /// offers only the transport we happen to be on.
     #[test]
     fn transport_row_says_checking_before_the_probe_lands() {
-        let out = joined(&render(&vta_managed(None)));
+        let out = joined(&render(&vta_managed(None), true));
         assert!(out.contains("checking"), "{out}");
     }
 
     #[test]
     fn transport_row_reports_the_other_advertised_transport() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: None,
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: Some("https://vta.example".to_string()),
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: None,
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: Some("https://vta.example".to_string()),
+                error: None,
+            })),
+            true,
+        ));
         assert!(out.contains("REST also available"), "{out}");
     }
 
     /// A VTA that advertises only the transport in use says exactly that.
     #[test]
     fn transport_row_reports_a_single_advertised_transport() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: None,
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: None,
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: None,
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: None,
+                error: None,
+            })),
+            true,
+        ));
         assert!(out.contains("only transport offered"), "{out}");
     }
 
@@ -701,12 +737,15 @@ mod tests {
     /// were offered.
     #[test]
     fn a_tsp_advertising_vta_is_not_reported_as_single_transport() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: None,
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: None,
+                error: None,
+            })),
+            true,
+        ));
         assert!(
             !out.contains("only transport offered"),
             "TSP is offered, so this claim is false: {out}"
@@ -719,12 +758,15 @@ mod tests {
     /// stays on DIDComm. The panel has to express that third thing (VTI R6.4).
     #[test]
     fn tsp_reads_as_carrying_the_trust_task_surface() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: None,
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: None,
+                error: None,
+            })),
+            true,
+        ));
         assert!(out.contains("TSP for trust tasks"), "{out}");
         assert!(
             !out.contains("TSP also available"),
@@ -740,12 +782,15 @@ mod tests {
     /// the selectable one distinct from the one we cannot speak.
     #[test]
     fn a_triple_transport_vta_reports_both_others() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: Some("https://vta.example".to_string()),
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: Some("https://vta.example".to_string()),
+                error: None,
+            })),
+            true,
+        ));
         assert!(out.contains("REST also available"), "{out}");
         assert!(out.contains("TSP for trust tasks"), "{out}");
     }
@@ -755,12 +800,15 @@ mod tests {
     /// offered. Both facts are true; unlabelled they read as a contradiction.
     #[test]
     fn a_configured_but_unadvertised_rest_endpoint_is_labelled_as_such() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: None,
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: Some(TSP_MEDIATOR_DID.to_string()),
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: None,
+                error: None,
+            })),
+            true,
+        ));
         assert!(out.contains("REST endpoint"), "{out}");
         assert!(out.contains("(configured; not advertised)"), "{out}");
     }
@@ -778,7 +826,7 @@ mod tests {
                 error: Some("DID did not resolve".to_string()),
             })),
         ] {
-            let out = joined(&render(&state));
+            let out = joined(&render(&state, true));
             assert!(
                 !out.contains("not advertised"),
                 "we have not established that: {out}"
@@ -789,12 +837,15 @@ mod tests {
     /// When the VTA does advertise REST, the endpoint line carries no caveat.
     #[test]
     fn an_advertised_rest_endpoint_is_not_labelled() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: None,
-            mediator_did: Some(MEDIATOR_DID.to_string()),
-            rest_url: Some("https://vta.example".to_string()),
-            error: None,
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: None,
+                mediator_did: Some(MEDIATOR_DID.to_string()),
+                rest_url: Some("https://vta.example".to_string()),
+                error: None,
+            })),
+            true,
+        ));
         assert!(out.contains("REST endpoint"), "{out}");
         assert!(!out.contains("not advertised"), "{out}");
     }
@@ -803,12 +854,15 @@ mod tests {
     /// an unreachable publication endpoint is not the same fact (VTI R6.4).
     #[test]
     fn a_failed_probe_reads_as_unknown_not_as_unavailable() {
-        let out = joined(&render(&vta_managed(Some(AdvertisedTransports {
-            tsp_mediator_did: None,
-            mediator_did: None,
-            rest_url: None,
-            error: Some("DID did not resolve".to_string()),
-        }))));
+        let out = joined(&render(
+            &vta_managed(Some(AdvertisedTransports {
+                tsp_mediator_did: None,
+                mediator_did: None,
+                rest_url: None,
+                error: Some("DID did not resolve".to_string()),
+            })),
+            true,
+        ));
         assert!(out.contains("other transports unknown"), "{out}");
         assert!(
             out.contains("DID did not resolve"),
@@ -824,7 +878,7 @@ mod tests {
     /// label said nothing about that.
     #[test]
     fn the_credential_row_says_what_the_credential_is_for() {
-        let out = joined(&render(&vta_managed(None)));
+        let out = joined(&render(&vta_managed(None), true));
         assert!(out.contains("Authenticated:"), "{out}");
     }
 
@@ -836,7 +890,7 @@ mod tests {
     fn an_identity_row_leads_with_the_name_and_keeps_the_did_below() {
         let mut state = vta_managed(None);
         state.persona_agent_name = Some("example.com/@alice".to_string());
-        let out = text(&render(&state));
+        let out = text(&render(&state, true));
 
         let name_row = out
             .iter()
@@ -856,7 +910,7 @@ mod tests {
     /// With no verified name the DID is the value and there is no second line.
     #[test]
     fn an_identity_row_without_a_name_shows_only_the_did() {
-        let out = text(&render(&vta_managed(None)));
+        let out = text(&render(&vta_managed(None), true));
         let rows: Vec<_> = out.iter().filter(|l| l.contains(PERSONA_DID)).collect();
         assert_eq!(rows.len(), 1, "DID appears once: {out:?}");
         assert!(rows[0].contains("Persona:"), "{rows:?}");
@@ -875,7 +929,7 @@ mod tests {
             label: "Persona".to_string(),
         }]
         .into();
-        let out = joined(&render(&state));
+        let out = joined(&render(&state, true));
         assert!(!out.contains("Active DIDs"), "{out}");
     }
 
@@ -897,7 +951,7 @@ mod tests {
             },
         ]
         .into();
-        let out = joined(&render(&state));
+        let out = joined(&render(&state, true));
         assert!(out.contains("Active DIDs (2)"), "{out}");
     }
 
@@ -910,7 +964,7 @@ mod tests {
         let mut state = state_with(vec![managed_did(None)], vec![vic(None)]);
 
         state.focus = VtaFocus::Dids;
-        let focused = joined(&render(&state));
+        let focused = joined(&render(&state, true));
         assert!(
             focused.contains("Context Identities (1)   ◀ focus"),
             "{focused}"
@@ -922,7 +976,7 @@ mod tests {
         assert!(focused.contains("n: new persona"), "{focused}");
 
         state.focus = VtaFocus::Vics;
-        let unfocused = joined(&render(&state));
+        let unfocused = joined(&render(&state, true));
         assert!(
             unfocused.contains("Context Identities (1)   [Tab] focus"),
             "{unfocused}"
@@ -933,14 +987,60 @@ mod tests {
         );
     }
 
+    /// With the content panel itself unfocused, neither list may claim the
+    /// keyboard. Both lists used to draw their affordance from `state.focus`
+    /// alone, so a panel whose keys are all discarded still announced "◀ focus"
+    /// and advertised `g` / `n` / `d` — the shortest path to "I pressed the key
+    /// and nothing happened".
+    #[test]
+    fn an_unfocused_panel_points_at_the_panel_not_the_lists() {
+        let mut state = state_with(vec![managed_did(None)], vec![vic(None)]);
+        state.focus = VtaFocus::Dids;
+
+        let out = joined(&render(&state, false));
+        assert!(
+            !out.contains("◀ focus"),
+            "no list has the keyboard when the panel does not: {out}"
+        );
+        assert!(
+            !out.contains("[Tab] focus"),
+            "Tab is not the key that helps here: {out}"
+        );
+        assert!(out.contains("[→] focus the panel"), "{out}");
+        assert!(
+            !out.contains("n: new persona"),
+            "hints belong to a list the keyboard can reach: {out}"
+        );
+    }
+
+    /// An in-flight vault query is visible. "No invitation credentials" is a
+    /// claim about the vault, and it can only be made once the vault answers —
+    /// before this the load was inline, so the panel simply froze instead.
+    #[test]
+    fn a_loading_vic_list_says_so_instead_of_claiming_none() {
+        let mut state = state_with(vec![managed_did(None)], vec![]);
+        state.vic_loading = true;
+
+        let out = joined(&render(&state, true));
+        assert!(out.contains("Reading the credential vault…"), "{out}");
+        assert!(
+            !out.contains("No invitation credentials."),
+            "an unanswered vault is not an empty one: {out}"
+        );
+
+        state.vic_loading = false;
+        let settled = joined(&render(&state, true));
+        assert!(settled.contains("No invitation credentials."), "{settled}");
+    }
+
     // --- VIC issuer ---------------------------------------------------------
 
     #[test]
     fn vic_row_shows_the_issuers_verified_agent_name() {
-        let out = text(&render(&state_with(
-            vec![],
-            vec![vic(Some("example.com/@acme"))],
-        )));
+        let out = text(&render(
+            &state_with(vec![], vec![vic(Some("example.com/@acme"))]),
+            true,
+        ));
         assert!(
             out.iter().any(|l| l.contains("example.com/@acme")),
             "issuer name is shown: {out:?}"
@@ -954,7 +1054,7 @@ mod tests {
     /// A cached negative lookup arrives as `None`, so the row keeps the DID.
     #[test]
     fn vic_row_without_a_name_keeps_the_issuer_did() {
-        let out = text(&render(&state_with(vec![], vec![vic(None)])));
+        let out = text(&render(&state_with(vec![], vec![vic(None)]), true));
         assert!(
             out.iter().any(|l| l.contains(VTC_DID)),
             "issuer DID is shown: {out:?}"
@@ -969,7 +1069,7 @@ mod tests {
     fn delete_confirm_keeps_both_the_name_and_the_did() {
         let mut state = state_with(vec![managed_did(Some("example.com/@alice"))], vec![]);
         state.confirm_delete_did = Some(0);
-        let out = text(&render(&state));
+        let out = text(&render(&state, true));
 
         let prompt = out
             .iter()
@@ -988,7 +1088,7 @@ mod tests {
     fn delete_confirm_without_a_name_shows_the_did() {
         let mut state = state_with(vec![managed_did(None)], vec![]);
         state.confirm_delete_did = Some(0);
-        let out = text(&render(&state));
+        let out = text(&render(&state, true));
 
         let prompt = out
             .iter()
