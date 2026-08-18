@@ -408,11 +408,16 @@ impl MainPage {
         // Keys that apply regardless of which list has focus.
         match key.code {
             KeyCode::Tab => {
-                // Switching to the VIC list loads it on demand (no polling).
+                // Focus moves first, then the VIC list is loaded on demand (no
+                // polling). Order matters: the handler services actions in
+                // sequence, so sending the load first put a vault round-trip in
+                // front of a pure in-memory focus change. The load is off the
+                // loop now, but the focus change still goes first — it is what
+                // the operator pressed the key for.
+                let _ = self.action_tx.send(Action::VicFocusToggle);
                 if focus == VtaFocus::Dids {
                     let _ = self.action_tx.send(Action::VicRefresh);
                 }
-                let _ = self.action_tx.send(Action::VicFocusToggle);
                 return true;
             }
             KeyCode::Char('n') => {
@@ -426,6 +431,19 @@ impl MainPage {
             }
             KeyCode::Char('i') => {
                 let _ = self.action_tx.send(Action::VicToggleInactive);
+                return true;
+            }
+            // Manage the selected persona's agent names (claim / park / remove).
+            // Deliberately focus-independent, alongside `n` and `a`: while this
+            // sat in the DID-list arm, pressing it with the VIC list focused was
+            // swallowed with no message and no state change — indistinguishable
+            // from a dead keyboard, and the reported symptom that sent someone
+            // restarting the app. The selection it acts on is the DID list's,
+            // which Tab does not move.
+            KeyCode::Char('g') => {
+                let _ = self
+                    .action_tx
+                    .send(Action::StartAgentNameManager(did_selected));
                 return true;
             }
             KeyCode::Esc => {
@@ -461,13 +479,6 @@ impl MainPage {
                     {
                         let _ = self.action_tx.send(Action::DidConfirmDelete(did_selected));
                     }
-                    true
-                }
-                KeyCode::Char('g') if did_selected < did_count => {
-                    // Manage this persona's agent names (claim / park / remove).
-                    let _ = self
-                        .action_tx
-                        .send(Action::StartAgentNameManager(did_selected));
                     true
                 }
                 _ => false,
@@ -2518,10 +2529,19 @@ impl MainPage {
             }
             AgentNameManagerPhase::Ready | AgentNameManagerPhase::Working => {
                 if overlay.names.is_empty() {
-                    lines.push(Line::from(Span::styled(
-                        "No agent names yet.",
-                        Style::new().fg(COLOR_DARK_GRAY),
-                    )));
+                    // "No agent names yet" is a claim about the registry, and we
+                    // can only make it when the registry actually answered. With
+                    // a failed read it is not just unknown but likely wrong —
+                    // the read that failed is the one *after* a successful claim.
+                    let (text, style) = if overlay.list_stale {
+                        (
+                            "Registry could not be read — any names on this DID are not shown.",
+                            Style::new().fg(COLOR_ORANGE),
+                        )
+                    } else {
+                        ("No agent names yet.", Style::new().fg(COLOR_DARK_GRAY))
+                    };
+                    lines.push(Line::from(Span::styled(text, style)));
                 } else {
                     for (i, row) in overlay.names.iter().enumerate() {
                         let marker = if i == overlay.selected { "▸ " } else { "  " };
@@ -3262,6 +3282,31 @@ mod key_handler_tests {
         }
     }
 
+    /// `g` works with either list focused. It used to live in the DID-list arm,
+    /// so pressing it after a Tab was swallowed silently — no action, no state
+    /// change, no message. The selection it acts on is the DID list's, which Tab
+    /// does not move, so the target is unambiguous either way.
+    #[test]
+    fn vta_g_opens_agent_name_manager_from_the_vic_list_too() {
+        use crate::state_handler::main_page::content::{ManagedDid, VtaFocus};
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.context_dids = vec![ManagedDid {
+                did: "did:webvh:example.com:alice".into(),
+                agent_name: None,
+                label: "Alice".into(),
+                bound_communities: 1,
+                is_active: true,
+            }]
+            .into();
+            s.main_page.content_panel.vta.focus = VtaFocus::Vics;
+        });
+        page.handle_key_event(press(KeyCode::Char('g')));
+        match rx.try_recv() {
+            Ok(Action::StartAgentNameManager(0)) => {}
+            _ => panic!("expected StartAgentNameManager(0)"),
+        }
+    }
+
     #[test]
     fn agent_name_manager_ready_keys_map_to_actions() {
         use crate::state_handler::main_page::content::{
@@ -3487,18 +3532,35 @@ mod key_handler_tests {
     }
 
     #[test]
-    fn vta_tab_refreshes_then_toggles_focus() {
-        // From the default (Dids) focus, Tab loads the VIC list, then switches.
+    fn vta_tab_toggles_focus_before_refreshing() {
+        // From the default (Dids) focus, Tab switches lists *first*, then asks
+        // for the VIC listing. The reverse order (what this asserted before) put
+        // a credential-vault round-trip in front of the focus change in the
+        // handler's serial queue, so Tab visibly lagged by the length of a
+        // network call.
         let (mut page, mut rx) = page_for(MainMenu::Vta, |_| {});
         page.handle_key_event(press(KeyCode::Tab));
         match rx.try_recv() {
-            Ok(Action::VicRefresh) => {}
-            _ => panic!("expected VicRefresh first"),
+            Ok(Action::VicFocusToggle) => {}
+            _ => panic!("focus must move first, before any VIC listing"),
         }
         match rx.try_recv() {
-            Ok(Action::VicFocusToggle) => {}
-            _ => panic!("expected VicFocusToggle"),
+            Ok(Action::VicRefresh) => {}
+            _ => panic!("expected VicRefresh second"),
         }
+    }
+
+    /// Tab back off the VIC list does not re-list: the listing is loaded on
+    /// demand when the list is entered, not on every focus change.
+    #[test]
+    fn vta_tab_off_the_vic_list_does_not_refresh() {
+        use crate::state_handler::main_page::content::VtaFocus;
+        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
+            s.main_page.content_panel.vta.focus = VtaFocus::Vics;
+        });
+        page.handle_key_event(press(KeyCode::Tab));
+        assert!(matches!(rx.try_recv(), Ok(Action::VicFocusToggle)));
+        assert!(rx.try_recv().is_err(), "no second action expected");
     }
 
     #[test]

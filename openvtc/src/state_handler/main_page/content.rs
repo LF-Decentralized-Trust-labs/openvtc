@@ -227,6 +227,16 @@ pub struct AgentNameManagerState {
     pub phase: AgentNameManagerPhase,
     /// Transient status / error line.
     pub message: Option<String>,
+    /// The registry could not be read, so [`names`](Self::names) is not known to
+    /// be the host's current answer.
+    ///
+    /// Only the empty case is actually dangerous, and it is why this flag
+    /// exists: a claim that succeeded and a reload that then failed left the
+    /// overlay rendering "No agent names yet." directly above "Applied, but
+    /// could not reload the list" — the two lines contradict each other, and the
+    /// prominent one says the opposite of what happened. The name was claimed,
+    /// and the DID document proved it.
+    pub list_stale: bool,
     /// Armed remove confirmation: `Some(row)` while awaiting `y`/Enter to
     /// release that name (a destructive op — the name becomes free for anyone to
     /// reclaim). Any other key cancels. `None` when nothing is armed.
@@ -414,6 +424,17 @@ pub struct VtaState {
     /// Whether the VIC list includes archived + soft-deleted entries (the
     /// `include_archived` / `include_deleted` query modifiers). Toggled with `i`.
     pub vic_show_inactive: bool,
+    /// A vault query is in flight. The list load is a network round-trip that no
+    /// longer blocks the loop, so the panel says so rather than showing a stale
+    /// (or empty) list with no sign that an answer is coming.
+    pub vic_loading: bool,
+    /// A refresh was asked for while one was already in flight, and must be
+    /// re-run once it lands. Set by the spawn helper when the busy-guard rejects
+    /// it: the in-flight query was issued *before* the mutation (or filter flip)
+    /// that prompted this request, so its result is already stale — dropping the
+    /// request instead would leave an archived VIC rendered as active until the
+    /// next manual refresh.
+    pub vic_refresh_queued: bool,
     /// Which of the two manageable lists (Context Identities vs Invitation
     /// Credentials) has keyboard focus, so `↑/↓` and the verbs apply to it.
     pub focus: VtaFocus,

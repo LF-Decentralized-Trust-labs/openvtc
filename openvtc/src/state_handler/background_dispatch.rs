@@ -73,6 +73,12 @@ pub(crate) enum DispatchDomain {
     /// VTA transport probe: resolve the VTA's DID document to learn which
     /// transports it advertises. Read-only, one resolve, off the loop.
     VtaTransports,
+    /// Invitation-credential (VIC) list refresh: one credential-vault query
+    /// against the always-on admin VTA session (30 s timeout in the SDK).
+    /// Read-only. Backgrounded because it is bound to *navigation* — Tab into
+    /// the VIC list, `i` to flip the filter — and an inline await made the
+    /// focus change itself wait on the round-trip, which read as a frozen key.
+    Vic,
 }
 
 impl DispatchDomain {
@@ -85,6 +91,7 @@ impl DispatchDomain {
             DispatchDomain::Did => "Identity deletion",
             DispatchDomain::AgentName => "Agent name refresh",
             DispatchDomain::VtaTransports => "VTA transport probe",
+            DispatchDomain::Vic => "Invitation credential refresh",
         }
     }
 }
@@ -157,6 +164,10 @@ pub(crate) enum DispatchOutcome {
     /// advertises, or the reason the probe could not tell. Display-only — it
     /// touches no `Config`, so it never marks the config dirty.
     VtaTransports(crate::state_handler::main_page::content::AdvertisedTransports),
+    /// A VIC list refresh finished. [`VicRefreshOutcome::apply`] swaps in the
+    /// listing (or logs why it could not be read); display-only, so it touches
+    /// no `Config` and never marks it dirty.
+    Vic(crate::state_handler::vic::VicRefreshOutcome),
     /// A spawned dispatch job panicked (or was cancelled) and so never produced a
     /// real outcome. Synthesised by [`spawn_dispatch`] from the `JoinError` so the
     /// domain's busy-flag is still cleared (a panicking job that sent nothing would
@@ -166,8 +177,10 @@ pub(crate) enum DispatchOutcome {
 }
 
 impl DispatchOutcome {
-    /// The domain whose busy-flag this outcome releases.
-    fn domain(&self) -> DispatchDomain {
+    /// The domain whose busy-flag this outcome releases. `pub(crate)` because
+    /// the degraded (State-A) loop has to free the flag directly on the one path
+    /// where it cannot apply an outcome — see its dispatch arm.
+    pub(crate) fn domain(&self) -> DispatchDomain {
         match self {
             DispatchOutcome::MediatorReconnect(_) => DispatchDomain::Mediator,
             DispatchOutcome::Relationship(_) => DispatchDomain::Relationship,
@@ -175,6 +188,7 @@ impl DispatchOutcome {
             DispatchOutcome::Did(_) => DispatchDomain::Did,
             DispatchOutcome::AgentName(_) => DispatchDomain::AgentName,
             DispatchOutcome::VtaTransports(_) => DispatchDomain::VtaTransports,
+            DispatchOutcome::Vic(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
         }
     }
@@ -292,6 +306,7 @@ pub(crate) fn apply_outcome(
             // from `Config` and would drop a field the config does not hold.
             state.main_page.content_panel.vta.transports.advertised = Some(advertised);
         }
+        DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic
             // failure so the user isn't left staring at a stuck "in progress"; the
