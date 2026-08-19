@@ -45,6 +45,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The main page appears as soon as you press Enter on the loading screen.**
+  Startup brought every DIDComm listener up — a mediator authentication
+  handshake and a websocket connect each, one after another — on the
+  state-handler thread, which is the only thread that services UI actions. The
+  loading screen had already been told to offer "Press Enter to continue", so
+  the keypress sat unread in the action channel until the last socket was up,
+  and the main page then arrived in one late jump. It reads as a freeze, and it
+  got worse with every extra identity on the account. The connects now happen
+  off that thread, which is what the code around them already claimed ("Phase 2
+  … runs ASYNCHRONOUSLY: we do NOT block the UI waiting for the listener").
+
 - **The VTA Service panel stops feeling frozen.** Tab into the Invitation
   Credentials list ran a credential-vault query *before* the focus change, and
   the state handler services actions one at a time — so a two-line in-memory
