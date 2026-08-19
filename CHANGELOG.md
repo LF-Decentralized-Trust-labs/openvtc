@@ -45,6 +45,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Removing a persona, and changing settings, work before you join a
+  community.** Two more casualties of the same gap: `y` on the remove-identity
+  confirm was dropped, leaving the prompt on screen with nothing behind it —
+  which reads as a hang — and the entire settings surface was inert, so a
+  State-A account could not change its own protection, logging or mediator.
+  Settings need no messaging and no VTA session at all; they were simply never
+  wired into that loop.
+- **Agent names can be managed on an account's first persona.** With no
+  communities yet, OpenVTC runs a second, smaller event loop (State A), and that
+  loop had no arm for the agent-name verbs — so `g` on a freshly minted persona
+  was dropped into a catch-all and nothing happened, on the very screen that had
+  just reported "Created persona DID …". State A is where an account's *first*
+  persona is created, so it is also the first place anyone wants to name one.
+  Restarting made it work, because an account that already has a persona starts
+  in the full runtime loop instead — which is why this went unnoticed.
+
+  The catch-all that swallowed them now says so on screen, rather than leaving a
+  key that does nothing and no way to tell an unimplemented action from a broken
+  one. What remains behind it genuinely needs a community — the inbox,
+  relationships, credential exchange and the community verbs — and now says
+  that instead of nothing.
+
 - **The main page appears as soon as you press Enter on the loading screen.**
   Startup brought every DIDComm listener up — a mediator authentication
   handshake and a websocket connect each, one after another — on the
