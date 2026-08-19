@@ -43,6 +43,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   R-A-5 regardless. The main page still *detects* an existing did-git-sign
   config; re-offering the install needs a new entry point.
 
+### Changed
+
+- **Neither event loop can silently drop an action again.** OpenVTC runs two
+  action loops — the runtime one, and a smaller one for an account with no
+  community — and each matched a hand-written list of actions ending in a silent
+  catch-all. That is how three surfaces came to be missing from the second one,
+  each presenting as a key that did nothing. Both matches are now exhaustive with
+  no catch-all, so adding an `Action` variant fails to compile until someone
+  decides what *each* loop does with it. Verified by adding a probe variant: two
+  `E0004` errors, one per loop. Actions that are genuinely unavailable before you
+  join a community stay inert, but say so on screen rather than doing nothing.
+
 ### Fixed
 
 - **Removing a persona, and changing settings, work before you join a

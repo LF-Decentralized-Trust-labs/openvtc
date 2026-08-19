@@ -1684,7 +1684,45 @@ impl StateHandler {
                             }
                         }
                     },
-                    _ => {}
+                    // ---- Listed so this match stays EXHAUSTIVE; no `_` arm ----
+                    //
+                    // The mirror of the degraded loop's listing. A silent
+                    // catch-all here would hide the same class of defect in the
+                    // other direction: an action wired into State A, or sent by
+                    // a screen, that this loop never services.
+
+                    // Serviced by `handle_nav_action` in the guard arm above.
+                    Action::MainMenuSelected(..) | Action::MainPanelSwitch(..) |
+                    Action::DismissLoading | Action::CapabilitiesClose | Action::CapabilitiesUp |
+                    Action::CapabilitiesDown | Action::CapabilitiesDetail |
+                    Action::CapabilitiesToggleArm | Action::CapabilitiesToggleCancel |
+                    Action::CommunitySelect(..) | Action::CommunityConfirmDelete(..) |
+                    Action::CommunityCancelDelete | Action::CommunityConfirmLeave(..) |
+                    Action::CommunityCancelLeave | Action::CommunityConfirmWithdraw(..) |
+                    Action::CommunityCancelWithdraw | Action::CommunitySwitcherMove(..) |
+                    Action::CloseCommunitySwitcher | Action::DidSelect(..) |
+                    Action::DidConfirmDelete(..) | Action::DidCancelDelete |
+                    Action::StartCreatePersona | Action::CreatePersonaInput(..) |
+                    Action::CreatePersonaClose | Action::AgentNameManagerInput(..) |
+                    Action::AgentNameManagerSelect(..) | Action::AgentNameManagerConfirmRemove |
+                    Action::AgentNameManagerCancelRemove | Action::AgentNameManagerClose |
+                    Action::VicSelect(..) | Action::VicFocusToggle | Action::VicConfirmDelete(..) |
+                    Action::VicCancelDelete | Action::VicConfirmPurge(..) | Action::VicCancelPurge |
+                    Action::StartAddVic | Action::AddVicInput(..) | Action::AddVicPaste(..) |
+                    Action::AddVicClose => {}
+
+                    // Owned by the join-flow and setup-wizard sub-loops.
+                    Action::ActivateMainMenu | Action::JoinSubmitVtc(..) |
+                    Action::JoinIdentitySelect(..) | Action::JoinIdentityChoose |
+                    Action::JoinReuseConfirm | Action::JoinReuseCancel |
+                    Action::JoinInvitationSelect(..) | Action::JoinInvitationChoose |
+                    Action::JoinCancel | Action::JoinPasteVic(..) | Action::JoinPasteFromClipboard |
+                    Action::JoinClearVic | Action::ImportConfig(..) | Action::SetProtection(..) |
+                    Action::VtaSubmitDid(..) | Action::VtaStartProvision(..) |
+                    Action::SetupCompleted(..) => {}
+                    #[cfg(feature = "openpgp-card")]
+                    Action::GetTokens | Action::SetAdminPin(..) | Action::SetTouchPolicy(..) |
+                    Action::SetTokenName(..) | Action::FactoryReset(..) | Action::TokenWriteKeys(..) => {}
                 },
                 // DIDComm inbound message events
                 Some(event) = didcomm_event_rx.recv() => {
@@ -3183,20 +3221,69 @@ impl StateHandler {
                     // from silence. (The action is not named: `Action` carries
                     // credential and key material in some variants and
                     // deliberately has no `Debug`.)
-                    // Everything left needs a live community or the messaging
-                    // runtime that comes with one: the inbox, relationships,
-                    // credential exchange, and every community verb. They are
-                    // inert here because there is nothing for them to act on.
+                    // ---- Everything below is listed so this match stays EXHAUSTIVE ----
                     //
-                    // Inert, but no longer *silent*. This arm is also where an
-                    // action lands that should have been serviced and simply has
-                    // no arm yet — the agent-name verbs, `DeleteDid` and the
-                    // whole settings surface all sat here, and the only symptom
-                    // was a key that did nothing. One line beats guessing.
-                    // (`Action` is not named: some variants carry credential and
-                    // key material, so it deliberately has no `Debug`.)
-                    _ => {
-                        debug!("action not serviced in State A — no arm in the degraded loop");
+                    // There is deliberately no `_` arm. This loop's coverage was
+                    // a hand-written list next to a silent catch-all, and three
+                    // surfaces were quietly missing from it (#235): the
+                    // agent-name verbs, `DeleteDid`, and every setting. Each one
+                    // presented as a key that did nothing. Without a catch-all a
+                    // new `Action` variant cannot be added without deciding,
+                    // here, what an account with no community does with it — the
+                    // compiler asks, instead of a user reporting a dead key.
+                    //
+                    // The `openpgp-card` arms are split out because those
+                    // variants do not exist in a default build: one flat list
+                    // compiles under a single feature set and breaks the other,
+                    // which is what CI caught the first time round.
+
+                    // Serviced by `handle_nav_action` in the guard arm above.
+                    // Unreachable here; listed for exhaustiveness only.
+                    Action::MainMenuSelected(..) | Action::MainPanelSwitch(..) |
+                    Action::DismissLoading | Action::CapabilitiesClose | Action::CapabilitiesUp |
+                    Action::CapabilitiesDown | Action::CapabilitiesDetail |
+                    Action::CapabilitiesToggleArm | Action::CapabilitiesToggleCancel |
+                    Action::CommunitySelect(..) | Action::CommunityConfirmDelete(..) |
+                    Action::CommunityCancelDelete | Action::CommunityConfirmLeave(..) |
+                    Action::CommunityCancelLeave | Action::CommunityConfirmWithdraw(..) |
+                    Action::CommunityCancelWithdraw | Action::CommunitySwitcherMove(..) |
+                    Action::CloseCommunitySwitcher | Action::DidSelect(..) |
+                    Action::DidConfirmDelete(..) | Action::DidCancelDelete |
+                    Action::StartCreatePersona | Action::CreatePersonaInput(..) |
+                    Action::CreatePersonaClose | Action::AgentNameManagerInput(..) |
+                    Action::AgentNameManagerSelect(..) | Action::AgentNameManagerConfirmRemove |
+                    Action::AgentNameManagerCancelRemove | Action::AgentNameManagerClose |
+                    Action::VicSelect(..) | Action::VicFocusToggle | Action::VicConfirmDelete(..) |
+                    Action::VicCancelDelete | Action::VicConfirmPurge(..) | Action::VicCancelPurge |
+                    Action::StartAddVic | Action::AddVicInput(..) | Action::AddVicPaste(..) |
+                    Action::AddVicClose => {}
+
+                    // Owned by the join-flow and setup-wizard sub-loops, which
+                    // run their own action loops and never delegate to this one.
+                    Action::ActivateMainMenu | Action::JoinSubmitVtc(..) |
+                    Action::JoinIdentitySelect(..) | Action::JoinIdentityChoose |
+                    Action::JoinReuseConfirm | Action::JoinReuseCancel |
+                    Action::JoinInvitationSelect(..) | Action::JoinInvitationChoose |
+                    Action::JoinCancel | Action::JoinPasteVic(..) | Action::JoinPasteFromClipboard |
+                    Action::JoinClearVic | Action::ImportConfig(..) | Action::SetProtection(..) |
+                    Action::VtaSubmitDid(..) | Action::VtaStartProvision(..) |
+                    Action::SetupCompleted(..) => {}
+                    #[cfg(feature = "openpgp-card")]
+                    Action::GetTokens | Action::SetAdminPin(..) | Action::SetTouchPolicy(..) |
+                    Action::SetTokenName(..) | Action::FactoryReset(..) | Action::TokenWriteKeys(..) => {}
+
+                    // Genuinely unavailable: these need a live community and the
+                    // messaging runtime that comes with it. Inert, but not
+                    // silent — a dead key is indistinguishable from a broken one.
+                    Action::Inbox(..) | Action::Relationship(..) | Action::Credential(..) |
+                    Action::IssueMemberVmc(..) | Action::CapabilitiesOpen(..) |
+                    Action::CapabilitiesRefresh | Action::CapabilitiesToggleCommit |
+                    Action::SetActiveCommunity(..) | Action::ToggleFavourite(..) |
+                    Action::AcknowledgeCommunity(..) | Action::LeaveCommunity(..) |
+                    Action::WithdrawJoin(..) | Action::ArchiveCommunity(..) |
+                    Action::ToggleShowArchived | Action::OpenCommunitySwitcher |
+                    Action::CommunitySwitcherSelect => {
+                        debug!("action needs a community — not serviced in State A");
                         state
                             .main_page
                             .log("Not available yet — join a community first.");
