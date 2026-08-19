@@ -73,6 +73,16 @@ pub(crate) enum DispatchDomain {
     /// VTA transport probe: resolve the VTA's DID document to learn which
     /// transports it advertises. Read-only, one resolve, off the loop.
     VtaTransports,
+    /// Agent-name management: the overlay's open / claim / park / resume /
+    /// remove verbs. Each is a Trust Task with a 60 s timeout, and a mutation
+    /// is two of them (the change, then the authoritative re-read) — so this
+    /// domain is the longest-running of the lot, and the one whose inline
+    /// await could park the loop for two minutes.
+    ///
+    /// Separate from [`Self::AgentName`], which is the periodic *display-name*
+    /// sweep: sharing a domain would let a background refresh delay an operator
+    /// who is claiming a name, and the two touch different state.
+    AgentNameManage,
     /// Invitation-credential (VIC) list refresh: one credential-vault query
     /// against the always-on admin VTA session (30 s timeout in the SDK).
     /// Read-only. Backgrounded because it is bound to *navigation* — Tab into
@@ -91,6 +101,7 @@ impl DispatchDomain {
             DispatchDomain::Did => "Identity deletion",
             DispatchDomain::AgentName => "Agent name refresh",
             DispatchDomain::VtaTransports => "VTA transport probe",
+            DispatchDomain::AgentNameManage => "Agent name change",
             DispatchDomain::Vic => "Invitation credential refresh",
         }
     }
@@ -164,6 +175,10 @@ pub(crate) enum DispatchOutcome {
     /// advertises, or the reason the probe could not tell. Display-only — it
     /// touches no `Config`, so it never marks the config dirty.
     VtaTransports(crate::state_handler::main_page::content::AdvertisedTransports),
+    /// An agent-name verb finished (open / claim / park / resume / remove).
+    /// [`AgentNameOutcome::apply`](crate::state_handler::agent_name_actions::AgentNameOutcome::apply)
+    /// applies the registry, the overlay status and the persisted display name.
+    AgentNameManage(crate::state_handler::agent_name_actions::AgentNameOutcome),
     /// A VIC list refresh finished. [`VicRefreshOutcome::apply`](crate::state_handler::vic::VicRefreshOutcome::apply)
     /// swaps in the
     /// listing (or logs why it could not be read); display-only, so it touches
@@ -189,6 +204,7 @@ impl DispatchOutcome {
             DispatchOutcome::Did(_) => DispatchDomain::Did,
             DispatchOutcome::AgentName(_) => DispatchDomain::AgentName,
             DispatchOutcome::VtaTransports(_) => DispatchDomain::VtaTransports,
+            DispatchOutcome::AgentNameManage(_) => DispatchDomain::AgentNameManage,
             DispatchOutcome::Vic(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
         }
@@ -307,6 +323,7 @@ pub(crate) fn apply_outcome(
             // from `Config` and would drop a field the config does not hold.
             state.main_page.content_panel.vta.transports.advertised = Some(advertised);
         }
+        DispatchOutcome::AgentNameManage(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic
