@@ -222,6 +222,7 @@ mod join_status_poll;
 pub mod main_page;
 mod message_dispatch;
 mod relationship_actions;
+mod runtime_actions;
 mod save_coalesce;
 mod session_manager;
 mod settings_actions;
@@ -847,11 +848,6 @@ impl StateHandler {
         let result = loop {
             tokio::select! {
                 Some(action) = action_rx.recv() => match action {
-                    // Shared nav reducer first: pure-state nav arms live in exactly
-                    // one place (`handle_nav_action`). It returns true when it
-                    // handled the action; the loop-specific arms below run only when
-                    // it didn't.
-                    _ if handle_nav_action(&mut state, &action) => {},
                     Action::Exit => {
                         if let Err(e) = terminator.terminate(Interrupted::UserInt) {
                             debug!("Failed to send terminate signal: {e}");
@@ -859,6 +855,7 @@ impl StateHandler {
 
                         break Interrupted::UserInt;
                     },
+
                     Action::UXError(interrupted) => {
                         // An error has occurred on the UX side
                         if let Err(e) = terminator.terminate(interrupted.clone()) {
@@ -867,498 +864,7 @@ impl StateHandler {
 
                         break interrupted;
                     },
-                    Action::DeleteCommunity(i) => {
-                        // Capture the deleted community + its persona BEFORE the
-                        // delete so we can deregister its session and tear down
-                        // *its* listener (not the active one) if its persona ends
-                        // up with no live community.
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        self.remove_community(&mut state, &mut config, &mut save, i);
-                        // A deleted community must not leave its persona's mediator
-                        // connection running. Deregister it from the session
-                        // manager (D15/R-S-3); if that persona no longer has any
-                        // live community, stop and remove its listener so the
-                        // connection is torn down with the community, not left
-                        // dangling.
-                        if let Some((vtc, pid)) = target {
-                            let removed = session_manager.deregister(pid, &vtc);
-                            let still_live = config
-                                .account
-                                .memberships()
-                                .any(|c| c.persona_ref == pid && c.is_live());
-                            if !still_live
-                                && let Some(did) =
-                                    config.identities.get(&pid).map(|id| id.did.clone())
-                            {
-                                // Prefer the listener id the manager recorded for
-                                // the torn-down session; fall back to deriving it.
-                                let listener_id = removed
-                                    .map(|s| s.listener_id)
-                                    .unwrap_or_else(|| didcomm::persona_listener_id(&did));
-                                didcomm_service.remove_listener(&listener_id).await;
-                                state
-                                    .main_page
-                                    .log("Community removed — persona listener stopped.");
-                            }
-                        }
-                        // Drop the global messaging status only when NO persona
-                        // has a live community left.
-                        if !config.account.memberships().any(|c| c.is_live()) {
-                            state.connection.status = state::MediatorStatus::NoActiveCommunity;
-                            state.connection.messaging_active = false;
-                        }
-                    },
-                    Action::SetActiveCommunity(i) => {
-                        // Switch the working context to the Active community at
-                        // display index `i` (R-C-6 / D10). Extract owned values to
-                        // end the immutable account borrow before mutating config.
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .filter(|c| c.status.is_active())
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona)) = target {
-                            state.selected_community = Some((vtc, persona));
-                            config.set_active_persona(Some(persona));
-                            // Refilter the community-scoped panels immediately so
-                            // the switch is reflected this frame.
-                            state.main_page.sync_from_config(&config);
-                        }
-                    },
-                    Action::ToggleFavourite(i) => {
-                        // R-C-4: flip the star on the community at display index
-                        // `i`, persist (coalesced), then keep the highlight on it
-                        // as the list re-sorts (favourites float to the top).
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona)) = target {
-                            if let Some(c) = config.account.membership_mut(&vtc, persona) {
-                                c.toggle_favourite();
-                            }
-                            save.mark_dirty();
-                            state.main_page.sync_from_config(&config);
-                            if let Some(new_idx) = config
-                                .account
-                                .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                                .iter()
-                                .position(|c| c.vtc_did == vtc && c.persona_ref == persona)
-                            {
-                                state.main_page.content_panel.communities.selected_index =
-                                    new_idx;
-                            }
-                        }
-                    },
-                    Action::AcknowledgeCommunity(i) => {
-                        // R-S-2: clear the actions-required badge on a terminal
-                        // outcome (Rejected / Expired) the user has now seen.
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona)) = target
-                            && let Some(c) = config.account.membership_mut(&vtc, persona)
-                        {
-                            c.acknowledge();
-                            save.mark_dirty();
-                            state.main_page.sync_from_config(&config);
-                        }
-                    },
-                    Action::LeaveCommunity(i) => {
-                        // R-L-1: send MEMBER_SELF_REMOVE, then set Left +
-                        // deregister the session once it lands (the community's
-                        // receipt is advisory). Both halves are in
-                        // `community_actions`; the session teardown is reported
-                        // back to this loop, which owns the session manager.
-                        state.main_page.content_panel.communities.confirm_leave = None;
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .filter(|c| c.status.is_active())
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona_id)) = target {
-                            match capability_sender(&config, &tdk, persona_id) {
-                                Some((atm, profile, member_did, mediator)) => {
-                                    spawn_community_job(
-                                        &dispatch_tx, &mut in_flight, &mut state,
-                                        community_actions::CommunityJob {
-                                            atm, profile, member_did, mediator,
-                                            vtc_did: vtc, persona: persona_id,
-                                            verb: community_actions::Verb::Leave,
-                                        },
-                                    );
-                                }
-                                None => {
-                                    state.main_page.content_panel.communities.status_message = Some(
-                                        "Messaging unavailable — cannot leave right now.".to_string(),
-                                    );
-                                }
-                            }
-                        }
-                    },
-                    Action::CapabilitiesOpen(i) => {
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .filter(|c| c.status.is_active())
-                            .map(|c| {
-                                (
-                                    c.vtc_did.clone(),
-                                    c.persona_ref,
-                                    community_label(&config, &c.vtc_did, c.display_name.as_deref(), 256),
-                                )
-                            });
-                        if let Some((vtc, persona_id, name)) = target {
-                            capability_actions::open_view(&mut state, vtc.clone(), persona_id, name);
-                            match capability_sender(&config, &tdk, persona_id) {
-                                Some((atm, profile, persona_did, mediator)) => {
-                                    spawn_capability_job(
-                                        &dispatch_tx, &mut in_flight, &mut state,
-                                        capability_actions::CapabilityJob {
-                                            atm, profile, persona_did, mediator,
-                                            vtc_did: vtc, persona: persona_id,
-                                            verb: capability_actions::Verb::List,
-                                        },
-                                    );
-                                }
-                                None => capability_actions::send_unavailable(&mut state),
-                            }
-                        }
-                    }
-                    Action::CapabilitiesRefresh => {
-                        let target = state
-                            .main_page
-                            .content_panel
-                            .capabilities
-                            .view
-                            .as_ref()
-                            .map(|v| (v.vtc_did.clone(), v.persona));
-                        if let Some((vtc, persona_id)) = target {
-                            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
-                                view.phase =
-                                    crate::state_handler::main_page::content::CapabilitiesPhase::Loading;
-                                view.status_message = None;
-                            }
-                            match capability_sender(&config, &tdk, persona_id) {
-                                Some((atm, profile, persona_did, mediator)) => {
-                                    spawn_capability_job(
-                                        &dispatch_tx, &mut in_flight, &mut state,
-                                        capability_actions::CapabilityJob {
-                                            atm, profile, persona_did, mediator,
-                                            vtc_did: vtc, persona: persona_id,
-                                            verb: capability_actions::Verb::List,
-                                        },
-                                    );
-                                }
-                                None => capability_actions::send_unavailable(&mut state),
-                            }
-                        }
-                    }
-                    Action::CapabilitiesToggleCommit => {
-                        let target = state
-                            .main_page
-                            .content_panel
-                            .capabilities
-                            .view
-                            .as_ref()
-                            .and_then(|v| {
-                                let i = v.confirm_toggle?;
-                                let item = v.items.get(i)?;
-                                Some((
-                                    v.vtc_did.clone(),
-                                    v.persona,
-                                    item.slug.clone(),
-                                    item.version.clone(),
-                                    !item.enabled,
-                                ))
-                            });
-                        if let Some((vtc, persona_id, slug, version, enable)) = target {
-                            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
-                                view.confirm_toggle = None;
-                            }
-                            // The signing key is read here, not in the job: it
-                            // comes from the TDK secrets resolver (in memory,
-                            // populated at startup), so it is not I/O — and
-                            // reading it here is what lets the job own a
-                            // `Secret` rather than borrow `Config`.
-                            let signed = match (
-                                capability_sender(&config, &tdk, persona_id),
-                                config.get_persona_keys_for(persona_id, &tdk).await,
-                            ) {
-                                (Some(sender), Ok(keys)) => Some((sender, keys)),
-                                (_, Err(e)) => {
-                                    if let Some(view) =
-                                        state.main_page.content_panel.capabilities.view.as_mut()
-                                    {
-                                        view.status_message =
-                                            Some(format!("couldn't sign the change: {e}"));
-                                    }
-                                    None
-                                }
-                                (None, _) => {
-                                    capability_actions::send_unavailable(&mut state);
-                                    None
-                                }
-                            };
-                            if let Some(((atm, profile, persona_did, mediator), keys)) = signed {
-                                spawn_capability_job(
-                                    &dispatch_tx, &mut in_flight, &mut state,
-                                    capability_actions::CapabilityJob {
-                                        atm, profile, persona_did, mediator,
-                                        vtc_did: vtc, persona: persona_id,
-                                        verb: capability_actions::Verb::Toggle {
-                                            slug, version, enable,
-                                            signing_secret: Box::new(keys.signing.secret.clone()),
-                                        },
-                                    },
-                                );
-                            }
-                        }
-                    }
-                    Action::IssueMemberVmc(i) => {
-                        // Issue this membership's reciprocal VMC (member -> community)
-                        // and send it to the VTC over DIDComm (members/vmc/1.0).
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .filter(|c| c.status.is_active())
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona_id)) = target {
-                            // The signing key is read here for the same reason as
-                            // the capability toggle: it comes from the in-memory
-                            // secrets resolver, not the network, and reading it
-                            // here lets the job own a `Secret` rather than borrow
-                            // `Config`.
-                            let ready = match (
-                                capability_sender(&config, &tdk, persona_id),
-                                config.get_persona_keys_for(persona_id, &tdk).await,
-                            ) {
-                                (Some(sender), Ok(keys)) => Some((sender, keys)),
-                                (_, Err(e)) => {
-                                    state.main_page.content_panel.communities.status_message =
-                                        Some(format!("Couldn't sign the membership credential: {e}"));
-                                    None
-                                }
-                                (None, _) => {
-                                    state.main_page.content_panel.communities.status_message = Some(
-                                        "Messaging unavailable — cannot issue right now.".to_string(),
-                                    );
-                                    None
-                                }
-                            };
-                            if let Some(((atm, profile, member_did, mediator), keys)) = ready {
-                                spawn_community_job(
-                                    &dispatch_tx, &mut in_flight, &mut state,
-                                    community_actions::CommunityJob {
-                                        atm, profile, member_did, mediator,
-                                        vtc_did: vtc, persona: persona_id,
-                                        verb: community_actions::Verb::IssueVmc {
-                                            signing_secret: Box::new(keys.signing.secret.clone()),
-                                        },
-                                    },
-                                );
-                            }
-                        }
-                    },
-                    Action::WithdrawJoin(i) => {
-                        // Cancel a Pending join: best-effort notify the VTC, set
-                        // the record `Withdrawn`, and tear down its now-dead
-                        // session (R-S-3) so it can be deleted or re-joined.
-                        state.main_page.content_panel.communities.confirm_withdraw = None;
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .filter(|c| matches!(
-                                c.status,
-                                openvtc_core::config::account::CommunityStatus::Pending { .. }
-                            ))
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona)) = target {
-                            // Best-effort VTC notification. The applicant-side
-                            // withdraw DIDComm message does not exist in vta-sdk
-                            // yet (only the `withdrawn` *status* the VTC reports),
-                            // so there is nothing to send. The cancel is otherwise
-                            // fully local; the request will also lapse to the VTC's
-                            // own timeout. TODO(VTI): once vta-sdk gains a
-                            // `join-requests/withdraw/1.0` message, send it here.
-                            debug!(
-                                vtc = %vtc,
-                                "cancel pending join: VTC notify pending protocol support (vta-sdk withdraw message)"
-                            );
-                            if config
-                                .account
-                                .membership_mut(&vtc, persona)
-                                .is_some_and(|c| c.withdraw())
-                            {
-                                save.mark_dirty();
-                                deregister_inactive_community(
-                                    &mut session_manager,
-                                    &didcomm_service,
-                                    &config,
-                                    &mut state,
-                                    &vtc,
-                                    persona,
-                                )
-                                .await;
-                                state.main_page.sync_from_config(&config);
-                                state
-                                    .main_page
-                                    .content_panel
-                                    .communities
-                                    .status_message =
-                                    Some("Join cancelled — request withdrawn.".to_string());
-                            }
-                        }
-                    },
-                    Action::ArchiveCommunity(i) => {
-                        // R-C-8: archive an inactive community (hide it, retain the
-                        // record). Guarded inactive-only by `archive_community`.
-                        let target = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .get(i)
-                            .map(|c| (c.vtc_did.clone(), c.persona_ref));
-                        if let Some((vtc, persona)) = target {
-                            match config.account.archive_membership(&vtc, persona) {
-                                Ok(()) => {
-                                    save.mark_dirty();
-                                    state.main_page.sync_from_config(&config);
-                                    state
-                                        .main_page
-                                        .content_panel
-                                        .communities
-                                        .status_message =
-                                        Some("Community archived.".to_string());
-                                }
-                                Err(e) => {
-                                    state
-                                        .main_page
-                                        .content_panel
-                                        .communities
-                                        .status_message =
-                                        Some(format!("Couldn't archive: {e}"));
-                                }
-                            }
-                        }
-                    },
-                    Action::ToggleShowArchived => {
-                        // R-C-8: flip archived visibility and rebuild the list so
-                        // archived records stay discoverable.
-                        let comms = &mut state.main_page.content_panel.communities;
-                        comms.show_archived = !comms.show_archived;
-                        state.main_page.sync_from_config(&config);
-                    },
-                    Action::OpenCommunitySwitcher => {
-                        // R-C-7: list the Active communities (the only switchable
-                        // ones) in display order and preselect the current one.
-                        let current = state.selected_community.clone();
-                        let items: Vec<_> = config
-                            .account
-                            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-                            .into_iter()
-                            .filter(|c| c.status.is_active())
-                            .map(|c| {
-                                // Same precedence as the communities panel:
-                                // user label, then verified agent name, then
-                                // the truncated DID.
-                                let persona = config.account.personas.get(&c.persona_ref);
-                                let persona_label = persona
-                                    .and_then(|p| p.label.clone())
-                                    .or_else(|| {
-                                        persona.and_then(|p| {
-                                            config.agent_name_for(&p.did).map(str::to_owned)
-                                        })
-                                    })
-                                    .unwrap_or_default();
-                                main_page::content::SwitcherItem {
-                                    vtc_did: c.vtc_did.clone(),
-                                    persona_ref: c.persona_ref,
-                                    display_name: c
-                                        .display_name
-                                        .clone()
-                                        .or_else(|| {
-                                            config.agent_name_for(&c.vtc_did).map(str::to_owned)
-                                        })
-                                        .unwrap_or_else(|| main_page::shorten_did(&c.vtc_did, 40)),
-                                    persona_label,
-                                    is_current: current.as_ref()
-                                        == Some(&(c.vtc_did.clone(), c.persona_ref)),
-                                }
-                            })
-                            .collect();
-                        // Don't pop an empty overlay when there's nothing to switch.
-                        if !items.is_empty() {
-                            let selected =
-                                items.iter().position(|it| it.is_current).unwrap_or(0);
-                            state.main_page.switcher =
-                                Some(main_page::content::CommunitySwitcherState {
-                                    items,
-                                    selected,
-                                });
-                        }
-                    },
-                    Action::CommunitySwitcherSelect => {
-                        // Switch the working context to the highlighted Active
-                        // community, then close the overlay (R-C-6 / R-C-7).
-                        let target = state.main_page.switcher.as_ref().and_then(|sw| {
-                            sw.items
-                                .get(sw.selected)
-                                .map(|it| (it.vtc_did.clone(), it.persona_ref))
-                        });
-                        if let Some((vtc, persona)) = target
-                            && config
-                                .account
-                                .membership(&vtc, persona)
-                                .is_some_and(|c| c.status.is_active())
-                        {
-                            state.selected_community = Some((vtc, persona));
-                            config.set_active_persona(Some(persona));
-                            state.main_page.sync_from_config(&config);
-                        }
-                        state.main_page.switcher = None;
-                    },
-                    Action::DeleteDid(i) => {
-                        // Identity deletion does a VTA `delete_did_webvh` + listener
-                        // teardown (R14): claim the Did domain, run the guards +
-                        // extraction on-thread, then spawn the I/O; local config
-                        // cleanup + save apply on the outcome. Guard failures (DID
-                        // bound to a community, not found) are surfaced inline and
-                        // spawn nothing.
-                        let domain = background_dispatch::DispatchDomain::Did;
-                        if !in_flight.try_begin(domain) {
-                            let msg = background_dispatch::InFlight::busy_message(domain);
-                            state.main_page.log(msg);
-                        } else if let Some(job) = self.prepare_delete_context_did(
-                            &mut state,
-                            &mut config,
-                            admin_vta.as_ref(),
-                            &didcomm_service,
-                            i,
-                        ) {
-                            background_dispatch::spawn_dispatch(
-                                dispatch_tx.clone(),
-                                domain,
-                                async move {
-                                    background_dispatch::DispatchOutcome::Did(job.run().await)
-                                },
-                            );
-                        } else {
-                            // Guard rejected the delete (logged inline); release.
-                            in_flight.finish(domain);
-                        }
-                    },
+
                     Action::StartJoin => {
                         // State-B join from the live runtime: reuse the always-on
                         // admin VTA session. The DIDComm service keeps running in
@@ -1404,363 +910,39 @@ impl StateHandler {
                             }
                         }
                     },
-                    Action::CreatePersonaSubmit => {
-                        // Mint a standalone persona DID using the always-on admin
-                        // VTA session; the overlay shows progress and, on success,
-                        // the new DID (copied to the clipboard). The mint runs off
-                        // this loop and streams its steps back as progress.
-                        spawn_persona_mint(
-                            &dispatch_tx, &mut in_flight, &mut state, &config, &tdk,
-                            admin_vta.as_ref(),
-                        );
-                    },
-                    Action::StartAgentNameManager(index) => {
-                        if let Some(did) = self.open_agent_name_overlay(&mut state, index) {
-                            spawn_agent_name_job(
-                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(),
-                                did, agent_name_actions::Verb::Open,
-                            );
-                        }
-                    },
-                    Action::AgentNameManagerClaim => {
-                        if let Some((did, name)) = self.agent_name_to_claim(&mut state) {
-                            spawn_agent_name_job(
-                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(),
-                                did, agent_name_actions::Verb::Claim(name),
-                            );
-                        }
-                    },
-                    Action::AgentNameManagerToggle => {
-                        if let Some((did, name, enabled)) = self.selected_agent_name(&state) {
-                            let verb = if enabled {
-                                agent_name_actions::Verb::Park(name)
-                            } else {
-                                agent_name_actions::Verb::Resume(name)
-                            };
-                            spawn_agent_name_job(
-                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(),
-                                did, verb,
-                            );
-                        }
-                    },
-                    Action::AgentNameManagerRemove => {
-                        if let Some((did, name, _)) = self.selected_agent_name(&state) {
-                            spawn_agent_name_job(
-                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(),
-                                did, agent_name_actions::Verb::Remove(name),
-                            );
-                        }
-                    },
-                    Action::VicRefresh => {
-                        // Off the loop: this is Tab into the VIC list, and the
-                        // focus change queued behind it must not wait on a vault
-                        // round-trip.
-                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
-                    },
-                    Action::VicToggleInactive => {
-                        state.main_page.content_panel.vta.vic_show_inactive =
-                            !state.main_page.content_panel.vta.vic_show_inactive;
-                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
-                    },
-                    Action::AddVicSubmit => {
-                        if let Some(vic) = vic_to_import(&mut state) {
-                            spawn_vic_mutation(
-                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(),
-                                vic::VicVerb::Add(vic),
-                            );
-                        }
-                    },
-                    Action::VicArchive(i)
-                    | Action::VicUnarchive(i)
-                    | Action::VicRestore(i)
-                    | Action::DeleteVic(i)
-                    | Action::PurgeVic(i) => {
-                        if let Some(verb) = vic_lifecycle_verb(&mut state, &action, i) {
-                            spawn_vic_mutation(
-                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(), verb,
-                            );
-                        }
-                    },
-                    Action::CreatePersonaCopy => {
-                        if let Some(did) = state
-                            .main_page
-                            .create_persona
-                            .as_ref()
-                            .and_then(|o| o.did.clone())
-                        {
-                            let copied = crate::clipboard::copy_to_clipboard(&did).is_ok();
-                            if let Some(overlay) = state.main_page.create_persona.as_mut() {
-                                overlay.copied = copied;
+                    // Everything else acts on state and the resources below,
+                    // and lives in `runtime_actions` where a test can call it.
+                    // Only the three arms above need what a loop has and a
+                    // handler cannot be given: the terminator, the action
+                    // receiver, and the ability to `break` with this loop's own
+                    // outcome type.
+                    action => {
+                        let mut ctx = runtime_actions::ActionCtx {
+                            state: &mut state,
+                            config: &mut config,
+                            save: &mut save,
+                            in_flight: &mut in_flight,
+                            dispatch_tx: &dispatch_tx,
+                            tdk: &tdk,
+                            admin_vta: admin_vta.as_ref(),
+                            didcomm_service: &didcomm_service,
+                            session_manager: &mut session_manager,
+                            ping_sent_at: &mut ping_sent_at,
+                            state_tx: &self.state_tx,
+                            profile: self.profile.as_str(),
+                        };
+                        if matches!(
+                            runtime_actions::handle_action(&mut ctx, action).await,
+                            runtime_actions::Handled::ExitUserInt
+                        ) {
+                            // A confirmed profile wipe. The handler cannot break
+                            // this loop or reach the terminator, so it says so.
+                            if let Err(e) = terminator.terminate(Interrupted::UserInt) {
+                                debug!("Failed to send terminate signal: {e}");
                             }
-                            let _ = self.state_tx.send(state.clone());
+                            break Interrupted::UserInt;
                         }
                     },
-                    Action::Inbox(ia) => {
-                        // Network inbox actions (accept/reject relationship or VRC
-                        // request) run off the loop (R14): claim the Inbox domain,
-                        // do the loop-thread pre-send work, then spawn the send;
-                        // the outcome arm applies the post-send mutation. A second
-                        // inbox network action while one is in flight is rejected
-                        // with a status. Local actions run inline as before.
-                        if inbox_actions::is_network(&ia) {
-                            let domain = background_dispatch::DispatchDomain::Inbox;
-                            if !in_flight.try_begin(domain) {
-                                let msg = background_dispatch::InFlight::busy_message(domain);
-                                state.main_page.content_panel.inbox.status_message =
-                                    Some(msg.clone());
-                                state.main_page.log(msg);
-                            } else {
-                                match inbox_actions::dispatch(
-                                    ia,
-                                    &mut config,
-                                    &tdk,
-                                    &didcomm_service,
-                                    &mut state,
-                                    &mut save,
-                                    admin_vta.as_ref(),
-                                )
-                                .await
-                                {
-                                    inbox_actions::InboxDispatch::Spawn(job) => {
-                                        background_dispatch::spawn_dispatch(
-                                            dispatch_tx.clone(),
-                                            domain,
-                                            async move {
-                                                background_dispatch::DispatchOutcome::Inbox(
-                                                    job.run().await,
-                                                )
-                                            },
-                                        );
-                                    }
-                                    // Pre-send failure recorded a status; nothing
-                                    // was spawned, so release the domain now.
-                                    inbox_actions::InboxDispatch::Handled => {
-                                        in_flight.finish(domain);
-                                    }
-                                }
-                            }
-                        } else {
-                            let _ = inbox_actions::dispatch(
-                                ia,
-                                &mut config,
-                                &tdk,
-                                &didcomm_service,
-                                &mut state,
-                                &mut save,
-                                admin_vta.as_ref(),
-                            )
-                            .await;
-                        }
-                    },
-                    Action::Relationship(ra) => {
-                        // Network relationship actions (create/ping/remove/request
-                        // VRC) run off the loop (R14). Same pattern as Inbox: claim
-                        // the Relationship domain, prepare on-thread, spawn the I/O,
-                        // apply the outcome later. `is_ping` stamps `ping_sent_at`
-                        // for pong-latency display.
-                        if relationship_actions::is_network(&ra) {
-                            let domain = background_dispatch::DispatchDomain::Relationship;
-                            if !in_flight.try_begin(domain) {
-                                let msg = background_dispatch::InFlight::busy_message(domain);
-                                state
-                                    .main_page
-                                    .content_panel
-                                    .relationships
-                                    .status_message = Some(msg.clone());
-                                state.main_page.log(msg);
-                            } else {
-                                match relationship_actions::dispatch(
-                                    ra,
-                                    &mut config,
-                                    &tdk,
-                                    &didcomm_service,
-                                    &mut state,
-                                    &mut save,
-                                    admin_vta.as_ref(),
-                                )
-                                .await
-                                {
-                                    relationship_actions::RelationshipDispatch::Spawn {
-                                        job,
-                                        is_ping,
-                                    } => {
-                                        if is_ping {
-                                            ping_sent_at = Some(std::time::Instant::now());
-                                        }
-                                        background_dispatch::spawn_dispatch(
-                                            dispatch_tx.clone(),
-                                            domain,
-                                            async move {
-                                                background_dispatch::DispatchOutcome::Relationship(
-                                                    job.run().await,
-                                                )
-                                            },
-                                        );
-                                    }
-                                    relationship_actions::RelationshipDispatch::Handled => {
-                                        in_flight.finish(domain);
-                                    }
-                                }
-                            }
-                        } else {
-                            let _ = relationship_actions::dispatch(
-                                ra,
-                                &mut config,
-                                &tdk,
-                                &didcomm_service,
-                                &mut state,
-                                &mut save,
-                                admin_vta.as_ref(),
-                            )
-                            .await;
-                        }
-                    },
-                    Action::Credential(ca) => {
-                        // One of the twelve credential actions goes to the
-                        // network — requesting a VRC from a peer — so it is
-                        // resolved here and dispatched. The other eleven are
-                        // state or config, and the dispatcher handles them
-                        // inline as before.
-                        if let actions::CredentialAction::SubmitRequest {
-                            relationship_p_did,
-                            reason,
-                        } = &ca
-                        {
-                            let domain = background_dispatch::DispatchDomain::Credential;
-                            if !in_flight.try_begin(domain) {
-                                state.main_page.content_panel.credentials.status_message =
-                                    Some(background_dispatch::InFlight::busy_message(domain));
-                            } else if let Some(job) = credential_actions::prepare_vrc_request(
-                                &config,
-                                &didcomm_service,
-                                relationship_p_did,
-                                reason.as_deref(),
-                            ) {
-                                background_dispatch::spawn_dispatch(
-                                    dispatch_tx.clone(),
-                                    domain,
-                                    async move {
-                                        background_dispatch::DispatchOutcome::Credential(
-                                            job.run().await,
-                                        )
-                                    },
-                                );
-                            } else {
-                                in_flight.finish(domain);
-                                state.main_page.content_panel.credentials.status_message = Some(
-                                    "That relationship is no longer available.".to_string(),
-                                );
-                            }
-                        } else {
-                            credential_actions::dispatch(ca, &mut config, &mut state, &mut save);
-                        }
-                    },
-                    Action::Settings(sa) => {
-                        match settings_actions::dispatch(
-                            sa,
-                            &mut config,
-                            &mut state,
-                            &self.state_tx,
-                            &mut save,
-                            &self.profile,
-                        )
-                        .await
-                        {
-                            settings_actions::SettingsOutcome::Continue => {}
-                            settings_actions::SettingsOutcome::ExitUserInt => {
-                                if let Err(e) = terminator.terminate(Interrupted::UserInt) {
-                                    debug!("Failed to send terminate signal: {e}");
-                                }
-                                break Interrupted::UserInt;
-                            }
-                            settings_actions::SettingsOutcome::ReconnectMediator => {
-                                // R13 proving case: the up-to-30s mediator
-                                // reconnect ran inline here before, freezing the
-                                // UI (queued keys, dropped inbound events, dead
-                                // `q`). Now it runs as a background task and the
-                                // loop stays live.
-                                //
-                                // The busy-guard rejects a second reconnect while
-                                // one is in flight (matching the old effectively
-                                // serialised behaviour) with a visible status.
-                                if !in_flight
-                                    .try_begin(background_dispatch::DispatchDomain::Mediator)
-                                {
-                                    let msg = background_dispatch::InFlight::busy_message(
-                                        background_dispatch::DispatchDomain::Mediator,
-                                    );
-                                    state.connection.status =
-                                        state::MediatorStatus::Connecting;
-                                    state.main_page.log(msg);
-                                } else {
-                                    // Build the new listener config on the loop
-                                    // thread (cheap, local: reads secrets from the
-                                    // TDK resolver, no network), then hand only the
-                                    // slow connect I/O to a background task.
-                                    let listener_id =
-                                        didcomm::persona_listener_id(config.persona_did());
-                                    let new_listener_config =
-                                        didcomm::persona_listener_config(&config, &tdk).await;
-                                    let service = didcomm_service.clone();
-                                    background_dispatch::spawn_dispatch(
-                                        dispatch_tx.clone(),
-                                        background_dispatch::DispatchDomain::Mediator,
-                                        async move {
-                                            let outcome =
-                                                didcomm::reconnect_persona_listener_io(
-                                                    &service,
-                                                    listener_id,
-                                                    new_listener_config,
-                                                )
-                                                .await;
-                                            background_dispatch::DispatchOutcome::MediatorReconnect(
-                                                outcome,
-                                            )
-                                        },
-                                    );
-                                }
-                            }
-                        }
-                    },
-                    // ---- Listed so this match stays EXHAUSTIVE; no `_` arm ----
-                    //
-                    // The mirror of the degraded loop's listing. A silent
-                    // catch-all here would hide the same class of defect in the
-                    // other direction: an action wired into State A, or sent by
-                    // a screen, that this loop never services.
-
-                    // Serviced by `handle_nav_action` in the guard arm above.
-                    Action::MainMenuSelected(..) | Action::MainPanelSwitch(..) |
-                    Action::DismissLoading | Action::CapabilitiesClose | Action::CapabilitiesUp |
-                    Action::CapabilitiesDown | Action::CapabilitiesDetail |
-                    Action::CapabilitiesToggleArm | Action::CapabilitiesToggleCancel |
-                    Action::CommunitySelect(..) | Action::CommunityConfirmDelete(..) |
-                    Action::CommunityCancelDelete | Action::CommunityConfirmLeave(..) |
-                    Action::CommunityCancelLeave | Action::CommunityConfirmWithdraw(..) |
-                    Action::CommunityCancelWithdraw | Action::CommunitySwitcherMove(..) |
-                    Action::CloseCommunitySwitcher | Action::DidSelect(..) |
-                    Action::DidConfirmDelete(..) | Action::DidCancelDelete |
-                    Action::StartCreatePersona | Action::CreatePersonaInput(..) |
-                    Action::CreatePersonaClose | Action::AgentNameManagerInput(..) |
-                    Action::AgentNameManagerSelect(..) | Action::AgentNameManagerConfirmRemove |
-                    Action::AgentNameManagerCancelRemove | Action::AgentNameManagerClose |
-                    Action::VicSelect(..) | Action::VicFocusToggle | Action::VicConfirmDelete(..) |
-                    Action::VicCancelDelete | Action::VicConfirmPurge(..) | Action::VicCancelPurge |
-                    Action::StartAddVic | Action::AddVicInput(..) | Action::AddVicPaste(..) |
-                    Action::AddVicClose => {}
-
-                    // Owned by the join-flow and setup-wizard sub-loops.
-                    Action::ActivateMainMenu | Action::JoinSubmitVtc(..) |
-                    Action::JoinIdentitySelect(..) | Action::JoinIdentityChoose |
-                    Action::JoinReuseConfirm | Action::JoinReuseCancel |
-                    Action::JoinInvitationSelect(..) | Action::JoinInvitationChoose |
-                    Action::JoinCancel | Action::JoinPasteVic(..) | Action::JoinPasteFromClipboard |
-                    Action::JoinClearVic | Action::ImportConfig(..) | Action::SetProtection(..) |
-                    Action::VtaSubmitDid(..) | Action::VtaStartProvision(..) |
-                    Action::SetupCompleted(..) => {}
-                    #[cfg(feature = "openpgp-card")]
-                    Action::GetTokens | Action::SetAdminPin(..) | Action::SetTouchPolicy(..) |
-                    Action::SetTokenName(..) | Action::FactoryReset(..) | Action::TokenWriteKeys(..) => {}
                 },
                 // DIDComm inbound message events
                 Some(event) = didcomm_event_rx.recv() => {
@@ -2283,168 +1465,6 @@ impl StateHandler {
         Ok(result)
     }
 
-    /// The `(persona_did, name, enabled)` of the overlay's selected row, if the
-    /// overlay is open, `Ready`, and has a selection.
-    /// The persona an agent-name overlay would open for, and the label/host to
-    /// show while it loads. `None` (with a reason logged) when the selection
-    /// points at no row.
-    fn open_agent_name_overlay(&self, state: &mut State, index: usize) -> Option<String> {
-        use main_page::content::{AgentNameManagerPhase, AgentNameManagerState};
-
-        let Some(persona) = state
-            .main_page
-            .content_panel
-            .vta
-            .context_dids
-            .get(index)
-            .cloned()
-        else {
-            // No persona under the selection: the account has none yet, or the
-            // index outlived the row it pointed at. Either way say so — an
-            // unexplained no-op here is what makes `g` look broken.
-            state
-                .main_page
-                .log("No persona selected — create or select a persona DID first.");
-            return None;
-        };
-        state.main_page.agent_names = Some(AgentNameManagerState {
-            persona_did: persona.did.clone(),
-            persona_label: persona.label.clone(),
-            host: agent_name_manage::derive_host(&persona.did).unwrap_or_default(),
-            phase: AgentNameManagerPhase::Loading,
-            ..Default::default()
-        });
-        Some(persona.did)
-    }
-
-    /// The typed name to claim, once it is non-empty and the overlay is idle.
-    fn agent_name_to_claim(&self, state: &mut State) -> Option<(String, String)> {
-        use main_page::content::AgentNameManagerPhase;
-        let o = state.main_page.agent_names.as_mut()?;
-        if o.phase != AgentNameManagerPhase::Ready {
-            return None;
-        }
-        let name = o.input.value().trim().to_string();
-        if name.is_empty() {
-            o.message = Some("Enter a name first.".to_string());
-            return None;
-        }
-        Some((o.persona_did.clone(), name))
-    }
-
-    fn selected_agent_name(&self, state: &State) -> Option<(String, String, bool)> {
-        use crate::state_handler::main_page::content::AgentNameManagerPhase;
-        let o = state.main_page.agent_names.as_ref()?;
-        if o.phase != AgentNameManagerPhase::Ready {
-            return None;
-        }
-        let row = o.names.get(o.selected)?;
-        Some((o.persona_did.clone(), row.name.clone(), row.enabled))
-    }
-
-    /// Remove the community at `index` in the Communities display list: withdraw
-    /// a live (Pending/Active) membership first (R-C-8 — for a pending join this
-    /// is the withdrawal), then delete the record, persist, and refresh the
-    /// panel. Surfaces the outcome as a status message.
-    fn remove_community(
-        &self,
-        state: &mut State,
-        config: &mut Config,
-        save: &mut save_coalesce::SaveScheduler,
-        index: usize,
-    ) {
-        let Some((vtc, persona)) = config
-            .account
-            .communities_for_display(state.main_page.content_panel.communities.show_archived)
-            .get(index)
-            .map(|c| (c.vtc_did.clone(), c.persona_ref))
-        else {
-            return;
-        };
-        // The confirmation is now resolved.
-        state.main_page.content_panel.communities.confirm_delete = None;
-        // Delete is inactive-only (R-C-8): an Active/Pending community must be
-        // left first (the `d` key is gated to inactive rows, and `delete_membership`
-        // re-checks). We no longer silently `leave()` here — that conflated leave
-        // with delete and skipped the protocol self-removal.
-        match config.account.delete_membership(&vtc, persona) {
-            Ok(_) => {
-                // R11: coalesced save (was an inline `config.save`). The
-                // Exit/shutdown force-flush guarantees the deletion is persisted
-                // even if the user quits within the debounce window.
-                save.mark_dirty();
-                state.main_page.sync_from_config(config);
-                state.main_page.content_panel.communities.status_message =
-                    Some("Community removed.".to_string());
-            }
-            Err(e) => {
-                state.main_page.content_panel.communities.status_message =
-                    Some(format!("Could not remove community: {e}"));
-            }
-        }
-    }
-
-    /// Loop-thread preparation for deleting an **orphan** context identity
-    /// (persona DID) at `index` in the VTA DID manager. Runs the guards (DID
-    /// resolution + the community-bound check — a community-bound identity must
-    /// not be deleted out from under its membership) and snapshots the persona /
-    /// key ids, then returns a [`relationship_actions::DidDeleteJob`] for the loop
-    /// to run off-thread (VTA `delete_did_webvh` + listener teardown). The local
-    /// cleanup (persona/identity/key removal + save + sync) is applied later by
-    /// [`relationship_actions::DidDeleteOutcome`].
-    ///
-    /// Returns `None` (and logs inline) when a guard rejects the delete, so the
-    /// caller can release the busy-domain without spawning anything.
-    fn prepare_delete_context_did(
-        &self,
-        state: &mut State,
-        config: &mut Config,
-        admin_vta: Option<&vta_sdk::client::VtaClient>,
-        didcomm_service: &openvtc_core::didcomm::Messaging,
-        index: usize,
-    ) -> Option<relationship_actions::DidDeleteJob> {
-        state.main_page.content_panel.vta.confirm_delete_did = None;
-        let did = state
-            .main_page
-            .content_panel
-            .vta
-            .context_dids
-            .get(index)
-            .map(|d| d.did.clone())?;
-
-        // Resolve the persona for this DID + its key ids.
-        let Some(persona) = config.account.personas.values().find(|p| p.did == did) else {
-            state.main_page.log("DID not found — nothing removed.");
-            return None;
-        };
-        let persona_id = persona.persona_id;
-        let key_ids: Vec<String> = persona.key_refs.iter().map(|k| k.key_id.clone()).collect();
-
-        // Guard: refuse to delete an identity any community still presents.
-        let bound = config
-            .account
-            .memberships()
-            .filter(|c| c.persona_ref == persona_id)
-            .count();
-        if bound > 0 {
-            state.main_page.log(format!(
-                "Can't delete — {bound} communit{} still use this identity; leave them first.",
-                if bound == 1 { "y" } else { "ies" }
-            ));
-            return None;
-        }
-
-        state.main_page.log(format!("Removing identity {did}…"));
-
-        Some(relationship_actions::DidDeleteJob {
-            admin_vta: admin_vta.cloned(),
-            service: didcomm_service.clone(),
-            did,
-            persona_id,
-            key_ids,
-        })
-    }
-
     /// Minimal event loop for when there is no active community / messaging
     /// (State-A) or after an init failure — keeps the UI alive so the user can
     /// navigate, exit, and (when `join_ctx` is supplied) start a join.
@@ -2524,7 +1544,7 @@ impl StateHandler {
                     }
                     Action::DeleteCommunity(i) => {
                         if let Some(ctx) = join_ctx.as_mut() {
-                            self.remove_community(state, &mut ctx.config, &mut save, i);
+                            remove_community(state, &mut ctx.config, &mut save, i);
                             // The degraded loop has no debounce arm and a `Joined`
                             // handoff carries the config into the runtime loop, so
                             // force-flush this single destructive action now rather
@@ -2665,7 +1685,7 @@ impl StateHandler {
                     // a `VtaClient` clone is cheap and shares the connection.
                     Action::StartAgentNameManager(index) => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
-                        if let Some(did) = self.open_agent_name_overlay(state, index) {
+                        if let Some(did) = open_agent_name_overlay(state, index) {
                             spawn_agent_name_job(
                                 &dispatch_tx, &mut in_flight, state, av.as_ref(),
                                 did, agent_name_actions::Verb::Open,
@@ -2674,7 +1694,7 @@ impl StateHandler {
                     }
                     Action::AgentNameManagerClaim => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
-                        if let Some((did, name)) = self.agent_name_to_claim(state) {
+                        if let Some((did, name)) = agent_name_to_claim(state) {
                             spawn_agent_name_job(
                                 &dispatch_tx, &mut in_flight, state, av.as_ref(),
                                 did, agent_name_actions::Verb::Claim(name),
@@ -2683,7 +1703,7 @@ impl StateHandler {
                     }
                     Action::AgentNameManagerToggle => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
-                        if let Some((did, name, enabled)) = self.selected_agent_name(state) {
+                        if let Some((did, name, enabled)) = selected_agent_name(state) {
                             let verb = if enabled {
                                 agent_name_actions::Verb::Park(name)
                             } else {
@@ -2696,7 +1716,7 @@ impl StateHandler {
                     }
                     Action::AgentNameManagerRemove => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
-                        if let Some((did, name, _)) = self.selected_agent_name(state) {
+                        if let Some((did, name, _)) = selected_agent_name(state) {
                             spawn_agent_name_job(
                                 &dispatch_tx, &mut in_flight, state, av.as_ref(),
                                 did, agent_name_actions::Verb::Remove(name),
@@ -2758,7 +1778,7 @@ impl StateHandler {
                                     state.main_page.log(msg);
                                 } else {
                                     let av = ctx.admin_vta.clone();
-                                    if let Some(job) = self.prepare_delete_context_did(
+                                    if let Some(job) = prepare_delete_context_did(
                                         state,
                                         &mut ctx.config,
                                         av.as_ref(),
@@ -3500,6 +2520,162 @@ fn spawn_vic_refresh(
             )
         },
     );
+}
+
+/// The typed name to claim, once it is non-empty and the overlay is idle.
+fn agent_name_to_claim(state: &mut State) -> Option<(String, String)> {
+    use main_page::content::AgentNameManagerPhase;
+    let o = state.main_page.agent_names.as_mut()?;
+    if o.phase != AgentNameManagerPhase::Ready {
+        return None;
+    }
+    let name = o.input.value().trim().to_string();
+    if name.is_empty() {
+        o.message = Some("Enter a name first.".to_string());
+        return None;
+    }
+    Some((o.persona_did.clone(), name))
+}
+/// The `(persona_did, name, enabled)` of the overlay's selected row, if the
+/// overlay is open, `Ready`, and has a selection.
+/// The persona an agent-name overlay would open for, and the label/host to
+/// show while it loads. `None` (with a reason logged) when the selection
+/// points at no row.
+fn open_agent_name_overlay(state: &mut State, index: usize) -> Option<String> {
+    use main_page::content::{AgentNameManagerPhase, AgentNameManagerState};
+
+    let Some(persona) = state
+        .main_page
+        .content_panel
+        .vta
+        .context_dids
+        .get(index)
+        .cloned()
+    else {
+        // No persona under the selection: the account has none yet, or the
+        // index outlived the row it pointed at. Either way say so — an
+        // unexplained no-op here is what makes `g` look broken.
+        state
+            .main_page
+            .log("No persona selected — create or select a persona DID first.");
+        return None;
+    };
+    state.main_page.agent_names = Some(AgentNameManagerState {
+        persona_did: persona.did.clone(),
+        persona_label: persona.label.clone(),
+        host: agent_name_manage::derive_host(&persona.did).unwrap_or_default(),
+        phase: AgentNameManagerPhase::Loading,
+        ..Default::default()
+    });
+    Some(persona.did)
+}
+fn selected_agent_name(state: &State) -> Option<(String, String, bool)> {
+    use crate::state_handler::main_page::content::AgentNameManagerPhase;
+    let o = state.main_page.agent_names.as_ref()?;
+    if o.phase != AgentNameManagerPhase::Ready {
+        return None;
+    }
+    let row = o.names.get(o.selected)?;
+    Some((o.persona_did.clone(), row.name.clone(), row.enabled))
+}
+/// Loop-thread preparation for deleting an **orphan** context identity
+/// (persona DID) at `index` in the VTA DID manager. Runs the guards (DID
+/// resolution + the community-bound check — a community-bound identity must
+/// not be deleted out from under its membership) and snapshots the persona /
+/// key ids, then returns a [`relationship_actions::DidDeleteJob`] for the loop
+/// to run off-thread (VTA `delete_did_webvh` + listener teardown). The local
+/// cleanup (persona/identity/key removal + save + sync) is applied later by
+/// [`relationship_actions::DidDeleteOutcome`].
+///
+/// Returns `None` (and logs inline) when a guard rejects the delete, so the
+/// caller can release the busy-domain without spawning anything.
+fn prepare_delete_context_did(
+    state: &mut State,
+    config: &mut Config,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+    didcomm_service: &openvtc_core::didcomm::Messaging,
+    index: usize,
+) -> Option<relationship_actions::DidDeleteJob> {
+    state.main_page.content_panel.vta.confirm_delete_did = None;
+    let did = state
+        .main_page
+        .content_panel
+        .vta
+        .context_dids
+        .get(index)
+        .map(|d| d.did.clone())?;
+
+    // Resolve the persona for this DID + its key ids.
+    let Some(persona) = config.account.personas.values().find(|p| p.did == did) else {
+        state.main_page.log("DID not found — nothing removed.");
+        return None;
+    };
+    let persona_id = persona.persona_id;
+    let key_ids: Vec<String> = persona.key_refs.iter().map(|k| k.key_id.clone()).collect();
+
+    // Guard: refuse to delete an identity any community still presents.
+    let bound = config
+        .account
+        .memberships()
+        .filter(|c| c.persona_ref == persona_id)
+        .count();
+    if bound > 0 {
+        state.main_page.log(format!(
+            "Can't delete — {bound} communit{} still use this identity; leave them first.",
+            if bound == 1 { "y" } else { "ies" }
+        ));
+        return None;
+    }
+
+    state.main_page.log(format!("Removing identity {did}…"));
+
+    Some(relationship_actions::DidDeleteJob {
+        admin_vta: admin_vta.cloned(),
+        service: didcomm_service.clone(),
+        did,
+        persona_id,
+        key_ids,
+    })
+}
+/// Remove the community at `index` in the Communities display list: withdraw
+/// a live (Pending/Active) membership first (R-C-8 — for a pending join this
+/// is the withdrawal), then delete the record, persist, and refresh the
+/// panel. Surfaces the outcome as a status message.
+fn remove_community(
+    state: &mut State,
+    config: &mut Config,
+    save: &mut save_coalesce::SaveScheduler,
+    index: usize,
+) {
+    let Some((vtc, persona)) = config
+        .account
+        .communities_for_display(state.main_page.content_panel.communities.show_archived)
+        .get(index)
+        .map(|c| (c.vtc_did.clone(), c.persona_ref))
+    else {
+        return;
+    };
+    // The confirmation is now resolved.
+    state.main_page.content_panel.communities.confirm_delete = None;
+    // Delete is inactive-only (R-C-8): an Active/Pending community must be
+    // left first (the `d` key is gated to inactive rows, and `delete_membership`
+    // re-checks). We no longer silently `leave()` here — that conflated leave
+    // with delete and skipped the protocol self-removal.
+    match config.account.delete_membership(&vtc, persona) {
+        Ok(_) => {
+            // R11: coalesced save (was an inline `config.save`). The
+            // Exit/shutdown force-flush guarantees the deletion is persisted
+            // even if the user quits within the debounce window.
+            save.mark_dirty();
+            state.main_page.sync_from_config(config);
+            state.main_page.content_panel.communities.status_message =
+                Some("Community removed.".to_string());
+        }
+        Err(e) => {
+            state.main_page.content_panel.communities.status_message =
+                Some(format!("Could not remove community: {e}"));
+        }
+    }
 }
 
 /// Apply a pure navigation action to `state`, shared by the runtime loop and the

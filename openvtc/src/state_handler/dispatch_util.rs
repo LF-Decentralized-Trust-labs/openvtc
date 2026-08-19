@@ -105,6 +105,24 @@ pub(crate) fn record_error(
 /// tests across the `state_handler` modules. Mirrors openvtc-core's own (private)
 /// `test_config`; all fields are public so no cross-crate test constructor is
 /// needed.
+/// An offline TDK: no environment file, no network, no mediator.
+///
+/// The thing that made the runtime loop untestable was believed to be its
+/// dependencies; this is the one that looked hardest, and it builds in
+/// milliseconds with nothing listening.
+#[cfg(test)]
+pub(crate) async fn test_tdk() -> affinidi_tdk::TDK {
+    affinidi_tdk::TDK::new(
+        affinidi_tdk::common::config::TDKConfig::builder()
+            .with_load_environment(false)
+            .build()
+            .expect("TDK config builds"),
+        None,
+    )
+    .await
+    .expect("TDK builds offline")
+}
+
 #[cfg(test)]
 pub(crate) fn test_config() -> Config {
     use openvtc_core::config::{

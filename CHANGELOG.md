@@ -45,6 +45,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The runtime loop's action handling is now callable by a test.** It was a
+  ~1,600-line function with a 900-line `match` at its centre and no seam a test
+  could reach, which is why every fix in this release was verified by reading
+  the code, by a live log, or by a unit test on some piece extracted from it.
+  The actions move to `runtime_actions::handle_action`, taking an `ActionCtx` of
+  everything they act on; the loop keeps only the three arms that are about the
+  loop itself. No behaviour changes — what changes is that a test can now press
+  a key and assert what happened, including that an action *dispatched at all*,
+  which is the property three surfaces were found to be silently violating.
+
 - **Requesting a credential from a peer, and creating a persona, no longer
   freeze the application.** These were the last two network actions still
   awaited on the state-handler thread. Creating a persona is half a dozen VTA
