@@ -45,6 +45,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Importing or archiving an invitation credential no longer freezes the
+  application.** Every vault verb — import, archive, unarchive, restore,
+  soft-delete, purge — ran its round-trip on the state-handler thread, and each
+  was followed by a re-read of the listing, so a single keypress could park
+  every other part of the app for two round-trips. The work now runs off the
+  loop. Validation of a pasted credential deliberately stays on it: rejecting a
+  bad paste is local and instant, and it is what keeps you on the input field
+  with the reason rather than dropping you into a failed state.
+
 - **Managing agent names no longer freezes the application.** The overlay's five
   verbs are Trust Tasks with a 60-second timeout each, and a mutation is *two* of
   them — the change, then the authoritative re-read of the registry. They ran on
