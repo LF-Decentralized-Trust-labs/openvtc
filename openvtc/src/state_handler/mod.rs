@@ -201,6 +201,7 @@ mod agent_name_actions;
 mod agent_name_manage;
 mod agent_name_refresh;
 mod background_dispatch;
+mod capability_actions;
 mod create_persona;
 mod credential_actions;
 /// The DIDComm transport module, which now lives in `openvtc-core`.
@@ -1050,25 +1051,20 @@ impl StateHandler {
                                 )
                             });
                         if let Some((vtc, persona_id, name)) = target {
-                            let mut view = crate::state_handler::main_page::content::CapabilitiesView::new(
-                                vtc.clone(),
-                                persona_id,
-                                name,
-                            );
-                            match message_dispatch::capabilities_list_for(&config, &tdk, &vtc, persona_id).await {
-                                Ok(thid) => {
-                                    view.pending_thid = Some(thid);
-                                    view.sent_at = Some(std::time::Instant::now());
+                            capability_actions::open_view(&mut state, vtc.clone(), persona_id, name);
+                            match capability_sender(&config, &tdk, persona_id) {
+                                Some((atm, profile, persona_did, mediator)) => {
+                                    spawn_capability_job(
+                                        &dispatch_tx, &mut in_flight, &mut state,
+                                        capability_actions::CapabilityJob {
+                                            atm, profile, persona_did, mediator,
+                                            vtc_did: vtc, persona: persona_id,
+                                            verb: capability_actions::Verb::List,
+                                        },
+                                    );
                                 }
-                                Err(e) => {
-                                    state.main_page.log_error("Capability query failed", &e);
-                                    view.phase =
-                                        crate::state_handler::main_page::content::CapabilitiesPhase::Failed(
-                                            format!("could not send the query: {e}"),
-                                        );
-                                }
+                                None => capability_actions::send_unavailable(&mut state),
                             }
-                            state.main_page.content_panel.capabilities.view = Some(view);
                         }
                     }
                     Action::CapabilitiesRefresh => {
@@ -1079,22 +1075,24 @@ impl StateHandler {
                             .view
                             .as_ref()
                             .map(|v| (v.vtc_did.clone(), v.persona));
-                        if let Some((vtc, persona_id)) = target
-                            && let Some(view) = state.main_page.content_panel.capabilities.view.as_mut()
-                        {
-                            view.phase = crate::state_handler::main_page::content::CapabilitiesPhase::Loading;
-                            view.status_message = None;
-                            match message_dispatch::capabilities_list_for(&config, &tdk, &vtc, persona_id).await {
-                                Ok(thid) => {
-                                    view.pending_thid = Some(thid);
-                                    view.sent_at = Some(std::time::Instant::now());
+                        if let Some((vtc, persona_id)) = target {
+                            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+                                view.phase =
+                                    crate::state_handler::main_page::content::CapabilitiesPhase::Loading;
+                                view.status_message = None;
+                            }
+                            match capability_sender(&config, &tdk, persona_id) {
+                                Some((atm, profile, persona_did, mediator)) => {
+                                    spawn_capability_job(
+                                        &dispatch_tx, &mut in_flight, &mut state,
+                                        capability_actions::CapabilityJob {
+                                            atm, profile, persona_did, mediator,
+                                            vtc_did: vtc, persona: persona_id,
+                                            verb: capability_actions::Verb::List,
+                                        },
+                                    );
                                 }
-                                Err(e) => {
-                                    view.phase =
-                                        crate::state_handler::main_page::content::CapabilitiesPhase::Failed(
-                                            format!("could not send the query: {e}"),
-                                        );
-                                }
+                                None => capability_actions::send_unavailable(&mut state),
                             }
                         }
                     }
@@ -1116,28 +1114,46 @@ impl StateHandler {
                                     !item.enabled,
                                 ))
                             });
-                        if let Some((vtc, persona_id, slug, version, enable)) = target
-                            && let Some(view) = state.main_page.content_panel.capabilities.view.as_mut()
-                        {
-                            view.confirm_toggle = None;
-                            match message_dispatch::capability_toggle_for(
-                                &config, &tdk, &vtc, persona_id, &slug, &version, enable,
-                            )
-                            .await
-                            {
-                                Ok(thid) => {
-                                    view.pending_thid = Some(thid);
-                                    view.sent_at = Some(std::time::Instant::now());
-                                    view.status_message = Some(format!(
-                                        "{} {slug}… awaiting the community's reply",
-                                        if enable { "enabling" } else { "disabling" }
-                                    ));
+                        if let Some((vtc, persona_id, slug, version, enable)) = target {
+                            if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+                                view.confirm_toggle = None;
+                            }
+                            // The signing key is read here, not in the job: it
+                            // comes from the TDK secrets resolver (in memory,
+                            // populated at startup), so it is not I/O — and
+                            // reading it here is what lets the job own a
+                            // `Secret` rather than borrow `Config`.
+                            let signed = match (
+                                capability_sender(&config, &tdk, persona_id),
+                                config.get_persona_keys_for(persona_id, &tdk).await,
+                            ) {
+                                (Some(sender), Ok(keys)) => Some((sender, keys)),
+                                (_, Err(e)) => {
+                                    if let Some(view) =
+                                        state.main_page.content_panel.capabilities.view.as_mut()
+                                    {
+                                        view.status_message =
+                                            Some(format!("couldn't sign the change: {e}"));
+                                    }
+                                    None
                                 }
-                                Err(e) => {
-                                    view.status_message =
-                                        Some(format!("couldn't send the change: {e}"));
-                                    tracing::error!("capability toggle failed: {e}");
+                                (None, _) => {
+                                    capability_actions::send_unavailable(&mut state);
+                                    None
                                 }
+                            };
+                            if let Some(((atm, profile, persona_did, mediator), keys)) = signed {
+                                spawn_capability_job(
+                                    &dispatch_tx, &mut in_flight, &mut state,
+                                    capability_actions::CapabilityJob {
+                                        atm, profile, persona_did, mediator,
+                                        vtc_did: vtc, persona: persona_id,
+                                        verb: capability_actions::Verb::Toggle {
+                                            slug, version, enable,
+                                            signing_secret: Box::new(keys.signing.secret.clone()),
+                                        },
+                                    },
+                                );
                             }
                         }
                     }
@@ -3109,6 +3125,53 @@ fn apply_capability_replies(
             }
         }
     }
+}
+
+/// Resolve the messaging identity a capability document is sent as.
+///
+/// Kept on the loop because it reads `Config`; everything it returns is owned,
+/// so the job that follows borrows nothing.
+fn capability_sender(
+    config: &Config,
+    tdk: &TDK,
+    persona_id: openvtc_core::config::account::PersonaId,
+) -> Option<(
+    affinidi_tdk::messaging::ATM,
+    std::sync::Arc<affinidi_tdk::messaging::profiles::ATMProfile>,
+    String,
+    String,
+)> {
+    let id = config.identities.get(&persona_id)?;
+    let atm = tdk.atm.as_ref()?.clone();
+    Some((
+        atm,
+        id.profile().clone(),
+        id.persona_did().to_string(),
+        id.mediator_did.clone().unwrap_or_default(),
+    ))
+}
+
+/// Send a capability document off the loop.
+///
+/// The busy-guard is what stops a held key queueing a fan of identical
+/// governance documents at a community: the view is armed with exactly one
+/// pending thread id, and a second send would orphan the first.
+fn spawn_capability_job(
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<background_dispatch::DispatchOutcome>,
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    job: capability_actions::CapabilityJob,
+) {
+    let domain = background_dispatch::DispatchDomain::Capabilities;
+    if !in_flight.try_begin(domain) {
+        if let Some(view) = state.main_page.content_panel.capabilities.view.as_mut() {
+            view.status_message = Some(background_dispatch::InFlight::busy_message(domain));
+        }
+        return;
+    }
+    background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
+        background_dispatch::DispatchOutcome::Capabilities(job.run().await)
+    });
 }
 
 /// Start a VIC vault mutation off the loop, shared by both loops.
