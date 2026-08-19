@@ -3045,6 +3045,93 @@ impl StateHandler {
                                 .await;
                         }
                     }
+                    // Settings are config-only: `settings_actions::dispatch`
+                    // takes the config, the state and the save scheduler, and
+                    // touches no messaging and no VTA session. So every one of
+                    // them is serviceable here — and all of them were being
+                    // dropped, which is a State-A account unable to change its
+                    // own protection, logging or mediator.
+                    //
+                    // `ReconnectMediator` is the one outcome this loop cannot
+                    // honour: there is no persona listener to rebuild yet. The
+                    // setting itself is already persisted by the dispatch above,
+                    // so it takes effect when messaging starts.
+                    Action::Settings(sa) => {
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            match settings_actions::dispatch(
+                                sa,
+                                &mut ctx.config,
+                                state,
+                                &self.state_tx,
+                                &mut save,
+                                &self.profile,
+                            )
+                            .await
+                            {
+                                settings_actions::SettingsOutcome::Continue => {}
+                                settings_actions::SettingsOutcome::ExitUserInt => {
+                                    if let Err(e) = terminator.terminate(Interrupted::UserInt) {
+                                        debug!("Failed to send terminate signal: {e}");
+                                    }
+                                    break DegradedOutcome::Exit(Interrupted::UserInt);
+                                }
+                                settings_actions::SettingsOutcome::ReconnectMediator => {
+                                    state.main_page.log(
+                                        "Mediator saved — it takes effect once messaging starts.",
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    // Removing a persona, for the same reason as creating one:
+                    // State A is where an account's first persona is minted, so
+                    // it is where a mistaken one gets thrown away. This was
+                    // listed as "intentionally inert" below, but the pieces it
+                    // needs are all here — the confirm prompt is armed by a nav
+                    // action that already works, and `prepare_delete_context_did`
+                    // is what clears it. Dropping the `y` left the prompt on
+                    // screen with nothing behind it, which reads as a hang.
+                    Action::DeleteDid(i) => {
+                        let domain = background_dispatch::DispatchDomain::Did;
+                        match (join_ctx.as_mut(), messaging) {
+                            (Some(ctx), Some(service)) => {
+                                if !in_flight.try_begin(domain) {
+                                    let msg = background_dispatch::InFlight::busy_message(domain);
+                                    state.main_page.log(msg);
+                                } else {
+                                    let av = ctx.admin_vta.clone();
+                                    if let Some(job) = self.prepare_delete_context_did(
+                                        state,
+                                        &mut ctx.config,
+                                        av.as_ref(),
+                                        service,
+                                        i,
+                                    ) {
+                                        background_dispatch::spawn_dispatch(
+                                            dispatch_tx.clone(),
+                                            domain,
+                                            async move {
+                                                background_dispatch::DispatchOutcome::Did(
+                                                    job.run().await,
+                                                )
+                                            },
+                                        );
+                                    } else {
+                                        // A guard rejected it (logged inline).
+                                        in_flight.finish(domain);
+                                    }
+                                }
+                            }
+                            // No session or no messaging runtime: say so and
+                            // disarm, rather than leaving the prompt hanging.
+                            _ => {
+                                state.main_page.content_panel.vta.confirm_delete_did = None;
+                                state
+                                    .main_page
+                                    .log("Cannot remove an identity right now — no VTA session.");
+                            }
+                        }
+                    }
                     Action::VicRefresh => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
@@ -3083,7 +3170,7 @@ impl StateHandler {
                         }
                     }
                     // Messaging-only actions (Inbox / Relationship / Credential /
-                    // Settings / Contact, DeleteDid) are intentionally inert in the
+                    // Settings / Contact) are intentionally inert in the
                     // degraded loop — there's no live messaging/admin context to
                     // service them. The pure nav arms they previously shared this
                     // catch-all with now go through `handle_nav_action` above.
@@ -3096,8 +3183,23 @@ impl StateHandler {
                     // from silence. (The action is not named: `Action` carries
                     // credential and key material in some variants and
                     // deliberately has no `Debug`.)
+                    // Everything left needs a live community or the messaging
+                    // runtime that comes with one: the inbox, relationships,
+                    // credential exchange, and every community verb. They are
+                    // inert here because there is nothing for them to act on.
+                    //
+                    // Inert, but no longer *silent*. This arm is also where an
+                    // action lands that should have been serviced and simply has
+                    // no arm yet — the agent-name verbs, `DeleteDid` and the
+                    // whole settings surface all sat here, and the only symptom
+                    // was a key that did nothing. One line beats guessing.
+                    // (`Action` is not named: some variants carry credential and
+                    // key material, so it deliberately has no `Debug`.)
                     _ => {
                         debug!("action not serviced in State A — no arm in the degraded loop");
+                        state
+                            .main_page
+                            .log("Not available yet — join a community first.");
                     }
                 },
                 Some(outcome) = dispatch_rx.recv() => {
