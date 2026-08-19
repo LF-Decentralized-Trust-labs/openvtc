@@ -55,6 +55,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   got worse with every extra identity on the account. The connects now happen
   off that thread, which is what the code around them already claimed ("Phase 2
   … runs ASYNCHRONOUSLY: we do NOT block the UI waiting for the listener").
+- **A listener's messaging profile now says which identity is speaking, not
+  just which community.** The label named the community only, so two personas
+  in one community produced byte-identical labels, a persona in several
+  communities took whichever membership happened to be found first, and a
+  persona with no community at all was labelled the literal string `"Persona"`.
+  All three showed up in live logs. Because this label names the messaging
+  profile, it is what the transport puts in every `websocket_run{profile=…}`
+  span and what a mediator-side log has to be correlated against — so one
+  listener reconnecting and several reconnecting independently looked the same.
+  Each label now carries the persona's own DID alongside the community,
+  truncated the way the relationship labels already truncate theirs.
 
 - **The VTA Service panel stops feeling frozen.** Tab into the Invitation
   Credentials list ran a credential-vault query *before* the focus change, and
