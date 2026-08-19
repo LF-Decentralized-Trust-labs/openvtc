@@ -1747,7 +1747,16 @@ pub fn start_empty_service(
 /// panel reports per-listener state, so a missing one is visible rather than
 /// silent, and `reconnect_persona_listener_io` is the recovery path.
 pub async fn install_listeners(service: &Messaging, config: &Config, tdk: &affinidi_tdk::TDK) {
-    for spec in build_listener_configs(config, tdk).await {
+    connect_listeners(service, build_listener_configs(config, tdk).await).await;
+}
+
+/// Bring up each spec's listener, skipping any already installed.
+///
+/// Split from [`install_listeners`] so a caller that cannot hold `Config`
+/// across an await — it is not `Clone` — can still do this part off its own
+/// thread. See [`spawn_install_listeners`].
+pub async fn connect_listeners(service: &Messaging, specs: Vec<ListenerSpec>) {
+    for spec in specs {
         if service.has_listener(&spec.id).await {
             continue;
         }
@@ -1759,6 +1768,41 @@ pub async fn install_listeners(service: &Messaging, config: &Config, tdk: &affin
             );
         }
     }
+}
+
+/// Bring the listeners up in the background, logging what came up.
+///
+/// Each listener costs a mediator authentication handshake and a websocket
+/// connect, and they are installed one after another — so on an account with
+/// several identities this is seconds of network, not microseconds. Startup ran
+/// it inline on the state-handler thread, which is the only thread that services
+/// UI actions: the loading screen offered "Press Enter to continue" and then
+/// ignored the keypress until every socket was up. The Enter was not lost — it
+/// sat in the action channel — so the main page arrived in one late jump, which
+/// reads as a freeze.
+///
+/// Running a service with no listeners yet is already a supported state
+/// (`start_empty_service` exists for it), and the runtime loop flips the
+/// connection status from typed lifecycle events as each one lands, so nothing
+/// downstream needs them to be up before the UI is live.
+pub fn spawn_install_listeners(
+    service: Messaging,
+    specs: Vec<ListenerSpec>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        connect_listeners(&service, specs).await;
+        // Logged here rather than at the call site: the point of the listing is
+        // what actually came up, which is only known once the installs finish.
+        let listeners = service.list_listeners().await;
+        for id in &listeners {
+            tracing::debug!(
+                listener = %crate::display::truncate_did(id, 32),
+                state = ?service.listener_state(id),
+                "registered listener"
+            );
+        }
+        tracing::info!(count = listeners.len(), "DIDComm listeners registered");
+    })
 }
 
 /// Produce a short, collision-resistant identifier from a DID for listener IDs.
@@ -1796,8 +1840,12 @@ pub fn relationship_listener_config_from_secrets(
 
 #[cfg(test)]
 mod supervisor_policy_tests {
-    use super::{REBUILD_BACKOFF_CAP, REBUILD_GRACE, rebuild_backoff, rebuild_due};
+    use super::{
+        ListenerSpec, REBUILD_BACKOFF_CAP, REBUILD_GRACE, rebuild_backoff, rebuild_due,
+        spawn_install_listeners, start_empty_service,
+    };
     use std::time::Duration;
+    use tokio::sync::mpsc;
 
     /// The dangerous direction. A transport that dropped a moment ago is retrying
     /// inside its own ATM; rebuilding now would race a second websocket for the
@@ -1811,6 +1859,45 @@ mod supervisor_policy_tests {
             0,
             None
         ));
+    }
+
+    /// Bringing listeners up must not block the caller.
+    ///
+    /// This is the whole point of the split: each listener costs a mediator
+    /// auth handshake and a websocket connect, in series, and startup used to
+    /// await that on the state-handler thread — the one thread that services UI
+    /// actions. The loading screen offered "Press Enter to continue" and then
+    /// could not read the keypress until the last socket was up.
+    ///
+    /// The spec here names a mediator that cannot resolve, so the install is
+    /// still in flight when the assertion runs: what is being pinned is that
+    /// `spawn_install_listeners` *returns* while that is true.
+    #[tokio::test]
+    async fn installing_listeners_does_not_block_the_caller() {
+        let (event_tx, _event_rx) = mpsc::unbounded_channel();
+        let service = start_empty_service(event_tx, tokio_util::sync::CancellationToken::new());
+        let spec = ListenerSpec {
+            id: "did:example:unreachable".to_string(),
+            did: "did:example:unreachable".to_string(),
+            mediator_did: "did:example:no-such-mediator".to_string(),
+            label: "test".to_string(),
+            secrets: Vec::new(),
+        };
+
+        let started = std::time::Instant::now();
+        let handle = spawn_install_listeners(service.clone(), vec![spec]);
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "spawning the install must return immediately, took {elapsed:?}"
+        );
+        assert!(
+            !service.has_listener("did:example:unreachable").await,
+            "the unreachable listener must not have been installed synchronously"
+        );
+
+        handle.abort();
     }
 
     /// The other direction: past the grace period nothing else is coming, so a

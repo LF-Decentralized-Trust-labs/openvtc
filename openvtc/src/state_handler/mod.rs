@@ -16,7 +16,7 @@ use tokio::sync::{
     broadcast,
     mpsc::{self, UnboundedReceiver},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 /// Tail-truncate a DID for log-message display, fixed at 30 chars.
 pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
@@ -714,7 +714,18 @@ impl StateHandler {
         // Install this account's listeners on the runtime started above. Skips
         // any that already exist, so a State-A join's own persona listener is
         // bound to rather than duplicated (one websocket per DID).
-        didcomm::install_listeners(&didcomm_service, &config, &tdk).await;
+        //
+        // The specs are built here because that needs `Config`, which is not
+        // `Clone` and cannot cross into a task. Bringing the listeners *up* is
+        // the expensive half — a mediator auth handshake and a websocket connect
+        // each, in series — and that half runs off this thread. This is the only
+        // thread that services UI actions, and the loading screen has already
+        // been told to offer "Press Enter to continue": awaiting the connects
+        // here meant the keypress sat unread in the action channel until the last
+        // socket was up, and the main page then arrived in one late jump.
+        let listener_specs = didcomm::build_listener_configs(&config, &tdk).await;
+        let _listener_install =
+            didcomm::spawn_install_listeners(didcomm_service.clone(), listener_specs);
 
         // Process-lifetime LRU of inbound message IDs. Backstop for replay
         // and mediator-pickup duplicates beyond what the TDK already filters.
@@ -724,17 +735,6 @@ impl StateHandler {
         let (lifecycle_log_tx, mut lifecycle_log_rx) =
             mpsc::unbounded_channel::<didcomm::LifecycleLog>();
         let _lifecycle_handle = didcomm::spawn_lifecycle_logger(&didcomm_service, lifecycle_log_tx);
-
-        // Log registered listeners for diagnostics
-        let listeners = didcomm_service.list_listeners().await;
-        for id in &listeners {
-            debug!(
-                listener = %openvtc_core::display::truncate_did(id, 32),
-                state = ?didcomm_service.listener_state(id),
-                "registered listener"
-            );
-        }
-        info!(count = listeners.len(), "DIDComm listeners registered");
 
         // Phase 2 (community/persona DIDComm connection) runs ASYNCHRONOUSLY: we
         // do NOT block the UI waiting for the listener. The main page is already
