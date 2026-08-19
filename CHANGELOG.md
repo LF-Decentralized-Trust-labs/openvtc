@@ -45,6 +45,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Leaving a community, or issuing it your membership credential, no longer
+  freezes the application.** Both send to the community and were awaited on the
+  state-handler thread — and an unreachable community is a *likely* reason to
+  leave one, which is exactly when the send retries longest. Both now run off
+  the loop. A successful leave still marks the membership Left and tears down
+  its messaging session; the record moves on the send rather than on a receipt,
+  because the community's acknowledgement is advisory and a member who has
+  announced a departure should not still be shown as a member if it never
+  answers.
+
 - **Opening the capabilities view, refreshing it, or committing a toggle no
   longer freezes the application.** Each of those sends a governance document to
   the community and waits for the *send* — which retries against an unreachable

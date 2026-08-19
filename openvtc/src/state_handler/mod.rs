@@ -202,6 +202,7 @@ mod agent_name_manage;
 mod agent_name_refresh;
 mod background_dispatch;
 mod capability_actions;
+mod community_actions;
 mod create_persona;
 mod credential_actions;
 /// The DIDComm transport module, which now lives in `openvtc-core`.
@@ -972,8 +973,11 @@ impl StateHandler {
                         }
                     },
                     Action::LeaveCommunity(i) => {
-                        // R-L-1: send MEMBER_SELF_REMOVE, then set Left + deregister
-                        // the session on send success (the receipt is advisory).
+                        // R-L-1: send MEMBER_SELF_REMOVE, then set Left +
+                        // deregister the session once it lands (the community's
+                        // receipt is advisory). Both halves are in
+                        // `community_actions`; the session teardown is reported
+                        // back to this loop, which owns the session manager.
                         state.main_page.content_panel.communities.confirm_leave = None;
                         let target = config
                             .account
@@ -982,57 +986,21 @@ impl StateHandler {
                             .filter(|c| c.status.is_active())
                             .map(|c| (c.vtc_did.clone(), c.persona_ref));
                         if let Some((vtc, persona_id)) = target {
-                            // Owned send inputs from the persona's runtime identity,
-                            // so no config borrow is held across the network await.
-                            let sender = config.identities.get(&persona_id).map(|id| {
-                                (
-                                    id.persona_did().to_string(),
-                                    id.profile().clone(),
-                                    id.mediator_did.clone().unwrap_or_default(),
-                                )
-                            });
-                            let send = match (sender, tdk.atm.as_ref()) {
-                                (Some((member_did, profile, mediator)), Some(atm)) => {
-                                    openvtc_core::join::submit_self_remove(
-                                        atm, &profile, &member_did, &vtc, &mediator, None,
-                                    )
-                                    .await
+                            match capability_sender(&config, &tdk, persona_id) {
+                                Some((atm, profile, member_did, mediator)) => {
+                                    spawn_community_job(
+                                        &dispatch_tx, &mut in_flight, &mut state,
+                                        community_actions::CommunityJob {
+                                            atm, profile, member_did, mediator,
+                                            vtc_did: vtc, persona: persona_id,
+                                            verb: community_actions::Verb::Leave,
+                                        },
+                                    );
                                 }
-                                _ => Err(openvtc_core::errors::OpenVTCError::Config(
-                                    "Messaging unavailable — cannot leave right now.".into(),
-                                )),
-                            };
-                            match send {
-                                Ok(_) => {
-                                    if let Some(c) =
-                                        config.account.membership_mut(&vtc, persona_id)
-                                    {
-                                        c.leave();
-                                    }
-                                    save.mark_dirty();
-                                    deregister_inactive_community(
-                                        &mut session_manager,
-                                        &didcomm_service,
-                                        &config,
-                                        &mut state,
-                                        &vtc,
-                                        persona_id,
-                                    )
-                                    .await;
-                                    state.main_page.sync_from_config(&config);
-                                    state
-                                        .main_page
-                                        .content_panel
-                                        .communities
-                                        .status_message = Some("Left the community.".to_string());
-                                }
-                                Err(e) => {
-                                    state.main_page.log_error("Leave failed", &e);
-                                    state
-                                        .main_page
-                                        .content_panel
-                                        .communities
-                                        .status_message = Some(format!("Couldn't leave: {e}"));
+                                None => {
+                                    state.main_page.content_panel.communities.status_message = Some(
+                                        "Messaging unavailable — cannot leave right now.".to_string(),
+                                    );
                                 }
                             }
                         }
@@ -1167,22 +1135,39 @@ impl StateHandler {
                             .filter(|c| c.status.is_active())
                             .map(|c| (c.vtc_did.clone(), c.persona_ref));
                         if let Some((vtc, persona_id)) = target {
-                            match message_dispatch::issue_member_vmc_for(&config, &tdk, &vtc, persona_id)
-                                .await
-                            {
-                                Ok(_) => {
-                                    state.main_page.content_panel.communities.status_message = Some(
-                                        "Membership credential issued and sent to the community."
-                                            .to_string(),
-                                    );
-                                }
-                                Err(e) => {
-                                    state
-                                        .main_page
-                                        .log_error("Issue membership credential failed", &e);
+                            // The signing key is read here for the same reason as
+                            // the capability toggle: it comes from the in-memory
+                            // secrets resolver, not the network, and reading it
+                            // here lets the job own a `Secret` rather than borrow
+                            // `Config`.
+                            let ready = match (
+                                capability_sender(&config, &tdk, persona_id),
+                                config.get_persona_keys_for(persona_id, &tdk).await,
+                            ) {
+                                (Some(sender), Ok(keys)) => Some((sender, keys)),
+                                (_, Err(e)) => {
                                     state.main_page.content_panel.communities.status_message =
-                                        Some(format!("Couldn't issue the membership credential: {e}"));
+                                        Some(format!("Couldn't sign the membership credential: {e}"));
+                                    None
                                 }
+                                (None, _) => {
+                                    state.main_page.content_panel.communities.status_message = Some(
+                                        "Messaging unavailable — cannot issue right now.".to_string(),
+                                    );
+                                    None
+                                }
+                            };
+                            if let Some(((atm, profile, member_did, mediator), keys)) = ready {
+                                spawn_community_job(
+                                    &dispatch_tx, &mut in_flight, &mut state,
+                                    community_actions::CommunityJob {
+                                        atm, profile, member_did, mediator,
+                                        vtc_did: vtc, persona: persona_id,
+                                        verb: community_actions::Verb::IssueVmc {
+                                            signing_secret: Box::new(keys.signing.secret.clone()),
+                                        },
+                                    },
+                                );
                             }
                         }
                     },
@@ -1944,13 +1929,30 @@ impl StateHandler {
                 // and inbound DIDComm events are all serviced *while* the spawned
                 // I/O is still pending.
                 Some(outcome) = dispatch_rx.recv() => {
-                    background_dispatch::apply_outcome(
+                    let pending_deregistration = background_dispatch::apply_outcome(
                         &mut state,
                         &mut config,
                         &mut save,
                         &mut in_flight,
                         outcome,
                     );
+                    // A community we have just left still holds a messaging
+                    // session. The session manager lives here, not in the shared
+                    // apply path, so the outcome reports the teardown and this
+                    // arm performs it. Local work — removing a listener — not a
+                    // network call.
+                    if let Some((vtc, persona)) = pending_deregistration {
+                        deregister_inactive_community(
+                            &mut session_manager,
+                            &didcomm_service,
+                            &config,
+                            &mut state,
+                            &vtc,
+                            persona,
+                        )
+                        .await;
+                        state.main_page.sync_from_config(&config);
+                    }
                     // A refresh asked for while the vault was busy is re-issued
                     // here, now that the domain is free — see `vic_refresh_queued`.
                     if state.main_page.content_panel.vta.vic_refresh_queued {
@@ -2977,13 +2979,18 @@ impl StateHandler {
                     // nowhere to go, but its domain must still be freed or the
                     // guard stays set for the life of the loop.
                     match join_ctx.as_mut() {
-                        Some(ctx) => background_dispatch::apply_outcome(
-                            state,
-                            &mut ctx.config,
-                            &mut save,
-                            &mut in_flight,
-                            outcome,
-                        ),
+                        // State A holds no messaging sessions, so a pending
+                        // deregistration cannot arise here — and could not be
+                        // honoured if it did.
+                        Some(ctx) => {
+                            let _ = background_dispatch::apply_outcome(
+                                state,
+                                &mut ctx.config,
+                                &mut save,
+                                &mut in_flight,
+                                outcome,
+                            );
+                        }
                         None => in_flight.finish(outcome.domain()),
                     }
                     if state.main_page.content_panel.vta.vic_refresh_queued {
@@ -3125,6 +3132,28 @@ fn apply_capability_replies(
             }
         }
     }
+}
+
+/// Send a document addressed to a community, off the loop.
+///
+/// The busy-guard serialises leave and issue-credential together: both address
+/// the same peer, both are user-initiated one at a time, and a second send while
+/// one is retrying would tell the community two things at once.
+fn spawn_community_job(
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<background_dispatch::DispatchOutcome>,
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    job: community_actions::CommunityJob,
+) {
+    let domain = background_dispatch::DispatchDomain::Community;
+    if !in_flight.try_begin(domain) {
+        state.main_page.content_panel.communities.status_message =
+            Some(background_dispatch::InFlight::busy_message(domain));
+        return;
+    }
+    background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
+        background_dispatch::DispatchOutcome::Community(job.run().await)
+    });
 }
 
 /// Resolve the messaging identity a capability document is sent as.
