@@ -45,6 +45,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Agent names can be managed on an account's first persona.** With no
+  communities yet, OpenVTC runs a second, smaller event loop (State A), and that
+  loop had no arm for the agent-name verbs — so `g` on a freshly minted persona
+  was dropped into a catch-all and nothing happened, on the very screen that had
+  just reported "Created persona DID …". State A is where an account's *first*
+  persona is created, so it is also the first place anyone wants to name one.
+  Restarting made it work, because an account that already has a persona starts
+  in the full runtime loop instead — which is why this went unnoticed.
+
+  That catch-all now leaves a debug breadcrumb. It is where an action lands when
+  it *should* be serviced and simply has no arm yet, and the only symptom was a
+  key that did nothing.
+
 - **The main page appears as soon as you press Enter on the loading screen.**
   Startup brought every DIDComm listener up — a mediator authentication
   handshake and a websocket connect each, one after another — on the

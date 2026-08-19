@@ -3009,6 +3009,42 @@ impl StateHandler {
                             ];
                         }
                     }
+                    // Agent-name management, for the persona this loop just
+                    // minted. State A is where an account's FIRST persona is
+                    // created, so it is also the first place anyone wants to
+                    // name one — and `g` reached a loop that had no arm for it
+                    // and dropped it into the catch-all below. Nothing happened
+                    // and nothing said why, on a screen that had just reported
+                    // "Created persona DID …".
+                    //
+                    // The session is cloned rather than borrowed because the
+                    // mutating verbs need `&mut ctx.config` at the same time;
+                    // a `VtaClient` clone is cheap and shares the connection.
+                    Action::StartAgentNameManager(index) => {
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
+                        self.run_agent_name_open(state, av.as_ref(), index).await;
+                    }
+                    Action::AgentNameManagerClaim => {
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            let av = ctx.admin_vta.clone();
+                            self.run_agent_name_claim(state, &mut ctx.config, &mut save, av.as_ref())
+                                .await;
+                        }
+                    }
+                    Action::AgentNameManagerToggle => {
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            let av = ctx.admin_vta.clone();
+                            self.run_agent_name_toggle(state, &mut ctx.config, &mut save, av.as_ref())
+                                .await;
+                        }
+                    }
+                    Action::AgentNameManagerRemove => {
+                        if let Some(ctx) = join_ctx.as_mut() {
+                            let av = ctx.admin_vta.clone();
+                            self.run_agent_name_remove(state, &mut ctx.config, &mut save, av.as_ref())
+                                .await;
+                        }
+                    }
                     Action::VicRefresh => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
@@ -3051,7 +3087,18 @@ impl StateHandler {
                     // degraded loop — there's no live messaging/admin context to
                     // service them. The pure nav arms they previously shared this
                     // catch-all with now go through `handle_nav_action` above.
-                    _ => {}
+                    //
+                    // Leaves a breadcrumb, because this arm is also where an
+                    // action lands that *should* have been serviced and simply
+                    // has no arm yet — the agent-name verbs sat here, and the
+                    // only symptom was a key that did nothing. A dropped action
+                    // is now visible in a debug log instead of being inferred
+                    // from silence. (The action is not named: `Action` carries
+                    // credential and key material in some variants and
+                    // deliberately has no `Debug`.)
+                    _ => {
+                        debug!("action not serviced in State A — no arm in the degraded loop");
+                    }
                 },
                 Some(outcome) = dispatch_rx.recv() => {
                     // Applying needs the config the outcome is annotated against.
