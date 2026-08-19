@@ -1407,14 +1407,12 @@ impl StateHandler {
                     Action::CreatePersonaSubmit => {
                         // Mint a standalone persona DID using the always-on admin
                         // VTA session; the overlay shows progress and, on success,
-                        // the new DID (copied to the clipboard).
-                        self.run_create_persona(
-                            &mut state,
-                            &tdk,
-                            &mut config,
+                        // the new DID (copied to the clipboard). The mint runs off
+                        // this loop and streams its steps back as progress.
+                        spawn_persona_mint(
+                            &dispatch_tx, &mut in_flight, &mut state, &config, &tdk,
                             admin_vta.as_ref(),
-                        )
-                        .await;
+                        );
                     },
                     Action::StartAgentNameManager(index) => {
                         if let Some(did) = self.open_agent_name_overlay(&mut state, index) {
@@ -1618,15 +1616,44 @@ impl StateHandler {
                         }
                     },
                     Action::Credential(ca) => {
-                        credential_actions::dispatch(
-                            ca,
-                            &mut config,
-                            &tdk,
-                            &didcomm_service,
-                            &mut state,
-                            &mut save,
-                        )
-                        .await;
+                        // One of the twelve credential actions goes to the
+                        // network — requesting a VRC from a peer — so it is
+                        // resolved here and dispatched. The other eleven are
+                        // state or config, and the dispatcher handles them
+                        // inline as before.
+                        if let actions::CredentialAction::SubmitRequest {
+                            relationship_p_did,
+                            reason,
+                        } = &ca
+                        {
+                            let domain = background_dispatch::DispatchDomain::Credential;
+                            if !in_flight.try_begin(domain) {
+                                state.main_page.content_panel.credentials.status_message =
+                                    Some(background_dispatch::InFlight::busy_message(domain));
+                            } else if let Some(job) = credential_actions::prepare_vrc_request(
+                                &config,
+                                &didcomm_service,
+                                relationship_p_did,
+                                reason.as_deref(),
+                            ) {
+                                background_dispatch::spawn_dispatch(
+                                    dispatch_tx.clone(),
+                                    domain,
+                                    async move {
+                                        background_dispatch::DispatchOutcome::Credential(
+                                            job.run().await,
+                                        )
+                                    },
+                                );
+                            } else {
+                                in_flight.finish(domain);
+                                state.main_page.content_panel.credentials.status_message = Some(
+                                    "That relationship is no longer available.".to_string(),
+                                );
+                            }
+                        } else {
+                            credential_actions::dispatch(ca, &mut config, &mut state, &mut save);
+                        }
                     },
                     Action::Settings(sa) => {
                         match settings_actions::dispatch(
@@ -1929,13 +1956,17 @@ impl StateHandler {
                 // and inbound DIDComm events are all serviced *while* the spawned
                 // I/O is still pending.
                 Some(outcome) = dispatch_rx.recv() => {
-                    let pending_deregistration = background_dispatch::apply_outcome(
+                    let after = background_dispatch::apply_outcome(
                         &mut state,
                         &mut config,
                         &mut save,
                         &mut in_flight,
                         outcome,
                     );
+                    let pending_deregistration = settle_after_apply(
+                        after, &mut state, &mut config, &tdk, self.profile.as_str(),
+                    )
+                    .await;
                     // A community we have just left still holds a messaging
                     // session. The session manager lives here, not in the shared
                     // apply path, so the outcome reports the teardown and this
@@ -2250,90 +2281,6 @@ impl StateHandler {
         }
 
         Ok(result)
-    }
-
-    /// Mint a standalone persona DID for the open create-persona overlay, driving
-    /// it through Working → Done/Failed. Reads the entered label, runs the VTA
-    /// mint (streaming progress into the overlay), and on success stores + copies
-    /// the new DID and refreshes the VTA panel so the orphan persona appears.
-    async fn run_create_persona(
-        &self,
-        state: &mut State,
-        tdk: &TDK,
-        config: &mut Config,
-        admin_vta: Option<&vta_sdk::client::VtaClient>,
-    ) {
-        use crate::state_handler::main_page::content::CreatePersonaPhase;
-
-        // Only act from the label phase; read + validate the label.
-        let label = match state.main_page.create_persona.as_ref() {
-            Some(o) if o.phase == CreatePersonaPhase::Label => o.label.value().trim().to_string(),
-            _ => return,
-        };
-        if label.is_empty() {
-            if let Some(o) = state.main_page.create_persona.as_mut() {
-                o.messages = vec!["Enter a label first.".to_string()];
-            }
-            let _ = self.state_tx.send(state.clone());
-            return;
-        }
-        let Some(admin_vta) = admin_vta else {
-            if let Some(o) = state.main_page.create_persona.as_mut() {
-                o.phase = CreatePersonaPhase::Failed;
-                o.messages = vec![
-                    "VTA session unavailable — cannot create a persona right now.".to_string(),
-                ];
-            }
-            let _ = self.state_tx.send(state.clone());
-            return;
-        };
-
-        // Lock input and enter the Working phase.
-        if let Some(o) = state.main_page.create_persona.as_mut() {
-            o.phase = CreatePersonaPhase::Working;
-            o.messages = vec![format!("Creating persona “{label}”…")];
-        }
-        let _ = self.state_tx.send(state.clone());
-
-        // Run the mint, streaming each network step into the overlay.
-        let state_tx = &self.state_tx;
-        let result = create_persona::mint_standalone_persona(
-            admin_vta,
-            tdk,
-            config,
-            self.profile.as_str(),
-            label,
-            |msg| {
-                if let Some(o) = state.main_page.create_persona.as_mut() {
-                    o.messages.push(msg.to_string());
-                }
-                let _ = state_tx.send(state.clone());
-            },
-        )
-        .await;
-
-        match result {
-            Ok((_persona_id, did)) => {
-                let copied = crate::clipboard::copy_to_clipboard(&did).is_ok();
-                if let Some(o) = state.main_page.create_persona.as_mut() {
-                    o.phase = CreatePersonaPhase::Done;
-                    o.did = Some(did.clone());
-                    o.copied = copied;
-                    o.messages.push("Persona created.".to_string());
-                }
-                // Refresh the VTA panel so the new orphan persona is listed.
-                state.main_page.sync_from_config(config);
-                state.main_page.log(format!("Created persona DID {did}"));
-            }
-            Err(e) => {
-                if let Some(o) = state.main_page.create_persona.as_mut() {
-                    o.phase = CreatePersonaPhase::Failed;
-                    o.messages.push(format!("Failed: {e}"));
-                }
-                state.main_page.log_error("Create persona failed", &e);
-            }
-        }
-        let _ = self.state_tx.send(state.clone());
     }
 
     /// The `(persona_did, name, enabled)` of the overlay's selected row, if the
@@ -2692,14 +2639,11 @@ impl StateHandler {
                         // Minting needs only the admin VTA session + account
                         // context, both present in State-A — so a brand-new account
                         // (which runs here) can create its first persona DID.
-                        if let Some(ctx) = join_ctx.as_mut() {
-                            self.run_create_persona(
-                                state,
-                                &ctx.tdk,
-                                &mut ctx.config,
+                        if let Some(ctx) = join_ctx.as_ref() {
+                            spawn_persona_mint(
+                                &dispatch_tx, &mut in_flight, state, &ctx.config, &ctx.tdk,
                                 ctx.admin_vta.as_ref(),
-                            )
-                            .await;
+                            );
                         } else if let Some(o) = state.main_page.create_persona.as_mut() {
                             o.phase = main_page::content::CreatePersonaPhase::Failed;
                             o.messages = vec![
@@ -2983,13 +2927,25 @@ impl StateHandler {
                         // deregistration cannot arise here — and could not be
                         // honoured if it did.
                         Some(ctx) => {
-                            let _ = background_dispatch::apply_outcome(
+                            let after = background_dispatch::apply_outcome(
                                 state,
                                 &mut ctx.config,
                                 &mut save,
                                 &mut in_flight,
                                 outcome,
                             );
+                            // State A holds no messaging sessions, so a pending
+                            // deregistration cannot arise here; a persona
+                            // persist very much can — this is where an account's
+                            // first one is minted.
+                            let _ = settle_after_apply(
+                                after,
+                                state,
+                                &mut ctx.config,
+                                &ctx.tdk,
+                                self.profile.as_str(),
+                            )
+                            .await;
                         }
                         None => in_flight.finish(outcome.domain()),
                     }
@@ -3132,6 +3088,124 @@ fn apply_capability_replies(
             }
         }
     }
+}
+
+/// Do the work an outcome handed back because [`background_dispatch::apply_outcome`]
+/// could not: it is shared by both loops, and they hold different things.
+///
+/// Split out so both loops honour it identically — a persona minted in State A
+/// must be persisted exactly as one minted at runtime.
+async fn settle_after_apply(
+    after: background_dispatch::AfterApply,
+    state: &mut State,
+    config: &mut Config,
+    tdk: &TDK,
+    profile: &str,
+) -> Option<(String, openvtc_core::config::account::PersonaId)> {
+    use main_page::content::CreatePersonaPhase;
+
+    match after {
+        background_dispatch::AfterApply::Nothing => None,
+        // Only the runtime loop owns a session manager, so it is handed back up.
+        background_dispatch::AfterApply::Deregister(vtc, persona) => Some((vtc, persona)),
+        background_dispatch::AfterApply::PersistPersona(minted) => {
+            match minted.persist(config, tdk, profile).await {
+                Ok(_) => {
+                    let did = minted.did.clone();
+                    let copied = crate::clipboard::copy_to_clipboard(&did).is_ok();
+                    if let Some(o) = state.main_page.create_persona.as_mut() {
+                        o.phase = CreatePersonaPhase::Done;
+                        o.did = Some(did.clone());
+                        o.copied = copied;
+                        o.messages.push("Persona created.".to_string());
+                    }
+                    // Refresh the VTA panel so the new orphan persona is listed.
+                    state.main_page.sync_from_config(config);
+                    state.main_page.log(format!("Created persona DID {did}"));
+                }
+                Err(e) => {
+                    // The DID exists at the VTA but is not in the config. Say so
+                    // plainly: it is not lost, and a retry would mint a second.
+                    if let Some(o) = state.main_page.create_persona.as_mut() {
+                        o.phase = CreatePersonaPhase::Failed;
+                        o.messages
+                            .push(format!("Minted, but could not be saved: {e}"));
+                    }
+                    state
+                        .main_page
+                        .log_error("Persona minted but not saved", &e);
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Start a standalone persona mint off the loop, shared by both loops.
+///
+/// The label is validated here — empty is an instant, local rejection that
+/// should keep the operator in the field — and the `Config` reads the mint needs
+/// are taken here too, so the job carries no borrow.
+///
+/// `progress_tx` is the dispatch channel itself: the job reports each step as a
+/// non-terminal [`background_dispatch::DispatchOutcome::Progress`], which the
+/// applier renders into the overlay without freeing the domain.
+fn spawn_persona_mint(
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<background_dispatch::DispatchOutcome>,
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    config: &Config,
+    tdk: &TDK,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+) {
+    use main_page::content::CreatePersonaPhase;
+
+    let label = match state.main_page.create_persona.as_ref() {
+        Some(o) if o.phase == CreatePersonaPhase::Label => o.label.value().trim().to_string(),
+        _ => return,
+    };
+    fn fail(state: &mut State, msg: &str, terminal: bool) {
+        if let Some(o) = state.main_page.create_persona.as_mut() {
+            if terminal {
+                o.phase = CreatePersonaPhase::Failed;
+            }
+            o.messages = vec![msg.to_string()];
+        }
+    }
+    if label.is_empty() {
+        return fail(state, "Enter a label first.", false);
+    }
+    let Some(admin_vta) = admin_vta else {
+        return fail(
+            state,
+            "VTA session unavailable — cannot create a persona right now.",
+            true,
+        );
+    };
+    let domain = background_dispatch::DispatchDomain::Persona;
+    if !in_flight.try_begin(domain) {
+        return fail(
+            state,
+            &background_dispatch::InFlight::busy_message(domain),
+            false,
+        );
+    }
+
+    if let Some(o) = state.main_page.create_persona.as_mut() {
+        o.phase = CreatePersonaPhase::Working;
+        o.messages = vec![format!("Creating persona \u{201c}{label}\u{201d}\u{2026}")];
+    }
+
+    let job = create_persona::MintJob {
+        admin_vta: admin_vta.clone(),
+        tdk: tdk.clone(),
+        inputs: create_persona::MintInputs::from_config(config),
+        label,
+        progress_tx: dispatch_tx.clone(),
+    };
+    background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
+        background_dispatch::DispatchOutcome::Persona(Box::new(job.run().await))
+    });
 }
 
 /// Send a document addressed to a community, off the loop.

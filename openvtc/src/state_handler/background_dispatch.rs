@@ -83,6 +83,11 @@ pub(crate) enum DispatchDomain {
     /// sweep: sharing a domain would let a background refresh delay an operator
     /// who is claiming a name, and the two touch different state.
     AgentNameManage,
+    /// Minting a standalone persona: several VTA trust tasks (find a hosting
+    /// server, mint the DID, create three keys), reported step by step.
+    Persona,
+    /// Requesting a verifiable relationship credential from a peer.
+    Credential,
     /// A send addressed to a community: leaving it, or issuing it the
     /// reciprocal membership credential. Serialised together because both
     /// address the same peer and both are user-initiated one at a time.
@@ -111,6 +116,8 @@ impl DispatchDomain {
             DispatchDomain::AgentName => "Agent name refresh",
             DispatchDomain::VtaTransports => "VTA transport probe",
             DispatchDomain::AgentNameManage => "Agent name change",
+            DispatchDomain::Persona => "Persona creation",
+            DispatchDomain::Credential => "Credential request",
             DispatchDomain::Community => "Community request",
             DispatchDomain::Capabilities => "Capability request",
             DispatchDomain::Vic => "Invitation credential refresh",
@@ -190,6 +197,23 @@ pub(crate) enum DispatchOutcome {
     /// [`AgentNameOutcome::apply`](crate::state_handler::agent_name_actions::AgentNameOutcome::apply)
     /// applies the registry, the overlay status and the persisted display name.
     AgentNameManage(crate::state_handler::agent_name_actions::AgentNameOutcome),
+    /// A job reporting a step it has reached, while still running.
+    ///
+    /// The only outcome that does **not** finish its domain: the job that sent
+    /// it is still going, and finishing here would let a second job start
+    /// alongside it. It exists because a long job's steps are worth showing —
+    /// minting a persona is half a dozen VTA round-trips, and a spinner that
+    /// says nothing for that long is indistinguishable from a hang.
+    Progress(ProgressUpdate),
+    /// A standalone persona mint finished. On success the persist is still
+    /// owed — see [`AfterApply::PersistPersona`].
+    ///
+    /// Boxed because a `MintedPersona` carries a whole `SetupState` (~2 KB),
+    /// and every other outcome is two orders of magnitude smaller: unboxed, the
+    /// enum would cost that on every dispatch of every domain.
+    Persona(Box<crate::state_handler::create_persona::MintOutcome>),
+    /// A VRC request was sent to a peer (or failed to send).
+    Credential(crate::state_handler::credential_actions::VrcRequestOutcome),
     /// A community send finished (leave / issue membership credential).
     Community(crate::state_handler::community_actions::CommunityOutcome),
     /// A capability query or toggle was sent (or failed to send).
@@ -224,11 +248,32 @@ impl DispatchOutcome {
             DispatchOutcome::AgentName(_) => DispatchDomain::AgentName,
             DispatchOutcome::VtaTransports(_) => DispatchDomain::VtaTransports,
             DispatchOutcome::AgentNameManage(_) => DispatchDomain::AgentNameManage,
+            DispatchOutcome::Progress(update) => update.domain(),
+            DispatchOutcome::Persona(_) => DispatchDomain::Persona,
+            DispatchOutcome::Credential(_) => DispatchDomain::Credential,
             DispatchOutcome::Community(_) => DispatchDomain::Community,
             DispatchOutcome::Capabilities(_) => DispatchDomain::Capabilities,
             DispatchOutcome::Vic(_) => DispatchDomain::Vic,
             DispatchOutcome::VicMutation(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
+        }
+    }
+}
+
+/// A step a running job has reached. Typed per consumer rather than a bare
+/// string, so the applier knows where the text belongs without a domain lookup
+/// and a new consumer cannot silently borrow another's display surface.
+pub(crate) enum ProgressUpdate {
+    /// A step of a standalone persona mint, for the create-persona overlay.
+    PersonaMint(String),
+}
+
+impl ProgressUpdate {
+    /// The domain whose job is reporting. Not finished — see
+    /// [`DispatchOutcome::Progress`].
+    fn domain(&self) -> DispatchDomain {
+        match self {
+            ProgressUpdate::PersonaMint(_) => DispatchDomain::Persona,
         }
     }
 }
@@ -285,13 +330,25 @@ pub(crate) fn spawn_dispatch<F>(
 /// persists it), and removes the provisional `RequestSent` record it pre-inserted
 /// (see [`RelationshipOutcome::apply`]) so a failed send leaves no relationship
 /// record — exactly the pre-R14 net state.
-/// A community whose messaging session the caller still owes a teardown, and
-/// the persona that held it.
+/// Work an outcome needs that [`apply_outcome`] itself cannot do, handed back
+/// to whichever loop called it.
 ///
-/// Returned rather than acted on because the session manager and the messaging
-/// service belong to the runtime loop, while this function is shared with the
-/// degraded loop — which has no sessions and ignores it.
-pub(crate) type PendingDeregistration = Option<(String, openvtc_core::config::account::PersonaId)>;
+/// This exists because `apply_outcome` is shared by the runtime loop and the
+/// degraded loop, and they hold different things. Rather than widen the
+/// signature with parameters one caller cannot supply — a session manager the
+/// degraded loop has no equivalent of, or an `async` persist the pure applier
+/// has no business awaiting — the outcome says what is still owed and the loop
+/// that can do it, does it.
+pub(crate) enum AfterApply {
+    /// Everything was applied here.
+    Nothing,
+    /// A community was left; its messaging session is still registered. Only
+    /// the runtime loop owns a session manager, so only it can honour this.
+    Deregister(String, openvtc_core::config::account::PersonaId),
+    /// A persona was minted at the VTA and must now be written into the config.
+    /// The persist is `async` and mutates `Config`, so it runs in the loop.
+    PersistPersona(Box<crate::state_handler::create_persona::MintedPersona>),
+}
 
 pub(crate) fn apply_outcome(
     state: &mut State,
@@ -299,8 +356,23 @@ pub(crate) fn apply_outcome(
     save: &mut SaveScheduler,
     in_flight: &mut InFlight,
     outcome: DispatchOutcome,
-) -> PendingDeregistration {
+) -> AfterApply {
     let domain = outcome.domain();
+
+    // Progress is the one outcome that leaves its domain busy: the job is still
+    // running. Handled before the match so the `finish` at the end cannot be
+    // reached for it.
+    if let DispatchOutcome::Progress(update) = outcome {
+        match update {
+            ProgressUpdate::PersonaMint(step) => {
+                if let Some(o) = state.main_page.create_persona.as_mut() {
+                    o.messages.push(step);
+                }
+            }
+        }
+        return AfterApply::Nothing;
+    }
+
     match outcome {
         DispatchOutcome::MediatorReconnect(result) => match result {
             ReconnectOutcome::Connected => {
@@ -357,11 +429,26 @@ pub(crate) fn apply_outcome(
         DispatchOutcome::Community(outcome) => {
             let pending = outcome.apply(state, config, save);
             in_flight.finish(domain);
-            return pending;
+            return match pending {
+                Some((vtc, persona)) => AfterApply::Deregister(vtc, persona),
+                None => AfterApply::Nothing,
+            };
         }
+        DispatchOutcome::Persona(outcome) => {
+            let pending = outcome.apply(state);
+            in_flight.finish(domain);
+            return match pending {
+                Some(minted) => AfterApply::PersistPersona(Box::new(minted)),
+                None => AfterApply::Nothing,
+            };
+        }
+        DispatchOutcome::Credential(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Capabilities(outcome) => outcome.apply(state),
         DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
         DispatchOutcome::VicMutation(outcome) => outcome.apply(state),
+        // Handled above, before the domain is finished. Listed because the
+        // match must stay exhaustive.
+        DispatchOutcome::Progress(_) => unreachable!("progress returns before this match"),
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic
             // failure so the user isn't left staring at a stuck "in progress"; the
@@ -371,7 +458,7 @@ pub(crate) fn apply_outcome(
         }
     }
     in_flight.finish(domain);
-    None
+    AfterApply::Nothing
 }
 
 #[cfg(test)]
@@ -694,5 +781,71 @@ mod tests {
             !save2.is_pending(),
             "an unchanged sweep must not re-dirty the config"
         );
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use crate::state_handler::dispatch_util::test_config;
+    use crate::state_handler::main_page::content::{CreatePersonaPhase, CreatePersonaState};
+
+    /// Progress is the one outcome that must NOT free its domain: the job that
+    /// sent it is still running, and freeing it would let a second mint start
+    /// alongside the first.
+    #[tokio::test]
+    async fn progress_renders_a_step_without_freeing_the_domain() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = SaveScheduler::new("test");
+        let mut in_flight = InFlight::default();
+        state.main_page.create_persona = Some(CreatePersonaState {
+            phase: CreatePersonaPhase::Working,
+            ..Default::default()
+        });
+        assert!(in_flight.try_begin(DispatchDomain::Persona));
+
+        apply_outcome(
+            &mut state,
+            &mut config,
+            &mut save,
+            &mut in_flight,
+            DispatchOutcome::Progress(ProgressUpdate::PersonaMint("Minting the DID…".into())),
+        );
+
+        assert!(
+            in_flight.is_busy(DispatchDomain::Persona),
+            "the job is still running, so its domain must stay claimed"
+        );
+        let messages = &state.main_page.create_persona.as_ref().unwrap().messages;
+        assert_eq!(
+            messages.last().map(String::as_str),
+            Some("Minting the DID…")
+        );
+        assert_eq!(
+            state.main_page.create_persona.as_ref().unwrap().phase,
+            CreatePersonaPhase::Working,
+            "progress never moves the phase — only the final outcome does"
+        );
+    }
+
+    /// A progress update for an overlay that has since closed is dropped, not
+    /// resurrected into one.
+    #[tokio::test]
+    async fn progress_for_a_closed_overlay_is_dropped() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = SaveScheduler::new("test");
+        let mut in_flight = InFlight::default();
+
+        apply_outcome(
+            &mut state,
+            &mut config,
+            &mut save,
+            &mut in_flight,
+            DispatchOutcome::Progress(ProgressUpdate::PersonaMint("Minting…".into())),
+        );
+
+        assert!(state.main_page.create_persona.is_none());
     }
 }

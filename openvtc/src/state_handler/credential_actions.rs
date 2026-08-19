@@ -2,62 +2,135 @@
 
 use std::sync::Arc;
 
-use affinidi_tdk::TDK;
 use anyhow::Result;
 use openvtc_core::didcomm::Messaging;
 use openvtc_core::{config::Config, logs::LogFamily, tasks::TaskType, vrc::VrcRequest};
 use tracing::{debug, info};
 
-/// Send a VRC request to a remote party via an established relationship.
-pub async fn send_vrc_request(
-    config: &mut Config,
-    _tdk: &TDK,
+/// One VRC request, resolved on the loop thread.
+///
+/// The only credential action that touches the network. It used to be awaited
+/// inline, which meant asking a peer for a credential froze the application for
+/// as long as the send retried — and an unresponsive peer is a common reason for
+/// the request to be slow, not a rare one.
+pub(crate) struct VrcRequestJob {
+    pub(crate) service: Messaging,
+    /// The DIDComm message, built on the loop where `Config` is available.
+    pub(crate) message: Box<affinidi_tdk::didcomm::Message>,
+    /// Listener the send goes out through, resolved from our side's DID.
+    pub(crate) listener_id: String,
+    pub(crate) remote_did: Arc<String>,
+    pub(crate) remote_p_did: Arc<String>,
+    /// Message id, which becomes the tracking task's id on success.
+    pub(crate) msg_id: Arc<String>,
+}
+
+impl VrcRequestJob {
+    /// Send it. I/O only.
+    pub(crate) async fn run(self) -> VrcRequestOutcome {
+        let result = crate::state_handler::didcomm::send_message_via(
+            &self.service,
+            &self.message,
+            &self.listener_id,
+            &self.remote_did,
+        )
+        .await;
+        VrcRequestOutcome {
+            remote_p_did: self.remote_p_did,
+            msg_id: self.msg_id,
+            error: result.err().map(|e| format!("{e}")),
+        }
+    }
+}
+
+/// What the send did. Data only; applied on the loop thread.
+pub(crate) struct VrcRequestOutcome {
+    remote_p_did: Arc<String>,
+    msg_id: Arc<String>,
+    error: Option<String>,
+}
+
+impl VrcRequestOutcome {
+    /// Record the tracking task and report, or say why the request never left.
+    ///
+    /// The task is created *after* the send, as it was inline: a task tracking
+    /// a request that was never sent would sit in the inbox waiting for a reply
+    /// that cannot come.
+    pub(crate) fn apply(self, state: &mut State, config: &mut Config, save: &mut SaveScheduler) {
+        match self.error {
+            None => {
+                let our_persona = config.active_persona;
+                config.private.tasks.new_task_for(
+                    &self.msg_id,
+                    TaskType::VRCRequestOutbound {
+                        remote_p_did: Arc::clone(&self.remote_p_did),
+                    },
+                    our_persona,
+                );
+                config.public.logs.insert(
+                    LogFamily::Relationship,
+                    format!(
+                        "Requested VRC from ({}) Task ID ({})",
+                        self.remote_p_did, self.msg_id
+                    ),
+                );
+                info!(to = %self.remote_p_did, "VRC request sent");
+
+                state.main_page.content_panel.credentials.mode = CredentialsMode::List;
+                let display_name =
+                    crate::state_handler::resolve_did_to_display(config, &self.remote_p_did);
+                dispatch_util::save_and_sync(
+                    &mut state.main_page,
+                    config,
+                    save,
+                    dispatch_util::Persist::SaveAndSync,
+                    |mp| &mut mp.content_panel.credentials.status_message,
+                    format!("VRC request sent to {display_name}"),
+                    dispatch_util::SyncLog::Plain(format!("VRC request sent to {display_name}")),
+                );
+            }
+            Some(e) => {
+                // `record_error` takes an `anyhow::Error`; the job hands back a
+                // formatted string, because an error cannot cross the channel.
+                dispatch_util::record_error(
+                    &mut state.main_page,
+                    |mp| &mut mp.content_panel.credentials.status_message,
+                    "Failed to send VRC request",
+                    &anyhow::anyhow!(e),
+                );
+            }
+        }
+    }
+}
+
+/// Resolve a VRC request on the loop: the relationship's two DIDs, the message,
+/// and the listener it goes out through. `None` when the relationship is gone.
+pub(crate) fn prepare_vrc_request(
+    config: &Config,
     service: &Messaging,
     remote_p_did: &str,
     reason: Option<&str>,
-) -> Result<()> {
+) -> Option<VrcRequestJob> {
     let remote_key = Arc::new(remote_p_did.to_string());
+    let relationship = config.private.relationships.get(&remote_key)?;
+    let our_did = Arc::clone(&relationship.our_did);
+    let remote_did = Arc::clone(&relationship.remote_did);
 
-    let (our_did, remote_did) = {
-        let relationship = config
-            .private
-            .relationships
-            .get(&remote_key)
-            .ok_or_else(|| anyhow::anyhow!("No relationship found for {}", remote_p_did))?;
-        (
-            Arc::clone(&relationship.our_did),
-            Arc::clone(&relationship.remote_did),
-        )
-    };
-
-    let request_body = VrcRequest {
-        reason: reason.map(|s| s.to_string()),
-    };
-
-    let message = request_body.create_message(&remote_did, &our_did)?;
+    let message = VrcRequest {
+        reason: reason.map(ToString::to_string),
+    }
+    .create_message(&remote_did, &our_did)
+    .ok()?;
     let msg_id = Arc::new(message.id.clone());
 
-    super::didcomm::send_message(service, config, &message, &our_did, &remote_did)
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to send VRC request: {e}"))?;
-
-    // Create tracking task, tagged with the working community's persona (D10).
-    let our_persona = config.active_persona;
-    config.private.tasks.new_task_for(
-        &msg_id,
-        TaskType::VRCRequestOutbound {
-            remote_p_did: remote_key,
-        },
-        our_persona,
-    );
-
-    config.public.logs.insert(
-        LogFamily::Relationship,
-        format!("Requested VRC from ({}) Task ID ({})", remote_p_did, msg_id),
-    );
-
-    info!(to = %remote_p_did, "VRC request sent");
-    Ok(())
+    Some(VrcRequestJob {
+        service: service.clone(),
+        listener_id: crate::state_handler::didcomm::listener_id_for_did(&our_did, config),
+        message: Box::new(message),
+        remote_did,
+        remote_p_did: remote_key,
+        msg_id,
+    })
 }
 
 /// Remove a VRC by its ID from both received and issued collections.
@@ -144,42 +217,6 @@ fn handle_reason_update(state: &mut State, value: String) {
     }
 }
 
-async fn handle_submit_request(
-    config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &Messaging,
-    state: &mut State,
-    save: &mut SaveScheduler,
-    relationship_p_did: &str,
-    reason: Option<&str>,
-) {
-    match send_vrc_request(config, tdk, service, relationship_p_did, reason).await {
-        Ok(()) => {
-            state.main_page.content_panel.credentials.mode = CredentialsMode::List;
-            // Names the party, like every other user-facing status line.
-            let display_name =
-                crate::state_handler::resolve_did_to_display(config, relationship_p_did);
-            dispatch_util::save_and_sync(
-                &mut state.main_page,
-                config,
-                save,
-                dispatch_util::Persist::SaveAndSync,
-                |mp| &mut mp.content_panel.credentials.status_message,
-                format!("VRC request sent to {display_name}"),
-                dispatch_util::SyncLog::Plain(format!("VRC request sent to {display_name}")),
-            );
-        }
-        Err(e) => {
-            dispatch_util::record_error(
-                &mut state.main_page,
-                |mp| &mut mp.content_panel.credentials.status_message,
-                "Failed to send VRC request",
-                &e,
-            );
-        }
-    }
-}
-
 fn handle_remove(
     config: &mut Box<Config>,
     state: &mut State,
@@ -205,12 +242,15 @@ fn handle_remove(
     );
 }
 
-/// Dispatch a single `CredentialAction` to its handler.
-pub(crate) async fn dispatch(
+/// Dispatch a single `CredentialAction`.
+///
+/// Takes neither the TDK nor the messaging service any more: the one action that
+/// used them — requesting a VRC from a peer — is dispatched off the loop, so
+/// everything reaching here is state or config. Not `async` either, for the same
+/// reason.
+pub(crate) fn dispatch(
     action: CredentialAction,
     config: &mut Box<Config>,
-    tdk: &TDK,
-    service: &Messaging,
     state: &mut State,
     save: &mut SaveScheduler,
 ) {
@@ -224,20 +264,12 @@ pub(crate) async fn dispatch(
         CredentialAction::StartNewRequest => handle_start_new_request(state),
         CredentialAction::SelectRelationship(index) => handle_select_relationship(state, index),
         CredentialAction::ReasonUpdate(value) => handle_reason_update(state, value),
-        CredentialAction::SubmitRequest {
-            relationship_p_did,
-            reason,
-        } => {
-            handle_submit_request(
-                config,
-                tdk,
-                service,
-                state,
-                save,
-                &relationship_p_did,
-                reason.as_deref(),
-            )
-            .await
+        // `SubmitRequest` is not handled here: it is the one credential action
+        // that goes to the network, so the loop resolves it into a
+        // `VrcRequestJob` and dispatches it. Everything else in this module is
+        // state or config, which is why the dispatcher stayed on the loop.
+        CredentialAction::SubmitRequest { .. } => {
+            debug_assert!(false, "SubmitRequest is dispatched by the loop");
         }
         CredentialAction::Remove { vrc_id } => handle_remove(config, state, save, &vrc_id),
         // R25 confirmation arming/cancel — pure state mutations.
@@ -357,5 +389,59 @@ mod tests {
                 "reason_update is a no-op outside NewRequest"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod vrc_request_tests {
+    use super::*;
+    use crate::state_handler::dispatch_util::test_config;
+
+    fn outcome(error: Option<&str>) -> VrcRequestOutcome {
+        VrcRequestOutcome {
+            remote_p_did: Arc::new("did:webvh:QmScidPeer:example.com:bob".to_string()),
+            msg_id: Arc::new("msg-1".to_string()),
+            error: error.map(ToString::to_string),
+        }
+    }
+
+    /// A sent request creates the task that will match the reply. It is created
+    /// on the outcome, not before the send, so a request that never left cannot
+    /// leave a task waiting for a reply that cannot come.
+    #[test]
+    fn a_sent_request_creates_the_tracking_task() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = SaveScheduler::new("test");
+
+        outcome(None).apply(&mut state, &mut config, &mut save);
+
+        assert_eq!(config.private.tasks.tasks.len(), 1, "one tracking task");
+        assert!(save.is_pending());
+    }
+
+    /// A failed send creates none, and says why.
+    #[test]
+    fn a_failed_request_creates_no_task() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = SaveScheduler::new("test");
+
+        outcome(Some("peer unreachable")).apply(&mut state, &mut config, &mut save);
+
+        assert_eq!(
+            config.private.tasks.tasks.len(),
+            0,
+            "no task for a failed send"
+        );
+        assert!(
+            state
+                .main_page
+                .content_panel
+                .credentials
+                .status_message
+                .as_deref()
+                .is_some_and(|m| m.contains("unreachable")),
+        );
     }
 }

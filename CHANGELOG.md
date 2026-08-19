@@ -45,6 +45,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Requesting a credential from a peer, and creating a persona, no longer
+  freeze the application.** These were the last two network actions still
+  awaited on the state-handler thread. Creating a persona is half a dozen VTA
+  round-trips, so it was the longest freeze left in the app — and the one an
+  operator is most likely to hit, since it is how an account gets its first
+  identity. Both now run off the loop, and the persona overlay still shows each
+  step as it happens: long jobs can report progress without blocking anything.
+  A persona is only shown as created once it has actually been written to the
+  config, rather than when the VTA finished minting it.
+
 - **Leaving a community, or issuing it your membership credential, no longer
   freezes the application.** Both send to the community and were awaited on the
   state-handler thread — and an unreachable community is a *likely* reason to
