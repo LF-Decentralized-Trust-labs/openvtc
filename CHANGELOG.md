@@ -45,6 +45,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Opening the capabilities view, refreshing it, or committing a toggle no
+  longer freezes the application.** Each of those sends a governance document to
+  the community and waits for the *send* — which retries against an unreachable
+  peer — on the one thread that also services the inbound channel the reply will
+  arrive on. Nothing could be received while a send was retrying, including the
+  reply being waited for. The sends now run off the loop, and a reply armed for
+  a community you have since navigated away from is dropped rather than matched
+  against the wrong view.
+
 - **Importing or archiving an invitation credential no longer freezes the
   application.** Every vault verb — import, archive, unarchive, restore,
   soft-delete, purge — ran its round-trip on the state-handler thread, and each

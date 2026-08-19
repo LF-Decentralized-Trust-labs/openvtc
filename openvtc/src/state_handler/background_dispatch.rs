@@ -83,6 +83,11 @@ pub(crate) enum DispatchDomain {
     /// sweep: sharing a domain would let a background refresh delay an operator
     /// who is claiming a name, and the two touch different state.
     AgentNameManage,
+    /// Capability query / toggle: one governance document sent to a community.
+    /// The community's *answer* is not part of this — it arrives later on the
+    /// inbound channel and is matched by thread id — so what this domain
+    /// serialises is the sending, which retries against an unreachable peer.
+    Capabilities,
     /// Invitation-credential (VIC) list refresh: one credential-vault query
     /// against the always-on admin VTA session (30 s timeout in the SDK).
     /// Read-only. Backgrounded because it is bound to *navigation* — Tab into
@@ -102,6 +107,7 @@ impl DispatchDomain {
             DispatchDomain::AgentName => "Agent name refresh",
             DispatchDomain::VtaTransports => "VTA transport probe",
             DispatchDomain::AgentNameManage => "Agent name change",
+            DispatchDomain::Capabilities => "Capability request",
             DispatchDomain::Vic => "Invitation credential refresh",
         }
     }
@@ -179,6 +185,8 @@ pub(crate) enum DispatchOutcome {
     /// [`AgentNameOutcome::apply`](crate::state_handler::agent_name_actions::AgentNameOutcome::apply)
     /// applies the registry, the overlay status and the persisted display name.
     AgentNameManage(crate::state_handler::agent_name_actions::AgentNameOutcome),
+    /// A capability query or toggle was sent (or failed to send).
+    Capabilities(crate::state_handler::capability_actions::CapabilityOutcome),
     /// A VIC vault mutation finished (import / archive / unarchive / restore /
     /// delete / purge). Shares the `Vic` domain with the listing, so the
     /// re-read it asks for cannot start until this outcome frees it.
@@ -209,6 +217,7 @@ impl DispatchOutcome {
             DispatchOutcome::AgentName(_) => DispatchDomain::AgentName,
             DispatchOutcome::VtaTransports(_) => DispatchDomain::VtaTransports,
             DispatchOutcome::AgentNameManage(_) => DispatchDomain::AgentNameManage,
+            DispatchOutcome::Capabilities(_) => DispatchDomain::Capabilities,
             DispatchOutcome::Vic(_) => DispatchDomain::Vic,
             DispatchOutcome::VicMutation(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
@@ -329,6 +338,7 @@ pub(crate) fn apply_outcome(
             state.main_page.content_panel.vta.transports.advertised = Some(advertised);
         }
         DispatchOutcome::AgentNameManage(outcome) => outcome.apply(state, config, save),
+        DispatchOutcome::Capabilities(outcome) => outcome.apply(state),
         DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
         DispatchOutcome::VicMutation(outcome) => outcome.apply(state),
         DispatchOutcome::Panicked(domain) => {
