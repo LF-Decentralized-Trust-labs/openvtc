@@ -1464,22 +1464,23 @@ impl StateHandler {
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     },
                     Action::AddVicSubmit => {
-                        self.run_add_vic(&mut state, admin_vta.as_ref()).await;
-                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
+                        if let Some(vic) = vic_to_import(&mut state) {
+                            spawn_vic_mutation(
+                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(),
+                                vic::VicVerb::Add(vic),
+                            );
+                        }
                     },
                     Action::VicArchive(i)
                     | Action::VicUnarchive(i)
                     | Action::VicRestore(i)
                     | Action::DeleteVic(i)
                     | Action::PurgeVic(i) => {
-                        self.run_vic_lifecycle(
-                            &mut state,
-                            admin_vta.as_ref(),
-                            &action,
-                            i,
-                        )
-                        .await;
-                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
+                        if let Some(verb) = vic_lifecycle_verb(&mut state, &action, i) {
+                            spawn_vic_mutation(
+                                &dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref(), verb,
+                            );
+                        }
                     },
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
@@ -2376,107 +2377,6 @@ impl StateHandler {
         Some((o.persona_did.clone(), row.name.clone(), row.enabled))
     }
 
-    /// Validate + store the pasted VIC from the add-VIC overlay. Mirrors
-    /// `run_create_persona`'s phase handling. The caller re-lists the vault
-    /// afterwards — see [`spawn_vic_refresh`], which owns every load so a stale
-    /// in-flight query can never overwrite a fresh one.
-    async fn run_add_vic(&self, state: &mut State, admin_vta: Option<&vta_sdk::client::VtaClient>) {
-        use crate::state_handler::main_page::content::AddVicPhase;
-
-        let json = match state.main_page.add_vic.as_ref() {
-            Some(o) if o.phase == AddVicPhase::Input => o.input.value().to_string(),
-            _ => return,
-        };
-        if json.trim().is_empty() {
-            if let Some(o) = state.main_page.add_vic.as_mut() {
-                o.messages = vec!["Paste an invitation credential (VIC) first.".to_string()];
-            }
-            let _ = self.state_tx.send(state.clone());
-            return;
-        }
-        let Some(admin_vta) = admin_vta else {
-            if let Some(o) = state.main_page.add_vic.as_mut() {
-                o.phase = AddVicPhase::Failed;
-                o.messages = vec!["VTA session unavailable — cannot store the VIC.".to_string()];
-            }
-            let _ = self.state_tx.send(state.clone());
-            return;
-        };
-
-        if let Some(o) = state.main_page.add_vic.as_mut() {
-            o.phase = AddVicPhase::Working;
-            o.messages = vec!["Storing invitation credential…".to_string()];
-        }
-        let _ = self.state_tx.send(state.clone());
-
-        match vic::add_vic(admin_vta, &json).await {
-            Ok(()) => {
-                if let Some(o) = state.main_page.add_vic.as_mut() {
-                    o.phase = AddVicPhase::Done;
-                    o.messages.push("Invitation credential stored.".to_string());
-                }
-                state.main_page.log("Stored an invitation credential.");
-            }
-            Err(e) => {
-                // A validation error keeps the operator on the input phase so they
-                // can fix the paste; a storage error is terminal for this attempt.
-                if let Some(o) = state.main_page.add_vic.as_mut() {
-                    o.phase = AddVicPhase::Failed;
-                    o.messages.push(format!("Failed: {e}"));
-                }
-                state
-                    .main_page
-                    .log_error("Storing the invitation credential failed", &e);
-            }
-        }
-        let _ = self.state_tx.send(state.clone());
-    }
-
-    /// Run a VIC lifecycle verb (archive / unarchive / restore / soft-delete /
-    /// purge) against the selected VIC, clearing any confirmation arm. `index`
-    /// is into the displayed VIC list. The caller re-lists the vault afterwards
-    /// (see [`spawn_vic_refresh`]).
-    async fn run_vic_lifecycle(
-        &self,
-        state: &mut State,
-        admin_vta: Option<&vta_sdk::client::VtaClient>,
-        action: &Action,
-        index: usize,
-    ) {
-        // Clear the confirmation arms regardless of outcome.
-        state.main_page.content_panel.vta.confirm_delete_vic = None;
-        state.main_page.content_panel.vta.confirm_purge_vic = None;
-
-        let Some(admin_vta) = admin_vta else { return };
-        let Some(id) = state
-            .main_page
-            .content_panel
-            .vta
-            .vics
-            .get(index)
-            .map(|v| v.id.clone())
-        else {
-            return;
-        };
-
-        let (result, verb) = match action {
-            Action::VicArchive(_) => (vic::archive_vic(admin_vta, &id).await, "Archived"),
-            Action::VicUnarchive(_) => (vic::unarchive_vic(admin_vta, &id).await, "Unarchived"),
-            Action::VicRestore(_) => (vic::restore_vic(admin_vta, &id).await, "Restored"),
-            Action::DeleteVic(_) => (vic::delete_vic(admin_vta, &id).await, "Deleted"),
-            Action::PurgeVic(_) => (vic::purge_vic(admin_vta, &id).await, "Purged"),
-            _ => return,
-        };
-        match result {
-            Ok(()) => state
-                .main_page
-                .log(format!("{verb} invitation credential.")),
-            Err(e) => state
-                .main_page
-                .log_error(format!("VIC {} failed", verb.to_lowercase()), &e),
-        }
-    }
-
     /// Remove the community at `index` in the Communities display list: withdraw
     /// a live (Pending/Active) membership first (R-C-8 — for a pending join this
     /// is the withdrawal), then delete the record, persist, and refresh the
@@ -2939,18 +2839,25 @@ impl StateHandler {
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
                     }
                     Action::AddVicSubmit => {
-                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        self.run_add_vic(state, av).await;
-                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
+                        if let Some(vic) = vic_to_import(state) {
+                            spawn_vic_mutation(
+                                &dispatch_tx, &mut in_flight, state, av.as_ref(),
+                                vic::VicVerb::Add(vic),
+                            );
+                        }
                     }
                     Action::VicArchive(i)
                     | Action::VicUnarchive(i)
                     | Action::VicRestore(i)
                     | Action::DeleteVic(i)
                     | Action::PurgeVic(i) => {
-                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
-                        self.run_vic_lifecycle(state, av, &action, i).await;
-                        spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.clone());
+                        if let Some(verb) = vic_lifecycle_verb(state, &action, i) {
+                            spawn_vic_mutation(
+                                &dispatch_tx, &mut in_flight, state, av.as_ref(), verb,
+                            );
+                        }
                     }
                     Action::CreatePersonaCopy => {
                         if let Some(did) = state
@@ -3202,6 +3109,100 @@ fn apply_capability_replies(
             }
         }
     }
+}
+
+/// Start a VIC vault mutation off the loop, shared by both loops.
+///
+/// The import's *validation* stays on the loop deliberately: parsing the paste
+/// and checking it is an invitation credential is local and instant, and it is
+/// what decides whether the operator stays on the input field to fix it. Only
+/// the vault round-trip is backgrounded.
+///
+/// Mutations share the `Vic` domain with the listing, so a mutation and a
+/// refresh cannot overlap and produce a list that reflects neither. The refresh
+/// that follows is *requested* by the outcome rather than started here — see
+/// [`vic::VicMutationOutcome::apply`].
+fn spawn_vic_mutation(
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<background_dispatch::DispatchOutcome>,
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+    verb: vic::VicVerb,
+) {
+    let domain = background_dispatch::DispatchDomain::Vic;
+    let Some(admin_vta) = admin_vta else { return };
+    if !in_flight.try_begin(domain) {
+        state
+            .main_page
+            .log(background_dispatch::InFlight::busy_message(domain));
+        return;
+    }
+    let job = vic::VicJob {
+        admin_vta: admin_vta.clone(),
+        verb,
+    };
+    background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
+        background_dispatch::DispatchOutcome::VicMutation(job.run().await)
+    });
+}
+
+/// Validate the pasted invitation credential on the loop, returning the parsed
+/// body to store. A bad paste keeps the operator on the input field with the
+/// reason, exactly as it did when the whole import ran inline.
+fn vic_to_import(state: &mut State) -> Option<serde_json::Value> {
+    use main_page::content::AddVicPhase;
+
+    let json = match state.main_page.add_vic.as_ref() {
+        Some(o) if o.phase == AddVicPhase::Input => o.input.value().to_string(),
+        _ => return None,
+    };
+    fn fail(state: &mut State, msg: String) -> Option<serde_json::Value> {
+        if let Some(o) = state.main_page.add_vic.as_mut() {
+            o.messages = vec![msg];
+        }
+        None
+    }
+    if json.trim().is_empty() {
+        return fail(
+            state,
+            "Paste an invitation credential (VIC) first.".to_string(),
+        );
+    }
+    let vic: serde_json::Value = match serde_json::from_str(json.trim()) {
+        Ok(v) => v,
+        Err(e) => return fail(state, format!("Failed: not valid JSON: {e}")),
+    };
+    if let Err(e) = openvtc_core::join::validate_invitation_credential(&vic) {
+        return fail(state, format!("Failed: {e}"));
+    }
+    if let Some(o) = state.main_page.add_vic.as_mut() {
+        o.phase = AddVicPhase::Working;
+        o.messages = vec!["Storing invitation credential…".to_string()];
+    }
+    Some(vic)
+}
+
+/// The vault verb an armed lifecycle key acts on, with its target id.
+fn vic_lifecycle_verb(state: &mut State, action: &Action, index: usize) -> Option<vic::VicVerb> {
+    // The confirmation arms are resolved either way.
+    state.main_page.content_panel.vta.confirm_delete_vic = None;
+    state.main_page.content_panel.vta.confirm_purge_vic = None;
+
+    let id = state
+        .main_page
+        .content_panel
+        .vta
+        .vics
+        .get(index)
+        .map(|v| v.id.clone())?;
+    Some(match action {
+        Action::VicArchive(_) => vic::VicVerb::Archive(id),
+        Action::VicUnarchive(_) => vic::VicVerb::Unarchive(id),
+        Action::VicRestore(_) => vic::VicVerb::Restore(id),
+        Action::DeleteVic(_) => vic::VicVerb::Delete(id),
+        Action::PurgeVic(_) => vic::VicVerb::Purge(id),
+        _ => return None,
+    })
 }
 
 /// Start an agent-name verb off the loop, shared by both loops.
