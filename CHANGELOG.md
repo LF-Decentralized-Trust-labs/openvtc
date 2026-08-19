@@ -45,6 +45,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Managing agent names no longer freezes the application.** The overlay's five
+  verbs are Trust Tasks with a 60-second timeout each, and a mutation is *two* of
+  them — the change, then the authoritative re-read of the registry. They ran on
+  the state-handler thread, which is the only thread that services anything: for
+  up to two minutes no inbound DIDComm was processed, no listener lifecycle
+  applied, and no key read, including `q`. The overlay locks its own input while
+  it works, so the freeze looked local to the overlay; it was not. The work now
+  runs off the loop, and a result that arrives after the overlay has been closed
+  or switched to another persona is dropped rather than written over it — though
+  a name it verified is still cached, because that is a fact about the DID
+  regardless of what is on screen.
+
 - **Neither event loop can silently drop an action again.** OpenVTC runs two
   action loops — the runtime one, and a smaller one for an account with no
   community — and each matched a hand-written list of actions ending in a silent
