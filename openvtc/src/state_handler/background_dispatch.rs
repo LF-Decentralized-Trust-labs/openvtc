@@ -179,6 +179,10 @@ pub(crate) enum DispatchOutcome {
     /// [`AgentNameOutcome::apply`](crate::state_handler::agent_name_actions::AgentNameOutcome::apply)
     /// applies the registry, the overlay status and the persisted display name.
     AgentNameManage(crate::state_handler::agent_name_actions::AgentNameOutcome),
+    /// A VIC vault mutation finished (import / archive / unarchive / restore /
+    /// delete / purge). Shares the `Vic` domain with the listing, so the
+    /// re-read it asks for cannot start until this outcome frees it.
+    VicMutation(crate::state_handler::vic::VicMutationOutcome),
     /// A VIC list refresh finished. [`VicRefreshOutcome::apply`](crate::state_handler::vic::VicRefreshOutcome::apply)
     /// swaps in the
     /// listing (or logs why it could not be read); display-only, so it touches
@@ -206,6 +210,7 @@ impl DispatchOutcome {
             DispatchOutcome::VtaTransports(_) => DispatchDomain::VtaTransports,
             DispatchOutcome::AgentNameManage(_) => DispatchDomain::AgentNameManage,
             DispatchOutcome::Vic(_) => DispatchDomain::Vic,
+            DispatchOutcome::VicMutation(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
         }
     }
@@ -325,6 +330,7 @@ pub(crate) fn apply_outcome(
         }
         DispatchOutcome::AgentNameManage(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
+        DispatchOutcome::VicMutation(outcome) => outcome.apply(state),
         DispatchOutcome::Panicked(domain) => {
             // The job panicked and produced no real outcome. Surface a generic
             // failure so the user isn't left staring at a stuck "in progress"; the

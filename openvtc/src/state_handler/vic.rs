@@ -39,50 +39,6 @@ pub(crate) async fn list_vics(
     Ok(creds.iter().map(VicSummary::from_descriptor).collect())
 }
 
-/// Import a pasted VIC into the vault: validate it is a *complete* Invitation
-/// Credential, then store it via `cred_vault_receive`. The vault keys it under
-/// the VC's own `id` — so a stripped copy with no top-level `id` could never be
-/// retrieved for presentation anyway; rejecting it here gives a clear reason.
-pub(crate) async fn add_vic(admin_vta: &VtaClient, json: &str) -> Result<()> {
-    let vic: serde_json::Value =
-        serde_json::from_str(json.trim()).map_err(|e| anyhow::anyhow!("not valid JSON: {e}"))?;
-    openvtc_core::join::validate_invitation_credential(&vic).map_err(|e| anyhow::anyhow!(e))?;
-    admin_vta.cred_vault_receive(vic, None).await?;
-    Ok(())
-}
-
-/// Archive a VIC (hidden from query/presentation, restorable via unarchive).
-pub(crate) async fn archive_vic(admin_vta: &VtaClient, id: &str) -> Result<()> {
-    admin_vta.cred_vault_archive(id, Some(REASON)).await?;
-    Ok(())
-}
-
-/// Return an archived VIC to active.
-pub(crate) async fn unarchive_vic(admin_vta: &VtaClient, id: &str) -> Result<()> {
-    admin_vta.cred_vault_unarchive(id, Some(REASON)).await?;
-    Ok(())
-}
-
-/// Soft-delete a VIC (recoverable tombstone within the grace window).
-pub(crate) async fn delete_vic(admin_vta: &VtaClient, id: &str) -> Result<()> {
-    admin_vta
-        .cred_vault_delete(id, /* force */ false, Some(REASON))
-        .await?;
-    Ok(())
-}
-
-/// Restore a soft-deleted VIC (only within the grace window).
-pub(crate) async fn restore_vic(admin_vta: &VtaClient, id: &str) -> Result<()> {
-    admin_vta.cred_vault_restore(id, Some(REASON)).await?;
-    Ok(())
-}
-
-/// Irreversibly purge a VIC and its index rows.
-pub(crate) async fn purge_vic(admin_vta: &VtaClient, id: &str) -> Result<()> {
-    admin_vta.cred_vault_purge(id, Some(REASON)).await?;
-    Ok(())
-}
-
 // ****************************************************************************
 // Background refresh
 // ****************************************************************************
@@ -252,5 +208,214 @@ mod tests {
                 .any(|e| e.summary.contains("connection refused")),
             "the failure reason must reach the log"
         );
+    }
+}
+
+// ****************************************************************************
+// Background mutations
+// ****************************************************************************
+
+/// A vault mutation, already resolved to the id (or body) it acts on.
+///
+/// Import is split at the validation boundary: the paste is parsed and checked
+/// on the loop thread, because that is local, instant, and decides whether the
+/// operator stays on the input field to fix it. Only the store round-trip is
+/// carried here.
+pub(crate) enum VicVerb {
+    /// Store a validated invitation credential.
+    Add(serde_json::Value),
+    /// Hide from query/presentation, restorable.
+    Archive(String),
+    /// Return an archived VIC to active.
+    Unarchive(String),
+    /// Restore a soft-deleted VIC.
+    Restore(String),
+    /// Soft-delete.
+    Delete(String),
+    /// Irreversible purge.
+    Purge(String),
+}
+
+impl VicVerb {
+    /// Past-tense word for the activity-log line, and the noun the error uses.
+    fn verb(&self) -> &'static str {
+        match self {
+            VicVerb::Add(_) => "Stored",
+            VicVerb::Archive(_) => "Archived",
+            VicVerb::Unarchive(_) => "Unarchived",
+            VicVerb::Restore(_) => "Restored",
+            VicVerb::Delete(_) => "Deleted",
+            VicVerb::Purge(_) => "Purged",
+        }
+    }
+}
+
+/// One backgrounded vault mutation.
+pub(crate) struct VicJob {
+    pub(crate) admin_vta: VtaClient,
+    pub(crate) verb: VicVerb,
+}
+
+impl VicJob {
+    /// Do the round-trip. I/O only.
+    pub(crate) async fn run(self) -> VicMutationOutcome {
+        let verb = self.verb.verb();
+        let is_add = matches!(self.verb, VicVerb::Add(_));
+        let result = match self.verb {
+            VicVerb::Add(vic) => self
+                .admin_vta
+                .cred_vault_receive(vic, None)
+                .await
+                .map(|_| ()),
+            VicVerb::Archive(id) => self
+                .admin_vta
+                .cred_vault_archive(&id, Some(REASON))
+                .await
+                .map(|_| ()),
+            VicVerb::Unarchive(id) => self
+                .admin_vta
+                .cred_vault_unarchive(&id, Some(REASON))
+                .await
+                .map(|_| ()),
+            VicVerb::Restore(id) => self
+                .admin_vta
+                .cred_vault_restore(&id, Some(REASON))
+                .await
+                .map(|_| ()),
+            VicVerb::Delete(id) => self
+                .admin_vta
+                .cred_vault_delete(&id, /* force */ false, Some(REASON))
+                .await
+                .map(|_| ()),
+            VicVerb::Purge(id) => self
+                .admin_vta
+                .cred_vault_purge(&id, Some(REASON))
+                .await
+                .map(|_| ()),
+        };
+        VicMutationOutcome {
+            verb,
+            is_add,
+            error: result.err().map(|e| format!("{e}")),
+        }
+    }
+}
+
+/// What a vault mutation did. Data only; applied on the loop thread.
+pub(crate) struct VicMutationOutcome {
+    verb: &'static str,
+    /// The import overlay only exists for `Add`, and only it has phases to move.
+    is_add: bool,
+    error: Option<String>,
+}
+
+impl VicMutationOutcome {
+    /// Apply on the loop thread, and ask for the listing to be re-read.
+    ///
+    /// The re-read is requested rather than started: mutations and refreshes
+    /// share the `Vic` domain, so the refresh cannot begin until this outcome
+    /// has freed it. Setting the queued flag hands that to the dispatch arm,
+    /// which re-issues it the moment the domain is free — the same path a
+    /// refresh rejected by the busy-guard already takes.
+    pub(crate) fn apply(self, state: &mut State) {
+        use crate::state_handler::main_page::content::AddVicPhase;
+
+        state.main_page.content_panel.vta.vic_refresh_queued = true;
+
+        match self.error {
+            None => {
+                if self.is_add
+                    && let Some(o) = state.main_page.add_vic.as_mut()
+                {
+                    o.phase = AddVicPhase::Done;
+                    o.messages.push("Invitation credential stored.".to_string());
+                }
+                state
+                    .main_page
+                    .log(format!("{} invitation credential.", self.verb));
+            }
+            Some(e) => {
+                if self.is_add
+                    && let Some(o) = state.main_page.add_vic.as_mut()
+                {
+                    // A storage failure is terminal for this attempt; a bad
+                    // paste never reaches here, because it is rejected on the
+                    // loop before the job is spawned.
+                    o.phase = AddVicPhase::Failed;
+                    o.messages.push(format!("Failed: {e}"));
+                }
+                state.main_page.log_error(
+                    format!("VIC {} failed", self.verb.to_lowercase()),
+                    e.as_str(),
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod mutation_tests {
+    use super::*;
+    use crate::state_handler::main_page::content::AddVicPhase;
+
+    fn outcome(verb: &'static str, is_add: bool, error: Option<&str>) -> VicMutationOutcome {
+        VicMutationOutcome {
+            verb,
+            is_add,
+            error: error.map(ToString::to_string),
+        }
+    }
+
+    /// Every mutation asks for the listing to be re-read, because the vault is
+    /// authoritative and the panel has just been invalidated. It *asks* rather
+    /// than starting one: mutation and refresh share a domain, so the refresh
+    /// cannot begin until this outcome frees it.
+    #[test]
+    fn a_mutation_requests_a_refresh() {
+        let mut state = State::default();
+        outcome("Archived", false, None).apply(&mut state);
+        assert!(state.main_page.content_panel.vta.vic_refresh_queued);
+    }
+
+    /// A failed mutation still asks: the vault's state is now unknown, which is
+    /// exactly when a stale list is most misleading.
+    #[test]
+    fn a_failed_mutation_still_requests_a_refresh() {
+        let mut state = State::default();
+        outcome("Purged", false, Some("vault refused")).apply(&mut state);
+        assert!(state.main_page.content_panel.vta.vic_refresh_queued);
+        assert!(
+            state
+                .main_page
+                .activity_log
+                .iter()
+                .any(|e| e.summary.contains("vault refused")),
+            "the reason must reach the log"
+        );
+    }
+
+    /// A successful import completes the overlay; a failed store is terminal
+    /// for that attempt. A *bad paste* never reaches here — it is rejected on
+    /// the loop before a job is spawned, so the operator keeps the input field.
+    #[test]
+    fn an_import_moves_the_overlay_to_a_terminal_phase() {
+        use crate::state_handler::main_page::content::AddVicState;
+        for (error, want) in [(None, AddVicPhase::Done), (Some("no"), AddVicPhase::Failed)] {
+            let mut state = State::default();
+            state.main_page.add_vic = Some(AddVicState {
+                phase: AddVicPhase::Working,
+                ..Default::default()
+            });
+            outcome("Stored", true, error).apply(&mut state);
+            assert_eq!(state.main_page.add_vic.as_ref().unwrap().phase, want);
+        }
+    }
+
+    /// A lifecycle verb has no overlay to move, and must not invent one.
+    #[test]
+    fn a_lifecycle_verb_leaves_the_import_overlay_alone() {
+        let mut state = State::default();
+        outcome("Deleted", false, None).apply(&mut state);
+        assert!(state.main_page.add_vic.is_none());
     }
 }
