@@ -343,8 +343,30 @@ pub struct ExportedConfig {
     pub sc: secured_config::SecuredConfig,
 }
 
-/// The messaging-profile label for a community membership: its display name,
-/// else the community's **verified** agent name, else the VTC DID.
+/// How much of the persona DID a messaging-profile label carries. Matches the
+/// width the R-DID labels use for their remote DID, so the two read alike in a
+/// log line; the head of a DID is where the method and the SCID live, which is
+/// the part that differs between two personas.
+const PROFILE_LABEL_DID_WIDTH: usize = 32;
+
+/// The messaging-profile label for one persona listener: which community it
+/// speaks for, and **which identity is speaking**.
+///
+/// The community half is its display name, else its **verified** agent name,
+/// else the VTC DID. The identity half is the persona's own DID, truncated the
+/// same way the R-DID labels truncate theirs.
+///
+/// The identity half is not decoration. This label names the messaging profile,
+/// so it is what the transport puts in every `websocket_run{profile=…}` span and
+/// what a mediator-side log has to be correlated against — and naming only the
+/// community made it many-to-one: two personas in the same community produced
+/// byte-identical labels, a persona in several communities took whichever
+/// membership `find` happened to return first, and a persona with no community
+/// at all was labelled the literal string `"Persona"`. All three were observed
+/// in live logs, where one listener reconnecting and several reconnecting
+/// independently were impossible to tell apart. Same defect the activity log
+/// had, one layer down — and this is the layer you drop to when the activity log
+/// is not enough.
 ///
 /// Shared by [`Config::persona_profile_label_for`] and the hydration path in
 /// `loading.rs`, which built this label with its own copy of the same
@@ -374,15 +396,22 @@ pub struct ExportedConfig {
 /// the fallback path, where a label is being built anyway.
 pub(crate) fn membership_profile_label(
     membership: Option<&account::CommunityRecord>,
+    persona_did: &str,
     agent_name: impl FnOnce(&str) -> Option<String>,
 ) -> String {
+    let who = crate::display::truncate_did(persona_did, PROFILE_LABEL_DID_WIDTH);
     let Some(c) = membership else {
-        return "Persona".to_string();
+        // No community yet (State A). The DID is then the only thing that
+        // distinguishes this listener, so it carries the label alone rather
+        // than hiding behind a bare "Persona".
+        return format!("Persona ({who})");
     };
-    c.display_name
+    let community = c
+        .display_name
         .clone()
         .or_else(|| agent_name(&c.vtc_did))
-        .unwrap_or_else(|| c.vtc_did.clone())
+        .unwrap_or_else(|| c.vtc_did.clone());
+    format!("{community} ({who})")
 }
 
 impl Config {
@@ -471,6 +500,9 @@ impl Config {
             self.account
                 .memberships()
                 .find(|c| c.persona_ref == persona_id),
+            self.identities
+                .get(&persona_id)
+                .map_or("", |identity| identity.did.as_str()),
             |did| self.agent_name_for(did).map(ToString::to_string),
         )
     }
@@ -1350,6 +1382,9 @@ mod membership_profile_label_tests {
     use crate::config::account::{CommunityRecord, PersonaId};
 
     const VTC_DID: &str = "did:webvh:QmScidCommunityCCCCCCCCCCCC:vtc.example:acme";
+    const PERSONA_DID: &str = "did:webvh:QmScidPersonaAAAAAAAAAAAAAA:vtc.example:alice";
+    /// What `PERSONA_DID` renders as inside a label.
+    const PERSONA_SHORT: &str = "did:webvh:QmScidPersonaAAAAAA...";
 
     fn membership(display_name: Option<&str>) -> CommunityRecord {
         CommunityRecord::new_pending(
@@ -1367,8 +1402,10 @@ mod membership_profile_label_tests {
     #[test]
     fn a_display_name_is_preferred() {
         let c = membership(Some("Acme Corp"));
-        let label = membership_profile_label(Some(&c), |_| Some("vtc.example/@acme".to_string()));
-        assert_eq!(label, "Acme Corp");
+        let label = membership_profile_label(Some(&c), PERSONA_DID, |_| {
+            Some("vtc.example/@acme".to_string())
+        });
+        assert_eq!(label, format!("Acme Corp ({PERSONA_SHORT})"));
     }
 
     /// The arm this change fixes. It used to run the DID through
@@ -1377,11 +1414,11 @@ mod membership_profile_label_tests {
     #[test]
     fn a_verified_agent_name_is_used_when_there_is_no_display_name() {
         let c = membership(None);
-        let label = membership_profile_label(Some(&c), |did| {
+        let label = membership_profile_label(Some(&c), PERSONA_DID, |did| {
             assert_eq!(did, VTC_DID, "the VTC DID is what gets looked up");
             Some("vtc.example/@acme".to_string())
         });
-        assert_eq!(label, "vtc.example/@acme");
+        assert_eq!(label, format!("vtc.example/@acme ({PERSONA_SHORT})"));
     }
 
     /// No display name and no *verified* name leaves the DID. Unpretty, but it
@@ -1390,13 +1427,52 @@ mod membership_profile_label_tests {
     #[test]
     fn an_unverified_community_falls_back_to_the_did() {
         let c = membership(None);
-        assert_eq!(membership_profile_label(Some(&c), |_| None), VTC_DID);
+        assert_eq!(
+            membership_profile_label(Some(&c), PERSONA_DID, |_| None),
+            format!("{VTC_DID} ({PERSONA_SHORT})")
+        );
     }
 
-    /// A persona with no community yet (State-A) keeps the generic label.
+    /// A persona with no community yet (State A) is named by its DID rather
+    /// than the bare word "Persona" — which is what several State-A listeners
+    /// used to share, in the logs and in the mediator's view alike.
     #[test]
-    fn no_membership_is_the_generic_persona_label() {
-        assert_eq!(membership_profile_label(None, |_| None), "Persona");
+    fn no_membership_is_still_identified_by_its_did() {
+        assert_eq!(
+            membership_profile_label(None, PERSONA_DID, |_| None),
+            format!("Persona ({PERSONA_SHORT})")
+        );
+    }
+
+    /// The property the whole change exists for: two personas in the SAME
+    /// community must not produce the same label. Before this, both were named
+    /// only after the community and were indistinguishable in every
+    /// `websocket_run{profile=…}` span the transport emits.
+    #[test]
+    fn two_personas_in_one_community_are_distinguishable() {
+        const OTHER_PERSONA: &str = "did:webvh:QmScidPersonaBBBBBBBBBBBBBB:vtc.example:bob";
+        let c = membership(Some("Acme Corp"));
+
+        let one = membership_profile_label(Some(&c), PERSONA_DID, |_| None);
+        let two = membership_profile_label(Some(&c), OTHER_PERSONA, |_| None);
+
+        assert_ne!(
+            one, two,
+            "same community, different identity: {one} / {two}"
+        );
+        assert!(one.starts_with("Acme Corp ("), "{one}");
+        assert!(two.starts_with("Acme Corp ("), "{two}");
+    }
+
+    /// A DID short enough not to need truncating is carried whole, so the
+    /// label never invents an ellipsis.
+    #[test]
+    fn a_short_did_is_not_truncated() {
+        const SHORT: &str = "did:key:z6MkShort";
+        assert_eq!(
+            membership_profile_label(None, SHORT, |_| None),
+            format!("Persona ({SHORT})")
+        );
     }
 }
 

@@ -291,8 +291,9 @@ impl Config {
         // (PERF #1) — it is NOT shut down here.
         let hydrate: Result<(), OpenVTCError> = async {
             for (persona_id, persona_did, persona_mediator, cached_document) in &personas {
-                // Name the persona's messaging profile after its community so it
-                // is identifiable (not a generic "Persona"). Shares one helper
+                // Name the persona's messaging profile after its community AND
+                // its own DID, so two personas in one community are still
+                // distinguishable. Shares one helper
                 // with the runtime label (`Config::persona_profile_label`) —
                 // this used to be a second copy of the expression, which is how
                 // the two could drift.
@@ -301,6 +302,7 @@ impl Config {
                 // through `private_cfg` directly.
                 let profile_label = crate::config::membership_profile_label(
                     account.memberships().find(|c| c.persona_ref == *persona_id),
+                    persona_did,
                     |did| private_cfg.cached_agent_name(did).map(ToString::to_string),
                 );
 
