@@ -34,6 +34,9 @@ pub enum SetupPage {
     /// The chosen Trust Context already holds an account (D5). Shown only when
     /// the probe found something, so a genuine first run never sees it.
     ContextOccupied,
+    /// What recovering that context would restore, and what it would not.
+    /// Reached from [`SetupPage::ContextOccupied`] via `[R]`.
+    RecoverConfirm,
 
     /// Optional PGP Token setup occurs here
     #[cfg(feature = "openpgp-card")]
@@ -114,6 +117,19 @@ pub struct SetupState {
     pub final_page: FinalSetupPage,
 }
 
+/// A recovery plan and the account it would produce.
+///
+/// Held together because the confirmation page needs both: the plan carries
+/// what was rejected and why, the account carries what will actually be
+/// written and which personas had to be skipped.
+#[derive(Clone, Debug)]
+pub struct RebuildOutcome {
+    /// What the VTA holds, verified.
+    pub plan: openvtc_core::rebuild::RebuildPlan,
+    /// The account that would be written.
+    pub account: openvtc_core::rebuild_apply::RebuiltAccount,
+}
+
 /// VTA-specific setup state
 ///
 /// `Debug` is implemented manually because `EphemeralSetupKey` doesn't expose
@@ -143,6 +159,12 @@ pub struct VtaSetupState {
     /// fresh install at a context already in use is a decision rather than a
     /// silent collision.
     pub context_probe: Option<openvtc_core::context_probe::ProbeOutcome>,
+
+    /// What a recovery of this context would restore, once the operator has
+    /// asked. `None` until `[R]` is pressed; `Some(Err(..))` when the plan
+    /// could not be built, so the page can say why rather than showing an
+    /// empty result.
+    pub rebuild: Option<Result<RebuildOutcome, String>>,
 
     /// Live diagnostics list streamed from `provision_client::run_connection_test`.
     pub diagnostics: Vec<DiagEntry>,

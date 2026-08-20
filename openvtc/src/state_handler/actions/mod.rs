@@ -498,6 +498,11 @@ pub enum Action {
     /// context id the operator typed on the AclInstructions screen so it
     /// matches what they ran `pnm contexts create --id …` with.
     VtaStartProvision(String),
+    /// Work out what recovering the chosen Trust Context would restore.
+    ///
+    /// Read-only: builds a plan and the account it would produce, and shows
+    /// them. Nothing is written until the operator confirms (D5).
+    RecoverPlanContext,
 
     // ************************************************************************
     // PGP Hardware token Specific Actions

@@ -2083,6 +2083,7 @@ impl StateHandler {
                     Action::JoinCancel | Action::JoinPasteVic(..) | Action::JoinPasteFromClipboard |
                     Action::JoinClearVic | Action::ImportConfig(..) | Action::SetProtection(..) |
                     Action::VtaSubmitDid(..) | Action::VtaStartProvision(..) |
+                    Action::RecoverPlanContext |
                     Action::SetupCompleted(..) => {}
                     #[cfg(feature = "openpgp-card")]
                     Action::GetTokens | Action::SetAdminPin(..) | Action::SetTouchPolicy(..) |

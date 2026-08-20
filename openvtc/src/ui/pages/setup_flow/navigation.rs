@@ -25,6 +25,11 @@ pub enum SetupEvent {
     /// The operator saw that the chosen Trust Context already holds an account
     /// and chose to continue into it regardless (D5/D11).
     ContextOccupiedAccepted,
+    /// The operator confirmed the recovery plan shown on
+    /// [`SetupPage::RecoverConfirm`]. From here setup continues exactly as a
+    /// fresh one, except the account it will write was rebuilt rather than
+    /// created.
+    RecoverConfirmed,
 
     // Token pages (cfg-gated)
     #[cfg(feature = "openpgp-card")]
@@ -103,6 +108,11 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
 
         // Acknowledged: carry on exactly where an empty context would have.
         SetupEvent::ContextOccupiedAccepted => NavResult::GoTo(protection_entry()),
+
+        // Same destination, different account. Protection is still the
+        // operator's choice — a recovered profile is protected on this machine
+        // by whatever they pick here, not by whatever the old one used.
+        SetupEvent::RecoverConfirmed => NavResult::GoTo(protection_entry()),
 
         // === Token pages ===
         #[cfg(feature = "openpgp-card")]

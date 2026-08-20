@@ -423,14 +423,39 @@ fn build_state_a_config(state: &SetupState) -> Result<Config> {
         encryption_seed,
     };
 
-    // The account owns the VTA relationship + top-level context. No persona, no
-    // community, no runtime identity yet (R-A-5).
-    let account = Account {
-        vta_did: state.vta.vta_did.clone(),
-        vta_url: state.vta.vta_url.clone(),
-        top_context_id: state.vta.context_id.clone().unwrap_or_default(),
-        org_did: LF_ORG_DID.to_string(),
-        ..Account::default()
+    // Normally the account owns only the VTA relationship + top-level context:
+    // no persona, no community, no runtime identity yet (R-A-5).
+    //
+    // A confirmed recovery replaces that with the account rebuilt from the
+    // context — its personas and their verified memberships — while the VTA
+    // relationship and protection choice still come from this run. The
+    // credential is new (this install was authorised separately), and the
+    // protection is whatever the operator picked here, so a recovered profile
+    // is protected on THIS machine rather than inheriting anything.
+    let recovered = state
+        .vta
+        .rebuild
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .filter(|o| !o.account.account.personas.is_empty());
+
+    let mut key_info = HashMap::new();
+    let account = match recovered {
+        Some(outcome) => {
+            key_info = outcome.account.key_info.clone();
+            let mut account = outcome.account.account.clone();
+            account.vta_did = state.vta.vta_did.clone();
+            account.vta_url = state.vta.vta_url.clone();
+            account.org_did = LF_ORG_DID.to_string();
+            account
+        }
+        None => Account {
+            vta_did: state.vta.vta_did.clone(),
+            vta_url: state.vta.vta_url.clone(),
+            top_context_id: state.vta.context_id.clone().unwrap_or_default(),
+            org_did: LF_ORG_DID.to_string(),
+            ..Account::default()
+        },
     };
 
     Ok(Config {
@@ -455,7 +480,9 @@ fn build_state_a_config(state: &SetupState) -> Result<Config> {
             friendly_name: String::new(),
         },
         private: ProtectedConfig::default(),
-        key_info: HashMap::new(),
+        // Empty for a fresh account; for a recovery, the verification-method
+        // → VTA-key mapping without which a rebuilt persona cannot sign.
+        key_info,
         #[cfg(feature = "openpgp-card")]
         token_admin_pin: None,
         #[cfg(feature = "openpgp-card")]
@@ -507,6 +534,106 @@ mod tests {
             },
             ..Default::default()
         }
+    }
+
+    /// A confirmed recovery must actually reach the written config — the
+    /// rebuilt personas AND the key mapping, without which they cannot sign.
+    #[test]
+    fn a_confirmed_recovery_replaces_the_empty_account() {
+        use openvtc_core::{
+            rebuild::{RebuildPlan, RebuiltMembership, RebuiltPersona},
+            rebuild_apply::{self, KeyCandidate, KeyPurposeHint},
+        };
+
+        const ALICE: &str = "did:webvh:QmA:example.com:alice";
+        const VTC: &str = "did:webvh:QmV:vtc.example.com:acme";
+
+        let plan = RebuildPlan {
+            top_context_id: "openvtc".to_string(),
+            personas: vec![RebuiltPersona {
+                did: ALICE.to_string(),
+                context_id: "openvtc".to_string(),
+                mediator_did: Some("did:webvh:QmM:mediator.example.com".to_string()),
+            }],
+            memberships: vec![RebuiltMembership {
+                vtc_did: VTC.to_string(),
+                persona_did: ALICE.to_string(),
+                credential: serde_json::json!({ "id": "vmc-1" }),
+            }],
+            rejected: Vec::new(),
+            other_credential_count: 0,
+        };
+        let keys = vec![
+            KeyCandidate {
+                key_id: format!("{ALICE}#key-0"),
+                label: None,
+                key_type: KeyPurposeHint::Signing,
+                created_at: chrono::Utc::now(),
+            },
+            KeyCandidate {
+                key_id: format!("{ALICE}#key-1"),
+                label: None,
+                key_type: KeyPurposeHint::Encryption,
+                created_at: chrono::Utc::now(),
+            },
+        ];
+        let rebuilt = rebuild_apply::apply(&plan, &keys, chrono::Utc::now());
+
+        let mut state = bootstrap_state();
+        state.vta.rebuild = Some(Ok(crate::state_handler::setup_sequence::RebuildOutcome {
+            plan,
+            account: rebuilt,
+        }));
+
+        let cfg = build_state_a_config(&state).expect("build should succeed");
+
+        assert_eq!(
+            cfg.account.personas.len(),
+            1,
+            "the persona must be restored"
+        );
+        assert_eq!(
+            cfg.account.memberships().count(),
+            1,
+            "the membership must be restored"
+        );
+        assert_eq!(
+            cfg.key_info.len(),
+            2,
+            "without key_info a rebuilt persona cannot sign or receive"
+        );
+
+        // The VTA relationship still comes from THIS run — the recovering
+        // install was authorised separately and holds its own credential.
+        assert_eq!(cfg.account.vta_did, "did:webvh:zVTASCID:vta.example.com");
+    }
+
+    /// A plan that produced nothing usable must not hijack the fresh path —
+    /// otherwise a failed recovery would silently write an empty account.
+    #[test]
+    fn an_unusable_recovery_falls_back_to_a_fresh_account() {
+        use openvtc_core::{rebuild::RebuildPlan, rebuild_apply::RebuiltAccount};
+
+        let mut state = bootstrap_state();
+        state.vta.rebuild = Some(Ok(crate::state_handler::setup_sequence::RebuildOutcome {
+            plan: RebuildPlan::default(),
+            account: RebuiltAccount::default(),
+        }));
+
+        let cfg = build_state_a_config(&state).expect("build should succeed");
+        assert!(cfg.account.personas.is_empty());
+        assert_eq!(cfg.account.top_context_id, "openvtc");
+    }
+
+    /// A failed plan must leave the fresh path completely alone.
+    #[test]
+    fn a_failed_recovery_falls_back_to_a_fresh_account() {
+        let mut state = bootstrap_state();
+        state.vta.rebuild = Some(Err("access denied".to_string()));
+
+        let cfg = build_state_a_config(&state).expect("build should succeed");
+        assert!(cfg.account.personas.is_empty());
+        assert_eq!(cfg.account.top_context_id, "openvtc");
     }
 
     // R-A-3/4/5: bootstrap yields an account-only v2 config — top context set, no

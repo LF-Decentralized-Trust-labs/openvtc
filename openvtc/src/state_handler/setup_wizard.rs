@@ -87,6 +87,19 @@ impl StateHandler {
                 Action::VtaSubmitDid(vta_did) => {
                     setup_vta_actions::handle_vta_submit_did(state, &self.state_tx, vta_did).await?;
                 },
+                Action::RecoverPlanContext => {
+                    // Needs the live admin session, which only this loop holds.
+                    // Read-only: the plan is built and shown, and nothing is
+                    // written until the operator confirms (D5).
+                    if let Some(client) = admin_client.as_ref() {
+                        setup_vta_actions::handle_recover_plan_context(
+                            state,
+                            &self.state_tx,
+                            client,
+                        )
+                        .await;
+                    }
+                },
                 Action::VtaStartProvision(context_id) => {
                     // Close any prior admin session before re-provisioning.
                     if let Some(c) = admin_client.take() {
