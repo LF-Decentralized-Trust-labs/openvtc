@@ -30,6 +30,50 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Constants for storing secure info in the OS Secure Store
 const SERVICE: &str = "openvtc";
 
+/// Mint a fresh random 32-byte `ProtectedConfig` key, base64url-encoded.
+///
+/// Uses the OS CSPRNG. Called once per profile, on the first save after this
+/// field existed; thereafter the stored value is reused so the on-disk blob
+/// stays readable.
+#[must_use]
+pub fn new_protected_key() -> SecretString {
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    let encoded = BASE64_URL_SAFE_NO_PAD.encode(key);
+    key.zeroize();
+    SecretString::new(encoded.into())
+}
+
+/// Reject an unencrypted `SecuredConfig` blob.
+///
+/// This is the [`SecretPolicy`](crate::secure_store::file::SecretPolicy) the
+/// file-backed store is built with. The file store exists so Linux profiles
+/// survive a reboot, but "durable" must not silently become "your BIP32 seed is
+/// now sitting in a file in the clear": a profile with no passphrase and no
+/// hardware token stays on the volatile store and gets told how to fix that.
+///
+/// The check is on the stored envelope, not on the caller's intent, so it holds
+/// for every path that reaches the store.
+///
+/// # Errors
+///
+/// Returns the reason to show the user when the blob is unencrypted or does not
+/// parse as a `SecuredConfig` envelope at all.
+pub fn require_encrypted_blob(bytes: &[u8]) -> Result<(), String> {
+    match serde_json::from_slice::<SecuredConfigFormat>(bytes) {
+        Ok(SecuredConfigFormat::PasswordEncrypted { .. })
+        | Ok(SecuredConfigFormat::TokenEncrypted { .. }) => Ok(()),
+        Ok(SecuredConfigFormat::PlainText { .. }) => Err(
+            "this profile has no passphrase, so its secret would be written to disk \
+             unencrypted; set one under Settings -> Config Protection to store it durably"
+                .to_string(),
+        ),
+        Err(e) => Err(format!(
+            "refusing to store a blob that is not a SecuredConfig envelope: {e}"
+        )),
+    }
+}
+
 /// Returns the `keyring` service name openvtc stores its `SecuredConfig`
 /// under. Used by sibling modules that need to address the same entry.
 #[must_use]
@@ -336,6 +380,33 @@ pub struct SecuredConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mediator_did: Option<String>,
 
+    /// Random 32-byte key (base64url) that encrypts
+    /// [`ProtectedConfig`](crate::config::protected_config::ProtectedConfig).
+    ///
+    /// # Why this is not derived from the admin credential
+    ///
+    /// It used to be: `HKDF(admin_credential_private_key,
+    /// "openvtc-protected-config-seed-v1")`. That made one value serve two
+    /// irreconcilable roles — an **authorisation grant** designed to rotate
+    /// (`acl/swap-key`) and be re-issued to a recovering install, and a
+    /// **data-at-rest key** that must never change. Rotating the credential
+    /// would have made the on-disk config undecryptable, and a recovered
+    /// install necessarily holds a *different* credential, so recovery and
+    /// existing local state were mutually exclusive.
+    ///
+    /// Generated on first save. `None` on configs written before this field
+    /// existed; [`Config::load_step2`] falls back to the legacy derivation and
+    /// re-keys on the next save. The fallback is retained deliberately — see
+    /// `protected_key_or_legacy`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serde_opt_secret_str::serialize",
+        deserialize_with = "serde_opt_secret_str::deserialize"
+    )]
+    #[zeroize(skip)]
+    pub protected_key: Option<SecretString>,
+
     /// Key information containing path info
     /// key is the DID VerificationMethod ID
     #[zeroize(skip)] // chrono doesn't support zeroize
@@ -353,6 +424,7 @@ impl From<&Config> for SecuredConfig {
             KeyBackend::Bip32 { seed, .. } => SecuredConfig {
                 bip32_seed: Some(seed.clone()),
                 credential_bundle: None,
+                protected_key: cfg.protected_key.clone(),
                 vta_url: None,
                 vta_did: None,
                 mediator_did: None,
@@ -368,6 +440,7 @@ impl From<&Config> for SecuredConfig {
             } => SecuredConfig {
                 bip32_seed: None,
                 credential_bundle: Some(credential_bundle.clone()),
+                protected_key: cfg.protected_key.clone(),
                 vta_url: if vta_url.is_empty() {
                     None
                 } else {
@@ -394,11 +467,8 @@ impl SecuredConfig {
         unlock: Option<&Vec<u8>>,
         #[cfg(feature = "openpgp-card")] touch_prompt: &(dyn Fn() + Send + Sync),
     ) -> Result<(), OpenVTCError> {
-        let entry = Entry::new(SERVICE, profile).map_err(|e| {
-            OpenVTCError::Config(format!(
-                "Couldn't open OS Secure Store for profile ({profile}). Reason: {e}"
-            ))
-        })?;
+        let entry =
+            Entry::new(SERVICE, profile).map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
 
         // Serialize SecuredConfig to byte array
         let input = serde_json::to_vec(&self)?;
@@ -435,11 +505,7 @@ impl SecuredConfig {
         // Save this to the OS Secure Store
         entry
             .set_secret(serde_json::to_string_pretty(&formatted)?.as_bytes())
-            .map_err(|e| {
-                OpenVTCError::Config(format!(
-                    "Couldn't save encrypted config to the OS Secure Store. Reason: {e}"
-                ))
-            })?;
+            .map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
         Ok(())
     }
 
@@ -449,7 +515,10 @@ impl SecuredConfig {
     /// current tagged format, then the legacy untagged shape (with `bool` =
     /// "needs migration"); errors only if neither parses. No key material is
     /// touched — that happens later in [`load`] under `unlock`.
-    fn parse_format(secret: &[u8]) -> Result<(SecuredConfigFormat, bool), OpenVTCError> {
+    fn parse_format(
+        secret: &[u8],
+        profile: &str,
+    ) -> Result<(SecuredConfigFormat, bool), OpenVTCError> {
         match serde_json::from_slice::<SecuredConfigFormat>(secret) {
             Ok(format) => Ok((format, false)),
             Err(tagged_err) => match serde_json::from_slice::<LegacySecuredConfigFormat>(secret) {
@@ -464,9 +533,14 @@ impl SecuredConfig {
                         "Format of SecuredConfig in OS Secure store is invalid! \
                          Tagged: {tagged_err}; legacy: {legacy_err}"
                     );
-                    Err(OpenVTCError::Config(format!(
-                        "Couldn't load openvtc secured configuration. Reason: {tagged_err}"
-                    )))
+                    Err(OpenVTCError::SecureStore {
+                        fault: crate::errors::SecureStoreFault::Corrupt,
+                        profile: profile.to_string(),
+                        detail: format!(
+                            "stored blob parses as neither the current nor the legacy \
+                             format: {tagged_err}"
+                        ),
+                    })
                 }
             },
         }
@@ -477,7 +551,7 @@ impl SecuredConfig {
     /// format; the encrypted key material is not decrypted. Exposed for fuzzing
     /// the deserialization surface directly.
     pub fn parse(bytes: &[u8]) -> Result<(), OpenVTCError> {
-        Self::parse_format(bytes).map(|_| ())
+        Self::parse_format(bytes, "").map(|_| ())
     }
 
     /// Loads secret info from the OS Secure Store
@@ -492,26 +566,24 @@ impl SecuredConfig {
         unlock: Option<&UnlockCode>,
         #[cfg(feature = "openpgp-card")] touch_prompt: &impl TokenInteractions,
     ) -> Result<Self, OpenVTCError> {
-        let entry = Entry::new(SERVICE, profile).map_err(|e| {
-            OpenVTCError::Config(format!(
-                "Couldn't access OS Secure Store for profile ({profile}). Reason: {e}",
-            ))
-        })?;
+        let entry =
+            Entry::new(SERVICE, profile).map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
 
         let secret = match entry.get_secret() {
             Ok(s) => s,
             Err(e) => {
-                error!("Couldn't find Secure Config in the OS Secret Store. Fatal Error: {e}");
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find openvtc secured configuration. Reason: {e}"
-                )));
+                // Typed, not stringly: `NoEntry` (the credential is gone) and
+                // `NoStorageAccess` (the store is locked) need opposite advice,
+                // and the old single `Config` string made them look identical.
+                error!("Couldn't read the SecuredConfig from the OS secure store: {e}");
+                return Err(OpenVTCError::from_keyring(&e, profile));
             }
         };
 
         // Try the current tagged format first, falling back to the legacy
         // untagged shape (flagged for migration). Anything that fails both is
         // genuinely invalid.
-        let (raw_secured_config, needs_migration) = Self::parse_format(secret.as_slice())?;
+        let (raw_secured_config, needs_migration) = Self::parse_format(secret.as_slice(), profile)?;
 
         // Layer-2 downgrade defence: cross-check the stored variant against
         // the caller's credentials before any decryption or re-save.
@@ -952,6 +1024,7 @@ mod tests {
         // Verify that SecretString cannot be printed via Debug or Display,
         // proving the seed value never leaks through formatting.
         let config = SecuredConfig {
+            protected_key: None,
             bip32_seed: Some(SecretString::new("super-secret-seed-value".into())),
             credential_bundle: None,
             vta_url: None,
@@ -982,5 +1055,89 @@ mod tests {
         if let KeySourceMaterial::Imported { seed } = &material {
             assert_eq!(seed.expose_secret(), "z6MkSensitiveKeyData");
         }
+    }
+}
+
+#[cfg(test)]
+mod protected_key_tests {
+    //! D12 — the `ProtectedConfig` key is the profile's own, not derived from
+    //! the admin credential. These pin the properties that make the credential
+    //! safe to rotate and re-issue.
+    use super::*;
+
+    #[test]
+    fn a_minted_key_is_32_bytes_and_unique() {
+        let a = new_protected_key();
+        let b = new_protected_key();
+        assert_ne!(
+            a.expose_secret(),
+            b.expose_secret(),
+            "two profiles must not share a config key"
+        );
+        let bytes = BASE64_URL_SAFE_NO_PAD
+            .decode(a.expose_secret())
+            .expect("base64url");
+        assert_eq!(bytes.len(), 32);
+    }
+
+    /// The whole point: the key does not move when the credential does.
+    #[test]
+    fn the_key_is_independent_of_the_credential() {
+        let key = new_protected_key();
+        let before = key.expose_secret().to_string();
+        // Whatever happens to the admin credential — rotation via
+        // `acl/swap-key`, or a reprovision handing a recovering install an
+        // entirely different one — this value is untouched, because nothing
+        // derives it.
+        let after = key.expose_secret().to_string();
+        assert_eq!(before, after);
+    }
+
+    /// A profile with no key yet must round-trip through serde as absent, not
+    /// as `null` — the `SecuredConfig` blob is size-sensitive and older builds
+    /// must still parse it.
+    #[test]
+    fn an_absent_key_is_omitted_from_the_wire() {
+        let sc = SecuredConfig {
+            bip32_seed: None,
+            credential_bundle: Some(SecretString::new("bundle".into())),
+            protected_key: None,
+            vta_url: None,
+            vta_did: None,
+            mediator_did: None,
+            key_info: HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+        };
+        let json = serde_json::to_string(&sc).expect("serialize");
+        assert!(!json.contains("protected_key"), "{json}");
+        assert!(!json.contains("null"), "{json}");
+
+        let back: SecuredConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.protected_key.is_none());
+    }
+
+    #[test]
+    fn a_stored_key_round_trips() {
+        let key = new_protected_key();
+        let expected = key.expose_secret().to_string();
+        let sc = SecuredConfig {
+            bip32_seed: None,
+            credential_bundle: Some(SecretString::new("bundle".into())),
+            protected_key: Some(key),
+            vta_url: None,
+            vta_did: None,
+            mediator_did: None,
+            key_info: HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+        };
+        let json = serde_json::to_string(&sc).expect("serialize");
+        let back: SecuredConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.protected_key
+                .as_ref()
+                .expect("key present")
+                .expose_secret(),
+            &expected
+        );
     }
 }

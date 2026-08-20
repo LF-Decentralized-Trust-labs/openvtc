@@ -171,6 +171,7 @@ mod tests {
 
     fn persona() -> PersonaRecord {
         PersonaRecord {
+            extra: serde_json::Map::new(),
             persona_id: PersonaId::new(),
             did: "did:webvh:example:p".into(),
             did_document: None,
@@ -184,6 +185,7 @@ mod tests {
 
     fn community(vtc: &str, persona_ref: PersonaId, status: CommunityStatus) -> CommunityRecord {
         CommunityRecord {
+            extra: serde_json::Map::new(),
             vtc_did: vtc.into(),
             display_name: None,
             sub_context_id: format!("openvtc/{vtc}"),

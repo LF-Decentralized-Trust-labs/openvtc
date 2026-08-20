@@ -59,22 +59,73 @@ openvtc -p my-profile
 
 ### Secure Storage
 
-Sensitive configuration (keys, credentials) is stored in the OS secure store:
+A profile lives in two halves: a **config file** on disk
+(`~/.config/openvtc/config.json`) and its **secret key material** — the BIP32
+seed or VTA credential bundle — in an OS credential store. Both are needed.
+Copying one without the other produces `No matching credential found` at
+startup; `openvtc health` says so explicitly.
 
-| Platform | Backend | Requirements |
-|----------|---------|--------------|
-| macOS | Keychain | Always available |
-| Windows | Credential Manager | Always available |
-| Linux (desktop) | Secret Service (GNOME Keyring / KDE Wallet) | D-Bus + secret service daemon |
-| Linux (headless) | Kernel keyring (`keyutils`) | Available on all Linux kernels ≥ 2.6 |
+| Platform | Store | Durable? |
+|----------|-------|----------|
+| macOS | Keychain | Yes |
+| Windows | Credential Manager | Yes |
+| Linux | Secret Service — GNOME Keyring / KWallet / KeePassXC | Yes |
 
-On headless Linux (servers, containers, CI) where no GUI secret service is
-available, the tool automatically falls back to the kernel keyring. No
-additional configuration is needed.
+This is the same registration `pnm` and every other tool on `vta-sdk` uses
+(`vta_sdk::keyring_init::install_default_store`), so a given OS keeps every
+tool's secrets in the same place.
 
-If you encounter `Couldn't open OS Secure Store` errors, ensure either:
-- A secret service daemon is running (`gnome-keyring-daemon`, `kwalletd`), or
-- The `keyutils` kernel module is loaded (`modprobe keyutils`)
+#### OpenVTC fails closed
+
+**If the credential store cannot be opened, OpenVTC exits and explains why.**
+It does not quietly write your keys somewhere else. A tool that silently
+downgrades its own storage teaches you the secure backend is optional, and the
+moment it matters you discover your secrets were somewhere you never agreed to.
+
+Every store OpenVTC will select is durable. Nothing it writes is lost by a
+reboot.
+
+#### Headless machines — choosing file storage
+
+On a server, container or CI runner with no keyring daemon, select durable file
+storage **deliberately**:
+
+```bash
+OPENVTC_SECURE_STORE=file openvtc
+```
+
+Secrets then live in `~/.config/openvtc/secrets/` at mode `0600`. This store
+**refuses to hold an unencrypted profile** — set a passphrase (Settings →
+Protection) or use a hardware token first, so key material is never written to
+disk in the clear.
+
+| `OPENVTC_SECURE_STORE` | Effect |
+|---|---|
+| *unset* (supported default) | The OS credential store. Fails closed if unavailable. |
+| `file` | Durable encrypted file. Requires a passphrase or token. Linux only. |
+| `keyutils` | **Deprecated, migration only.** The Linux kernel keyring is RAM-only and loses your keys on reboot. It exists solely so a profile written by an older OpenVTC can be started once and exported. Warns loudly on every launch. |
+
+#### When the secure store fails
+
+`openvtc health` reports which store is in use, whether this profile's
+credential is present, and how long it will survive — and it runs even when the
+profile cannot be decrypted, which is when you need it. On a startup failure,
+OpenVTC also writes the full diagnosis to
+`~/.config/openvtc/last-startup-failure.txt`; attach that to a bug report.
+
+To look at the entry yourself:
+
+```bash
+# macOS
+security find-generic-password -s openvtc -a default
+# Linux (Secret Service)
+secret-tool search service openvtc username default
+# Linux (encrypted file)
+ls -l ~/.config/openvtc/secrets/
+# Windows
+cmdkey /list | findstr openvtc
+```
+
 
 ## Feature Flags
 

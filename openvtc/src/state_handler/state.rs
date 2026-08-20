@@ -1,4 +1,6 @@
-#[cfg(feature = "openpgp-card")]
+// Unconditional: the startup diagnosis and integrity report are `Arc`-shared
+// regardless of feature set (`State` is cloned per frame). Leaving this behind
+// the `openpgp-card` gate broke the `--no-default-features` build that CI runs.
 use std::sync::Arc;
 
 #[cfg(feature = "openpgp-card")]
@@ -23,7 +25,7 @@ pub struct State {
     /// membership inactive); the main page shows its "no active community" state.
     ///
     /// Runtime-only (not persisted): re-defaulted from the account on each launch
-    /// via [`State::reconcile_selected_community`].
+    /// via [`State::reconcile_selected_community_among`].
     ///
     /// A *membership* reference — the community DID plus the presented persona —
     /// since a community may hold more than one membership (one per persona). The
@@ -50,6 +52,33 @@ pub struct State {
     /// main page.
     pub loading_complete: bool,
 
+    /// This install's own VTA device binding, once registered (D13). Runtime
+    /// only; identifies us so we are excluded from the sibling list.
+    pub self_device_id: Option<String>,
+
+    /// Other installs currently using this account, newest report wins.
+    ///
+    /// Empty is the normal case. Non-empty means the mediator's one-socket-per-
+    /// DID ceiling is in play and messaging may be unstable — see
+    /// [`openvtc_core::devices`].
+    pub live_siblings: Vec<openvtc_core::devices::DeviceRecord>,
+
+    /// What the load could not bring up, when it could not bring up everything.
+    ///
+    /// `Some` gates the startup screen on an explicit acknowledgement: a
+    /// partially-loaded profile must not slide silently into a working session
+    /// where a persona the user believes they have is quietly absent.
+    pub integrity: Option<Arc<openvtc_core::config::integrity::LoadIntegrity>>,
+
+    /// Cause-specific troubleshooting for a startup failure, built from the
+    /// *typed* error by [`openvtc_core::diagnostics::diagnose`].
+    ///
+    /// Separate from [`MediatorStatus::Failed`], which carries only a display
+    /// string: the failure screen needs the store/profile/path context and the
+    /// per-cause checks and remedies, and stringifying the error at the failure
+    /// site is exactly what used to make every failure look like a network one.
+    pub startup_diagnosis: Option<Arc<openvtc_core::diagnostics::Diagnosis>>,
+
     /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
     #[cfg(feature = "openpgp-card")]
     pub token_admin_pin: Option<Arc<SecretString>>,
@@ -73,19 +102,35 @@ impl State {
     /// was left, rejected, or deleted), then default to the deterministic
     /// working community when none is selected. Idempotent; called whenever the
     /// account may have changed so the working context never dangles.
-    pub fn reconcile_selected_community(
+    /// `usable` is the set of persona ids with a live runtime identity (`None`
+    /// means "no restriction"). Selecting a membership whose persona failed to
+    /// hydrate would put the whole UI into a working context that cannot send,
+    /// receive, or sign anything — a silent dead end, and precisely what a
+    /// partially-loaded profile would otherwise land on when the degraded
+    /// persona happens to sort first.
+    pub fn reconcile_selected_community_among(
         &mut self,
         account: &openvtc_core::config::account::Account,
+        usable: Option<&std::collections::BTreeSet<openvtc_core::config::account::PersonaId>>,
     ) {
+        let selectable = |persona: openvtc_core::config::account::PersonaId| {
+            usable.is_none_or(|set| set.contains(&persona))
+        };
+
         if let Some((vtc, persona)) = &self.selected_community
-            && !account
+            && !(account
                 .membership(vtc, *persona)
                 .is_some_and(|c| c.status.is_active())
+                && selectable(*persona))
         {
             self.selected_community = None;
         }
         if self.selected_community.is_none() {
-            self.selected_community = account.default_working_membership();
+            self.selected_community = account
+                .communities_for_display(false)
+                .into_iter()
+                .find(|c| c.status.is_active() && selectable(c.persona_ref))
+                .map(|c| (c.vtc_did.clone(), c.persona_ref));
         }
     }
 }
@@ -312,7 +357,7 @@ mod tests {
         assert_eq!(state.selected_community, None);
 
         // With one active community and no selection, reconcile defaults to it.
-        state.reconcile_selected_community(&account);
+        state.reconcile_selected_community_among(&account, None);
         assert_eq!(
             state.selected_community,
             Some(("did:web:vtc-a".to_string(), pid))
@@ -324,7 +369,7 @@ mod tests {
             .membership_mut("did:web:vtc-a", pid)
             .unwrap()
             .leave();
-        state.reconcile_selected_community(&account);
+        state.reconcile_selected_community_among(&account, None);
         assert_eq!(state.selected_community, None);
     }
 }

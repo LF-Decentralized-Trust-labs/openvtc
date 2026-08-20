@@ -74,6 +74,24 @@ pub enum OpenVTCError {
     #[error("Config Not Found! path({0}): {1}")]
     ConfigNotFound(String, std::io::Error),
 
+    /// An operation against the OS secure store (keychain / credential manager
+    /// / Secret Service / kernel keyring) failed.
+    ///
+    /// Distinct from [`Self::Config`] because the remedies do not overlap: a
+    /// missing credential needs a restore-or-reset, a locked store needs the
+    /// user to unlock it, and a corrupt blob needs a reset. Collapsing all
+    /// three into one `Config` string is what produced the "check your
+    /// network" advice for a purely local failure (dev-guide R6.4).
+    #[error("Secure store error ({fault}) for profile '{profile}': {detail}")]
+    SecureStore {
+        /// Which class of secure-store failure this is.
+        fault: SecureStoreFault,
+        /// The config profile whose credential was being addressed.
+        profile: String,
+        /// The underlying store's own message, kept verbatim for the log.
+        detail: String,
+    },
+
     /// The on-disk config predates the current [`crate::config::public_config::CONFIG_VERSION`]
     /// and cannot be migrated in place (T1 breaking reset, D13/R-RST). The caller
     /// must warn the user, delete the old config + keyring entries, and re-run setup.
@@ -126,6 +144,74 @@ pub enum OpenVTCError {
     /// A process lock-file operation (create, read, or remove) failed.
     #[error("Lock file error: {0}")]
     LockFile(String),
+}
+
+/// Which class of OS-secure-store failure occurred.
+///
+/// The point of the split is triage: each variant maps to a different remedy,
+/// and [`crate::diagnostics`] turns each into its own set of checks and fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecureStoreFault {
+    /// The store is reachable but holds no credential for this profile.
+    ///
+    /// On a profile that previously worked this means the credential was
+    /// deleted, expired (the Linux kernel keyring is RAM-only), or the config
+    /// file was copied to a machine/user whose store never held it.
+    Missing,
+    /// The store itself could not be opened or read — a locked login keychain,
+    /// no D-Bus session, no Secret Service daemon, a denied access prompt.
+    Unavailable,
+    /// More than one credential matched this service/user pair.
+    Ambiguous,
+    /// A credential exists but its contents are not a readable `SecuredConfig`.
+    Corrupt,
+    /// The store refused to hold this secret. Currently only the encrypted-file
+    /// store does this, and only for an unencrypted blob.
+    Rejected,
+}
+
+impl std::fmt::Display for SecureStoreFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            SecureStoreFault::Missing => "no credential stored",
+            SecureStoreFault::Unavailable => "store unavailable",
+            SecureStoreFault::Ambiguous => "ambiguous credential",
+            SecureStoreFault::Corrupt => "stored credential unreadable",
+            SecureStoreFault::Rejected => "store refused the secret",
+        };
+        f.write_str(s)
+    }
+}
+
+impl OpenVTCError {
+    /// Classify a [`keyring_core::Error`] into a typed [`Self::SecureStore`].
+    ///
+    /// Kept here rather than at the call sites so every keyring touchpoint
+    /// classifies identically — the previous `format!` at each site is exactly
+    /// how `NoEntry` and "keychain is locked" ended up indistinguishable.
+    #[must_use]
+    pub fn from_keyring(err: &keyring_core::Error, profile: &str) -> Self {
+        let fault = match err {
+            keyring_core::Error::NoEntry => SecureStoreFault::Missing,
+            keyring_core::Error::NoStorageAccess(_)
+            | keyring_core::Error::PlatformFailure(_)
+            | keyring_core::Error::NoDefaultStore
+            | keyring_core::Error::NotSupportedByStore(_) => SecureStoreFault::Unavailable,
+            keyring_core::Error::Ambiguous(_) => SecureStoreFault::Ambiguous,
+            keyring_core::Error::BadEncoding(_)
+            | keyring_core::Error::BadDataFormat(_, _)
+            | keyring_core::Error::BadStoreFormat(_) => SecureStoreFault::Corrupt,
+            // `Error` is `#[non_exhaustive]`: an unrecognised variant is more
+            // likely a store-level problem than a missing credential, and
+            // guessing `Missing` would advise a reset that destroys keys.
+            _ => SecureStoreFault::Unavailable,
+        };
+        OpenVTCError::SecureStore {
+            fault,
+            profile: profile.to_string(),
+            detail: err.to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

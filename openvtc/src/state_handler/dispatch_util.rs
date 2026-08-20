@@ -130,6 +130,8 @@ pub(crate) fn test_config() -> Config {
         public_config::PublicConfig, secured_config::ProtectionMethod,
     };
     Config {
+        protected_key: None,
+        integrity: Default::default(),
         public: PublicConfig::default(),
         private: ProtectedConfig::default(),
         key_backend: KeyBackend::Bip32 {

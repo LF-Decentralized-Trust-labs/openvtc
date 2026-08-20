@@ -415,6 +415,8 @@ mod export_import {
         let seed_bytes = BASE64_URL_SAFE_NO_PAD.decode(seed_b64).unwrap();
         let root = ExtendedSigningKey::from_seed(&seed_bytes).unwrap();
         Config {
+            protected_key: None,
+            integrity: Default::default(),
             public: PublicConfig {
                 config_version: CONFIG_VERSION,
                 protection: ConfigProtectionType::Encrypted,

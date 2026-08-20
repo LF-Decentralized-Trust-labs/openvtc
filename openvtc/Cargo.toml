@@ -99,6 +99,7 @@ openpgp-card-rpgp = { workspace = true, optional = true }
 apple-native-keyring-store.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
+dbus-secret-service-keyring-store.workspace = true
 linux-keyutils-keyring-store.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]

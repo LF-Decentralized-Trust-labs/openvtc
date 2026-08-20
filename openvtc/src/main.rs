@@ -13,6 +13,7 @@ use openvtc_core::{
     config::{Config, ConfigProtectionType, UnlockCode, public_config::PublicConfig},
     errors::OpenVTCError,
     process_lock::{check_duplicate_instance, remove_lock_file},
+    secure_store::{Durability, StoreDescription},
 };
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
@@ -113,20 +114,177 @@ async fn load_config_for_health(profile: &str, unlock_code_arg: Option<&str>) ->
     }
 }
 
-/// Register the platform-specific keyring-core credential store as the
-/// process default. Must run before any `keyring_core::Entry::new` call.
-fn init_default_keyring_store() -> Result<()> {
+/// Environment variable that selects a non-default credential store.
+///
+/// Values: `file` (durable encrypted file, Linux) and `keyutils` (deprecated,
+/// migration only). **Absent is the only supported production configuration** —
+/// the OS-native store. Anything unrecognised is an error rather than a silent
+/// fall-through to the default: a typo here would otherwise put a profile's
+/// keys somewhere the user did not intend.
+const STORE_OVERRIDE_ENV: &str = "OPENVTC_SECURE_STORE";
+
+/// The message shown when the OS credential store cannot be opened.
+///
+/// Deliberately long. This is a hard stop, and a hard stop that does not say
+/// what to do instead is just a wall.
+fn no_secure_store_message(err: &keyring_core::Error) -> String {
+    let mut msg = format!(
+        "Could not open the OS credential store, so OpenVTC cannot read or write \
+         this profile's keys.\n\n  Reason: {err}\n\n"
+    );
+    if cfg!(target_os = "linux") {
+        msg.push_str(
+            "On Linux this means no Secret Service is reachable — no keyring daemon is \
+             running, or DBUS_SESSION_BUS_ADDRESS is not set (common over SSH and in \
+             containers).\n\n\
+             Fix it in one of these ways:\n\n\
+             \x20 1. Start a keyring daemon — gnome-keyring-daemon, kwalletd, KeePassXC \
+             or oo7-daemon — and make sure it is unlocked.\n\
+             \x20 2. If this is a headless machine with no keyring, choose file storage \
+             deliberately:\n\n\
+             \x20      OPENVTC_SECURE_STORE=file openvtc\n\n\
+             \x20    That stores your secrets in an encrypted file under the profile \
+             directory. It requires the profile to have a passphrase or a hardware \
+             token, so the key material is never written to disk in the clear.\n\n\
+             OpenVTC will NOT silently choose a weaker store for you. Where your keys \
+             live is your decision, not a side effect of what happened to be installed.\n",
+        );
+    } else {
+        msg.push_str(
+            "Unlock your login keychain and try again. If OpenVTC is running as a \
+             different user (via sudo, or a service account), that user has a different \
+             credential store.\n",
+        );
+    }
+    msg
+}
+
+/// Register the credential store as keyring-core's process default.
+///
+/// # Policy: fail closed
+///
+/// If the OS-native store cannot be opened, this **errors and OpenVTC exits**.
+/// It does not quietly write the keys somewhere else. A tool that silently
+/// downgrades its own storage teaches users that the secure backend is
+/// optional, and the moment it matters they discover their secrets were
+/// somewhere they never agreed to. Choosing file storage is a decision the
+/// operator makes explicitly, with [`STORE_OVERRIDE_ENV`].
+///
+/// # Policy: one implementation across the workspace
+///
+/// The default path delegates to [`vta_sdk::keyring_init::install_default_store`]
+/// — the same call `pnm-cli` makes — so `openvtc`, `pnm` and anything else on
+/// the SDK put secrets in the same store on the same OS: Apple Keychain,
+/// Windows Credential Manager, or DBus Secret Service. OpenVTC previously
+/// registered its own per-platform set and picked the Linux kernel keyring,
+/// which is RAM-only; that divergence is what made a reboot look like a
+/// corrupt install.
+///
+/// `profile` names the store entry in the diagnostics and locates the file
+/// store, so this runs *after* profile resolution.
+fn init_default_keyring_store(profile: &str) -> Result<()> {
+    let requested = std::env::var(STORE_OVERRIDE_ENV).unwrap_or_default();
+
+    match requested.as_str() {
+        // The supported configuration: whatever the OS provides, via the
+        // shared SDK helper.
+        "" => {
+            vta_sdk::keyring_init::install_default_store()
+                .map_err(|e| anyhow::anyhow!("{}", no_secure_store_message(&e)))?;
+            openvtc_core::secure_store::record_active(native_store_description(profile));
+            Ok(())
+        }
+
+        // Deliberate, durable file storage for machines with no keyring.
+        #[cfg(target_os = "linux")]
+        "file" => {
+            let dir = openvtc_core::secure_store::secrets_dir(profile)
+                .map_err(|e| anyhow::anyhow!("resolve secrets directory: {e}"))?;
+            let store = openvtc_core::secure_store::file::Store::new(
+                dir.clone(),
+                Some(openvtc_core::config::secured_config::require_encrypted_blob),
+            );
+            keyring_core::set_default_store(store);
+            openvtc_core::secure_store::record_active(StoreDescription {
+                label: "Encrypted file (chosen via OPENVTC_SECURE_STORE)".to_string(),
+                location: dir.display().to_string(),
+                durability: Durability::Durable,
+                inspect_hint: Some(format!("ls -l {}", dir.display())),
+            });
+            Ok(())
+        }
+
+        // Migration only. The kernel keyring cannot satisfy "durable", so it is
+        // not a supported place to keep a profile — it exists here so a user
+        // whose secrets are still in it from an older build can start once and
+        // export them.
+        #[cfg(target_os = "linux")]
+        "keyutils" => {
+            let store = linux_keyutils_keyring_store::Store::new()
+                .map_err(|e| anyhow::anyhow!("init linux keyutils store: {e}"))?;
+            keyring_core::set_default_store(store);
+            openvtc_core::secure_store::record_active(StoreDescription {
+                label: "Linux kernel keyring (DEPRECATED — migration only)".to_string(),
+                location: "kernel memory — NOT written to disk, lost on reboot".to_string(),
+                durability: Durability::UntilReboot,
+                inspect_hint: Some("keyctl show @us 2>/dev/null; keyctl show @s".to_string()),
+            });
+            eprintln!(
+                "{}",
+                style(
+                    "WARNING: OPENVTC_SECURE_STORE=keyutils stores your keys in kernel \
+                     memory. They are NOT on disk and are lost on reboot. This mode exists \
+                     only so you can recover an older profile: export a backup now \
+                     (Settings -> Export Config), then restart without the variable set."
+                )
+                .color256(CLI_ORANGE)
+            );
+            Ok(())
+        }
+
+        other => bail!(
+            "unknown {STORE_OVERRIDE_ENV}={other}. Leave it unset to use the OS \
+             credential store (the supported configuration). On Linux, `file` selects \
+             durable encrypted-file storage for machines with no keyring."
+        ),
+    }
+}
+
+/// Describe the OS-native store the SDK just registered, for diagnostics and
+/// `openvtc health`.
+fn native_store_description(profile: &str) -> StoreDescription {
     #[cfg(target_os = "macos")]
-    let store = apple_native_keyring_store::keychain::Store::new()
-        .map_err(|e| anyhow::anyhow!("init macOS keychain store: {e}"))?;
+    {
+        StoreDescription {
+            label: "macOS Keychain".to_string(),
+            location: "login keychain (service \"openvtc\", account = profile name)".to_string(),
+            durability: Durability::Durable,
+            inspect_hint: Some(format!(
+                "security find-generic-password -s openvtc -a {profile}"
+            )),
+        }
+    }
     #[cfg(target_os = "linux")]
-    let store = linux_keyutils_keyring_store::Store::new()
-        .map_err(|e| anyhow::anyhow!("init linux keyutils store: {e}"))?;
+    {
+        StoreDescription {
+            label: "Secret Service (GNOME Keyring / KWallet / KeePassXC)".to_string(),
+            location: "your login keyring, typically ~/.local/share/keyrings".to_string(),
+            durability: Durability::Durable,
+            inspect_hint: Some(format!(
+                "secret-tool search service openvtc username {profile}"
+            )),
+        }
+    }
     #[cfg(target_os = "windows")]
-    let store = windows_native_keyring_store::Store::new()
-        .map_err(|e| anyhow::anyhow!("init Windows credential manager store: {e}"))?;
-    keyring_core::set_default_store(store);
-    Ok(())
+    {
+        let _ = profile;
+        StoreDescription {
+            label: "Windows Credential Manager".to_string(),
+            location: "generic credential \"openvtc\" for the current user".to_string(),
+            durability: Durability::Durable,
+            inspect_hint: Some("cmdkey /list | findstr openvtc".to_string()),
+        }
+    }
 }
 
 /// Redact file system paths from error messages for user display.
@@ -184,12 +342,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-
-    // Register the platform's keyring-core credential store. keyring-core 1.0
-    // doesn't auto-pick a backend — every binary registers exactly one at
-    // startup. On Linux we use the kernel keyutils backend so headless
-    // sessions (no D-Bus, no GUI) work without extra setup.
-    init_default_keyring_store()?;
 
     // Parse the command line exactly once; thread the parsed values down to
     // the call sites that need them (profile resolution, setup detection, and
@@ -266,6 +418,12 @@ async fn main() -> Result<()> {
         bail!("Profile name may only contain [A-Za-z0-9._-] and must not contain '..'");
     }
 
+    // Register the platform's keyring-core credential store. keyring-core 1.0
+    // doesn't auto-pick a backend — every binary registers exactly one at
+    // startup. This runs *after* profile resolution because the durable
+    // file-backed store used on Linux lives beside that profile's config.
+    init_default_keyring_store(&profile)?;
+
     // `health` runs before the duplicate-instance check and never takes the
     // lock. The report is read-only, and the moment you most want it is while a
     // TUI is sitting on a join that never came back — refusing to run because
@@ -280,7 +438,7 @@ async fn main() -> Result<()> {
             .unwrap_or_default();
         let as_json = health_args.get_flag("json");
         let config = load_config_for_health(&profile, unlock_code_arg.as_deref()).await;
-        return health_cmd::run(config.as_ref(), &vtc_dids, as_json).await;
+        return health_cmd::run(&profile, config.as_ref(), &vtc_dids, as_json).await;
     }
 
     // Check if profile is currently active elsewhere?

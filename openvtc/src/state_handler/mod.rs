@@ -16,7 +16,7 @@ use tokio::sync::{
     broadcast,
     mpsc::{self, UnboundedReceiver},
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// Tail-truncate a DID for log-message display, fixed at 30 chars.
 pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
@@ -214,6 +214,7 @@ mod credential_actions;
 /// means the move itself changed no call sites, so a regression in the messaging
 /// layer cannot hide inside an import churn diff.
 pub use openvtc_core::didcomm;
+mod device_presence;
 mod dispatch_util;
 mod inbox_actions;
 pub mod join;
@@ -264,6 +265,67 @@ pub struct StateHandler {
 pub(crate) enum SetupWizardExit {
     Interrupted(Interrupted),
     Config(Box<Config>),
+}
+
+/// Multi-line detail for the degraded-load activity-log entry, so the report
+/// survives past the startup screen the user acknowledged it on.
+fn integrity_detail(integrity: &openvtc_core::config::integrity::LoadIntegrity) -> String {
+    let mut out = String::new();
+    for persona in &integrity.degraded_personas {
+        out.push_str(&format!(
+            "persona {}: {}\n",
+            persona.did,
+            persona.reason.summary()
+        ));
+    }
+    for membership in &integrity.stranded_memberships {
+        out.push_str(&format!(
+            "community {} is inactive: its persona did not load\n",
+            membership
+                .label
+                .clone()
+                .unwrap_or_else(|| membership.vtc_did.clone())
+        ));
+    }
+    for key_id in &integrity.orphaned_key_ids {
+        out.push_str(&format!("orphaned key record: {key_id}\n"));
+    }
+    out
+}
+
+/// Build a startup [`Diagnosis`](openvtc_core::diagnostics::Diagnosis) for an
+/// error that arrived as an `anyhow::Error`.
+///
+/// The load task keeps the typed `OpenVTCError` inside the `anyhow` wrapper, so
+/// the classification that drives the whole failure screen is available here.
+/// Anything that is genuinely not an `OpenVTCError` (a TDK init failure, a join
+/// panic) still gets the generic diagnosis rather than no help at all.
+fn diagnose_startup(err: &anyhow::Error, profile: &str) -> openvtc_core::diagnostics::Diagnosis {
+    use openvtc_core::{
+        diagnostics::{DiagnosisContext, diagnose},
+        errors::OpenVTCError,
+    };
+    let ctx = DiagnosisContext::new(profile);
+    let mut diagnosis = match err.downcast_ref::<OpenVTCError>() {
+        Some(typed) => diagnose(typed, &ctx),
+        None => {
+            let mut d = diagnose(&OpenVTCError::Config(err.to_string()), &ctx);
+            d.error = format!("{err:#}");
+            d
+        }
+    };
+
+    // The report goes to the log and to a file as well as to the screen: the
+    // screen version scrolls away with the terminal, and a support request is
+    // far more useful with the whole thing attached than with a photograph of
+    // the top of it.
+    error!("startup failed\n{}", diagnosis.render_plain());
+    if let Some(path) = diagnosis.write_report(profile) {
+        diagnosis
+            .context
+            .push(("Full report".to_string(), path.display().to_string()));
+    }
+    diagnosis
 }
 
 impl StateHandler {
@@ -409,6 +471,10 @@ impl StateHandler {
                 // dropped inside the spawn and recv() immediately returns None.
                 let (token_touch_tx, mut token_touch_rx) = mpsc::unbounded_channel::<bool>();
 
+                // `deferred` (and its profile) moves into the load task, so the
+                // failure handler below needs its own copy to diagnose with.
+                let profile = self.profile.clone();
+
                 let mut load_handle = tokio::spawn(async move {
                     let on_progress = |major: &str, sub: &str| {
                         if let Err(e) = progress_tx.send((major.to_string(), sub.to_string())) {
@@ -469,7 +535,10 @@ impl StateHandler {
                         Some(&on_progress),
                     )
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    // Keep the typed `OpenVTCError` rather than formatting it
+                    // away: the failure handler downcasts it to build a
+                    // cause-specific diagnosis, which a string cannot support.
+                    .map_err(anyhow::Error::new)?;
 
                     Ok::<_, anyhow::Error>((tdk, config, admin_session))
                 });
@@ -505,6 +574,8 @@ impl StateHandler {
                                 }
                                 Ok(Err(e)) => {
                                     progress.fail(&mut state.loading);
+                                    state.startup_diagnosis =
+                                        Some(std::sync::Arc::new(diagnose_startup(&e, &profile)));
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
                                     let _ = self.state_tx.send(state.clone());
@@ -521,6 +592,12 @@ impl StateHandler {
                                 }
                                 Err(join_err) => {
                                     progress.fail(&mut state.loading);
+                                    state.startup_diagnosis = Some(std::sync::Arc::new(
+                                        diagnose_startup(
+                                            &anyhow::anyhow!("internal error: {join_err}"),
+                                            &profile,
+                                        ),
+                                    ));
                                     state.connection.status =
                                         state::MediatorStatus::Failed(
                                             format!("Internal error: {join_err}"),
@@ -560,7 +637,40 @@ impl StateHandler {
                 let config = Box::new(config);
                 // Sync all display state from the loaded config
                 state.main_page.sync_from_config(&config);
-                state.main_page.log("Configuration loaded");
+                state.main_page.refresh_storage_warning(&self.profile);
+
+                // A degraded load is still a load — but it does not get to look
+                // like a clean one. The report gates the startup screen on an
+                // acknowledgement and stays in the activity log afterwards.
+                if config.integrity.is_clean() {
+                    state.main_page.log("Configuration loaded");
+                } else {
+                    let integrity = config.integrity.clone();
+                    state
+                        .main_page
+                        .log_detailed(integrity.headline(), integrity_detail(&integrity));
+                    for persona in &integrity.degraded_personas {
+                        state.main_page.log(format!(
+                            "Persona unavailable: {} — {}",
+                            persona.label.clone().unwrap_or_else(|| {
+                                openvtc_core::display::truncate_did(&persona.did, 40).into_owned()
+                            }),
+                            persona.reason.summary()
+                        ));
+                    }
+                    state.integrity = Some(std::sync::Arc::new(integrity));
+                }
+                if let Some(warning) = state
+                    .main_page
+                    .content_panel
+                    .settings
+                    .storage_warning
+                    .clone()
+                {
+                    // Loud enough to be seen without opening Settings: losing a
+                    // profile to a reboot is not something to discover later.
+                    state.main_page.log(format!("WARNING: {warning}"));
+                }
 
                 (tdk, config, loaded_admin_vta)
             }
@@ -600,6 +710,21 @@ impl StateHandler {
         } else {
             None
         };
+
+        // D13: make this install visible to the rest of the account, and notice
+        // the others. Spawned rather than awaited — registration is diagnostic,
+        // and a slow or device-slice-less VTA must not delay startup by a
+        // single frame. Uses its OWN client clone so the heartbeat loop can
+        // outlive any one borrow of the admin session.
+        let (presence_tx, mut presence_rx) =
+            mpsc::unbounded_channel::<device_presence::PresenceReport>();
+        if let Some(client) = admin_vta.as_ref() {
+            tokio::spawn(device_presence::run(
+                client.clone(),
+                self.profile.clone(),
+                presence_tx,
+            ));
+        }
 
         // Fetch VTA context name, reusing the always-on admin session.
         if let Some(client) = admin_vta.as_ref()
@@ -705,7 +830,10 @@ impl StateHandler {
         // R-C-6) — otherwise a multi-persona account renders empty panels until
         // the first event re-syncs (the per-path syncs above run with no
         // selection set yet).
-        state.reconcile_selected_community(&config.account);
+        state.reconcile_selected_community_among(
+            &config.account,
+            Some(&config.identities.keys().copied().collect()),
+        );
         let initial_active = state
             .selected_community
             .as_ref()
@@ -1173,6 +1301,44 @@ impl StateHandler {
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     }
                 },
+                // D13 presence: another install using this account, or a
+                // report that we could not tell. The task never touches
+                // `State` — everything lands here, in the single mutator.
+                Some(report) = presence_rx.recv() => {
+                    match report {
+                        device_presence::PresenceReport::Registered { device_id } => {
+                            debug!(%device_id, "this install is registered with the VTA");
+                            state.self_device_id = Some(device_id);
+                        }
+                        device_presence::PresenceReport::NewSiblings(siblings) => {
+                            if let Some(warning) =
+                                openvtc_core::devices::sibling_warning(&siblings)
+                            {
+                                state.main_page.log_detailed(
+                                    format!("WARNING: {warning}"),
+                                    siblings
+                                        .iter()
+                                        .map(|d| {
+                                            format!(
+                                                "{} — last seen {}",
+                                                d.label(),
+                                                d.last_seen_at.as_deref().unwrap_or("unknown")
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                );
+                            }
+                            state.live_siblings = siblings;
+                            let _ = self.state_tx.send(state.clone());
+                        }
+                        device_presence::PresenceReport::Unavailable(reason) => {
+                            // Said once, so an absence of sibling warnings is
+                            // not mistaken for an absence of siblings.
+                            debug!("device presence unavailable: {reason}");
+                        }
+                    }
+                },
                 // Lifecycle log messages from the Messaging
                 Some(event) = lifecycle_log_rx.recv() => {
                     // Formatted here, not in the logger task: naming a listener
@@ -1404,7 +1570,10 @@ impl StateHandler {
             // working persona actually changes (e.g. the active community left and
             // the default shifted), refilter the community-scoped panels so the UI
             // reflects the new context this frame.
-            state.reconcile_selected_community(&config.account);
+            state.reconcile_selected_community_among(
+                &config.account,
+                Some(&config.identities.keys().copied().collect()),
+            );
             let active_persona = state
                 .selected_community
                 .as_ref()
@@ -2700,6 +2869,15 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         Action::DismissLoading => {
             // Phase 1 done + user pressed Enter — reveal the main page
             // (phase-2 connection is already running in the background).
+            //
+            // When the load was degraded, this Enter IS the acknowledgement.
+            // Record that it was given, so the activity log shows the user was
+            // told rather than leaving it ambiguous whether they ever saw it.
+            if let Some(integrity) = state.integrity.take() {
+                state
+                    .main_page
+                    .log(format!("Acknowledged: {}", integrity.headline()));
+            }
             state.active_page = state::ActivePage::Main;
         }
         Action::MainMenuSelected(menu_item) => {

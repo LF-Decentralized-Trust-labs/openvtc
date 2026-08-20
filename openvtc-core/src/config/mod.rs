@@ -31,6 +31,7 @@ use std::{
 pub mod account;
 pub mod context_path;
 pub mod did;
+pub mod integrity;
 pub mod keys;
 pub mod loading;
 pub mod protected_config;
@@ -312,6 +313,24 @@ pub struct Config {
     /// and `account.org_did`.
     pub account: account::Account,
 
+    /// Random key that encrypts [`ProtectedConfig`], carried from
+    /// [`secured_config::SecuredConfig`] and written straight back on save.
+    ///
+    /// `None` only between loading a pre-D12 config and its first save: the
+    /// load falls back to the legacy credential-derived seed and mints a real
+    /// key here, which the next save persists. See
+    /// [`Self::get_encryption_seed`].
+    pub protected_key: Option<SecretString>,
+
+    /// What this load could not bring up. Runtime-only, like `identities`,
+    /// and empty on a healthy profile.
+    ///
+    /// Lives on `Config` rather than being returned separately so it cannot be
+    /// dropped on the floor by a caller that only wanted the config: the whole
+    /// point is that a degraded load is still a load, and something has to
+    /// carry the evidence that it was one.
+    pub integrity: integrity::LoadIntegrity,
+
     /// Runtime-resolved identities (resolved DID document + ATM profile),
     /// keyed by persona id. Not persisted — rebuilt at load from `account`.
     ///
@@ -414,12 +433,43 @@ pub(crate) fn membership_profile_label(
     format!("{community} ({who})")
 }
 
+/// Decode a stored base64url `ProtectedConfig` key into raw bytes.
+pub(crate) fn decode_protected_key(key: &SecretString) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
+    use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
+    let bytes = BASE64_URL_SAFE_NO_PAD
+        .decode(key.expose_secret())
+        .map_err(|e| OpenVTCError::Decrypt(format!("stored config key is not base64url: {e}")))?;
+    if bytes.len() < 32 {
+        return Err(OpenVTCError::Decrypt(
+            "stored config key is shorter than 32 bytes".to_string(),
+        ));
+    }
+    Ok(SecretBox::new(Box::new(bytes)))
+}
+
 impl Config {
     /// Returns the 32-byte encryption seed used to encrypt/decrypt `ProtectedConfig`.
     ///
     /// For `Bip32` backends, this derives the seed from path `m/0'/0'/0'`.
     /// For `Vta` backends, this returns the pre-computed SHA-256 hash of the private key.
     pub fn get_encryption_seed(&self) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
+        // D12: the profile's own key wins whenever it exists. Only a config
+        // written before that field existed falls through to the legacy
+        // derivation, and only until its next save.
+        if let Some(key) = &self.protected_key {
+            return decode_protected_key(key);
+        }
+        self.legacy_encryption_seed()
+    }
+
+    /// The pre-D12 seed: derived from the key backend rather than stored.
+    ///
+    /// Retained as a *decryption* fallback, never as the preferred key. A
+    /// profile mid-migration may still have its `ProtectedConfig` under this
+    /// seed — `Config::save` writes the secured blob before the public one, so
+    /// a crash between the two leaves the new key stored and the old blob on
+    /// disk. Keeping both readable is what makes that survivable (R7).
+    pub(crate) fn legacy_encryption_seed(&self) -> Result<SecretBox<Vec<u8>>, OpenVTCError> {
         match &self.key_backend {
             KeyBackend::Bip32 { root, .. } => ProtectedConfig::get_seed(root, "m/0'/0'/0'"),
             KeyBackend::Vta {
@@ -1550,6 +1600,8 @@ mod tests {
         identities: BTreeMap<account::PersonaId, crate::identity::IdentityContext>,
     ) -> Config {
         Config {
+            protected_key: None,
+            integrity: Default::default(),
             public: public_config::PublicConfig::default(),
             private: ProtectedConfig::default(),
             key_backend: KeyBackend::Bip32 {
@@ -1612,6 +1664,7 @@ mod tests {
         config.account.personas.insert(
             pid,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id: pid,
                 did: did.clone(),
                 did_document: None,
@@ -1657,6 +1710,7 @@ mod tests {
         config.account.personas.insert(
             pid,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id: pid,
                 did: "did:webvh:example.com:alice".into(),
                 did_document: None,
@@ -1695,6 +1749,7 @@ mod tests {
         config.account.personas.insert(
             pid,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id: pid,
                 did: "did:webvh:example.com:alice".into(),
                 did_document: None,

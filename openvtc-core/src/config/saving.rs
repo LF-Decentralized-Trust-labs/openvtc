@@ -117,9 +117,17 @@ impl Config {
                 .unlock_code
                 .as_ref()
                 .map(|s| SecretBox::new(Box::new(s.expose_secret().clone()))),
+            // The full account, INCLUDING personas that could not be loaded
+            // this session. A degraded persona keeps its record: it is skipped,
+            // never dropped, so a save taken while degraded does not turn a
+            // recoverable inconsistency into permanent loss.
             account: self.account.clone(),
+            // Carried, not regenerated: a snapshot that minted its own key
+            // would write the blob under a key the live config does not hold.
+            protected_key: self.protected_key.clone(),
             // Runtime-only; rebuilt at load and unused by `save`.
             identities: BTreeMap::new(),
+            integrity: crate::config::integrity::LoadIntegrity::default(),
             active_persona: None,
         })
     }
@@ -138,12 +146,25 @@ impl Config {
         #[cfg(feature = "openpgp-card")] touch_prompt: &(dyn Fn() + Send + Sync),
     ) -> Result<(), OpenVTCError> {
         let encryption_seed = self.get_encryption_seed()?;
-        // The v2 `account` is the encrypted source of truth — mirror the live
-        // in-memory account into the protected tier so it round-trips to disk.
-        let mut private = self.private.clone();
-        private.account = self.account.clone();
-        self.public.save(profile, &private, &encryption_seed)?;
 
+        // ORDER MATTERS: secrets first, then the config file.
+        //
+        // These are two separate, non-atomic writes, so a crash (or a full disk,
+        // or a credential store that refuses) between them leaves the halves
+        // disagreeing. Which half is already on disk decides how bad that is:
+        //
+        //   secrets, then file  — the interrupted persona is absent from the
+        //     account and its keys are left over. Nothing references keys that
+        //     do not exist; the load is clean and the leftovers are reported as
+        //     orphaned key records.
+        //   file, then secrets  — the account records a persona whose keys were
+        //     never written. Every load then has to cope with a persona that
+        //     cannot sign, encrypt, or connect.
+        //
+        // Both lose the persona that was mid-creation, which is unavoidable
+        // without a real transaction across two stores. Only the second leaves
+        // damage behind, so we take the first. `config::integrity` handles the
+        // damage either way — this just stops manufacturing it.
         let sc = SecuredConfig::from(self);
         sc.save(
             profile,
@@ -156,6 +177,12 @@ impl Config {
             #[cfg(feature = "openpgp-card")]
             touch_prompt,
         )?;
+
+        // The v2 `account` is the encrypted source of truth — mirror the live
+        // in-memory account into the protected tier so it round-trips to disk.
+        let mut private = self.private.clone();
+        private.account = self.account.clone();
+        self.public.save(profile, &private, &encryption_seed)?;
 
         Ok(())
     }

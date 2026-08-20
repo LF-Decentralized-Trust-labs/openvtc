@@ -7,6 +7,7 @@ use crate::{
     bip32::Bip32Extension,
     config::{
         Config, KeyBackend, KeyInfo, KeyTypes, PersonaDIDKeys,
+        integrity::DegradedReason,
         secured_config::{KeyInfoConfig, KeySourceMaterial, SecuredConfig},
     },
     errors::OpenVTCError,
@@ -309,13 +310,22 @@ impl Config {
     ///
     /// Returns an error if a verification method key path is missing from config,
     /// key derivation or import fails, or VTA secret retrieval fails.
+    /// Rehydrate one persona's private keys into the TDK secrets resolver.
+    ///
+    /// Returns a [`DegradedReason`] rather than an `OpenVTCError` because the
+    /// caller isolates the fault to this persona: the two ways this fails —
+    /// `key_info` has no entry for a verification method (an interrupted save)
+    /// and the VTA will not hand the key back (a transient fault) — need
+    /// different words in front of the user, and a formatted string cannot tell
+    /// them apart. Previously both were `OpenVTCError::Config` and either one
+    /// failed the entire profile load.
     pub(crate) async fn regenerate_persona_keys(
         tdk: &mut TDK,
         sc: &SecuredConfig,
         key_backend: &KeyBackend,
         doc: &Document,
         vta_client: Option<&vta_sdk::client::VtaClient>,
-    ) -> Result<(), OpenVTCError> {
+    ) -> Result<(), DegradedReason> {
         // Rehydrate DID keys referenced by Verification Methods in the DID
         // Document.
         //
@@ -333,14 +343,15 @@ impl Config {
         // `vta-sdk/src/didcomm_session.rs::send_and_wait`.
         for vm in &doc.verification_method {
             let Some(kp) = sc.key_info.get(vm.id.as_str()) else {
+                // The account knows about this persona but the secured config
+                // has no key for it: the two halves of a save disagree.
                 warn!(
-                    "Couldn't find DID Verification method key path ({}) in config.",
-                    vm.id
+                    key_id = %vm.id,
+                    "no key material recorded for this verification method"
                 );
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find DID Verification method key path ({}) in config.",
-                    vm.id
-                )));
+                return Err(DegradedReason::MissingKeyInfo {
+                    key_id: vm.id.to_string(),
+                });
             };
 
             // need to match this to VM purpose
@@ -358,32 +369,44 @@ impl Config {
             let mut secret = match &kp.path {
                 KeySourceMaterial::Derived { path } => {
                     let KeyBackend::Bip32 { root, .. } = key_backend else {
-                        return Err(OpenVTCError::Config(
-                            "KeySourceMaterial::Derived requires KeyBackend::Bip32".to_string(),
-                        ));
+                        return Err(DegradedReason::KeyUnavailable {
+                            detail: "a derived key needs the BIP32 backend, but this account \
+                                     uses VTA-managed keys"
+                                .to_string(),
+                        });
                     };
-                    root.get_secret_from_path(path, k_purpose)?
+                    root.get_secret_from_path(path, k_purpose).map_err(|e| {
+                        DegradedReason::KeyUnavailable {
+                            detail: format!("could not derive {path}: {e}"),
+                        }
+                    })?
                 }
                 KeySourceMaterial::Imported { seed } => {
                     Secret::from_multibase(seed.expose_secret(), None).map_err(|e| {
-                        OpenVTCError::Secret(format!(
-                            "Couldn't create secret from multibase for key id. Reason: {e}"
-                        ))
+                        DegradedReason::KeyUnavailable {
+                            detail: format!("stored key material is not valid multibase: {e}"),
+                        }
                     })?
                 }
                 KeySourceMaterial::VtaManaged { key_id } => {
                     // Use pre-authenticated VTA client
-                    let client = vta_client.ok_or_else(|| {
-                        OpenVTCError::Config("VtaManaged key requires VTA client".to_string())
+                    let client = vta_client.ok_or_else(|| DegradedReason::KeyUnavailable {
+                        detail: "this persona's keys are held by the VTA, and no VTA session \
+                                 is open"
+                            .to_string(),
                     })?;
 
                     let key_secret = client.get_key_secret(key_id).await.map_err(|e| {
-                        OpenVTCError::Config(format!(
-                            "Failed to get key secret from VTA for key_id {key_id}: {e}"
-                        ))
+                        DegradedReason::KeyUnavailable {
+                            detail: format!("the VTA would not return key {key_id}: {e}"),
+                        }
                     })?;
 
-                    secret_from_vta_response(&key_secret, k_purpose)?
+                    secret_from_vta_response(&key_secret, k_purpose).map_err(|e| {
+                        DegradedReason::KeyUnavailable {
+                            detail: format!("the VTA returned an unusable key {key_id}: {e}"),
+                        }
+                    })?
                 }
             };
 

@@ -328,6 +328,7 @@ impl ConfigExtension for Config {
             .await;
         let persona_id = PersonaId::new();
         let persona_record = PersonaRecord {
+            extra: serde_json::Map::new(),
             persona_id,
             did: persona_did_str.clone(),
             // Cache the minted document so the next startup skips the resolve.
@@ -433,6 +434,8 @@ fn build_state_a_config(state: &SetupState) -> Result<Config> {
     };
 
     Ok(Config {
+        protected_key: None,
+        integrity: Default::default(),
         account,
         identities: BTreeMap::new(),
         active_persona: None,

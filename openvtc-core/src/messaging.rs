@@ -1620,6 +1620,7 @@ mod tests {
         acct.personas.insert(
             pid,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id: pid,
                 did: persona_did.to_string(),
                 did_document: None,

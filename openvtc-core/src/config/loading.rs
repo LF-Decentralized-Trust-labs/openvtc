@@ -2,8 +2,12 @@
 
 use crate::{
     config::{
-        Config, ConfigProtectionType, KeyBackend, UnlockCode, protected_config::ProtectedConfig,
-        public_config::PublicConfig, secured_config::SecuredConfig,
+        Config, ConfigProtectionType, KeyBackend, UnlockCode,
+        account::{Account, PersonaId},
+        integrity::{DegradedPersona, DegradedReason, LoadIntegrity, StrandedMembership},
+        protected_config::ProtectedConfig,
+        public_config::PublicConfig,
+        secured_config::SecuredConfig,
     },
     errors::OpenVTCError,
 };
@@ -12,7 +16,7 @@ use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::BTreeMap;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use vta_sdk::credentials::CredentialBundle;
 
 #[cfg(feature = "openpgp-card")]
@@ -22,6 +26,136 @@ use super::TokenInteractions;
 /// sub-step of a major task begins, so the UI can build a two-level loading view
 /// with per-step and per-major timing.
 pub type ProgressFn<'a> = &'a (dyn Fn(&str, &str) + Send + Sync);
+
+/// Decrypt the protected blob, trying each key a profile could legitimately be
+/// sitting under, newest first. Returns the config and whether it needs re-keying.
+///
+/// Three keys, because all three are reachable in practice:
+///
+/// 1. **`stored`** — the profile's own D12 key. The normal case once migrated.
+/// 2. **`legacy`** — the pre-D12 seed derived from the admin credential (or the
+///    BIP32 root). Reached by a config written before D12, *and* by one whose
+///    re-key was interrupted: `Config::save` writes the secured blob before the
+///    public one, so a crash between them leaves the new key stored and the old
+///    blob on disk. Trying `legacy` after `stored` is precisely what makes that
+///    survivable rather than a lockout (R7).
+/// 3. **`oldest`** — pre-0.1.4 BIP32 configs, which derived from the verifying
+///    key. `None` for VTA-backed profiles, which never had that form.
+///
+/// Anything but (1) sets the re-key flag, and the next save rewrites the blob
+/// under the stored key.
+///
+/// Extracted from `load_step2` so this decision is testable without a TDK, a
+/// keyring, or a network — it is the one place a wrong answer locks a user out
+/// of their own profile.
+fn decrypt_protected_with_fallback(
+    stored: Option<&SecretBox<Vec<u8>>>,
+    legacy: &SecretBox<Vec<u8>>,
+    oldest: Option<&SecretBox<Vec<u8>>>,
+    blob: &str,
+) -> Result<(ProtectedConfig, bool), OpenVTCError> {
+    if let Some(seed) = stored {
+        match ProtectedConfig::load(seed, blob) {
+            Ok(cfg) => return Ok((cfg, false)),
+            Err(e) => {
+                debug!("stored config key did not decrypt ({e}); trying older seeds");
+            }
+        }
+    }
+
+    match ProtectedConfig::load(legacy, blob) {
+        Ok(cfg) => {
+            if stored.is_none() {
+                info!("config predates its own encryption key; re-keying on next save (D12)");
+            } else {
+                warn!(
+                    "config decrypted with the pre-D12 seed despite a stored key — a previous \
+                     re-key was interrupted; completing it on next save"
+                );
+            }
+            Ok((cfg, true))
+        }
+        Err(legacy_err) => {
+            let Some(oldest) = oldest else {
+                return Err(legacy_err);
+            };
+            match ProtectedConfig::load(oldest, blob) {
+                Ok(cfg) => {
+                    warn!(
+                        "config was encrypted with the pre-0.1.4 seed — re-encrypting on next save"
+                    );
+                    Ok((cfg, true))
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// Record a persona that could not be brought up, pulling its label and
+/// creation time from the account so the report can name it the way the user
+/// does rather than by DID alone.
+///
+/// Deliberately does **not** touch the account: the persona's record stays
+/// exactly as it was. See `config::integrity` for why removing it would be the
+/// wrong thing to do on the one path taken by an already-damaged profile.
+fn record_degraded(
+    integrity: &mut LoadIntegrity,
+    account: &Account,
+    persona_id: PersonaId,
+    persona_did: &str,
+    reason: DegradedReason,
+) {
+    let record = account.personas.get(&persona_id);
+    warn!(
+        persona = %persona_did,
+        "persona unavailable this session: {}", reason.summary()
+    );
+    integrity.degraded_personas.push(DegradedPersona {
+        persona_id,
+        did: persona_did.to_string(),
+        label: record.and_then(|p| p.label.clone()),
+        created_at: record.map_or_else(chrono::Utc::now, |p| p.created_at),
+        reason,
+    });
+}
+
+/// Cross-check the account against what actually loaded.
+///
+/// Two mismatches matter, and both are the same interrupted write seen from
+/// opposite sides: a membership whose persona did not load (so the community is
+/// inert), and `key_info` entries for a DID no persona claims (so keys were
+/// written and the account was not).
+fn cross_check(integrity: &mut LoadIntegrity, account: &Account, key_ids: &[String]) {
+    let unusable: std::collections::HashSet<PersonaId> = integrity
+        .degraded_personas
+        .iter()
+        .map(|p| p.persona_id)
+        .collect();
+
+    for community in account.memberships() {
+        if unusable.contains(&community.persona_ref) {
+            integrity.stranded_memberships.push(StrandedMembership {
+                vtc_did: community.vtc_did.to_string(),
+                persona_id: community.persona_ref,
+                label: community.display_name.clone(),
+            });
+        }
+    }
+
+    // A key id is `{did}#key-N`; it is ours if some persona owns that DID.
+    // Relationship (R-DID) keys are `did:peer:...` and are not persona keys, so
+    // they are excluded rather than reported as orphans.
+    let persona_dids: std::collections::HashSet<&str> =
+        account.personas.values().map(|p| p.did.as_str()).collect();
+    for key_id in key_ids {
+        let did = key_id.split('#').next().unwrap_or(key_id);
+        if did.starts_with("did:webvh:") && !persona_dids.contains(did) {
+            integrity.orphaned_key_ids.push(key_id.clone());
+        }
+    }
+    integrity.orphaned_key_ids.sort();
+}
 
 impl Config {
     /// Step 1 of loading the configuration: reads the public config from disk.
@@ -139,48 +273,61 @@ impl Config {
             ));
         };
 
-        // Get the encryption seed for ProtectedConfig
-        let encryption_seed = match &key_backend {
+        // D12: the profile's own key encrypts `ProtectedConfig`, so the admin
+        // credential is free to rotate and be re-issued to a recovering
+        // install. `legacy_seed` is the pre-D12 derivation, kept as a
+        // *decryption* fallback only.
+        let legacy_seed = match &key_backend {
             KeyBackend::Bip32 { root, .. } => ProtectedConfig::get_seed(root, "m/0'/0'/0'")?,
             KeyBackend::Vta {
                 encryption_seed, ..
             } => SecretBox::new(Box::new(encryption_seed.expose_secret().to_vec())),
         };
+        let stored_key = sc.protected_key.clone();
 
         // Unencrypt the private config data, with migration from legacy seed
-        let (mut private_cfg, needs_migration) =
-            if let Some(private_cfg_str) = &public_config.private {
-                match ProtectedConfig::load(&encryption_seed, private_cfg_str) {
-                    Ok(cfg) => (cfg, false),
-                    Err(_) => {
-                        // Try legacy seed (pre-0.1.4 used verifying key instead of signing key)
-                        if let KeyBackend::Bip32 { root, .. } = &key_backend {
-                            let legacy_seed = ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?;
-                            match ProtectedConfig::load(&legacy_seed, private_cfg_str) {
-                                Ok(cfg) => {
-                                    warn!(
-                                        "Config was encrypted with legacy seed — will be \
-                                         re-encrypted with the new seed on next save"
-                                    );
-                                    (cfg, true)
-                                }
-                                Err(e) => return Err(e),
-                            }
-                        } else {
-                            return Err(OpenVTCError::Decrypt(
-                                "Failed to decrypt protected config".to_string(),
-                            ));
-                        }
+        //
+        // Three keys are tried, newest first, because a profile can legitimately
+        // be sitting under any of them:
+        //   1. the stored D12 key — the normal case once migrated;
+        //   2. the pre-D12 credential/BIP32-derived seed — a config written
+        //      before D12, or one whose re-key was interrupted between the two
+        //      writes `Config::save` makes (R7);
+        //   3. the pre-0.1.4 BIP32 seed, which used the verifying key.
+        // Succeeding on anything but (1) sets `needs_rekey`, and the next save
+        // writes the blob back under the stored key.
+        let (mut private_cfg, needs_rekey) = match &public_config.private {
+            Some(blob) => {
+                let stored_seed = stored_key
+                    .as_ref()
+                    .map(crate::config::decode_protected_key)
+                    .transpose()?;
+                let oldest_seed = match &key_backend {
+                    KeyBackend::Bip32 { root, .. } => {
+                        Some(ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?)
                     }
-                }
-            } else {
-                (ProtectedConfig::default(), false)
-            };
+                    KeyBackend::Vta { .. } => None,
+                };
+                decrypt_protected_with_fallback(
+                    stored_seed.as_ref(),
+                    &legacy_seed,
+                    oldest_seed.as_ref(),
+                    blob,
+                )?
+            }
+            // A profile with no protected blob yet still gets a key, so its
+            // first write is already under the D12 scheme.
+            None => (ProtectedConfig::default(), stored_key.is_none()),
+        };
 
-        // If migrating from legacy seed, flag for re-encryption on next save
-        if needs_migration {
-            info!("Config will be re-encrypted with the updated seed derivation on next save");
-        }
+        // Mint the profile's own key now if it has none (or if a previous
+        // re-key was interrupted); the next save persists it and rewrites the
+        // protected blob under it.
+        let protected_key = if needs_rekey || stored_key.is_none() {
+            Some(crate::config::secured_config::new_protected_key())
+        } else {
+            stored_key
+        };
 
         // Cached "this DID has no verifiable name" results do not survive a
         // restart — see `prune_agent_name_negatives`. The first refresh sweep
@@ -289,6 +436,9 @@ impl Config {
         // session trips the SDK `LeakGuard` and duels other sessions on the
         // mediator). On SUCCESS the session is returned to the caller alive
         // (PERF #1) — it is NOT shut down here.
+        // Gathered rather than thrown: see `config::integrity`.
+        let mut integrity = LoadIntegrity::default();
+
         let hydrate: Result<(), OpenVTCError> = async {
             for (persona_id, persona_did, persona_mediator, cached_document) in &personas {
                 // Name the persona's messaging profile after its community AND
@@ -315,15 +465,23 @@ impl Config {
                     doc
                 } else {
                     report_progress(&on_progress, "Identity", "Resolving DID document");
-                    tdk.did_resolver()
-                        .resolve(persona_did)
-                        .await
-                        .map_err(|e| {
-                            OpenVTCError::Resolver(format!(
-                                "Couldn't resolve Persona DID ({persona_did}): {e}"
-                            ))
-                        })?
-                        .doc
+                    match tdk.did_resolver().resolve(persona_did).await {
+                        Ok(resolved) => resolved.doc,
+                        Err(e) => {
+                            // Isolated, not fatal: this persona has no usable
+                            // document, but the others may.
+                            record_degraded(
+                                &mut integrity,
+                                &account,
+                                *persona_id,
+                                persona_did,
+                                DegradedReason::DocumentUnresolvable {
+                                    detail: e.to_string(),
+                                },
+                            );
+                            continue;
+                        }
+                    }
                 };
 
                 // Final mediator resolution. If neither the persona record nor
@@ -356,32 +514,72 @@ impl Config {
                 };
 
                 report_progress(&on_progress, "Identity", "Fetching persona keys");
-                Config::regenerate_persona_keys(
+                // THE isolation point. A persona recorded in the account with no
+                // `key_info` — the signature of a save that wrote the config file
+                // and then died before the credential store — used to return here
+                // and fail the ENTIRE profile: every other persona, every
+                // community, every relationship. Now it costs exactly the persona
+                // that has the fault.
+                if let Err(reason) = Config::regenerate_persona_keys(
                     tdk,
                     &sc,
                     &key_backend,
                     &document,
                     vta_client.as_ref(),
                 )
-                .await?;
+                .await
+                {
+                    record_degraded(&mut integrity, &account, *persona_id, persona_did, reason);
+                    continue;
+                }
 
                 report_progress(&on_progress, "Identity", "Building messaging profiles");
-                let persona_profile = ATMProfile::new(
-                    tdk.atm.as_ref().ok_or_else(|| {
-                        OpenVTCError::Config("TDK ATM service not initialized".to_string())
-                    })?,
+                // The ATM service itself is account-wide, not per persona: if it
+                // is missing, no persona can work and degrading each in turn
+                // would report the same fault N times as though N things broke.
+                let atm = tdk.atm.clone().ok_or_else(|| {
+                    OpenVTCError::Config("TDK ATM service not initialized".to_string())
+                })?;
+                let persona_profile = match ATMProfile::new(
+                    &atm,
                     Some(profile_label.clone()),
                     persona_did.to_string(),
                     Some(persona_mediator.clone()),
                 )
-                .await?;
+                .await
+                {
+                    Ok(profile) => profile,
+                    Err(e) => {
+                        record_degraded(
+                            &mut integrity,
+                            &account,
+                            *persona_id,
+                            persona_did,
+                            DegradedReason::MessagingUnavailable {
+                                detail: e.to_string(),
+                            },
+                        );
+                        continue;
+                    }
+                };
 
                 // Register the persona profile with the TDK ATM Service but do
                 // NOT open a WebSocket — the DIDComm service owns connections.
-                let atm = tdk.atm.clone().ok_or_else(|| {
-                    OpenVTCError::Config("TDK ATM service not initialized".to_string())
-                })?;
-                let persona_profile = atm.profile_add(&persona_profile, false).await?;
+                let persona_profile = match atm.profile_add(&persona_profile, false).await {
+                    Ok(profile) => profile,
+                    Err(e) => {
+                        record_degraded(
+                            &mut integrity,
+                            &account,
+                            *persona_id,
+                            persona_did,
+                            DegradedReason::MessagingUnavailable {
+                                detail: e.to_string(),
+                            },
+                        );
+                        continue;
+                    }
+                };
 
                 identities.insert(
                     *persona_id,
@@ -396,12 +594,18 @@ impl Config {
             }
 
             // Register relationship (R-DID) profiles ONCE, excluding ALL persona
-            // DIDs (each persona's own listener carries the relationships served
-            // by its DID). Personas share the account VTA mediator, so any
-            // persona's mediator is correct for the R-DID profiles — use the
-            // first. Registers each profile with the ATM service as a side-effect;
-            // the returned map is no longer stored on `Config`.
-            if let Some((_, _, first_mediator, _)) = personas.first() {
+            // DIDs — including degraded ones, which are still ours and whose
+            // relationships must not be re-registered under an R-DID profile.
+            // Personas share the account VTA mediator, so any persona's mediator
+            // works; take it from one that actually loaded, since a degraded
+            // persona's mediator may be exactly what was wrong with it.
+            // Registers each profile with the ATM service as a side-effect; the
+            // returned map is no longer stored on `Config`.
+            let relationship_mediator = identities
+                .values()
+                .find_map(|i| i.mediator_did.clone())
+                .or_else(|| personas.first().map(|(_, _, m, _)| m.clone()));
+            if let Some(first_mediator) = relationship_mediator.as_ref() {
                 report_progress(&on_progress, "Identity", "Loading relationships");
                 let our_p_dids: std::collections::HashSet<String> = personas
                     .iter()
@@ -456,10 +660,26 @@ impl Config {
             return Err(e);
         }
 
+        // Cross-check what the account claims against what came up. Runs after
+        // hydration because it needs the degraded set, and before `Config` is
+        // built so the report travels with the config it describes.
+        let key_ids: Vec<String> = sc.key_info.keys().cloned().collect();
+        cross_check(&mut integrity, &account, &key_ids);
+        if !integrity.is_clean() {
+            warn!(
+                degraded = integrity.degraded_personas.len(),
+                stranded = integrity.stranded_memberships.len(),
+                orphaned = integrity.orphaned_key_ids.len(),
+                "profile loaded with problems; the user is asked to acknowledge them"
+            );
+        }
+
         Ok((
             Config {
                 account,
                 identities,
+                integrity,
+                protected_key,
                 active_persona: None,
                 key_backend,
                 public: public_config,
@@ -496,6 +716,283 @@ fn log_private_config_shape(private_cfg: &ProtectedConfig) {
         vrcs_received = private_cfg.vrcs_received.keys().len(),
         "private config loaded"
     );
+}
+
+#[cfg(test)]
+mod protected_key_fallback_tests {
+    //! D12/R7 — the key-fallback decision. A wrong answer here locks a user out
+    //! of their own profile, so every reachable combination is pinned.
+    use super::*;
+    use crate::config::secured_config::new_protected_key;
+
+    fn seed(byte: u8) -> SecretBox<Vec<u8>> {
+        SecretBox::new(Box::new(vec![byte; 32]))
+    }
+
+    fn blob_under(seed: &SecretBox<Vec<u8>>) -> String {
+        let mut cfg = ProtectedConfig::default();
+        cfg.account.top_context_id = "marker".to_string();
+        cfg.save(seed).expect("encrypt")
+    }
+
+    /// The normal, migrated case: stored key decrypts, nothing to re-key.
+    #[test]
+    fn a_stored_key_decrypts_and_needs_no_rekey() {
+        let stored = seed(1);
+        let blob = blob_under(&stored);
+        let (cfg, rekey) =
+            decrypt_protected_with_fallback(Some(&stored), &seed(2), None, &blob).expect("decrypt");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(!rekey);
+    }
+
+    /// A config written before D12: no stored key, legacy seed decrypts, and it
+    /// must be flagged for re-keying.
+    #[test]
+    fn a_pre_d12_config_falls_back_and_is_flagged() {
+        let legacy = seed(2);
+        let blob = blob_under(&legacy);
+        let (cfg, rekey) =
+            decrypt_protected_with_fallback(None, &legacy, None, &blob).expect("decrypt");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(rekey, "a pre-D12 config must be re-keyed");
+    }
+
+    /// **R7.** `Config::save` writes the secured blob before the public one, so
+    /// a crash between them leaves the NEW key stored and the OLD blob on disk.
+    /// The user must still get in.
+    #[test]
+    fn an_interrupted_rekey_still_opens_the_profile() {
+        let legacy = seed(2);
+        let blob = blob_under(&legacy);
+        // The new key was persisted; the blob was not rewritten.
+        let stored = crate::config::decode_protected_key(&new_protected_key()).expect("decode");
+
+        let (cfg, rekey) = decrypt_protected_with_fallback(Some(&stored), &legacy, None, &blob)
+            .expect("an interrupted re-key must not lock the user out");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(
+            rekey,
+            "the interrupted re-key must be completed on next save"
+        );
+    }
+
+    /// Pre-0.1.4 BIP32 configs used the verifying key. Still reachable.
+    #[test]
+    fn the_oldest_bip32_seed_is_still_tried() {
+        let oldest = seed(3);
+        let blob = blob_under(&oldest);
+        let (cfg, rekey) =
+            decrypt_protected_with_fallback(Some(&seed(1)), &seed(2), Some(&oldest), &blob)
+                .expect("decrypt");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(rekey);
+    }
+
+    /// A blob under none of the keys is an error, not a silent empty config —
+    /// returning a default would present an account with no personas as though
+    /// that were the truth.
+    #[test]
+    fn an_undecryptable_blob_is_an_error_not_an_empty_config() {
+        let blob = blob_under(&seed(9));
+        let err = decrypt_protected_with_fallback(Some(&seed(1)), &seed(2), Some(&seed(3)), &blob);
+        assert!(err.is_err(), "must not fabricate an empty account");
+    }
+
+    /// A VTA-backed profile has no pre-0.1.4 form, so the legacy failure is
+    /// what surfaces — not a confusing error about a seed that never applied.
+    #[test]
+    fn a_vta_profile_reports_the_legacy_failure() {
+        let blob = blob_under(&seed(9));
+        let err =
+            decrypt_protected_with_fallback(None, &seed(2), None, &blob).expect_err("should fail");
+        assert!(
+            matches!(err, OpenVTCError::Decrypt(_)),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    //! The cross-check that turns a half-written save into a report instead of
+    //! a fatal load. The hydration path itself needs a live TDK and a VTA, so
+    //! what is pinned here is the consistency logic that decides what the user
+    //! is told.
+    use super::*;
+    use crate::config::account::{CommunityRecord, CommunityStatus, PersonaRecord, VtcDid};
+    use uuid::Uuid;
+
+    const ALICE: &str = "did:webvh:QmAlice:example.com:alice";
+    const BOB: &str = "did:webvh:QmBob:example.com:bob";
+    const GHOST: &str = "did:webvh:QmGhost:example.com:ghost";
+
+    fn persona(did: &str) -> (PersonaId, PersonaRecord) {
+        let persona_id = PersonaId(Uuid::new_v4());
+        (
+            persona_id,
+            PersonaRecord {
+                extra: serde_json::Map::new(),
+                persona_id,
+                did: did.to_string(),
+                did_document: None,
+                key_refs: Vec::new(),
+                mediator_did: None,
+                origin_context_id: "top".to_string(),
+                created_at: chrono::Utc::now(),
+                label: None,
+            },
+        )
+    }
+
+    fn account_with(personas: Vec<(PersonaId, PersonaRecord)>) -> Account {
+        let mut account = Account::default();
+        for (id, record) in personas {
+            account.personas.insert(id, record);
+        }
+        account
+    }
+
+    fn active_membership(account: &mut Account, vtc: &str, persona_ref: PersonaId, name: &str) {
+        let vtc_did = VtcDid::from(vtc.to_string());
+        let mut record = CommunityRecord::new_pending(
+            vtc_did.clone(),
+            Some(name.to_string()),
+            "top/sub".to_string(),
+            persona_ref,
+            Uuid::new_v4(),
+            chrono::Utc::now(),
+        );
+        record.status = CommunityStatus::Active;
+        account.communities.insert(vtc_did, vec![record]);
+    }
+
+    fn degraded(persona_id: PersonaId, did: &str) -> DegradedPersona {
+        DegradedPersona {
+            persona_id,
+            did: did.to_string(),
+            label: None,
+            created_at: chrono::Utc::now(),
+            reason: DegradedReason::MissingKeyInfo {
+                key_id: format!("{did}#key-1"),
+            },
+        }
+    }
+
+    #[test]
+    fn a_healthy_account_cross_checks_clean() {
+        let (alice_id, alice) = persona(ALICE);
+        let mut account = account_with(vec![(alice_id, alice)]);
+        active_membership(
+            &mut account,
+            "did:webvh:QmV:vtc.example.com:c",
+            alice_id,
+            "C",
+        );
+
+        let mut integrity = LoadIntegrity::default();
+        cross_check(
+            &mut integrity,
+            &account,
+            &[format!("{ALICE}#key-1"), format!("{ALICE}#key-2")],
+        );
+        assert!(integrity.is_clean(), "{integrity:?}");
+    }
+
+    /// The point of the whole change: one degraded persona strands only its own
+    /// membership. Bob and his community must be untouched.
+    #[test]
+    fn a_degraded_persona_strands_only_its_own_membership() {
+        let (alice_id, alice) = persona(ALICE);
+        let (bob_id, bob) = persona(BOB);
+        let mut account = account_with(vec![(alice_id, alice), (bob_id, bob)]);
+        active_membership(
+            &mut account,
+            "did:webvh:QmV:vtc.example.com:a",
+            alice_id,
+            "A",
+        );
+        active_membership(&mut account, "did:webvh:QmV:vtc.example.com:b", bob_id, "B");
+
+        let mut integrity = LoadIntegrity {
+            degraded_personas: vec![degraded(alice_id, ALICE)],
+            ..Default::default()
+        };
+        cross_check(
+            &mut integrity,
+            &account,
+            &[format!("{ALICE}#key-1"), format!("{BOB}#key-1")],
+        );
+
+        assert_eq!(integrity.stranded_memberships.len(), 1);
+        assert_eq!(integrity.stranded_memberships[0].persona_id, alice_id);
+        assert_eq!(
+            integrity.stranded_memberships[0].label.as_deref(),
+            Some("A")
+        );
+        assert!(integrity.orphaned_key_ids.is_empty());
+    }
+
+    /// The mirror image of the interrupted write: keys landed, the account did
+    /// not. The keys belong to a persona the account has never heard of.
+    #[test]
+    fn keys_for_an_unknown_persona_are_reported_as_orphans() {
+        let (alice_id, alice) = persona(ALICE);
+        let account = account_with(vec![(alice_id, alice)]);
+
+        let mut integrity = LoadIntegrity::default();
+        cross_check(
+            &mut integrity,
+            &account,
+            &[
+                format!("{ALICE}#key-1"),
+                format!("{GHOST}#key-1"),
+                format!("{GHOST}#key-2"),
+            ],
+        );
+
+        assert_eq!(integrity.orphaned_key_ids.len(), 2);
+        assert!(integrity.orphaned_key_ids[0].starts_with(GHOST));
+        assert!(integrity.has_incomplete_write());
+    }
+
+    /// Relationship keys are `did:peer:` and belong to no persona by design.
+    /// Reporting them as orphans would cry wolf on every healthy profile that
+    /// has ever formed a relationship.
+    #[test]
+    fn relationship_keys_are_not_mistaken_for_orphans() {
+        let (alice_id, alice) = persona(ALICE);
+        let account = account_with(vec![(alice_id, alice)]);
+
+        let mut integrity = LoadIntegrity::default();
+        cross_check(
+            &mut integrity,
+            &account,
+            &[
+                format!("{ALICE}#key-1"),
+                "did:peer:2.Ez6LS.Vz6Mk#key-1".to_string(),
+                "did:peer:2.Ez6LS.Vz6Mk#key-2".to_string(),
+            ],
+        );
+        assert!(integrity.is_clean(), "{integrity:?}");
+    }
+
+    /// A membership whose persona loaded fine is never stranded, even when some
+    /// *other* persona is degraded.
+    #[test]
+    fn a_healthy_persona_keeps_its_membership_when_another_is_degraded() {
+        let (alice_id, alice) = persona(ALICE);
+        let (bob_id, bob) = persona(BOB);
+        let mut account = account_with(vec![(alice_id, alice), (bob_id, bob)]);
+        active_membership(&mut account, "did:webvh:QmV:vtc.example.com:b", bob_id, "B");
+
+        let mut integrity = LoadIntegrity {
+            degraded_personas: vec![degraded(alice_id, ALICE)],
+            ..Default::default()
+        };
+        cross_check(&mut integrity, &account, &[]);
+        assert!(integrity.stranded_memberships.is_empty());
+    }
 }
 
 #[cfg(test)]

@@ -6,7 +6,116 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The admin credential was doing two irreconcilable jobs.** `ProtectedConfig`'s
+  encryption key was `HKDF(admin_credential_private_key, …)`, which made one
+  value both an **authorisation grant** designed to rotate (`acl/swap-key`) and
+  be re-issued to a recovering install, *and* a **data-at-rest key** that must
+  never change. Rotating the credential would have made the on-disk config
+  undecryptable, and a recovered install necessarily holds a different
+  credential — so recovery and existing local state were mutually exclusive.
+  The profile now carries its own random 32-byte key in `SecuredConfig`, beside
+  the credential bundle and under the same passphrase or token.
+
+  Migration is transparent and crash-safe. Load tries three keys, newest first:
+  the stored key, the pre-D12 derivation, and the pre-0.1.4 BIP32 seed. Anything
+  but the first flags a re-key, completed on the next save. Keeping the older
+  keys readable is what makes an *interrupted* re-key survivable — `Config::save`
+  writes the secured blob before the public one, so a crash between them leaves
+  the new key stored and the old blob on disk, and the user must still get in.
+
+- **Config records silently dropped fields written by newer builds.** Neither
+  `Account`, `PersonaRecord`, `CommunityRecord` nor `ProtectedConfig` carried
+  `deny_unknown_fields` or a catch-all, so serde discarded anything it did not
+  recognise. Harmless while one writer owns the config — which is why it never
+  bit — but a round trip through an older build strips a newer one's work, and
+  that becomes real the moment a record is shared between two installs. Each now
+  carries a `#[serde(flatten)] extra` that preserves unknown fields verbatim.
+  `CommunityRecord`'s had to go on its deserialization shadow, which parses
+  first; putting it on the record itself compiles and drops everything.
+
+- **One half-written persona took down the entire profile.** A profile is saved
+  in two non-atomic writes — the config file (carrying the account, and with it
+  the persona records) and the `SecuredConfig` blob in the OS credential store
+  (carrying `key_info`). A crash between them left a persona recorded with no
+  key material, and key rehydration returned `Err` on the first verification
+  method it could not find. That error propagated out of the persona loop and
+  failed the whole load: every *other* persona, every community, every
+  relationship, gone — reported as a verification method id, which tells the
+  user nothing. Now a fault is isolated to the persona that has it. Everything
+  loadable loads, what could not is collected into a `LoadIntegrity` report, and
+  the startup screen shows it and requires an explicit acknowledgement before
+  continuing. The report distinguishes an interrupted write (real loss — say so)
+  from an unreachable VTA (transient — say that instead), names what still works,
+  and states plainly that nothing has been deleted: a degraded persona keeps its
+  record and is skipped, never dropped, so an already-damaged profile is not
+  quietly made worse. A membership whose persona did not load is reported and
+  cannot be selected as the working context, which would otherwise be a silent
+  dead end.
+
+- **`Config::save` wrote the config file before the secrets, manufacturing the
+  above.** Both orders lose the persona that was mid-creation — that is
+  unavoidable without a transaction across two stores — but only file-first
+  leaves damage behind: an account referencing keys that were never written.
+  Secrets-first leaves the interrupted persona simply absent, with leftover keys
+  reported as orphaned key records, and the load is clean.
+
+- **OpenVTC silently chose where to keep your keys, and on Linux chose badly.**
+  `linux-keyutils-keyring-store` documents itself as RAM-only — *"completely
+  in-memory and will not persist across reboots. Consider the keyring a secure
+  cache"* — and OpenVTC registered it unconditionally on Linux as the sole home
+  of a profile's BIP32 seed / VTA credential bundle. A reboot, a logout, or three
+  days of the persistent keyring's default expiry destroyed the account, and it
+  surfaced as `Config Error: Couldn't find openvtc secured configuration.
+  Reason: No matching credential found` — which reads like a corrupt install
+  rather than the expected data loss it was.
+
+  Two changes, and the second matters more than the first.
+
+  **Durable, and the same as every other tool.** Store registration now
+  delegates to `vta_sdk::keyring_init::install_default_store` — the same call
+  `pnm-cli` makes — so `openvtc`, `pnm` and anything else on the SDK put secrets
+  in the same place on the same OS: Apple Keychain, Windows Credential Manager,
+  or DBus Secret Service. OpenVTC was the only tool in the workspace using the
+  kernel keyring. Every store it will now select is durable.
+
+  **Fail closed.** If the credential store cannot be opened, OpenVTC exits with
+  an explanation instead of quietly writing the keys somewhere weaker. A tool
+  that silently downgrades its own storage teaches users the secure backend is
+  optional, and the moment it matters they discover their secrets were somewhere
+  they never agreed to. Headless machines choose durable file storage
+  deliberately with `OPENVTC_SECURE_STORE=file` — a new encrypted-file store
+  under `~/.config/openvtc/secrets/` at mode `0600` that refuses to hold an
+  unencrypted profile, so key material is never written to disk in the clear.
+  `keyutils` remains selectable but is deprecated, warns loudly on every launch,
+  and exists only so a profile written by an older build can be started once and
+  exported.
+
+- **Every startup failure printed the same advice, including the ones with no
+  network in them.** The loading screen's single hint — *"Check your network and
+  that your VTA/mediator are reachable"* — was shown for a missing credential, a
+  locked keychain, a wrong passphrase and a corrupt blob alike, pointing the user
+  away from the machine the problem was on. This is what the stack development
+  guide's **R6.4** forbids. `OpenVTCError` gained a typed `SecureStore { fault,
+  .. }` variant (missing / unavailable / ambiguous / corrupt / rejected) so the
+  cases stay distinguishable, and a new `diagnostics` module turns each into its
+  own report: what failed, what it means, the state of the profile's config file
+  and credential store, commands to confirm it, and remedies in order — with
+  restore-a-backup always ahead of the destructive reset, and no reset offered at
+  all for a locked store or a wrong passphrase, where the keys are intact. The
+  report is scrollable, is written to
+  `~/.config/openvtc/last-startup-failure.txt` for bug reports, and the rotating
+  "your keys never leave your device" tip no longer appears under a fatal error.
+
 ### Added
+
+- **`openvtc health` now reports local storage first.** Which credential store
+  is in use, where it keeps things, whether *this* profile's credential is
+  actually there, and how long it will survive — plus the command to check it
+  yourself. It runs when no account can be loaded at all, which used to abort
+  with "nothing to check" and is exactly the run where the answer is wanted.
+  `--json` gains a `local` object alongside the existing keys.
 
 - **An explicit `[Ctrl+V]` "paste an invitation" action on the join entry
   page.** Bracketed paste worked the whole time, but nothing on screen said so —

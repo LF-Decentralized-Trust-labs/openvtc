@@ -208,6 +208,17 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
         ),
     ]));
 
+    // Volatile-storage warning, sitting between Protection (which fixes it)
+    // and Export (which insures against it) — the two actions it asks for.
+    if let Some(warning) = &state.storage_warning {
+        for line in textwrap_warning(warning) {
+            lines.push(Line::from(Span::styled(
+                line,
+                Style::new().fg(COLOR_ORANGE).bold(),
+            )));
+        }
+    }
+
     // Export option (index 5)
     let export_selected = state.selected_index == 5;
     let export_style = if export_selected {
@@ -500,4 +511,47 @@ fn render_change_protection(
     }
 
     lines
+}
+
+/// Wrap the volatile-storage warning to the settings panel's width, prefixed so
+/// it reads as an aside rather than another selectable row.
+///
+/// A hand-rolled wrap rather than a dependency: this is the only place in the
+/// panel that needs one, and the panel builds `Line`s directly rather than
+/// going through a `Paragraph` that could wrap for us.
+fn textwrap_warning(warning: &str) -> Vec<String> {
+    const WIDTH: usize = 64;
+    let mut out = vec![String::from("  ⚠ ")];
+    for word in warning.split_whitespace() {
+        let current = out.last_mut().expect("seeded with one line");
+        if current.chars().count() + word.chars().count() + 1 > WIDTH {
+            out.push(format!("    {word}"));
+        } else {
+            if !current.ends_with(' ') {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod storage_warning_tests {
+    use super::textwrap_warning;
+
+    #[test]
+    fn warning_wraps_within_the_panel_and_keeps_every_word() {
+        let warning = "This profile's keys are lost when this machine reboots and are NOT \
+                       on disk. Set a passphrase to store them durably, and export a backup now.";
+        let lines = textwrap_warning(warning);
+        assert!(lines.len() > 1, "a long warning must wrap");
+        for line in &lines {
+            assert!(line.chars().count() <= 70, "line too wide: {line}");
+        }
+        let rejoined = lines.join(" ");
+        for word in warning.split_whitespace() {
+            assert!(rejoined.contains(word), "wrapping dropped {word}");
+        }
+    }
 }

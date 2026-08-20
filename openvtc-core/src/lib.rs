@@ -23,6 +23,8 @@ pub mod config;
 // docs and is resolved in *this* file's scope, so every intra-doc link the
 // module writes about its own items breaks — which is what failed CI on #192
 // and again here.
+pub mod devices;
+pub mod diagnostics;
 pub mod didcomm;
 pub mod display;
 pub mod errors;
@@ -37,6 +39,7 @@ pub mod openpgp_card;
 pub mod presentation;
 pub mod process_lock;
 pub mod relationships;
+pub mod secure_store;
 pub mod tasks;
 pub mod tsp;
 pub mod vrc;
