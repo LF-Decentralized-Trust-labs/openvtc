@@ -61,6 +61,11 @@ impl ContextOccupied {
             KeyCode::Esc | KeyCode::Char('b') | KeyCode::Char('B') => {
                 state.props.state.active_page = SetupPage::VtaEnterDid;
             }
+            // Recover this context into a working account. Read-only until
+            // confirmed — the handler builds a plan and shows it.
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                let _ = state.action_tx.send(Action::RecoverPlanContext);
+            }
             // Continue into this context anyway. Not the default, and not
             // Enter: continuing means adding a second account beside the first,
             // and that should take a deliberate keystroke rather than the one
@@ -137,19 +142,19 @@ impl ContextOccupied {
              account alongside the existing one in the same context.",
             Style::new().fg(COLOR_TEXT_DEFAULT),
         ));
-        lines.push(Line::default());
-        lines.push(Line::styled(
-            "Recovering an existing context is not available yet. If you have an \
-             encrypted export, restore it instead: run OpenVTC and choose \
-             Import / Restore Backup.",
-            Style::new().fg(COLOR_TEXT_DEFAULT),
-        ));
 
         lines.push(Line::default());
         lines.push(Line::styled(
             "What would you like to do?",
             Style::new().fg(COLOR_BORDER).bold(),
         ));
+        lines.push(Line::from(vec![
+            Span::styled("  [R] ", Style::new().fg(COLOR_SOFT_PURPLE).bold()),
+            Span::styled(
+                "Recover this account — restores its identities and memberships",
+                Style::new().fg(COLOR_TEXT_DEFAULT),
+            ),
+        ]));
         lines.push(Line::from(vec![
             Span::styled("  [B] ", Style::new().fg(COLOR_SOFT_PURPLE).bold()),
             Span::styled(
@@ -174,6 +179,8 @@ impl ContextOccupied {
         frame.render_widget(body, middle);
 
         let bottom_line = Line::from(vec![
+            Span::styled("[R]", Style::new().fg(COLOR_BORDER).bold()),
+            Span::styled(" recover  |  ", Style::new().fg(COLOR_TEXT_DEFAULT)),
             Span::styled("[B]", Style::new().fg(COLOR_BORDER).bold()),
             Span::styled(
                 " different context  |  ",
@@ -264,8 +271,8 @@ mod tests {
         assert!(text.contains("does NOT recover"), "{text}");
         assert!(text.contains("second"), "{text}");
         assert!(
-            text.contains("not available yet"),
-            "recovery must be described as unavailable, not offered: {text}"
+            text.contains("Recover this account"),
+            "recovery must be offered now that it works: {text}"
         );
     }
 

@@ -1,5 +1,5 @@
 use crate::state_handler::{
-    setup_sequence::{Completion, MessageType, SetupPage},
+    setup_sequence::{Completion, MessageType, RebuildOutcome, SetupPage},
     state::State,
 };
 use std::sync::Arc;
@@ -502,6 +502,78 @@ pub(crate) async fn handle_vta_start_provision(
     // for the key/DID-creation steps (one mediator connection for the whole
     // flow), then shut down once when setup ends.
     Ok(Some(client))
+}
+
+/// Handle [`Action::RecoverPlanContext`]: work out what recovering this
+/// Trust Context would restore, and show it.
+///
+/// Strictly read-only — `rebuild::plan` lists and verifies, `rebuild_apply`
+/// is pure. Nothing reaches disk until the operator confirms on
+/// [`SetupPage::RecoverConfirm`] (D5).
+///
+/// A failure here is recorded rather than propagated: the operator can still
+/// go back and choose a different context, and losing the whole wizard because
+/// a listing failed would be a worse outcome than a page that explains itself.
+pub(crate) async fn handle_recover_plan_context(
+    state: &mut State,
+    state_tx: &watch::Sender<State>,
+    client: &vta_sdk::client::VtaClient,
+) {
+    let context_id = state.setup.vta.context_id.clone().unwrap_or_default();
+    let now = chrono::Utc::now();
+
+    state.setup.active_page = SetupPage::RecoverConfirm;
+    state.setup.vta.rebuild = None;
+    let _ = state_tx.send(state.clone());
+
+    let outcome = match openvtc_core::rebuild::plan(client, &context_id, now).await {
+        Ok(plan) => {
+            // Narrow the SDK key records to what the mapping needs. Only
+            // active keys: a revoked key cannot back a working persona.
+            let keys = match client
+                .list_keys(0, 500, Some("active"), Some(&context_id))
+                .await
+            {
+                Ok(resp) => resp
+                    .keys
+                    .into_iter()
+                    .filter_map(|k| {
+                        let key_type = match k.key_type {
+                            vta_sdk::keys::KeyType::Ed25519 => {
+                                openvtc_core::rebuild_apply::KeyPurposeHint::Signing
+                            }
+                            vta_sdk::keys::KeyType::X25519 => {
+                                openvtc_core::rebuild_apply::KeyPurposeHint::Encryption
+                            }
+                            // A key type OpenVTC has no slot for is not an
+                            // error — it simply backs no verification method
+                            // this build knows how to use.
+                            _ => return None,
+                        };
+                        Some(openvtc_core::rebuild_apply::KeyCandidate {
+                            key_id: k.key_id,
+                            label: k.label,
+                            key_type,
+                            created_at: k.created_at,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+                Err(e) => {
+                    state.setup.vta.rebuild =
+                        Some(Err(format!("could not list this context's keys: {e}")));
+                    let _ = state_tx.send(state.clone());
+                    return;
+                }
+            };
+
+            let account = openvtc_core::rebuild_apply::apply(&plan, &keys, now);
+            Ok(RebuildOutcome { plan, account })
+        }
+        Err(e) => Err(e.to_string()),
+    };
+
+    state.setup.vta.rebuild = Some(outcome);
+    let _ = state_tx.send(state.clone());
 }
 
 #[cfg(test)]

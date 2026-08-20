@@ -17,10 +17,10 @@ use crate::{
         component::{Component, ComponentRender},
         pages::setup_flow::{
             config_import::ConfigImport, context_occupied::ContextOccupied, final_page::FinalPage,
-            start_ask::StartAskPanel, unlock_code_ask::UnlockCodeAsk,
-            unlock_code_set::UnlockCodeSet, unlock_code_warn::UnlockCodeWarn,
-            vta_acl_instructions::VtaAclInstructions, vta_enter_did::VtaEnterDid,
-            vta_provisioning::VtaProvisioning,
+            recover_confirm::RecoverConfirm, start_ask::StartAskPanel,
+            unlock_code_ask::UnlockCodeAsk, unlock_code_set::UnlockCodeSet,
+            unlock_code_warn::UnlockCodeWarn, vta_acl_instructions::VtaAclInstructions,
+            vta_enter_did::VtaEnterDid, vta_provisioning::VtaProvisioning,
         },
     },
 };
@@ -39,6 +39,7 @@ pub mod config_import;
 pub mod context_occupied;
 pub mod final_page;
 pub mod navigation;
+pub mod recover_confirm;
 pub mod start_ask;
 pub mod unlock_code_ask;
 pub mod unlock_code_set;
@@ -64,6 +65,7 @@ pub struct SetupFlow {
     pub vta_acl_instructions: VtaAclInstructions,
     pub vta_provisioning: VtaProvisioning,
     pub context_occupied: ContextOccupied,
+    pub recover_confirm: RecoverConfirm,
 
     #[cfg(feature = "openpgp-card")]
     pub token_start: TokenStart,
@@ -113,6 +115,7 @@ impl Component for SetupFlow {
             vta_acl_instructions: VtaAclInstructions::default(),
             vta_provisioning: VtaProvisioning,
             context_occupied: ContextOccupied,
+            recover_confirm: RecoverConfirm,
 
             #[cfg(feature = "openpgp-card")]
             token_start: TokenStart::default(),
@@ -159,6 +162,7 @@ impl Component for SetupFlow {
             SetupPage::VtaAclInstructions => VtaAclInstructions::handle_key_event(self, key),
             SetupPage::VtaProvisioning => VtaProvisioning::handle_key_event(self, key),
             SetupPage::ContextOccupied => ContextOccupied::handle_key_event(self, key),
+            SetupPage::RecoverConfirm => RecoverConfirm::handle_key_event(self, key),
 
             #[cfg(feature = "openpgp-card")]
             SetupPage::TokenStart => TokenStart::handle_key_event(self, key),
@@ -230,6 +234,7 @@ impl ComponentRender<()> for SetupFlow {
             }
             SetupPage::VtaProvisioning => self.vta_provisioning.render(&self.props.state, frame),
             SetupPage::ContextOccupied => self.context_occupied.render(&self.props.state, frame),
+            SetupPage::RecoverConfirm => self.recover_confirm.render(&self.props.state, frame),
 
             #[cfg(feature = "openpgp-card")]
             SetupPage::TokenStart => self.token_start.render(&self.props.state, frame),
