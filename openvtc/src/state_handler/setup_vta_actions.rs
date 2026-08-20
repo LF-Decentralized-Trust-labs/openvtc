@@ -468,6 +468,30 @@ pub(crate) async fn handle_vta_start_provision(
         }
     };
 
+    // D5–D7: now that the session is authenticated, ask the context what it
+    // already contains, *before* setup writes anything into it. Read-only, three
+    // list calls, and the answer is ready by the time the operator presses
+    // Enter — so the wizard can route through the "already in use" warning
+    // without a pause the operator would experience as a hang.
+    //
+    // Deliberately not fatal: an outcome of `Unknown` means the wizard proceeds
+    // exactly as it always has. Failing to inform the decision must not prevent
+    // making it.
+    let probe = openvtc_core::context_probe::probe(&client, &context_id).await;
+    match &probe {
+        openvtc_core::context_probe::ProbeOutcome::Occupied(contents) => {
+            state.setup.vta.messages.push(MessageType::Info(format!(
+                "This Trust Context already contains {}.",
+                contents.summary()
+            )));
+        }
+        openvtc_core::context_probe::ProbeOutcome::Unknown(reason) => {
+            tracing::debug!("context probe inconclusive: {reason}");
+        }
+        openvtc_core::context_probe::ProbeOutcome::Empty => {}
+    }
+    state.setup.vta.context_probe = Some(probe);
+
     state.setup.vta.completed = Completion::CompletedOK;
     // Stay on VtaProvisioning so the operator can see the admin DID rotation
     // result (ephemeral setup DID → long-term admin DID) before advancing on
