@@ -39,6 +39,7 @@ pub mod messaging;
 pub mod openpgp_card;
 pub mod presentation;
 pub mod process_lock;
+pub mod rebuild;
 pub mod relationships;
 pub mod secure_store;
 pub mod tasks;
