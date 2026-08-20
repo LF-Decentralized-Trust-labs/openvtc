@@ -230,7 +230,6 @@ mod tests {
         let mut state = empty_state();
         state.vta.context_probe = Some(ProbeOutcome::Occupied(Box::new(ContextContents {
             persona_dids: vec!["did:webvh:Qm:example.com:alice".to_string()],
-            credential_count: 3,
             sub_context_count: 1,
         })));
 

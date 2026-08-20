@@ -71,6 +71,13 @@ pub fn cli() -> Command {
                         .long("json")
                         .action(clap::ArgAction::SetTrue)
                         .help("Emit the report as JSON instead of a rendered map"),
+                    Arg::new("recoverable")
+                        .long("recoverable")
+                        .action(clap::ArgAction::SetTrue)
+                        .help(
+                            "Also report whether this account could be rebuilt from its \
+                             Trust Context if this machine were lost. Read-only.",
+                        ),
                 ]),
         )
 }

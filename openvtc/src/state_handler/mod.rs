@@ -726,6 +726,41 @@ impl StateHandler {
             ));
         }
 
+        // Put any membership credential this account holds into the VTA's
+        // credential vault, if it is not there already. Idempotent, and covers
+        // three cases with one mechanism: a join that just completed, one
+        // received while the VTA was unreachable, and the back-fill of every
+        // membership from before credentials were stored there at all.
+        //
+        // This is what makes membership recovery work: `rebuild` reconstructs a
+        // membership from the credential the community signed, and that
+        // credential has to be somewhere other than the config file a rebuild
+        // exists because you no longer have.
+        if let Some(client) = admin_vta.as_ref() {
+            let report =
+                openvtc_core::credential_sync::sync_membership_credentials(&config, client).await;
+            if report.stored > 0 {
+                // Worth an activity-log line rather than only a debug one:
+                // this is the moment the account becomes recoverable, and a
+                // user who has just joined a community should be able to see
+                // that it happened.
+                state.main_page.log(format!(
+                    "Stored {} membership credential(s) at the VTA — this account can now \
+                     be recovered from its Trust Context",
+                    report.stored
+                ));
+            }
+            if report.failed > 0 {
+                // Costs recoverability rather than anything working now, so it
+                // is worth saying but not worth alarming about.
+                state.main_page.log(format!(
+                    "{} membership credential(s) could not be stored at the VTA — \
+                     this account may not be fully recoverable until they are",
+                    report.failed
+                ));
+            }
+        }
+
         // Fetch VTA context name, reusing the always-on admin session.
         if let Some(client) = admin_vta.as_ref()
             && let Ok(resp) = client.list_contexts().await

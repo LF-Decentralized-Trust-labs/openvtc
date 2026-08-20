@@ -218,7 +218,6 @@ mod tests {
             persona_dids: (0..personas)
                 .map(|i| format!("did:webvh:QmAAAAAAAAAAAA:example.com:persona{i}"))
                 .collect(),
-            credential_count: 14,
             sub_context_count: 2,
         })));
         state
@@ -258,10 +257,7 @@ mod tests {
         let text = flat(&occupied_state(3));
         assert!(text.contains("already in use"), "{text}");
         assert!(text.contains("openvtc"), "{text}");
-        assert!(
-            text.contains("3 personas, 2 sub-contexts and 14 credentials"),
-            "{text}"
-        );
+        assert!(text.contains("3 personas and 2 sub-contexts"), "{text}");
     }
 
     /// The misreading that would make this page actively harmful.
