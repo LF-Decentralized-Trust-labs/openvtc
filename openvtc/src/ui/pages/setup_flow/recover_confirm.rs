@@ -1,7 +1,8 @@
 //! What recovering this Trust Context would restore — and what it would not.
 //!
 //! Reached from [`SetupPage::ContextOccupied`] with `[R]`. Nothing has been
-//! written when this page appears: [`rebuild::plan`] only lists and verifies,
+//! written when this page appears: [`openvtc_core::rebuild::plan`] only lists
+//! and verifies,
 //! and `rebuild_apply::apply` is pure. The write happens when the operator
 //! confirms here, and not before (D5).
 //!

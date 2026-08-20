@@ -504,7 +504,8 @@ pub(crate) async fn handle_vta_start_provision(
     Ok(Some(client))
 }
 
-/// Handle [`Action::RecoverPlanContext`]: work out what recovering this
+/// Handle [`RecoverPlanContext`](crate::state_handler::actions::Action::RecoverPlanContext):
+/// work out what recovering this
 /// Trust Context would restore, and show it.
 ///
 /// Strictly read-only — `rebuild::plan` lists and verifies, `rebuild_apply`
