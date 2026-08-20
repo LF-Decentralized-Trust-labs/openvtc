@@ -1,7 +1,7 @@
 # SPEC — VTA-Authoritative State and Reinstall Recovery
 
-> Status: **DRAFT v4** — for review. Decisions D1–D22 proposed; D17–D22 agreed
-> in review, the rest still open.
+> Status: **DRAFT v5** — for review. Decisions D1–D22; D17–D22 agreed in review.
+> External asks reworked in v5 (E1–E4), see below.
 > Scope: the `openvtc` CLI and `openvtc-core` config model, plus three asks on
 > `verifiable-trust-infrastructure` — **E2 is blocking**, E1 and E3 are not.
 > Sealed bootstrap turns out to be **already implemented** in `pnm-cli` (§4).
@@ -11,6 +11,14 @@
 > flow rather than a separate command (§5); "start fresh" no longer means
 > "destroy" (D11); and a latent coupling that currently prevents the whole model
 > from working is called out (§7, D12).
+>
+> **Changed in v5:** the external asks. **E2 is now a store design, not a field**
+> — agent memory is the wrong home for application metadata, because clearing an
+> agent's memory must not delete your account. **E3 is sharper**: protect the
+> established connection rather than the newcomer, and the redelivery carve-out
+> turns out to be unnecessary. **E1 is deferred** (convenience, not capability)
+> and **E4 becomes a pluggable audit sink** rather than a tamper-evidence
+> mandate.
 >
 > **Changed in v4:** recovery safety (§10) — revoking the authorisation you just
 > replaced (D17), verifying the rebuilt model instead of trusting it (D18),
@@ -142,16 +150,22 @@ generate the ephemeral key, display/export the request, accept the armored
 bundle, verify the digest, open it, store the credential. Step 2 stays with
 whoever administers the VTA — see D4.
 
-### E1 (external, VTI) — the only remaining ask
+### E1 (external, VTI) — self-service reprovision · **deferred**
 
-Today step 2 requires operator access to `pnm`. For self-service recovery on a
-VTA you already administer, a caller who can prove control of a **second
-registered factor** should be able to reprovision without a human in the loop.
-The VTA already has the primitives: `spec/device/register/0.2` and
-`spec/auth/passkey/login/{start,finish}/0.2`.
+Recovery works today, but step 2 above needs a human with operator access to
+`pnm`. E1 would remove that human *only where it is safe to*: if you can already
+prove control of a **second thing the VTA knows about you** — a passkey you
+registered, or another enrolled device — that is evidence of the same strength,
+and you should be able to reprovision unattended. The primitives exist
+(`spec/device/register/0.2`, `spec/auth/passkey/login/{start,finish}/0.2`); what
+is missing is permission to use them as authorisation for a reprovision.
 
-**Requested:** allow a passkey- or registered-device-authenticated caller to
-issue a reprovision for a context they already hold a factor against.
+Concretely: recovering your laptop from your phone, with no operator involved,
+because the phone is already an enrolled device.
+
+**Deferred.** It is convenience, not capability — the operator path already
+delivers the recovery story. Revisit when there is a second enrolled device in
+the picture to authenticate *with*, which today there usually is not.
 
 **D4 — until then, an operator step is correct, not a workaround.** Anything
 that lets an unauthenticated caller re-issue an admin credential for a context
@@ -171,7 +185,7 @@ moment it holds a `VtaClient`, it can see whether that context has content.
 
 1. Operator supplies VTA DID + context id (unchanged).
 2. Authorise — existing provisioning, or §4's sealed bootstrap.
-3. **Probe the context** — `list_dids_webvh`, `memory_list`, `cred_vault_query`.
+3. **Probe the context** — `list_dids_webvh`, the appstate listing, `cred_vault_query`.
 4. If it is empty → continue as today. Nothing changes for a genuine first run.
 5. If it has content → present what was found and offer three choices (D11).
 
@@ -197,7 +211,7 @@ account; they need enough to tell.
 | 3 | `list_dids_webvh(context)` | persona DIDs |
 | 4 | `get_did_webvh(did)` | documents; mediator via existing `did::mediator_from_document` |
 | 5 | `list_keys(.., context)` | `key_info` as `VtaManaged { key_id }` |
-| 6 | `memory_list(context)` | the account model |
+| 6 | `appstate.list(context, "openvtc")` | the account model — needs E2 |
 | 7 | `cred_vault_query({})` | VICs, VMCs, VRCs |
 
 Only step 6 needs new work; the rest exist.
@@ -212,17 +226,24 @@ Three candidate stores; one fits:
   pollute a user-facing vault UI.
 - **Credential vault** (`cred_vault_*`) — **adopted for VICs/VMCs/VRCs**, where
   VICs already live.
-- **Agent memory** (`vta/memory/{put,list,delete}/0.1`) — per-context key/value,
-  ACL-gated on context access, isolation enforced server-side. **Adopted for the
-  account model.**
+- **Agent memory** (`vta/memory/{put,list,delete}/0.1`) — per-context key/value
+  for AI-agent recall. **Rejected for application state**: clearing an agent's
+  memory must not delete your account, `list` has no prefix or pagination, and
+  there is no version to build a precondition on. See E2.
+- **A new application-state store** (`spec/vta/appstate/*` — E2) — versioned,
+  namespaced, prefix-listable. **Adopted for the account model**, and blocking.
 
 **D8a — one key per record, never one blob:**
 
 ```
-openvtc/v1/account
-openvtc/v1/persona/{persona_id}
-openvtc/v1/membership/{vtc_hash}/{persona_id}
-openvtc/v1/relationship/{r_did_hash}
+namespace = "openvtc"
+
+v1/account
+v1/persona/{persona_id}
+v1/membership/{vtc_hash}/{persona_id}
+v1/relationship/{r_did_hash}
+v1/contact/{did_hash}
+v1/agent-name/{did_hash}
 ```
 
 1. **Payload size** — a blob grows without bound, and this project has already
@@ -234,25 +255,54 @@ openvtc/v1/relationship/{r_did_hash}
 
 **D8b** — every record carries `schema_version` and `updated_at`.
 
-### E2 (external, VTI) — **blocking**
+### E2 (external, VTI) — an application-state store · **blocking**
 
-`MemoryPutBody` is `{contextId, key, value}` with no precondition, and the
-`MemoryItem` returned by `list` is `{key, value}` — **no version, no timestamp,
-no ETag**. There is nothing to compare against, so two instances writing the
-same record silently overwrite each other and neither can detect it afterwards.
+v4 asked for `expectedVersion` on `vta/memory/put`. Review pushed back on the
+premise: is agent memory the right home at all? It is not.
 
-Per-record keys (D8a) bound *which* records collide. They do nothing about
-whether a collision is noticed, because nothing is carried that could reveal
-one.
+**Why not `vta/memory`.** Its stated purpose is *"a per-context key/value store
+for AI-agent memory"* — free-form recall for an agent. Three concrete problems
+with overloading it:
 
-**Requested:** `spec/vta/memory/put/0.2` taking an optional `expectedVersion`,
-and a `version` (and ideally `updatedAt`) on the listed entry — the same
-precondition pattern the vault slice already uses (`vault_delete(expected_version)`).
+1. **"Forget everything" would delete your account.** Clearing an agent's memory
+   is a reasonable, expected user action. It must not take your community
+   memberships with it. That alone settles the question.
+2. **`list` returns the entire context.** No prefix, no pagination. An agent
+   with a large memory makes every application read expensive, and the two grow
+   independently.
+3. **No versioning, and nothing to add it to.** `MemoryItem` is `{key, value}`.
 
-This is not an optimisation. **The account model must not move to agent memory
-until it lands**, or the migration replaces a local single-writer store with a
-shared one that corrupts silently. Along with D12, this is one of the two
-blockers on the whole spec.
+So: **a third store, with three jobs cleanly separated** —
+secrets in the vault, verifiable credentials in the credential vault,
+application metadata here.
+
+#### Proposed: `spec/vta/appstate/{get,put,list,delete}/1.0`
+
+Addressed by `(contextId, namespace, key)`. The **namespace** scopes an
+application — `openvtc`, `cnm`, a future agent runtime — so several tools share
+a context without colliding, and it gives a natural seam for per-namespace ACLs
+later.
+
+| Property | Behaviour | Why |
+|---|---|---|
+| `version` | Server-assigned, monotonic per record. Returned by `get`, `list` and `put`. | The thing v4 asked for, and the thing that does not exist today. |
+| `expectedVersion` on `put` | Optional precondition. On mismatch, a typed conflict that **carries the current version and value**. | Returning the loser's view with the rejection saves a round trip and removes the re-read race. |
+| `expectedVersion: 0` | "Create only — fail if it exists." | Makes lease acquisition (D15) safe. Without it two instances can both believe they won. |
+| `list` with `prefix` + pagination | Scoped enumeration. | `v1/membership/` without dragging every record. |
+| `list` with `sinceVersion` | Incremental: only records changed since a watermark. | This is what makes write-behind reconcile cheap instead of a full pull each connect. |
+| **Tombstones on delete** | A delete leaves a versioned tombstone, reaped after a retention window. | Without it, incremental sync **cannot converge** — a peer pulling `sinceVersion` never learns a record was deleted, and silently keeps it forever. |
+| Documented size limit | A stated per-record cap, and an explicit error on exceeding it. | This project has already lost a join to a size limit that dropped a write silently. |
+| Not for secrets | Stated in the protocol docs. | Three stores, three jobs; the boundary has to be written down or it will erode. |
+
+**E2a — the value stays opaque.** The store does not parse it. `schemaVersion`
+and the D19 flatten-through live inside the value, owned by the application.
+A dumb store is one that does not need a migration when OpenVTC's model changes.
+
+**E2b — `vta/memory` is left exactly as it is.** This is additive. Agent memory
+keeps its semantics, including being safe to clear.
+
+**Until this lands, the account model does not move.** Along with D12, it is one
+of two blockers on the whole spec.
 
 ### D8c — Cache and write-behind
 
@@ -352,7 +402,7 @@ community first, so the VTC learns about it.
 | Same machine, different profile names sharing one persona DID | none | Gap |
 | Two machines, same context | none | Gap |
 | Messaging | mediator ceiling of **one websocket per DID** | **Actively harmful** |
-| `vta/memory` writes | none — see E2 | Gap |
+| Shared application state | no store exists yet — see E2 | Gap |
 
 ### 9.2 The messaging layer is already broken
 
@@ -397,7 +447,7 @@ only reduces how often it is exercised.
 
 ### 9.5 D15 — An advisory writer lease, if exclusion is wanted
 
-A single memory record, `openvtc/v1/writer-lease`, holding
+A single appstate record, `v1/writer-lease`, holding
 `{device_id, display_name, expires_at}`, refreshed by the heartbeat already
 running under D13. An instance that sees a live lease held by someone else opens
 **read-only** and offers "take over".
@@ -428,19 +478,31 @@ Without D15, the fallback is D13 alone: still connect, but detect the sibling
 and warn loudly that both are open and the connection will be unstable. Better
 than today, which is silence.
 
-### E3 (external, VTI/mediator) — refuse, don't evict
+### E3 (external, VTI/mediator) — protect the incumbent
 
-The mediator's one-socket-per-DID ceiling would be far safer as a refusal than
-an eviction. A second connection for a DID that already has a live socket should
-be **rejected with a clear reason** the client can render, rather than silently
-displacing the incumbent.
+The mediator's one-socket-per-DID ceiling is enforced by **evicting the
+established connection in favour of the new one**. That is backwards. The
+incumbent is authenticated, live, and possibly mid-exchange; the newcomer has
+proved only that it can also authenticate. Preferring the newcomer means any
+second process can silently take over a live session — and when both retry, they
+take turns doing it forever.
 
-Eviction also has a legitimate use — it is how stored-mail redelivery is
-triggered (openvtc #218), so this needs a *deliberate* displace flag rather than
-having the two behaviours share one door.
+**Requested:** an established, authenticated connection for a DID is **kept**. A
+second connection attempt is **refused**, with a reason the client can render
+("this DID already has a live connection"), so the newcomer can say so instead
+of looping.
 
-**Requested:** a refuse-by-default connect mode, with displacement as an explicit
-opt-in for the redelivery path.
+v4 hedged this with "displacement as an explicit opt-in", because displacing a
+socket is how stored-mail redelivery gets triggered (openvtc #218). Checked, and
+the hedge is unnecessary for OpenVTC: it already collects stored mail explicitly
+through the standard message-pickup protocol
+(`affinidi_messaging_sdk::protocols::message_pickup`, via `Messaging::pickup_stored`).
+Redelivery does not need eviction, because there is a pull for it.
+
+**E3a — confirm before removing it.** Other clients may still rely on
+displacement for redelivery. The check is "does anything depend on connect-time
+displacement", not "assume nothing does" — but if OpenVTC is representative, the
+opt-in carve-out is dead weight and the rule can simply be: the incumbent wins.
 
 ## 10. Recovery safety and data integrity
 
@@ -483,7 +545,7 @@ through the `LoadIntegrity` path (already merged) and the user decides.
 **D18a — verify on rebuild, not on every load.** The local cache is ours; the
 check belongs at the trust boundary the data crosses, which is the rebuild.
 
-**D18b — this is why the credential vault and agent memory are separate stores.**
+**D18b — this is why the credential vault and the appstate store are separate.**
 Credentials are signed and independently verifiable; the account model is
 metadata *about* them. Keeping metadata in a store the VTA can rewrite is only
 safe because the signed artifact backing each record lives elsewhere and is
@@ -532,11 +594,17 @@ assertion of every bundle it opens, with the resulting subject DID and the
 timestamp. That answers *"prove this device was authorised, and by whom"*
 without trusting the VTA's own account of it.
 
-**E4 (external, VTI) — tamper-evident audit.** For the audit log itself to be
-evidence rather than testimony it needs integrity protection: signed entries, or
-a hash chain with a periodically published head. Not blocking — D20a gives the
-property where it matters most — but the current log cannot detect a VTA that
-rewrites its own history.
+**E4 (external, VTI) — a pluggable audit sink.** Tamper-evidence is deliberately
+*not* being solved now. The more useful move is an extension point: an audit
+trait the VTA writes through, with the current database sink as one
+implementation, so an operator who needs stronger guarantees can add a sink —
+an append-only log, a transparency log, a blockchain anchor — without the VTA
+committing to any one of them.
+
+That keeps the crypto decision out of the protocol and turns "make the audit
+tamper-evident" from a design argument into a deployment choice. D20a already
+supplies the property where it matters most: the recovery receipt is signed and
+verifiable regardless of what the audit sink does.
 
 ### D22 — Restored caches are stale by construction
 
@@ -581,7 +649,7 @@ large; both must land first.
 4. **Ship rebuild** (§6) behind the recover branch. Read-only against the VTA,
    so it does not depend on E2.
 5. **E2 lands** → ship the writer. Every mutation to personas, memberships or
-   relationships enqueues a `memory_put` with `expectedVersion`; existing
+   relationships enqueues an appstate write with `expectedVersion`; existing
    profiles back-fill on first connect. **D19 must already be in** — a record
    format that cannot survive an older build is not safe to share.
 6. **Ship the recipient side of sealed bootstrap** (D3), the revoke prompt
@@ -597,7 +665,7 @@ large; both must land first.
 anything writes to agent memory) · device registration + heartbeat + sibling
 reporting (D13) · setup probe and three-way branch (D5–D7, D10, D11) · rebuild
 with per-membership VMC verification (§6, D18) · account model, contacts and
-name cache → agent memory with `expectedVersion` (D14, D22) · VRCs/VMCs →
+name cache → the appstate store with `expectedVersion` (D14, D22) · VRCs/VMCs →
 credential vault · sealed-bootstrap recipient side, retaining the producer
 assertion (D3, D20a) · revoke-what-you-replaced prompt (D17) · audit view (D20)
 · write-behind queue and conflict surfacing (D8c) · optionally the writer lease
@@ -605,12 +673,12 @@ and listener ownership (D15, D16).
 
 **verifiable-trust-infrastructure**:
 
-| Ask | What | Priority |
+| Ask | What | Status |
 |---|---|---|
-| **E2** | `vta/memory/put/0.2` with `expectedVersion`, and a version on the listed entry | **Blocking** |
-| E3 | Mediator: refuse a second socket for a DID rather than evicting the incumbent, with displacement as an explicit opt-in for stored-mail redelivery | High — fixes a live bug |
-| E1 | Passkey- or device-authenticated reprovision, for self-service recovery | When convenient |
-| E4 | Tamper-evident audit — signed entries or a hash chain, so the log is evidence rather than testimony (D20) | When convenient |
+| **E2** | A new application-state store — `spec/vta/appstate/*` with versions, `expectedVersion`, prefix + `sinceVersion` listing, and tombstones. Agent memory is the wrong home. | **Blocking** |
+| **E3** | Mediator: keep the established authenticated connection and refuse the newcomer, rather than evicting the incumbent | High — fixes a live bug |
+| E1 | Self-service reprovision authenticated by a second registered factor | Deferred — convenience, not capability |
+| E4 | A pluggable audit sink (trait + backends), *not* tamper-evidence in the protocol | When convenient |
 | — | Fix the stale *"Design — not yet implemented"* header on `sealed-bootstrap.md` | Trivial |
 
 ## 12. Risks
@@ -622,7 +690,7 @@ and listener ownership (D15, D16).
   records collide; they do nothing about whether a collision is noticed,
   because `MemoryItem` carries nothing that could reveal one. Until E2 lands
   there is no detection at all, which is why the account model must not move
-  to agent memory before it. After E2, D14 makes a collision a surfaced
+  to a shared store before it. After E2, D14 makes a collision a surfaced
   conflict rather than a silent clobber — and D15/D16 reduce how often it
   happens, without ever being the thing that prevents corruption.
 - **R3 — the VTA sees your whole social graph.** Wider in v4: memberships,
@@ -643,10 +711,10 @@ and listener ownership (D15, D16).
   user out of their own account until expiry. The lease must never be the only
   thing standing between two writers and a corrupt record — that is D14's job
   (D15a).
-- **R9 — E3 could break stored-mail redelivery.** Displacing a socket is
-  currently how a stored inbox gets redelivered (openvtc #218). A blanket
-  refuse-don't-evict change would silently regress that, which is why E3 asks
-  for displacement as an explicit opt-in rather than removing it.
+- **R9 — another client may depend on connect-time displacement.** OpenVTC does
+  not: it collects stored mail explicitly through message-pickup. E3a makes
+  confirming that across other clients a precondition of the change, rather than
+  assuming it.
 - **R10 — revocation is destructive and easy to get wrong.** D17 offers to
   remove an ACL entry. Revoking the binding you are *currently using* would lock
   you out immediately; revoking a colleague's shared-context access would be
