@@ -1,15 +1,21 @@
 # SPEC — VTA-Authoritative State and Reinstall Recovery
 
-> Status: **DRAFT v2** — for review. Decisions D1–D12 proposed, none settled.
-> Scope: the `openvtc` CLI and `openvtc-core` config model. Sealed bootstrap
-> turns out to be **already implemented** in `pnm-cli` (see §4), so the only
-> external ask is E1, and it is small.
+> Status: **DRAFT v3** — for review. Decisions D1–D16 proposed, none settled.
+> Scope: the `openvtc` CLI and `openvtc-core` config model, plus three asks on
+> `verifiable-trust-infrastructure` — **E2 is blocking**, E1 and E3 are not.
+> Sealed bootstrap turns out to be **already implemented** in `pnm-cli` (§4).
 >
 > **Changed in v2:** the admin credential is reframed as an authorisation grant
 > rather than an identity (§3); recovery becomes a branch in the existing setup
 > flow rather than a separate command (§5); "start fresh" no longer means
 > "destroy" (D11); and a latent coupling that currently prevents the whole model
 > from working is called out (§7, D12).
+>
+> **Changed in v3:** concurrency (§8). Two instances against one context is not
+> a future risk — the messaging layer breaks on it **today**, by mutual
+> eviction. E2 is promoted from a minor ask to **blocking**, because
+> `MemoryItem` carries no version at all and there is nothing to build a
+> precondition on. New decisions D13–D16 and a new external ask E3.
 
 ---
 
@@ -24,7 +30,8 @@ OpenVTC's local state to a cache it can rebuild.
 
 ### Non-goals
 
-- Multi-device *concurrent* editing with full merge (D8, R2).
+- Automatic *merge* of concurrent edits. §9 detects and surfaces conflicts;
+  it never resolves them for you (D14, R2).
 - Changing the VTA's trust posture — D1 argues this moves no boundary.
 - Recovering a lost VTA. That repo has `backup_export`/`backup_import`.
 
@@ -210,10 +217,25 @@ openvtc/v1/relationship/{r_did_hash}
 
 **D8b** — every record carries `schema_version` and `updated_at`.
 
-**E2 (external, VTI, minor):** `MemoryPutBody` is `{contextId, key, value}` with
-no precondition, so writes are last-write-wins. A `put/0.2` with an optional
-`expectedVersion` — matching the pattern the vault tasks already use — would
-close the multi-device gap. Until then D8a bounds the damage.
+### E2 (external, VTI) — **blocking**
+
+`MemoryPutBody` is `{contextId, key, value}` with no precondition, and the
+`MemoryItem` returned by `list` is `{key, value}` — **no version, no timestamp,
+no ETag**. There is nothing to compare against, so two instances writing the
+same record silently overwrite each other and neither can detect it afterwards.
+
+Per-record keys (D8a) bound *which* records collide. They do nothing about
+whether a collision is noticed, because nothing is carried that could reveal
+one.
+
+**Requested:** `spec/vta/memory/put/0.2` taking an optional `expectedVersion`,
+and a `version` (and ideally `updatedAt`) on the listed entry — the same
+precondition pattern the vault slice already uses (`vault_delete(expected_version)`).
+
+This is not an optimisation. **The account model must not move to agent memory
+until it lands**, or the migration replaces a local single-writer store with a
+shared one that corrupts silently. Along with D12, this is one of the two
+blockers on the whole spec.
 
 ### D8c — Cache and write-behind
 
@@ -301,37 +323,163 @@ community first, so the VTC learns about it.
 
 ---
 
-## 9. Migration and work split
+## 9. Concurrency — two instances, one context
+
+### 9.1 What guards this today
+
+| Case | Guard | Status |
+|---|---|---|
+| Same machine, same `OPENVTC_CONFIG_PATH`, same profile | `process_lock.rs` — PID lock file, atomic `create_new` | Covered |
+| Same machine, **different** `OPENVTC_CONFIG_PATH`, same profile name | none — the lock path is derived from the config dir, so two config dirs get two lock files | Gap |
+| Same machine, different profile names sharing one persona DID | none | Gap |
+| Two machines, same context | none | Gap |
+| Messaging | mediator ceiling of **one websocket per DID** | **Actively harmful** |
+| `vta/memory` writes | none — see E2 | Gap |
+
+### 9.2 The messaging layer is already broken
+
+This is not a future risk. From the SDK's own docs: *"The mediator's real ceiling
+is **one websocket per DID**."* It does not refuse a second connection — it
+**evicts the first**. Two OpenVTC instances presenting the same persona DID
+therefore each connect, each evicts the other, and both reconnect-loop
+indefinitely.
+
+That is the listener-flapping class already debugged in this project (openvtc
+#231, and the upstream `force_refresh` fix in affinidi-tdk-rs). Eviction is the
+worst available behaviour: it does not prevent the conflict, it makes both
+parties permanently unstable, and it presents as a network fault rather than as
+"you have this open twice".
+
+**Anyone who opens OpenVTC twice against one persona hits this now**, with no
+part of this spec implemented.
+
+### 9.3 D13 — Detect and say so, before anything else
+
+The cheapest useful step, and it needs no VTA change: `device_register` at
+startup, `device_heartbeat` on the timer, `device_list` to see siblings. All
+three are in vta-sdk 0.25.1, and `DeviceBinding` already carries `last_seen_at`.
+
+A `DeviceBinding` is *"the device-facing half of an `AclEntry`"* and the caller
+always acts on its own binding — so each install naturally has its own identity
+at the VTA, without inventing anything.
+
+Surface it plainly: *"This context is also open on 'glenn-laptop', last seen 30
+seconds ago."* It blocks nothing. The point is that the user is not surprised,
+and that a support conversation starts from the real cause.
+
+### 9.4 D14 — Optimistic concurrency is the correctness mechanism
+
+**Not a lock.** Every write to agent memory carries `expectedVersion` (E2); a
+rejected write is a conflict, surfaced through the same acknowledge-and-continue
+path as `LoadIntegrity`, naming both sides. Never auto-merged, never silently
+retried with a fresh version — that would be a clobber with extra steps.
+
+This is the layer that *prevents corruption*. Everything else in this section
+only reduces how often it is exercised.
+
+### 9.5 D15 — An advisory writer lease, if exclusion is wanted
+
+A single memory record, `openvtc/v1/writer-lease`, holding
+`{device_id, display_name, expires_at}`, refreshed by the heartbeat already
+running under D13. An instance that sees a live lease held by someone else opens
+**read-only** and offers "take over".
+
+Three properties, all deliberate:
+
+- **Advisory, not enforced.** The VTA does not police it. A lease that could
+  lock you out of your own account when a laptop dies is a worse failure than
+  divergence.
+- **It expires.** Takeover after expiry needs no human and no support ticket.
+- **It is acquired with `expectedVersion`.** Without E2, two instances can both
+  believe they won it — a lease with no precondition is theatre.
+
+**D15a — the lease reduces conflict; the precondition prevents corruption.**
+Never rely on the lease alone. D14 stands whether or not D15 is built.
+
+### 9.6 D16 — Persona listener ownership
+
+The messaging problem (§9.2) needs an answer regardless of the state layer,
+because it bites first.
+
+**Whoever holds the writer lease runs the persona listeners.** Instances without
+it do not open persona sockets at all — they read, and they show why messaging
+is idle. That converts a mutual-eviction loop into one working instance and one
+that says what is going on.
+
+Without D15, the fallback is D13 alone: still connect, but detect the sibling
+and warn loudly that both are open and the connection will be unstable. Better
+than today, which is silence.
+
+### E3 (external, VTI/mediator) — refuse, don't evict
+
+The mediator's one-socket-per-DID ceiling would be far safer as a refusal than
+an eviction. A second connection for a DID that already has a live socket should
+be **rejected with a clear reason** the client can render, rather than silently
+displacing the incumbent.
+
+Eviction also has a legitimate use — it is how stored-mail redelivery is
+triggered (openvtc #218), so this needs a *deliberate* displace flag rather than
+having the two behaviours share one door.
+
+**Requested:** a refuse-by-default connect mode, with displacement as an explicit
+opt-in for the redelivery path.
+
+## 10. Migration and work split
 
 No breaking config reset. Steps are independently useful; none is a one-way door.
 
-1. **D12 first** — decouple the ProtectedConfig key. Nothing else works until it
-   lands, and it is self-contained.
-2. **Ship the writer** — every mutation to personas, memberships or
-   relationships also enqueues a `memory_put`. Local stays the read path;
-   existing profiles back-fill on first connect.
-3. **Ship the probe + branch** (§5, D10/D11) — useful immediately even before
-   recovery is complete, because "this context already has content" is
-   information a user always wants.
-4. **Ship rebuild** (§6) behind the recover branch.
-5. **Ship the recipient side of sealed bootstrap** (D3).
-6. **Only then** consider demoting the local file from source-of-truth to cache.
+**Two hard blockers gate everything that touches shared state:** D12 (decouple
+the local encryption key) and E2 (a precondition on `memory/put`). Neither is
+large; both must land first.
 
-**openvtc**: D12 decoupling · account model → agent memory · VRCs/VMCs → credential
-vault · setup probe and branch · rebuild · sealed-bootstrap recipient side ·
-write-behind queue and conflict surfacing.
+1. **D12** — decouple the ProtectedConfig key. Self-contained, and nothing else
+   works until it lands.
+2. **D13** — register as a device, heartbeat, and report siblings. Needs no VTA
+   change, and is worth shipping on its own: it turns today's silent
+   reconnect-loop into a stated cause.
+3. **Ship the probe + branch** (§5, D10/D11) — useful before recovery is
+   complete, because "this context already has content" is information a user
+   always wants.
+4. **Ship rebuild** (§6) behind the recover branch. Read-only against the VTA,
+   so it does not depend on E2.
+5. **E2 lands** → ship the writer. Every mutation to personas, memberships or
+   relationships enqueues a `memory_put` with `expectedVersion`; existing
+   profiles back-fill on first connect.
+6. **Ship the recipient side of sealed bootstrap** (D3).
+7. **Optionally D15/D16** — the advisory lease and listener ownership, once
+   there is real multi-device usage to justify them.
+8. **Only then** consider demoting the local file from source-of-truth to cache.
 
-**verifiable-trust-infrastructure**: E1 (passkey/device-authenticated
-reprovision) · E2 (`memory/put/0.2` with `expectedVersion`) · fix the stale
-"not yet implemented" status header on `sealed-bootstrap.md`.
+### Work split
 
----
+**openvtc**: D12 decoupling · device registration + heartbeat + sibling
+reporting (D13) · setup probe and three-way branch (D5–D7, D10, D11) · rebuild
+(§6) · account model → agent memory with `expectedVersion` (D14) · VRCs/VMCs →
+credential vault · sealed-bootstrap recipient side (D3) · write-behind queue and
+conflict surfacing (D8c) · optionally the writer lease and listener ownership
+(D15, D16).
 
-## 10. Risks
+**verifiable-trust-infrastructure**:
+
+| Ask | What | Priority |
+|---|---|---|
+| **E2** | `vta/memory/put/0.2` with `expectedVersion`, and a version on the listed entry | **Blocking** |
+| E3 | Mediator: refuse a second socket for a DID rather than evicting the incumbent, with displacement as an explicit opt-in for stored-mail redelivery | High — fixes a live bug |
+| E1 | Passkey- or device-authenticated reprovision, for self-service recovery | When convenient |
+| — | Fix the stale *"Design — not yet implemented"* header on `sealed-bootstrap.md` | Trivial |
+
+## 11. Risks
 
 - **R1 — reprovision is account takeover if unguarded.** D4 keeps a human or a
   second factor in the loop. E1 must not weaken this to "knows the context id".
-- **R2 — multi-device divergence.** Mitigated, not solved, by D8a/D8c; E2 helps.
+- **R2 — multi-device divergence.** Draft 2 called this "mitigated by
+  per-record keys", which was too generous. Per-record keys bound *which*
+  records collide; they do nothing about whether a collision is noticed,
+  because `MemoryItem` carries nothing that could reveal one. Until E2 lands
+  there is no detection at all, which is why the account model must not move
+  to agent memory before it. After E2, D14 makes a collision a surfaced
+  conflict rather than a silent clobber — and D15/D16 reduce how often it
+  happens, without ever being the thing that prevents corruption.
 - **R3 — the VTA sees the relationship graph.** Accepted under D2; document it.
 - **R4 — a VTA outage becomes a sync outage.** Bounded by D8c.
 - **R5 — a mis-typed context id shows someone else's summary.** The D7 summary
@@ -341,6 +489,15 @@ reprovision) · E2 (`memory/put/0.2` with `expectedVersion`) · fix the stale
   them as excluded from backup and unrecoverable from the mnemonic. OpenVTC sets
   `internal: None` explicitly today, with a comment saying why. If that changes,
   revisit this whole spec.
+- **R8 — an advisory lease that is trusted like a real one.** If D15 ships and
+  anyone treats it as exclusion rather than advice, a crashed holder locks a
+  user out of their own account until expiry. The lease must never be the only
+  thing standing between two writers and a corrupt record — that is D14's job
+  (D15a).
+- **R9 — E3 could break stored-mail redelivery.** Displacing a socket is
+  currently how a stored inbox gets redelivered (openvtc #218). A blanket
+  refuse-don't-evict change would silently regress that, which is why E3 asks
+  for displacement as an explicit opt-in rather than removing it.
 - **R7 — D12's migration must not lock anyone out.** The fallback path has to
   survive a profile that is mid-migration when it crashes; the existing
   legacy-seed migration is the template.
