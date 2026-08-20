@@ -1,6 +1,7 @@
 # SPEC — VTA-Authoritative State and Reinstall Recovery
 
-> Status: **DRAFT v3** — for review. Decisions D1–D16 proposed, none settled.
+> Status: **DRAFT v4** — for review. Decisions D1–D22 proposed; D17–D22 agreed
+> in review, the rest still open.
 > Scope: the `openvtc` CLI and `openvtc-core` config model, plus three asks on
 > `verifiable-trust-infrastructure` — **E2 is blocking**, E1 and E3 are not.
 > Sealed bootstrap turns out to be **already implemented** in `pnm-cli` (§4).
@@ -11,7 +12,13 @@
 > "destroy" (D11); and a latent coupling that currently prevents the whole model
 > from working is called out (§7, D12).
 >
-> **Changed in v3:** concurrency (§8). Two instances against one context is not
+> **Changed in v4:** recovery safety (§10) — revoking the authorisation you just
+> replaced (D17), verifying the rebuilt model instead of trusting it (D18),
+> forward-compatible records (D19), and making recovery auditable *and provable*
+> (D20). D2a is **withdrawn**: contacts and the agent-name cache sync after all
+> (D22), which was a correction, not a refinement.
+>
+> **Changed in v3:** concurrency (§9). Two instances against one context is not
 > a future risk — the messaging layer breaks on it **today**, by mutual
 > eviction. E2 is promoted from a minor ask to **blocking**, because
 > `MemoryItem` carries no version at all and there is nothing to build a
@@ -33,7 +40,10 @@ OpenVTC's local state to a cache it can rebuild.
 - Automatic *merge* of concurrent edits. §9 detects and surfaces conflicts;
   it never resolves them for you (D14, R2).
 - Changing the VTA's trust posture — D1 argues this moves no boundary.
-- Recovering a lost VTA. That repo has `backup_export`/`backup_import`.
+- **D21 — recovering a lost VTA.** Out of scope. This spec protects against a
+  lost *OpenVTC instance*, not a lost agent. The encrypted export
+  (Settings → Export Config) remains the answer to a VTA that is gone, and the
+  docs must keep saying so rather than letting "recovery" imply it covers both.
 
 ---
 
@@ -51,7 +61,9 @@ against `vta-sdk` 0.25.1.
 | Community memberships — status, sub-context, VMC, request ids | OpenVTC only | **→ VTA** |
 | Relationships (R-DIDs, `did:peer`) | OpenVTC only | **→ VTA** |
 | VRCs issued / received | OpenVTC only | **→ VTA credential vault** |
-| Contacts, tasks, agent-name cache | OpenVTC only | stays local (D9) |
+| Contacts (DID + your alias) | OpenVTC only | **→ VTA** (D22) |
+| Agent-name cache | OpenVTC only | **→ VTA** as a *stale* hint (D22) |
+| Tasks, activity log, UI preferences | OpenVTC only | stays local (D9) |
 | Admin credential bundle | OpenVTC keyring only | re-issuable (§3, §4) |
 
 **Half the target is already the reality.** The rows marked *→ VTA* are a
@@ -92,8 +104,13 @@ What this means, to be said plainly in the docs rather than buried:
 - The VTA can see your community memberships and relationship graph.
 - A VTA operator, or a VTA database leak, exposes that graph.
 
-**D2a** — contacts and the agent-name cache are *not* uploaded. No recovery
-value, and the contact list is the most socially sensitive thing OpenVTC holds.
+**D2a is withdrawn** (v4). It excluded contacts and the agent-name cache on the
+grounds that they had "no recovery value". That was wrong about contacts — a
+`Contact` is `{did, alias}`, and the alias is user-authored data that exists
+nowhere else and cannot be re-derived — and it contradicted D2 itself, which
+already uploads the *relationship graph*. A relationship is strictly more
+revealing than a contact. Excluding one while including the other was an
+inconsistency, not a privacy position. See D22.
 
 ---
 
@@ -251,8 +268,9 @@ single-active-device case correctly and reports the multi-device case honestly.
 
 ### D9 — What stays local
 
-Contacts, agent-name cache, tasks, activity log, UI preferences, working-community
-selection. All pure cache; none has recovery value.
+Tasks, activity log, UI preferences, working-community selection. Genuinely
+per-installation state with nothing to recover. Contacts and the agent-name
+cache were here in v1–v3 and moved out under D22.
 
 ---
 
@@ -424,7 +442,127 @@ having the two behaviours share one door.
 **Requested:** a refuse-by-default connect mode, with displacement as an explicit
 opt-in for the redelivery path.
 
-## 10. Migration and work split
+## 10. Recovery safety and data integrity
+
+Five decisions agreed in review. Four of them exist because moving authority to
+the VTA changes what can go wrong, and one because it changes who you have to
+trust.
+
+### D17 — Recovery must offer to revoke what it replaced
+
+Recovering onto a new machine mints a **new** admin ACL entry. The old one is
+still valid. If the laptop was stolen rather than dead, the thief keeps a
+working credential and the account they can reach with it.
+
+After a successful recovery, show the other bindings — `device_list` gives
+`display_name` and `last_seen_at` — and ask which to revoke. `delete_acl(did)`
+(`acl/revoke/0.1`) removes the entry; `device_disable` / `device_wipe` handle
+the device half.
+
+**D17a — offer, do not assume.** Revoking every other binding by default would
+break the legitimate two-machine user on their first recovery. The prompt
+defaults to revoking nothing and names each binding with when it was last seen,
+so "the one I lost on Tuesday" is identifiable.
+
+**D17b — the offer is repeatable.** A user who skips it under pressure must be
+able to find it later, in Settings, not only in the minute after recovery.
+
+### D18 — Verify the rebuilt account model, do not trust it
+
+Today the local config is the source of truth, so a hostile VTA cannot invent a
+membership. Once the VTA is authoritative it can — and a fabricated membership
+is a fabricated claim about who you belong to.
+
+The material to prevent this is already in the record: `CommunityRecord` carries
+its VMC under `CredentialKind::Membership`. So on rebuild, **each membership is
+verified against its own credential** rather than accepted because the VTA said
+so. A record whose VMC is missing, expired, or issued by someone other than the
+VTC it claims is not silently dropped and not silently trusted — it is reported
+through the `LoadIntegrity` path (already merged) and the user decides.
+
+**D18a — verify on rebuild, not on every load.** The local cache is ours; the
+check belongs at the trust boundary the data crosses, which is the rebuild.
+
+**D18b — this is why the credential vault and agent memory are separate stores.**
+Credentials are signed and independently verifiable; the account model is
+metadata *about* them. Keeping metadata in a store the VTA can rewrite is only
+safe because the signed artifact backing each record lives elsewhere and is
+checked.
+
+### D19 — Records must survive a round trip through an older build
+
+`Account`, `PersonaRecord`, `CommunityRecord` and `ProtectedConfig` carry no
+`deny_unknown_fields` and no catch-all, so unknown fields are **silently dropped
+on deserialize**. Harmless with a single writer, and the reason it has never
+bitten: a newer build only ever reads its own older data.
+
+With two instances on one store at different versions it becomes data loss by
+round trip — the older build reads a record, drops the fields it does not know,
+and writes it back without them.
+
+**Fix:** a `#[serde(flatten)] extra: serde_json::Map<String, Value>` on every
+record that goes to agent memory, so unknown fields are carried through
+untouched rather than discarded. The pattern is already used in vta-sdk's own
+protocol types for exactly this reason.
+
+**D19a — `schema_version` is a second line, not the first.** Refusing to write a
+record whose `schema_version` exceeds what this build understands stops the
+worst case, but it also stops the user working. Preserving the fields is what
+lets an older build stay useful.
+
+### D20 — Recovery is audited *and* provable
+
+Two different properties, and only one of them is available from the audit log.
+
+**Audited** — the VTA records the reprovision and the ACL grant, readable via
+`list_audit_logs`. Surface it: a user should be able to see *"a new device was
+authorised on 12 Aug from …"* without leaving OpenVTC. This is the detection
+mechanism for a recovery nobody authorised, and it pairs with D17.
+
+**Provable** — the audit log is VTA-asserted. `AuditLogEntry` is
+`{id, timestamp, action, actor, resource, outcome, channel, contextId, detail}`
+with **no signature and no hash chain**, so it corroborates, it does not prove.
+The proof already exists elsewhere: the sealed bundle opened during recovery
+carries a `ProducerAssertion` — `AssertionProof::DidSigned(DidSignedAssertion)`,
+or an attestation quote for a TEE VTA — which is signed and independently
+verifiable.
+
+**D20a — keep the assertion as a recovery receipt.** OpenVTC stores the producer
+assertion of every bundle it opens, with the resulting subject DID and the
+timestamp. That answers *"prove this device was authorised, and by whom"*
+without trusting the VTA's own account of it.
+
+**E4 (external, VTI) — tamper-evident audit.** For the audit log itself to be
+evidence rather than testimony it needs integrity protection: signed entries, or
+a hash chain with a periodically published head. Not blocking — D20a gives the
+property where it matters most — but the current log cannot detect a VTA that
+rewrites its own history.
+
+### D22 — Restored caches are stale by construction
+
+Contacts and the agent-name cache sync (D2a withdrawn). The alias in a contact
+is irreplaceable user data; the name cache is what makes the first launch after
+a recovery readable instead of fifty cold round-trips.
+
+But a cache carries "I checked this" semantics, and after a restore that becomes
+"something told me it checked this". For agent names that distinction is the
+whole phishing surface the project's rule exists to close: *never display an
+unverified name*. A hostile VTA could inject `bigbank.com/@support → attacker`
+and, because the cache is the display path, it would render as verified.
+
+**Every restored cache entry is marked stale on import.** A remote `checked_at`
+is never imported as fresh. The existing TTL and background re-verify machinery
+in `agent_name` then does exactly what it already does: re-verify through
+`verified_agent_name` before anything is shown. The restored cache is a list of
+*DIDs worth resolving*, not a list of answers.
+
+**D22a — the rule generalises.** It applies to anything whose local copy means
+"I verified this", including the cached persona `did_document`. Restore for
+speed; re-verify before trust.
+
+---
+
+## 11. Migration and work split
 
 No breaking config reset. Steps are independently useful; none is a one-way door.
 
@@ -444,20 +582,26 @@ large; both must land first.
    so it does not depend on E2.
 5. **E2 lands** → ship the writer. Every mutation to personas, memberships or
    relationships enqueues a `memory_put` with `expectedVersion`; existing
-   profiles back-fill on first connect.
-6. **Ship the recipient side of sealed bootstrap** (D3).
+   profiles back-fill on first connect. **D19 must already be in** — a record
+   format that cannot survive an older build is not safe to share.
+6. **Ship the recipient side of sealed bootstrap** (D3), the revoke prompt
+   (D17) and the audit view (D20) together — recovery should not ship without
+   the means to see and undo it.
 7. **Optionally D15/D16** — the advisory lease and listener ownership, once
    there is real multi-device usage to justify them.
 8. **Only then** consider demoting the local file from source-of-truth to cache.
 
 ### Work split
 
-**openvtc**: D12 decoupling · device registration + heartbeat + sibling
+**openvtc**: D12 decoupling · forward-compatible records (D19, do it *before*
+anything writes to agent memory) · device registration + heartbeat + sibling
 reporting (D13) · setup probe and three-way branch (D5–D7, D10, D11) · rebuild
-(§6) · account model → agent memory with `expectedVersion` (D14) · VRCs/VMCs →
-credential vault · sealed-bootstrap recipient side (D3) · write-behind queue and
-conflict surfacing (D8c) · optionally the writer lease and listener ownership
-(D15, D16).
+with per-membership VMC verification (§6, D18) · account model, contacts and
+name cache → agent memory with `expectedVersion` (D14, D22) · VRCs/VMCs →
+credential vault · sealed-bootstrap recipient side, retaining the producer
+assertion (D3, D20a) · revoke-what-you-replaced prompt (D17) · audit view (D20)
+· write-behind queue and conflict surfacing (D8c) · optionally the writer lease
+and listener ownership (D15, D16).
 
 **verifiable-trust-infrastructure**:
 
@@ -466,9 +610,10 @@ conflict surfacing (D8c) · optionally the writer lease and listener ownership
 | **E2** | `vta/memory/put/0.2` with `expectedVersion`, and a version on the listed entry | **Blocking** |
 | E3 | Mediator: refuse a second socket for a DID rather than evicting the incumbent, with displacement as an explicit opt-in for stored-mail redelivery | High — fixes a live bug |
 | E1 | Passkey- or device-authenticated reprovision, for self-service recovery | When convenient |
+| E4 | Tamper-evident audit — signed entries or a hash chain, so the log is evidence rather than testimony (D20) | When convenient |
 | — | Fix the stale *"Design — not yet implemented"* header on `sealed-bootstrap.md` | Trivial |
 
-## 11. Risks
+## 12. Risks
 
 - **R1 — reprovision is account takeover if unguarded.** D4 keeps a human or a
   second factor in the loop. E1 must not weaken this to "knows the context id".
@@ -480,7 +625,11 @@ conflict surfacing (D8c) · optionally the writer lease and listener ownership
   to agent memory before it. After E2, D14 makes a collision a surfaced
   conflict rather than a silent clobber — and D15/D16 reduce how often it
   happens, without ever being the thing that prevents corruption.
-- **R3 — the VTA sees the relationship graph.** Accepted under D2; document it.
+- **R3 — the VTA sees your whole social graph.** Wider in v4: memberships,
+  relationships *and* contacts, including the aliases you chose for people.
+  Accepted under D2 — the VTA already holds keys that can sign as you — but this
+  is a bigger disclosure than v3 described, and it belongs in the user-facing
+  docs rather than buried in a decision record.
 - **R4 — a VTA outage becomes a sync outage.** Bounded by D8c.
 - **R5 — a mis-typed context id shows someone else's summary.** The D7 summary
   must not leak content the caller is not authorised for; the probe is
@@ -498,6 +647,14 @@ conflict surfacing (D8c) · optionally the writer lease and listener ownership
   currently how a stored inbox gets redelivered (openvtc #218). A blanket
   refuse-don't-evict change would silently regress that, which is why E3 asks
   for displacement as an explicit opt-in rather than removing it.
+- **R10 — revocation is destructive and easy to get wrong.** D17 offers to
+  remove an ACL entry. Revoking the binding you are *currently using* would lock
+  you out immediately; revoking a colleague's shared-context access would be
+  worse. The prompt must name what each binding is and never preselect.
+- **R11 — D18 could reject legitimate memberships.** A VMC that has expired, or
+  a VTC that has rotated its issuing key, would fail verification on a record
+  that is genuinely fine. That is why a failed check reports through
+  `LoadIntegrity` and asks, rather than dropping the membership.
 - **R7 — D12's migration must not lock anyone out.** The fallback path has to
   survive a profile that is mid-migration when it crashes; the existing
   legacy-seed migration is the template.
