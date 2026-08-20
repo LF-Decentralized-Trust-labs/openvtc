@@ -24,6 +24,7 @@ pub mod config;
 // module writes about its own items breaks — which is what failed CI on #192
 // and again here.
 pub mod context_probe;
+pub mod credential_sync;
 pub mod devices;
 pub mod diagnostics;
 pub mod didcomm;

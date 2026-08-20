@@ -31,6 +31,7 @@ pub async fn run(
     config: Option<&Config>,
     vtc_args: &[String],
     as_json: bool,
+    recoverable: bool,
 ) -> Result<()> {
     let local = local_report(profile);
 
@@ -68,6 +69,20 @@ pub async fn run(
             format!("VTC {} (--vtc)", short_tail(did)),
             did.clone(),
         ));
+    }
+
+    // `--recoverable` answers a question the local section cannot: if this
+    // machine were lost, could the account be rebuilt from its Trust Context?
+    // Strictly read-only — the same plan the setup wizard would build, printed
+    // rather than applied.
+    if recoverable {
+        match config {
+            Some(config) => report_recoverability(config).await,
+            None => eprintln!(
+                "{}",
+                style("--recoverable needs a loadable account; skipping.").color256(CLI_ORANGE)
+            ),
+        }
     }
 
     // No subjects means no *network* checks — but the local section above is
@@ -552,6 +567,181 @@ fn protocols(list: &[vta_sdk::protocol::matching::Protocol]) -> String {
         .map(|p| p.as_str())
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Report whether this account could be rebuilt from its Trust Context.
+///
+/// The question this answers is not "is my config intact" — that is the local
+/// section — but "if this machine vanished, is what the VTA holds enough?"
+///
+/// It runs exactly the plan the setup wizard's Recover option would, and prints
+/// it instead of applying it. Nothing is written.
+///
+/// The part worth watching is the **key mapping**. A rebuilt persona is only
+/// usable if each verification method in its DID document can be matched back
+/// to a VTA key, and that match only fires when the store's `key_id` *is* a
+/// verification-method id of the DID, or when its label is. A deployment that
+/// labels keys some other way cannot be rebuilt, and this is where that shows
+/// up — before it matters.
+async fn report_recoverability(config: &Config) {
+    use openvtc_core::config::KeyBackend;
+
+    println!("{}", style("Recoverability").color256(CLI_BLUE).bold());
+
+    let KeyBackend::Vta { .. } = &config.key_backend else {
+        println!("  This profile does not use a VTA, so there is nothing to rebuild from.\n");
+        return;
+    };
+
+    let client = match openvtc_core::config::build_runtime_vta_client(&config.key_backend).await {
+        Ok(c) => c,
+        Err(e) => {
+            println!("  Could not open a VTA session: {e}\n");
+            return;
+        }
+    };
+
+    let context_id = config.account.top_context_id.clone();
+    let now = chrono::Utc::now();
+
+    let plan = match openvtc_core::rebuild::plan(&client, &context_id, now).await {
+        Ok(p) => p,
+        Err(e) => {
+            println!("  Could not read the context: {e}\n");
+            client.shutdown().await;
+            return;
+        }
+    };
+
+    let keys = match client
+        .list_keys(0, 500, Some("active"), Some(&context_id))
+        .await
+    {
+        Ok(resp) => resp
+            .keys
+            .into_iter()
+            .filter_map(|k| {
+                let key_type = match k.key_type {
+                    vta_sdk::keys::KeyType::Ed25519 => {
+                        openvtc_core::rebuild_apply::KeyPurposeHint::Signing
+                    }
+                    vta_sdk::keys::KeyType::X25519 => {
+                        openvtc_core::rebuild_apply::KeyPurposeHint::Encryption
+                    }
+                    _ => return None,
+                };
+                Some(openvtc_core::rebuild_apply::KeyCandidate {
+                    key_id: k.key_id,
+                    label: k.label,
+                    key_type,
+                    created_at: k.created_at,
+                })
+            })
+            .collect::<Vec<_>>(),
+        Err(e) => {
+            println!("  Could not list the context's keys: {e}\n");
+            client.shutdown().await;
+            return;
+        }
+    };
+
+    let rebuilt = openvtc_core::rebuild_apply::apply(&plan, &keys, now);
+    client.shutdown().await;
+
+    // Held locally vs held at the VTA. Without this line a reader cannot tell
+    // "this account has no memberships" from "its memberships have not been
+    // stored at the VTA yet", and those need different actions.
+    let held_locally = config
+        .account
+        .memberships()
+        .filter(|c| {
+            c.credentials
+                .contains_key(&openvtc_core::CredentialKind::Membership)
+        })
+        .count();
+
+    println!("  context          {context_id}");
+    println!("  at the VTA       {}", plan.summary());
+    println!("  usable keys      {}", keys.len());
+    println!("  held locally     {held_locally} membership credential(s)");
+    println!("  would restore    {}", rebuilt.summary());
+
+    // The diagnosis, stated rather than left to be inferred from the counts.
+    if rebuilt.account.personas.is_empty() && !plan.personas.is_empty() {
+        println!(
+            "\n  {}",
+            style(
+                "NOT RECOVERABLE: the VTA holds identities, but none of their keys could \
+                 be matched to them, so a rebuilt account could not sign or receive."
+            )
+            .color256(CLI_RED)
+        );
+        println!(
+            "  {}",
+            style(
+                "A key matches only when its store id — or its label — is a verification \
+                 method of the persona's DID. This deployment appears to label them some \
+                 other way, so recovery would need a different mapping."
+            )
+            .color256(CLI_ORANGE)
+        );
+    } else if rebuilt.account.personas.is_empty() {
+        println!(
+            "\n  {}",
+            style("Nothing to recover: this context holds no identities.").color256(CLI_ORANGE)
+        );
+    } else if rebuilt.skipped.is_empty() {
+        println!(
+            "\n  {}",
+            style("RECOVERABLE: every identity in this context maps to its keys.")
+                .color256(CLI_PURPLE)
+        );
+    } else {
+        println!(
+            "\n  {}",
+            style(format!(
+                "PARTIALLY RECOVERABLE: {} of {} identities map to their keys.",
+                rebuilt.account.personas.len(),
+                plan.personas.len()
+            ))
+            .color256(CLI_ORANGE)
+        );
+    }
+
+    // The specific gap this check exists to surface: the credential is held,
+    // but not where a rebuild would look for it.
+    if held_locally > rebuilt.account.memberships().count() {
+        println!(
+            "\n  {}",
+            style(format!(
+                "{} membership credential(s) are held locally but not at the VTA, so they \
+                 would NOT be recovered. Launch OpenVTC once while online — it stores them \
+                 on connect — then re-run this.",
+                held_locally - rebuilt.account.memberships().count()
+            ))
+            .color256(CLI_ORANGE)
+        );
+    }
+
+    for s in &rebuilt.skipped {
+        println!("    - {} — {}", truncate_did(&s.did), s.reason.summary());
+    }
+    for r in &plan.rejected {
+        println!(
+            "    - credential {} — {}",
+            r.id.as_deref().unwrap_or("(unnamed)"),
+            r.reason.summary()
+        );
+    }
+
+    println!(
+        "\n  {}",
+        style("Not restored by a rebuild, whatever the outcome above:").color256(CLI_BLUE)
+    );
+    for gap in openvtc_core::rebuild::RebuildPlan::known_gaps() {
+        println!("    - {gap}");
+    }
+    println!();
 }
 
 #[cfg(test)]

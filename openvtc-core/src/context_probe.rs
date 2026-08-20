@@ -34,8 +34,6 @@ pub struct ContextContents {
     /// `did:webvh` identities the VTA holds for this context — the personas of
     /// whatever account already lives here.
     pub persona_dids: Vec<String>,
-    /// Credentials in the account's vault (VICs, VMCs, VRCs).
-    pub credential_count: usize,
     /// Sub-contexts beneath this one — one per community joined, by convention.
     pub sub_context_count: usize,
 }
@@ -45,7 +43,7 @@ impl ContextContents {
     /// existing account.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.persona_dids.is_empty() && self.credential_count == 0 && self.sub_context_count == 0
+        self.persona_dids.is_empty() && self.sub_context_count == 0
     }
 
     /// A concrete one-line summary (D7).
@@ -70,9 +68,6 @@ impl ContextContents {
                 "sub-context",
                 "sub-contexts",
             ));
-        }
-        if self.credential_count > 0 {
-            parts.push(plural(self.credential_count, "credential", "credentials"));
         }
 
         match parts.len() {
@@ -131,17 +126,14 @@ pub async fn probe(client: &VtaClient, context_id: &str) -> ProbeOutcome {
         }
     };
 
-    // The other two are enrichment: they sharpen the summary but their absence
-    // does not change whether the context is occupied, so a failure here is
-    // logged and counted as zero rather than downgrading the whole answer.
-    let credential_count = match client.cred_vault_query(serde_json::json!({})).await {
-        Ok(v) => count_array(&v, &["credentials", "items", "results"]),
-        Err(e) => {
-            debug!("credential vault not enumerable during probe: {e}");
-            0
-        }
-    };
-
+    // Credentials are deliberately NOT counted. The credential vault is
+    // non-enumerable by design — `vault/credentials/query/0.1` refuses a
+    // filterless request, because running one would be a wallet enumeration —
+    // so "how many credentials are here?" is a question the contract does not
+    // answer. An earlier version asked it anyway with an empty filter, and
+    // quietly read the refusal as "zero", which under-reported occupied
+    // contexts. Personas and sub-contexts are enough to tell a context is in
+    // use, and both are properly enumerable.
     let sub_context_count = match client.list_contexts().await {
         Ok(resp) => resp
             .contexts
@@ -156,7 +148,6 @@ pub async fn probe(client: &VtaClient, context_id: &str) -> ProbeOutcome {
 
     let contents = ContextContents {
         persona_dids: dids.into_iter().map(|d| d.did).collect(),
-        credential_count,
         sub_context_count,
     };
 
@@ -165,20 +156,6 @@ pub async fn probe(client: &VtaClient, context_id: &str) -> ProbeOutcome {
     } else {
         ProbeOutcome::Occupied(Box::new(contents))
     }
-}
-
-/// Count the array under whichever of `keys` the response actually used.
-///
-/// The vault listing is returned untyped and the envelope key has moved before;
-/// trying the plausible names beats hard-coding one and silently reporting zero
-/// credentials on a full vault.
-fn count_array(value: &serde_json::Value, keys: &[&str]) -> usize {
-    if let Some(arr) = value.as_array() {
-        return arr.len();
-    }
-    keys.iter()
-        .find_map(|k| value.get(*k).and_then(|v| v.as_array()))
-        .map_or(0, Vec::len)
 }
 
 /// Whether `candidate` is a context *beneath* `parent`, not `parent` itself.
@@ -195,12 +172,11 @@ fn is_sub_context_of(candidate: &str, parent: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn contents(personas: usize, creds: usize, subs: usize) -> ContextContents {
+    fn contents(personas: usize, subs: usize) -> ContextContents {
         ContextContents {
             persona_dids: (0..personas)
                 .map(|i| format!("did:webvh:Qm:example.com:p{i}"))
                 .collect(),
-            credential_count: creds,
             sub_context_count: subs,
         }
     }
@@ -212,33 +188,26 @@ mod tests {
 
     #[test]
     fn any_single_signal_makes_it_occupied() {
-        assert!(!contents(1, 0, 0).is_empty());
-        assert!(!contents(0, 1, 0).is_empty());
-        assert!(!contents(0, 0, 1).is_empty());
+        assert!(!contents(1, 0).is_empty());
+        assert!(!contents(0, 1).is_empty());
     }
 
     /// D7 — the summary must be concrete enough that a user can tell whether
     /// this is *their* account.
     #[test]
     fn the_summary_counts_rather_than_gesturing() {
-        assert_eq!(
-            contents(3, 14, 2).summary(),
-            "3 personas, 2 sub-contexts and 14 credentials"
-        );
+        assert_eq!(contents(3, 2).summary(), "3 personas and 2 sub-contexts");
     }
 
     #[test]
     fn the_summary_is_singular_when_it_should_be() {
-        assert_eq!(
-            contents(1, 1, 1).summary(),
-            "1 persona, 1 sub-context and 1 credential"
-        );
+        assert_eq!(contents(1, 1).summary(), "1 persona and 1 sub-context");
     }
 
     #[test]
     fn the_summary_omits_what_is_absent() {
-        assert_eq!(contents(2, 0, 0).summary(), "2 personas");
-        assert_eq!(contents(0, 5, 0).summary(), "5 credentials");
+        assert_eq!(contents(2, 0).summary(), "2 personas");
+        assert_eq!(contents(0, 3).summary(), "3 sub-contexts");
     }
 
     /// "We could not tell" must never read as "it is empty" — that conflation
@@ -254,7 +223,7 @@ mod tests {
     #[test]
     fn only_an_occupied_context_stops_setup() {
         assert!(!ProbeOutcome::Empty.needs_confirmation());
-        assert!(ProbeOutcome::Occupied(Box::new(contents(1, 0, 0))).needs_confirmation());
+        assert!(ProbeOutcome::Occupied(Box::new(contents(1, 0))).needs_confirmation());
     }
 
     /// A sibling context must not be counted as a child, or every account on a
@@ -268,17 +237,12 @@ mod tests {
         assert!(!is_sub_context_of("other/acme", "openvtc"));
     }
 
-    /// The vault envelope is untyped and its key has moved before. Reporting
-    /// zero credentials on a full vault would make the summary lie.
+    /// The credential vault is non-enumerable by design, so the probe does not
+    /// count credentials at all. An earlier version asked with an empty filter
+    /// and read the refusal as "zero", which under-reported occupied contexts.
     #[test]
-    fn the_credential_count_tolerates_the_envelope_key_moving() {
-        let keys = ["credentials", "items", "results"];
-        for key in keys {
-            let v = serde_json::json!({ key: [1, 2, 3] });
-            assert_eq!(count_array(&v, &keys), 3, "key {key}");
-        }
-        // A bare array, and an envelope we do not recognise.
-        assert_eq!(count_array(&serde_json::json!([1, 2]), &keys), 2);
-        assert_eq!(count_array(&serde_json::json!({ "nope": [1] }), &keys), 0);
+    fn a_context_with_only_personas_is_still_occupied() {
+        assert!(!contents(1, 0).is_empty());
+        assert_eq!(contents(1, 0).summary(), "1 persona");
     }
 }

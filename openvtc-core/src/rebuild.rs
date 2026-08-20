@@ -36,7 +36,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::warn;
 use vta_sdk::client::VtaClient;
 
 use crate::errors::OpenVTCError;
@@ -130,8 +130,12 @@ pub struct RebuildPlan {
     pub memberships: Vec<RebuiltMembership>,
     /// Credentials that looked like memberships but did not verify.
     pub rejected: Vec<RejectedCredential>,
-    /// Credentials of other kinds (VICs, role credentials), carried across
-    /// as-is — they are signed artifacts and need no reconstruction.
+    /// Credentials of other kinds (VICs, role credentials) are **not counted**.
+    ///
+    /// Counting them would mean enumerating the vault, which `query/0.1`
+    /// refuses by design. They are restored as they stand — they are signed
+    /// artifacts needing no reconstruction — but the plan cannot say how many
+    /// there are without asking a question the contract forbids.
     pub other_credential_count: usize,
 }
 
@@ -281,41 +285,49 @@ pub async fn plan(
 
     let mut memberships = Vec::new();
     let mut rejected = Vec::new();
-    let mut other_credential_count = 0usize;
 
-    match client.cred_vault_query(serde_json::json!({})).await {
-        Ok(listing) => {
-            for credential in credentials_in(&listing) {
-                match crate::CredentialKind::from_credential(&credential) {
-                    Some(crate::CredentialKind::Membership) => {
-                        match membership_from_credential(&credential, &known, now) {
-                            Ok(m) => memberships.push(m),
-                            Err(reason) => {
-                                warn!(
-                                    reason = %reason.summary(),
-                                    "membership credential did not verify during rebuild"
-                                );
-                                rejected.push(RejectedCredential {
-                                    id: credential
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .map(str::to_string),
-                                    reason,
-                                });
-                            }
-                        }
-                    }
-                    // Signed artifacts of other kinds need no reconstruction —
-                    // they are restored as they stand.
-                    Some(_) => other_credential_count += 1,
-                    None => debug!("skipping credential of unknown kind during rebuild"),
-                }
-            }
-        }
+    // The credential vault is deliberately **non-enumerable**: `query/0.1`
+    // refuses a filterless request, because running one would be a wallet
+    // enumeration. So this asks the only question it needs — "which membership
+    // credentials are held?" — as an indexed filter.
+    //
+    // `purpose` rather than `type`: the purpose is the vault's own semantic
+    // classification and is what the index is keyed on, so it does not depend
+    // on how a particular issuer spelled its `type` array.
+    let descriptors = match client.cred_vault_query(membership_query_filter()).await {
+        Ok(listing) => descriptors_in(&listing),
         Err(e) => {
             // Degrade rather than fail: personas and their keys are the larger
             // half of an account, and are worth restoring without memberships.
-            warn!("credential vault not readable during rebuild: {e}");
+            warn!("credential vault not queryable during rebuild: {e}");
+            Vec::new()
+        }
+    };
+
+    // `query` returns **body-free descriptors** — id, types, issuer, purpose,
+    // status — and a membership is defined by its *subject*, which only the
+    // body carries. So each descriptor is fetched with `get/0.1` before it can
+    // be verified.
+    for id in descriptors {
+        let credential = match client.cred_vault_get(&id).await {
+            Ok(v) => v.get("credential").cloned().unwrap_or(v),
+            Err(e) => {
+                warn!(id = %id, "could not fetch a held credential during rebuild: {e}");
+                continue;
+            }
+        };
+        match membership_from_credential(&credential, &known, now) {
+            Ok(m) => memberships.push(m),
+            Err(reason) => {
+                warn!(
+                    reason = %reason.summary(),
+                    "membership credential did not verify during rebuild"
+                );
+                rejected.push(RejectedCredential {
+                    id: Some(id),
+                    reason,
+                });
+            }
         }
     }
 
@@ -324,16 +336,32 @@ pub async fn plan(
         personas,
         memberships,
         rejected,
-        other_credential_count,
+        // Always zero from a live plan: see the field's docs.
+        other_credential_count: 0,
     })
 }
 
-/// Pull credential objects out of a vault listing, whichever envelope it used.
+/// The filter used to find held membership credentials.
 ///
-/// The listing is untyped and its envelope key has moved before; a bare array
-/// and the common wrappers are all accepted so a full vault is never read as an
-/// empty one.
-fn credentials_in(listing: &Value) -> Vec<Value> {
+/// Factored out so the "this query must carry a filter" contract is testable
+/// without a VTA — see `the_membership_query_carries_a_filter`.
+///
+/// `purpose` rather than `type`: the purpose is the vault's own semantic
+/// classification and what its secondary index is keyed on, so it does not
+/// depend on how a particular issuer spelled its `type` array.
+fn membership_query_filter() -> Value {
+    serde_json::json!({ "purpose": "membership" })
+}
+
+/// Descriptor ids from a `query/0.1` response.
+///
+/// The response is `{ credentials: [CredentialDescriptor, …] }`, and a
+/// descriptor carries only `id`, `types`, `issuerDid`, `purpose` and `status` —
+/// deliberately **no body**. The id is the handle `get/0.1` takes.
+///
+/// Tolerant about the envelope key because the response is consumed untyped and
+/// a wrong guess would silently read a full vault as an empty one.
+fn descriptors_in(listing: &Value) -> Vec<String> {
     let array = if let Some(arr) = listing.as_array() {
         arr.clone()
     } else {
@@ -344,15 +372,14 @@ fn credentials_in(listing: &Value) -> Vec<Value> {
             .unwrap_or_default()
     };
 
-    // Entries may be the credential itself or a wrapper carrying it.
     array
         .into_iter()
-        .map(|entry| {
-            entry
-                .get("credential")
-                .or_else(|| entry.get("vc"))
-                .cloned()
-                .unwrap_or(entry)
+        .filter_map(|d| {
+            d.get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                // A bare string id, should the envelope ever carry one.
+                .or_else(|| d.as_str().map(str::to_string))
         })
         .collect()
 }
@@ -533,26 +560,55 @@ mod tests {
         assert!(all.contains("contact"), "{all}");
     }
 
-    /// Reporting zero credentials on a full vault would make the plan lie.
+    /// **Contract regression guard.** The credential vault is non-enumerable:
+    /// `vault/credentials/query/0.1` refuses a filterless request, because
+    /// running one would be a wallet enumeration. An earlier version of this
+    /// module sent `{}` and read the refusal as "no credentials", which
+    /// silently restored zero memberships from a healthy account.
+    ///
+    /// Pins that the query this module sends carries a filter. A future edit
+    /// that drops it fails here rather than in production.
     #[test]
-    fn credentials_are_found_whatever_the_envelope() {
-        let one = serde_json::json!({ "id": "a" });
-        for key in ["credentials", "items", "results"] {
-            let listing = serde_json::json!({ key: [one.clone()] });
-            assert_eq!(credentials_in(&listing).len(), 1, "key {key}");
-        }
-        assert_eq!(credentials_in(&serde_json::json!([one.clone()])).len(), 1);
-        assert!(credentials_in(&serde_json::json!({ "nope": [one] })).is_empty());
+    fn the_membership_query_carries_a_filter() {
+        let filter = membership_query_filter();
+        let obj = filter.as_object().expect("an object");
+        assert!(
+            !obj.is_empty(),
+            "a filterless vault query is refused by contract as an enumeration"
+        );
+        assert_eq!(
+            obj.get("purpose").and_then(serde_json::Value::as_str),
+            Some("membership"),
+            "the vault indexes on its own semantic purpose, not the issuer's type spelling"
+        );
     }
 
-    /// Vault rows wrap the credential; the rebuild needs the credential.
+    /// The vault returns body-free descriptors; only the id is usable, and it
+    /// is the handle `get/0.1` takes. Misreading the envelope would make a full
+    /// vault look empty and silently restore no memberships.
     #[test]
-    fn a_wrapped_credential_is_unwrapped() {
-        let listing = serde_json::json!({
-            "credentials": [{ "vaultId": "v1", "credential": { "id": "inner" } }]
-        });
-        let found = credentials_in(&listing);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0]["id"], "inner");
+    fn descriptor_ids_are_found_whatever_the_envelope() {
+        let one = serde_json::json!({ "id": "vmc-1", "types": ["MembershipCredential"] });
+        for key in ["credentials", "items", "results"] {
+            let listing = serde_json::json!({ key: [one.clone()] });
+            assert_eq!(
+                descriptors_in(&listing),
+                vec!["vmc-1".to_string()],
+                "key {key}"
+            );
+        }
+        assert_eq!(
+            descriptors_in(&serde_json::json!([one.clone()])),
+            vec!["vmc-1".to_string()]
+        );
+        assert!(descriptors_in(&serde_json::json!({ "nope": [one] })).is_empty());
+    }
+
+    /// A descriptor with no id cannot be fetched, so it is skipped rather than
+    /// turned into a rejection the user cannot act on.
+    #[test]
+    fn a_descriptor_without_an_id_is_skipped() {
+        let listing = serde_json::json!({ "credentials": [{ "types": ["X"] }, { "id": "keep" }] });
+        assert_eq!(descriptors_in(&listing), vec!["keep".to_string()]);
     }
 }
