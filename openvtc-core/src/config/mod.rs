@@ -31,6 +31,7 @@ use std::{
 pub mod account;
 pub mod context_path;
 pub mod did;
+pub mod integrity;
 pub mod keys;
 pub mod loading;
 pub mod protected_config;
@@ -311,6 +312,15 @@ pub struct Config {
     /// now read from here via [`Config::persona_did`], [`Config::mediator_did`],
     /// and `account.org_did`.
     pub account: account::Account,
+
+    /// What this load could not bring up. Runtime-only, like `identities`,
+    /// and empty on a healthy profile.
+    ///
+    /// Lives on `Config` rather than being returned separately so it cannot be
+    /// dropped on the floor by a caller that only wanted the config: the whole
+    /// point is that a degraded load is still a load, and something has to
+    /// carry the evidence that it was one.
+    pub integrity: integrity::LoadIntegrity,
 
     /// Runtime-resolved identities (resolved DID document + ATM profile),
     /// keyed by persona id. Not persisted — rebuilt at load from `account`.
@@ -1550,6 +1560,7 @@ mod tests {
         identities: BTreeMap<account::PersonaId, crate::identity::IdentityContext>,
     ) -> Config {
         Config {
+            integrity: Default::default(),
             public: public_config::PublicConfig::default(),
             private: ProtectedConfig::default(),
             key_backend: KeyBackend::Bip32 {

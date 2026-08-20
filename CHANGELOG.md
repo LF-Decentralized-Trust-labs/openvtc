@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **One half-written persona took down the entire profile.** A profile is saved
+  in two non-atomic writes — the config file (carrying the account, and with it
+  the persona records) and the `SecuredConfig` blob in the OS credential store
+  (carrying `key_info`). A crash between them left a persona recorded with no
+  key material, and key rehydration returned `Err` on the first verification
+  method it could not find. That error propagated out of the persona loop and
+  failed the whole load: every *other* persona, every community, every
+  relationship, gone — reported as a verification method id, which tells the
+  user nothing. Now a fault is isolated to the persona that has it. Everything
+  loadable loads, what could not is collected into a `LoadIntegrity` report, and
+  the startup screen shows it and requires an explicit acknowledgement before
+  continuing. The report distinguishes an interrupted write (real loss — say so)
+  from an unreachable VTA (transient — say that instead), names what still works,
+  and states plainly that nothing has been deleted: a degraded persona keeps its
+  record and is skipped, never dropped, so an already-damaged profile is not
+  quietly made worse. A membership whose persona did not load is reported and
+  cannot be selected as the working context, which would otherwise be a silent
+  dead end.
+
+- **`Config::save` wrote the config file before the secrets, manufacturing the
+  above.** Both orders lose the persona that was mid-creation — that is
+  unavoidable without a transaction across two stores — but only file-first
+  leaves damage behind: an account referencing keys that were never written.
+  Secrets-first leaves the interrupted persona simply absent, with leftover keys
+  reported as orphaned key records, and the load is clean.
+
 - **A Linux profile's keys were kept only in the kernel keyring, which does not
   persist.** `linux-keyutils-keyring-store` documents itself as RAM-only —
   *"completely in-memory and will not persist across reboots. Consider the

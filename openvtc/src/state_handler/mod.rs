@@ -266,6 +266,32 @@ pub(crate) enum SetupWizardExit {
     Config(Box<Config>),
 }
 
+/// Multi-line detail for the degraded-load activity-log entry, so the report
+/// survives past the startup screen the user acknowledged it on.
+fn integrity_detail(integrity: &openvtc_core::config::integrity::LoadIntegrity) -> String {
+    let mut out = String::new();
+    for persona in &integrity.degraded_personas {
+        out.push_str(&format!(
+            "persona {}: {}\n",
+            persona.did,
+            persona.reason.summary()
+        ));
+    }
+    for membership in &integrity.stranded_memberships {
+        out.push_str(&format!(
+            "community {} is inactive: its persona did not load\n",
+            membership
+                .label
+                .clone()
+                .unwrap_or_else(|| membership.vtc_did.clone())
+        ));
+    }
+    for key_id in &integrity.orphaned_key_ids {
+        out.push_str(&format!("orphaned key record: {key_id}\n"));
+    }
+    out
+}
+
 /// Build a startup [`Diagnosis`](openvtc_core::diagnostics::Diagnosis) for an
 /// error that arrived as an `anyhow::Error`.
 ///
@@ -611,7 +637,28 @@ impl StateHandler {
                 // Sync all display state from the loaded config
                 state.main_page.sync_from_config(&config);
                 state.main_page.refresh_storage_warning(&self.profile);
-                state.main_page.log("Configuration loaded");
+
+                // A degraded load is still a load — but it does not get to look
+                // like a clean one. The report gates the startup screen on an
+                // acknowledgement and stays in the activity log afterwards.
+                if config.integrity.is_clean() {
+                    state.main_page.log("Configuration loaded");
+                } else {
+                    let integrity = config.integrity.clone();
+                    state
+                        .main_page
+                        .log_detailed(integrity.headline(), integrity_detail(&integrity));
+                    for persona in &integrity.degraded_personas {
+                        state.main_page.log(format!(
+                            "Persona unavailable: {} — {}",
+                            persona.label.clone().unwrap_or_else(|| {
+                                openvtc_core::display::truncate_did(&persona.did, 40).into_owned()
+                            }),
+                            persona.reason.summary()
+                        ));
+                    }
+                    state.integrity = Some(std::sync::Arc::new(integrity));
+                }
                 if let Some(warning) = state
                     .main_page
                     .content_panel
@@ -767,7 +814,10 @@ impl StateHandler {
         // R-C-6) — otherwise a multi-persona account renders empty panels until
         // the first event re-syncs (the per-path syncs above run with no
         // selection set yet).
-        state.reconcile_selected_community(&config.account);
+        state.reconcile_selected_community_among(
+            &config.account,
+            Some(&config.identities.keys().copied().collect()),
+        );
         let initial_active = state
             .selected_community
             .as_ref()
@@ -1466,7 +1516,10 @@ impl StateHandler {
             // working persona actually changes (e.g. the active community left and
             // the default shifted), refilter the community-scoped panels so the UI
             // reflects the new context this frame.
-            state.reconcile_selected_community(&config.account);
+            state.reconcile_selected_community_among(
+                &config.account,
+                Some(&config.identities.keys().copied().collect()),
+            );
             let active_persona = state
                 .selected_community
                 .as_ref()
@@ -2762,6 +2815,15 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
         Action::DismissLoading => {
             // Phase 1 done + user pressed Enter — reveal the main page
             // (phase-2 connection is already running in the background).
+            //
+            // When the load was degraded, this Enter IS the acknowledgement.
+            // Record that it was given, so the activity log shows the user was
+            // told rather than leaving it ambiguous whether they ever saw it.
+            if let Some(integrity) = state.integrity.take() {
+                state
+                    .main_page
+                    .log(format!("Acknowledged: {}", integrity.headline()));
+            }
             state.active_page = state::ActivePage::Main;
         }
         Action::MainMenuSelected(menu_item) => {

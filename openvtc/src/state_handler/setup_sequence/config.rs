@@ -433,6 +433,7 @@ fn build_state_a_config(state: &SetupState) -> Result<Config> {
     };
 
     Ok(Config {
+        integrity: Default::default(),
         account,
         identities: BTreeMap::new(),
         active_persona: None,

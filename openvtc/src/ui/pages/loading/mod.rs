@@ -12,8 +12,8 @@
 
 use crate::{
     colors::{
-        COLOR_BORDER, COLOR_DARK_GRAY, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
-        COLOR_WARNING_ACCESSIBLE_RED,
+        COLOR_BORDER, COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS,
+        COLOR_TEXT_DEFAULT, COLOR_WARNING_ACCESSIBLE_RED,
     },
     state_handler::{
         actions::Action,
@@ -61,6 +61,9 @@ pub struct Props {
     /// Its presence — not `MediatorStatus::Failed` — is what switches the screen
     /// into its troubleshooting layout.
     pub diagnosis: Option<std::sync::Arc<openvtc_core::diagnostics::Diagnosis>>,
+    /// What loaded but shouldn't have been missing, when the profile came up
+    /// only partially. Turns the continue prompt into an acknowledgement.
+    pub integrity: Option<std::sync::Arc<openvtc_core::config::integrity::LoadIntegrity>>,
     /// Current mediator/connection status, driving the phase + error display.
     pub status: MediatorStatus,
     /// Hierarchical, timed startup tasks (the last may still be in progress).
@@ -76,6 +79,7 @@ impl From<&State> for Props {
     fn from(state: &State) -> Self {
         Props {
             diagnosis: state.startup_diagnosis.clone(),
+            integrity: state.integrity.clone(),
             status: state.connection.status.clone(),
             tasks: state.loading.clone(),
             tip_index: state.tip_index,
@@ -174,7 +178,7 @@ impl LoadingScreen {
     /// list and needs the room; the normal startup view keeps its narrow,
     /// centred column.
     fn content_width(&self, available: u16) -> u16 {
-        if self.props.diagnosis.is_some() {
+        if self.props.diagnosis.is_some() || self.props.integrity.is_some() {
             96u16.min(available.saturating_sub(2))
         } else {
             64u16.min(available.saturating_sub(2))
@@ -336,6 +340,133 @@ impl LoadingScreen {
         lines
     }
 
+    /// The degraded-load report.
+    ///
+    /// Says three things in order, because they are three different questions
+    /// the user has: what is missing, what still works, and what to do about it.
+    /// The "what still works" half is not padding — the whole change this
+    /// belongs to exists so that one broken persona no longer means nothing
+    /// loads, and a report that only lists damage would hide that.
+    fn integrity_lines(
+        integrity: &openvtc_core::config::integrity::LoadIntegrity,
+        width: usize,
+    ) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line> = Vec::new();
+        let warn = Style::new().fg(COLOR_ORANGE);
+        let body = Style::new().fg(COLOR_TEXT_DEFAULT);
+        let dim = Style::new().fg(COLOR_DARK_GRAY);
+
+        lines.extend(
+            Self::wrap_to("This profile did not load completely.", width)
+                .into_iter()
+                .map(|l| Line::from(Span::styled(l, warn.bold()))),
+        );
+
+        let mut missing = Vec::new();
+        for persona in &integrity.degraded_personas {
+            let name = persona.label.clone().unwrap_or_else(|| {
+                openvtc_core::display::truncate_did(&persona.did, 44).into_owned()
+            });
+            missing.extend(
+                Self::wrap_with_prefix(
+                    &format!("Persona {name} — {}", persona.reason.summary()),
+                    width,
+                    "  • ",
+                    "    ",
+                )
+                .into_iter()
+                .map(|(p, t)| Line::from(vec![Span::styled(p, dim), Span::styled(t, body)])),
+            );
+        }
+        for membership in &integrity.stranded_memberships {
+            let name = membership.label.clone().unwrap_or_else(|| {
+                openvtc_core::display::truncate_did(&membership.vtc_did, 44).into_owned()
+            });
+            missing.extend(
+                Self::wrap_with_prefix(
+                    &format!("Community {name} — inactive, its persona did not load"),
+                    width,
+                    "  • ",
+                    "    ",
+                )
+                .into_iter()
+                .map(|(p, t)| Line::from(vec![Span::styled(p, dim), Span::styled(t, body)])),
+            );
+        }
+        if !integrity.orphaned_key_ids.is_empty() {
+            missing.extend(
+                Self::wrap_with_prefix(
+                    &format!(
+                        "{} key record(s) belong to no persona in this account — \
+                         evidence of the same interrupted save",
+                        integrity.orphaned_key_ids.len()
+                    ),
+                    width,
+                    "  • ",
+                    "    ",
+                )
+                .into_iter()
+                .map(|(p, t)| Line::from(vec![Span::styled(p, dim), Span::styled(t, body)])),
+            );
+        }
+        Self::section(&mut lines, "Not available this session", missing);
+
+        Self::section(
+            &mut lines,
+            "Everything else loaded normally",
+            Self::wrap_with_prefix(
+                "Your other personas, communities and relationships are unaffected. \
+                 Nothing has been deleted: the records above are still in your \
+                 configuration and are skipped, not removed.",
+                width,
+                "  ",
+                "  ",
+            )
+            .into_iter()
+            .map(|(p, t)| Line::from(vec![Span::styled(p, dim), Span::styled(t, body)]))
+            .collect(),
+        );
+
+        // The advice divides on one question: is this loss, or a bad moment?
+        let advice: Vec<String> = if integrity.is_all_transient() {
+            vec![
+                "This looks temporary — the VTA or the network could not be reached for \
+                 these personas rather than anything being lost."
+                    .to_string(),
+                "Restart OpenVTC once connectivity is back; they should load normally.".to_string(),
+            ]
+        } else {
+            vec![
+                "A persona recorded with no key material is the signature of a save that \
+                 was interrupted — most often a crash or a power loss part-way through \
+                 creating that persona."
+                    .to_string(),
+                "If you have an encrypted export from before the interruption, restoring \
+                 it (Settings -> Import / Restore Backup) is the way to get the persona \
+                 back."
+                    .to_string(),
+                "Otherwise the affected persona cannot be recovered and will need to be \
+                 created again, and any community joined with it re-joined. It is left \
+                 in your configuration until you remove it."
+                    .to_string(),
+                "This does not affect your other personas — carry on using them.".to_string(),
+            ]
+        };
+        let mut advice_lines = Vec::new();
+        for (i, item) in advice.iter().enumerate() {
+            let first = format!("  {}. ", i + 1);
+            let rest = " ".repeat(first.len());
+            advice_lines.extend(
+                Self::wrap_with_prefix(item, width, &first, &rest)
+                    .into_iter()
+                    .map(|(p, t)| Line::from(vec![Span::styled(p, dim), Span::styled(t, body)])),
+            );
+        }
+        Self::section(&mut lines, "What this means", advice_lines);
+
+        lines
+    }
+
     /// The human-readable phase line derived from the connection status.
     /// `Failed` is handled separately (rendered as a prominent error block).
     fn phase_line(status: &MediatorStatus) -> Line<'static> {
@@ -477,6 +608,10 @@ impl ComponentRender<()> for LoadingScreen {
             let text_width = usize::from(content_width.saturating_sub(2));
             lines.extend(Self::diagnosis_lines(diagnosis, text_width));
             lines.push(Line::default());
+        } else if let Some(integrity) = &self.props.integrity {
+            let text_width = usize::from(content_width.saturating_sub(2));
+            lines.extend(Self::integrity_lines(integrity, text_width));
+            lines.push(Line::default());
         } else if let MediatorStatus::Failed(reason) = &self.props.status {
             // Failed with no diagnosis attached: a phase-2 (post-load)
             // connection failure. Show it plainly rather than inventing advice.
@@ -506,7 +641,7 @@ impl ComponentRender<()> for LoadingScreen {
 
         // Rotating tip — suppressed on failure. "Tip: your keys never leave
         // your device" under "your keys could not be found" is not a good look.
-        if !TIPS.is_empty() && self.props.diagnosis.is_none() {
+        if !TIPS.is_empty() && self.props.diagnosis.is_none() && self.props.integrity.is_none() {
             let tip = TIPS[self.props.tip_index % TIPS.len()];
             lines.push(Line::styled(
                 tip,
@@ -518,10 +653,22 @@ impl ComponentRender<()> for LoadingScreen {
         // already running in the background).
         if self.props.complete {
             lines.push(Line::default());
-            lines.push(Line::styled(
-                "Press [ENTER] to continue — connecting in the background",
-                Style::new().fg(COLOR_SUCCESS).bold(),
-            ));
+            let (prompt, style) = match &self.props.integrity {
+                Some(integrity) => (
+                    format!(
+                        "Press [ENTER] to acknowledge — {} — and continue",
+                        integrity
+                            .headline()
+                            .trim_start_matches("Loaded with problems: ")
+                    ),
+                    Style::new().fg(COLOR_ORANGE).bold(),
+                ),
+                None => (
+                    "Press [ENTER] to continue — connecting in the background".to_string(),
+                    Style::new().fg(COLOR_SUCCESS).bold(),
+                ),
+            };
+            lines.push(Line::styled(prompt, style));
         }
 
         self.rendered_lines
@@ -746,6 +893,107 @@ mod tests {
         for row in &drawn {
             assert!(row.chars().count() <= 100, "row overflows: {row:?}");
         }
+    }
+
+    /// A partially-loaded profile: one persona lost its key material, the rest
+    /// of the account is fine.
+    fn degraded_state() -> State {
+        use openvtc_core::config::{
+            account::PersonaId,
+            integrity::{DegradedPersona, DegradedReason, LoadIntegrity, StrandedMembership},
+        };
+        let persona_id = PersonaId(uuid::Uuid::nil());
+        State {
+            loading_complete: true,
+            integrity: Some(std::sync::Arc::new(LoadIntegrity {
+                degraded_personas: vec![DegradedPersona {
+                    persona_id,
+                    did: "did:webvh:QmAlice:example.com:alice".to_string(),
+                    label: Some("Work identity".to_string()),
+                    created_at: chrono::Utc::now(),
+                    reason: DegradedReason::MissingKeyInfo {
+                        key_id: "did:webvh:QmAlice:example.com:alice#key-1".to_string(),
+                    },
+                }],
+                stranded_memberships: vec![StrandedMembership {
+                    vtc_did: "did:webvh:QmV:vtc.example.com:acme".to_string(),
+                    persona_id,
+                    label: Some("Acme Community".to_string()),
+                }],
+                orphaned_key_ids: Vec::new(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// The user must be told three things, and the reassurance is not optional:
+    /// the entire point of isolating the fault is that the rest of the account
+    /// survived, and a report listing only damage would hide that.
+    #[test]
+    fn degraded_load_names_what_is_lost_and_what_survived() {
+        let state = degraded_state();
+        let text = flat(&rows(&screen(&state), 100, 60));
+        assert!(text.contains("did not load completely"), "{text}");
+        assert!(text.contains("Work identity"), "{text}");
+        assert!(text.contains("Acme Community"), "{text}");
+        assert!(
+            text.contains("unaffected") && text.contains("Nothing has been deleted"),
+            "the report must say what still works:\n{text}"
+        );
+    }
+
+    /// Enter must read as an acknowledgement, not as an ordinary "continue" —
+    /// this is the interaction that makes the warning something the user has
+    /// been shown rather than something that scrolled past.
+    #[test]
+    fn degraded_load_turns_continue_into_an_acknowledgement() {
+        let degraded = flat(&rows(&screen(&degraded_state()), 100, 60));
+        assert!(degraded.contains("[ENTER] to acknowledge"), "{degraded}");
+
+        let healthy = State {
+            loading_complete: true,
+            ..Default::default()
+        };
+        let healthy = flat(&rows(&screen(&healthy), 100, 40));
+        assert!(healthy.contains("[ENTER] to continue"), "{healthy}");
+        assert!(!healthy.contains("acknowledge"), "{healthy}");
+    }
+
+    /// An interrupted write is loss and must be described as such; an
+    /// unreachable VTA is not, and telling a user their persona is gone when it
+    /// is merely offline would be worse than saying nothing.
+    #[test]
+    fn transient_faults_are_not_described_as_loss() {
+        use openvtc_core::config::{
+            account::PersonaId,
+            integrity::{DegradedPersona, DegradedReason, LoadIntegrity},
+        };
+        let state = State {
+            loading_complete: true,
+            integrity: Some(std::sync::Arc::new(LoadIntegrity {
+                degraded_personas: vec![DegradedPersona {
+                    persona_id: PersonaId(uuid::Uuid::nil()),
+                    did: "did:webvh:QmAlice:example.com:alice".to_string(),
+                    label: None,
+                    created_at: chrono::Utc::now(),
+                    reason: DegradedReason::KeyUnavailable {
+                        detail: "connection refused".to_string(),
+                    },
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let text = flat(&rows(&screen(&state), 100, 60));
+        assert!(text.contains("looks temporary"), "{text}");
+        assert!(
+            !text.contains("cannot be recovered"),
+            "a transient fault must not be reported as permanent loss:\n{text}"
+        );
+
+        let lossy = flat(&rows(&screen(&degraded_state()), 100, 60));
+        assert!(lossy.contains("interrupted"), "{lossy}");
+        assert!(lossy.contains("cannot be recovered"), "{lossy}");
     }
 
     /// Scroll keys are inert on a healthy startup, where they would otherwise
