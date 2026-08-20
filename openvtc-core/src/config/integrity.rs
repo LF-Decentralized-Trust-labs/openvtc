@@ -2,7 +2,7 @@
 //!
 //! # The failure this exists for
 //!
-//! A profile is persisted in two writes, not one: [`Config::save`] writes the
+//! A profile is persisted in two writes, not one: [`Config::save`](crate::config::Config::save) writes the
 //! public config file (carrying the encrypted account, and with it the persona
 //! records) and *then* writes the `SecuredConfig` blob (carrying `key_info`,
 //! which maps each DID verification method to its key) to the OS credential

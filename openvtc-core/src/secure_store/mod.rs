@@ -14,7 +14,7 @@
 //! - [`probe`] answers the only question that matters for a given profile —
 //!   is the credential there, and will it still be there after a reboot?
 //!
-//! [`file`] is the durable store an operator can select deliberately on a
+//! [`mod@file`] is the durable store an operator can select deliberately on a
 //! machine with no OS keyring. There is no automatic downgrade: registration
 //! lives in the binary, which fails closed when the OS store cannot be opened
 //! and calls [`record_active`] so diagnostics can report what was chosen.

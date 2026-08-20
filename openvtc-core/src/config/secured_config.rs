@@ -380,7 +380,8 @@ pub struct SecuredConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mediator_did: Option<String>,
 
-    /// Random 32-byte key (base64url) that encrypts [`ProtectedConfig`].
+    /// Random 32-byte key (base64url) that encrypts
+    /// [`ProtectedConfig`](crate::config::protected_config::ProtectedConfig).
     ///
     /// # Why this is not derived from the admin credential
     ///
