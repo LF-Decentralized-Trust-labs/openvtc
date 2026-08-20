@@ -95,6 +95,20 @@ pub struct PersonaRecord {
     pub created_at: DateTime<Utc>,
     /// Optional human-friendly label.
     pub label: Option<String>,
+
+    /// Fields written by a build newer than this one, preserved verbatim.
+    ///
+    /// **D19.** Without this, serde silently drops what it does not know, and a
+    /// round trip through an older build is data loss: read a record, discard
+    /// the new fields, write it back without them. Harmless while a single
+    /// writer owns the config — and exactly why it has never bitten — but the
+    /// moment this record is shared with another instance (E2), an older build
+    /// would quietly strip a newer one's work.
+    ///
+    /// Carried, never interpreted. `skip_serializing_if` keeps it off the wire
+    /// when empty so existing configs are byte-identical.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Lifecycle state of a community membership (D8). Only [`Active`] is live; all
@@ -270,6 +284,11 @@ pub struct CommunityRecord {
     /// load so older configs keep working.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub credentials: BTreeMap<CredentialKind, serde_json::Value>,
+
+    /// Fields written by a newer build, preserved verbatim (D19). See
+    /// [`Account::extra`] for why.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Deserialize-only shadow of [`CommunityRecord`] that folds pre-R19
@@ -319,6 +338,11 @@ struct CommunityRecordShadow {
     membership_credential: Option<serde_json::Value>,
     #[serde(default)]
     role_credential: Option<serde_json::Value>,
+    // D19: the catch-all has to live HERE, not on `CommunityRecord`. The shadow
+    // deserializes first, so anything it does not name is gone before the real
+    // type is built.
+    #[serde(flatten, default)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl From<CommunityRecordShadow> for CommunityRecord {
@@ -345,6 +369,8 @@ impl From<CommunityRecordShadow> for CommunityRecord {
             credentials.entry(CredentialKind::Role).or_insert(vec);
         }
         CommunityRecord {
+            // D19: carry forward whatever a newer build wrote.
+            extra: shadow.extra,
             vtc_did: shadow.vtc_did,
             display_name: shadow.display_name,
             sub_context_id: shadow.sub_context_id,
@@ -394,6 +420,7 @@ impl CommunityRecord {
         now: DateTime<Utc>,
     ) -> Self {
         CommunityRecord {
+            extra: serde_json::Map::new(),
             vtc_did,
             display_name,
             sub_context_id,
@@ -650,6 +677,20 @@ pub struct Account {
     /// record) into the grouped form on load.
     #[serde(default, deserialize_with = "de_communities")]
     pub communities: HashMap<VtcDid, Vec<CommunityRecord>>,
+
+    /// Fields written by a build newer than this one, preserved verbatim.
+    ///
+    /// **D19.** Without this, serde silently drops what it does not know, and a
+    /// round trip through an older build is data loss: read a record, discard
+    /// the new fields, write it back without them. Harmless while a single
+    /// writer owns the config — and exactly why it has never bitten — but the
+    /// moment this record is shared with another instance (E2), an older build
+    /// would quietly strip a newer one's work.
+    ///
+    /// Carried, never interpreted. `skip_serializing_if` keeps it off the wire
+    /// when empty so existing configs are byte-identical.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Deserialize [`Account::communities`] tolerantly: each VTC's value may be a
@@ -939,6 +980,7 @@ mod tests {
 
     fn persona(label: &str) -> PersonaRecord {
         PersonaRecord {
+            extra: serde_json::Map::new(),
             persona_id: PersonaId::new(),
             did: format!("did:webvh:example.com:{label}"),
             did_document: None,
@@ -984,6 +1026,7 @@ mod tests {
 
     fn community(vtc: &str, persona_ref: PersonaId, status: CommunityStatus) -> CommunityRecord {
         CommunityRecord {
+            extra: serde_json::Map::new(),
             vtc_did: vtc.to_string(),
             display_name: Some(vtc.to_string()),
             sub_context_id: format!("openvtc/{vtc}"),
@@ -1751,5 +1794,119 @@ mod tests {
         });
         let acct: Account = serde_json::from_value(modern).expect("modern config loads");
         assert_eq!(acct.memberships().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod forward_compat_tests {
+    //! D19 — a record written by a newer build must survive a round trip
+    //! through this one. Harmless while a single writer owns the config; data
+    //! loss the moment the record is shared (E2).
+    use super::*;
+
+    /// The failure this exists to stop: read, write back, and the newer build's
+    /// fields are gone.
+    #[test]
+    fn unknown_persona_fields_survive_a_round_trip() {
+        let json = serde_json::json!({
+            "persona_id": Uuid::nil(),
+            "did": "did:webvh:Qm:example.com:alice",
+            "key_refs": [],
+            "origin_context_id": "top",
+            "created_at": "2026-08-20T00:00:00Z",
+            "label": "Alice",
+            // Written by a build that knows about something this one does not.
+            "recovery_approver": "did:key:zApprover",
+            "future_nested": { "a": 1, "b": [true, null] }
+        });
+
+        let record: PersonaRecord = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(record.label.as_deref(), Some("Alice"));
+
+        let back = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(
+            back.get("recovery_approver").and_then(|v| v.as_str()),
+            Some("did:key:zApprover"),
+            "an unknown field was dropped: {back}"
+        );
+        assert_eq!(
+            back.get("future_nested"),
+            Some(&serde_json::json!({ "a": 1, "b": [true, null] })),
+            "nested structure was not preserved verbatim: {back}"
+        );
+    }
+
+    /// `CommunityRecord` deserializes through a shadow, so the catch-all has to
+    /// live there. This is the test that catches putting it on the wrong type —
+    /// the record would compile, and silently drop everything.
+    #[test]
+    fn unknown_membership_fields_survive_the_shadow() {
+        let json = serde_json::json!({
+            "vtc_did": "did:webvh:Qm:vtc.example.com:acme",
+            "display_name": "Acme",
+            "sub_context_id": "top/acme",
+            "persona_ref": Uuid::nil(),
+            "status": { "state": "active" },
+            "invented_by_a_newer_build": "keep me"
+        });
+
+        let record: CommunityRecord = serde_json::from_value(json).expect("deserialize");
+        let back = serde_json::to_value(&record).expect("serialize");
+        assert_eq!(
+            back.get("invented_by_a_newer_build")
+                .and_then(|v| v.as_str()),
+            Some("keep me"),
+            "the shadow dropped an unknown field: {back}"
+        );
+    }
+
+    /// A record with nothing unknown must serialize byte-identically to before
+    /// D19 — no empty `extra`, no new keys. Existing configs must not churn.
+    #[test]
+    fn a_known_record_gains_nothing_on_the_wire() {
+        let (id, record) = {
+            let id = PersonaId(Uuid::nil());
+            (
+                id,
+                PersonaRecord {
+                    persona_id: id,
+                    did: "did:webvh:Qm:example.com:alice".to_string(),
+                    did_document: None,
+                    key_refs: Vec::new(),
+                    mediator_did: None,
+                    origin_context_id: "top".to_string(),
+                    created_at: Utc::now(),
+                    label: None,
+                    extra: serde_json::Map::new(),
+                },
+            )
+        };
+        let _ = id;
+        let json = serde_json::to_value(&record).expect("serialize");
+        assert!(json.get("extra").is_none(), "{json}");
+        let obj = json.as_object().expect("object");
+        assert!(
+            !obj.keys().any(|k| k.starts_with('_')),
+            "unexpected synthetic key: {json}"
+        );
+    }
+
+    /// The account itself carries unknowns too — it is the outermost shared
+    /// record, so losing a field here loses whatever it described.
+    #[test]
+    fn unknown_account_fields_survive_a_round_trip() {
+        let json = serde_json::json!({
+            "vta_did": "did:webvh:Qm:vta.example.com:agent",
+            "vta_url": "",
+            "top_context_id": "top",
+            "recovery_approver_set": ["did:key:zA", "did:key:zB"]
+        });
+        let account: Account = serde_json::from_value(json).expect("deserialize");
+        let back = serde_json::to_value(&account).expect("serialize");
+        assert_eq!(
+            back.get("recovery_approver_set"),
+            Some(&serde_json::json!(["did:key:zA", "did:key:zB"])),
+            "{back}"
+        );
     }
 }

@@ -122,6 +122,9 @@ impl Config {
             // never dropped, so a save taken while degraded does not turn a
             // recoverable inconsistency into permanent loss.
             account: self.account.clone(),
+            // Carried, not regenerated: a snapshot that minted its own key
+            // would write the blob under a key the live config does not hold.
+            protected_key: self.protected_key.clone(),
             // Runtime-only; rebuilt at load and unused by `save`.
             identities: BTreeMap::new(),
             integrity: crate::config::integrity::LoadIntegrity::default(),

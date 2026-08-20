@@ -245,6 +245,15 @@ pub struct ProtectedConfig {
     /// there is nothing to `Arc`. See [`crate::agent_name`].
     #[serde(default)]
     pub agent_names: HashMap<String, CachedAgentName>,
+
+    /// Fields written by a newer build, preserved verbatim (D19).
+    ///
+    /// The protected tier is where the account lives, so an older build
+    /// round-tripping this blob is the highest-stakes instance of the problem:
+    /// without the catch-all it would read the config, drop everything it does
+    /// not recognise, and write it back stripped.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 impl ProtectedConfig {
@@ -286,6 +295,7 @@ impl ProtectedConfig {
 impl Default for ProtectedConfig {
     fn default() -> Self {
         ProtectedConfig {
+            extra: serde_json::Map::new(),
             schema_version: PROTECTED_SCHEMA_VERSION,
             account: Account::default(),
             contacts: Contacts::default(),
@@ -473,6 +483,7 @@ mod tests {
         config.account.personas.insert(
             pid,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id: pid,
                 did: "did:webvh:example:p".into(),
                 did_document: None,

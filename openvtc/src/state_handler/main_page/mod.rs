@@ -1122,6 +1122,7 @@ mod tests {
         config.account.personas.insert(
             persona_id,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id,
                 did: persona_did.to_string(),
                 did_document: None,
@@ -1135,6 +1136,7 @@ mod tests {
         config.account.communities.insert(
             vtc_did.to_string(),
             vec![CommunityRecord {
+                extra: serde_json::Map::new(),
                 vtc_did: vtc_did.to_string(),
                 display_name: display_name.map(str::to_owned),
                 sub_context_id: String::new(),

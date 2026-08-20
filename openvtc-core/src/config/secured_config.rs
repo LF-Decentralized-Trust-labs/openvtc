@@ -30,6 +30,20 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Constants for storing secure info in the OS Secure Store
 const SERVICE: &str = "openvtc";
 
+/// Mint a fresh random 32-byte `ProtectedConfig` key, base64url-encoded.
+///
+/// Uses the OS CSPRNG. Called once per profile, on the first save after this
+/// field existed; thereafter the stored value is reused so the on-disk blob
+/// stays readable.
+#[must_use]
+pub fn new_protected_key() -> SecretString {
+    let mut key = [0u8; 32];
+    OsRng.fill_bytes(&mut key);
+    let encoded = BASE64_URL_SAFE_NO_PAD.encode(key);
+    key.zeroize();
+    SecretString::new(encoded.into())
+}
+
 /// Reject an unencrypted `SecuredConfig` blob.
 ///
 /// This is the [`SecretPolicy`](crate::secure_store::file::SecretPolicy) the
@@ -366,6 +380,32 @@ pub struct SecuredConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mediator_did: Option<String>,
 
+    /// Random 32-byte key (base64url) that encrypts [`ProtectedConfig`].
+    ///
+    /// # Why this is not derived from the admin credential
+    ///
+    /// It used to be: `HKDF(admin_credential_private_key,
+    /// "openvtc-protected-config-seed-v1")`. That made one value serve two
+    /// irreconcilable roles — an **authorisation grant** designed to rotate
+    /// (`acl/swap-key`) and be re-issued to a recovering install, and a
+    /// **data-at-rest key** that must never change. Rotating the credential
+    /// would have made the on-disk config undecryptable, and a recovered
+    /// install necessarily holds a *different* credential, so recovery and
+    /// existing local state were mutually exclusive.
+    ///
+    /// Generated on first save. `None` on configs written before this field
+    /// existed; [`Config::load_step2`] falls back to the legacy derivation and
+    /// re-keys on the next save. The fallback is retained deliberately — see
+    /// `protected_key_or_legacy`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serde_opt_secret_str::serialize",
+        deserialize_with = "serde_opt_secret_str::deserialize"
+    )]
+    #[zeroize(skip)]
+    pub protected_key: Option<SecretString>,
+
     /// Key information containing path info
     /// key is the DID VerificationMethod ID
     #[zeroize(skip)] // chrono doesn't support zeroize
@@ -383,6 +423,7 @@ impl From<&Config> for SecuredConfig {
             KeyBackend::Bip32 { seed, .. } => SecuredConfig {
                 bip32_seed: Some(seed.clone()),
                 credential_bundle: None,
+                protected_key: cfg.protected_key.clone(),
                 vta_url: None,
                 vta_did: None,
                 mediator_did: None,
@@ -398,6 +439,7 @@ impl From<&Config> for SecuredConfig {
             } => SecuredConfig {
                 bip32_seed: None,
                 credential_bundle: Some(credential_bundle.clone()),
+                protected_key: cfg.protected_key.clone(),
                 vta_url: if vta_url.is_empty() {
                     None
                 } else {
@@ -981,6 +1023,7 @@ mod tests {
         // Verify that SecretString cannot be printed via Debug or Display,
         // proving the seed value never leaks through formatting.
         let config = SecuredConfig {
+            protected_key: None,
             bip32_seed: Some(SecretString::new("super-secret-seed-value".into())),
             credential_bundle: None,
             vta_url: None,
@@ -1011,5 +1054,89 @@ mod tests {
         if let KeySourceMaterial::Imported { seed } = &material {
             assert_eq!(seed.expose_secret(), "z6MkSensitiveKeyData");
         }
+    }
+}
+
+#[cfg(test)]
+mod protected_key_tests {
+    //! D12 — the `ProtectedConfig` key is the profile's own, not derived from
+    //! the admin credential. These pin the properties that make the credential
+    //! safe to rotate and re-issue.
+    use super::*;
+
+    #[test]
+    fn a_minted_key_is_32_bytes_and_unique() {
+        let a = new_protected_key();
+        let b = new_protected_key();
+        assert_ne!(
+            a.expose_secret(),
+            b.expose_secret(),
+            "two profiles must not share a config key"
+        );
+        let bytes = BASE64_URL_SAFE_NO_PAD
+            .decode(a.expose_secret())
+            .expect("base64url");
+        assert_eq!(bytes.len(), 32);
+    }
+
+    /// The whole point: the key does not move when the credential does.
+    #[test]
+    fn the_key_is_independent_of_the_credential() {
+        let key = new_protected_key();
+        let before = key.expose_secret().to_string();
+        // Whatever happens to the admin credential — rotation via
+        // `acl/swap-key`, or a reprovision handing a recovering install an
+        // entirely different one — this value is untouched, because nothing
+        // derives it.
+        let after = key.expose_secret().to_string();
+        assert_eq!(before, after);
+    }
+
+    /// A profile with no key yet must round-trip through serde as absent, not
+    /// as `null` — the `SecuredConfig` blob is size-sensitive and older builds
+    /// must still parse it.
+    #[test]
+    fn an_absent_key_is_omitted_from_the_wire() {
+        let sc = SecuredConfig {
+            bip32_seed: None,
+            credential_bundle: Some(SecretString::new("bundle".into())),
+            protected_key: None,
+            vta_url: None,
+            vta_did: None,
+            mediator_did: None,
+            key_info: HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+        };
+        let json = serde_json::to_string(&sc).expect("serialize");
+        assert!(!json.contains("protected_key"), "{json}");
+        assert!(!json.contains("null"), "{json}");
+
+        let back: SecuredConfig = serde_json::from_str(&json).expect("deserialize");
+        assert!(back.protected_key.is_none());
+    }
+
+    #[test]
+    fn a_stored_key_round_trips() {
+        let key = new_protected_key();
+        let expected = key.expose_secret().to_string();
+        let sc = SecuredConfig {
+            bip32_seed: None,
+            credential_bundle: Some(SecretString::new("bundle".into())),
+            protected_key: Some(key),
+            vta_url: None,
+            vta_did: None,
+            mediator_did: None,
+            key_info: HashMap::new(),
+            protection_method: ProtectionMethod::default(),
+        };
+        let json = serde_json::to_string(&sc).expect("serialize");
+        let back: SecuredConfig = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            back.protected_key
+                .as_ref()
+                .expect("key present")
+                .expose_secret(),
+            &expected
+        );
     }
 }

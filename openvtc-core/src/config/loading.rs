@@ -16,7 +16,7 @@ use base64::{Engine, prelude::BASE64_URL_SAFE_NO_PAD};
 use ed25519_dalek_bip32::ExtendedSigningKey;
 use secrecy::{ExposeSecret, SecretBox, SecretString};
 use std::collections::BTreeMap;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use vta_sdk::credentials::CredentialBundle;
 
 #[cfg(feature = "openpgp-card")]
@@ -26,6 +26,71 @@ use super::TokenInteractions;
 /// sub-step of a major task begins, so the UI can build a two-level loading view
 /// with per-step and per-major timing.
 pub type ProgressFn<'a> = &'a (dyn Fn(&str, &str) + Send + Sync);
+
+/// Decrypt the protected blob, trying each key a profile could legitimately be
+/// sitting under, newest first. Returns the config and whether it needs re-keying.
+///
+/// Three keys, because all three are reachable in practice:
+///
+/// 1. **`stored`** — the profile's own D12 key. The normal case once migrated.
+/// 2. **`legacy`** — the pre-D12 seed derived from the admin credential (or the
+///    BIP32 root). Reached by a config written before D12, *and* by one whose
+///    re-key was interrupted: `Config::save` writes the secured blob before the
+///    public one, so a crash between them leaves the new key stored and the old
+///    blob on disk. Trying `legacy` after `stored` is precisely what makes that
+///    survivable rather than a lockout (R7).
+/// 3. **`oldest`** — pre-0.1.4 BIP32 configs, which derived from the verifying
+///    key. `None` for VTA-backed profiles, which never had that form.
+///
+/// Anything but (1) sets the re-key flag, and the next save rewrites the blob
+/// under the stored key.
+///
+/// Extracted from `load_step2` so this decision is testable without a TDK, a
+/// keyring, or a network — it is the one place a wrong answer locks a user out
+/// of their own profile.
+fn decrypt_protected_with_fallback(
+    stored: Option<&SecretBox<Vec<u8>>>,
+    legacy: &SecretBox<Vec<u8>>,
+    oldest: Option<&SecretBox<Vec<u8>>>,
+    blob: &str,
+) -> Result<(ProtectedConfig, bool), OpenVTCError> {
+    if let Some(seed) = stored {
+        match ProtectedConfig::load(seed, blob) {
+            Ok(cfg) => return Ok((cfg, false)),
+            Err(e) => {
+                debug!("stored config key did not decrypt ({e}); trying older seeds");
+            }
+        }
+    }
+
+    match ProtectedConfig::load(legacy, blob) {
+        Ok(cfg) => {
+            if stored.is_none() {
+                info!("config predates its own encryption key; re-keying on next save (D12)");
+            } else {
+                warn!(
+                    "config decrypted with the pre-D12 seed despite a stored key — a previous \
+                     re-key was interrupted; completing it on next save"
+                );
+            }
+            Ok((cfg, true))
+        }
+        Err(legacy_err) => {
+            let Some(oldest) = oldest else {
+                return Err(legacy_err);
+            };
+            match ProtectedConfig::load(oldest, blob) {
+                Ok(cfg) => {
+                    warn!(
+                        "config was encrypted with the pre-0.1.4 seed — re-encrypting on next save"
+                    );
+                    Ok((cfg, true))
+                }
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
 
 /// Record a persona that could not be brought up, pulling its label and
 /// creation time from the account so the report can name it the way the user
@@ -208,48 +273,61 @@ impl Config {
             ));
         };
 
-        // Get the encryption seed for ProtectedConfig
-        let encryption_seed = match &key_backend {
+        // D12: the profile's own key encrypts `ProtectedConfig`, so the admin
+        // credential is free to rotate and be re-issued to a recovering
+        // install. `legacy_seed` is the pre-D12 derivation, kept as a
+        // *decryption* fallback only.
+        let legacy_seed = match &key_backend {
             KeyBackend::Bip32 { root, .. } => ProtectedConfig::get_seed(root, "m/0'/0'/0'")?,
             KeyBackend::Vta {
                 encryption_seed, ..
             } => SecretBox::new(Box::new(encryption_seed.expose_secret().to_vec())),
         };
+        let stored_key = sc.protected_key.clone();
 
         // Unencrypt the private config data, with migration from legacy seed
-        let (mut private_cfg, needs_migration) =
-            if let Some(private_cfg_str) = &public_config.private {
-                match ProtectedConfig::load(&encryption_seed, private_cfg_str) {
-                    Ok(cfg) => (cfg, false),
-                    Err(_) => {
-                        // Try legacy seed (pre-0.1.4 used verifying key instead of signing key)
-                        if let KeyBackend::Bip32 { root, .. } = &key_backend {
-                            let legacy_seed = ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?;
-                            match ProtectedConfig::load(&legacy_seed, private_cfg_str) {
-                                Ok(cfg) => {
-                                    warn!(
-                                        "Config was encrypted with legacy seed — will be \
-                                         re-encrypted with the new seed on next save"
-                                    );
-                                    (cfg, true)
-                                }
-                                Err(e) => return Err(e),
-                            }
-                        } else {
-                            return Err(OpenVTCError::Decrypt(
-                                "Failed to decrypt protected config".to_string(),
-                            ));
-                        }
+        //
+        // Three keys are tried, newest first, because a profile can legitimately
+        // be sitting under any of them:
+        //   1. the stored D12 key — the normal case once migrated;
+        //   2. the pre-D12 credential/BIP32-derived seed — a config written
+        //      before D12, or one whose re-key was interrupted between the two
+        //      writes `Config::save` makes (R7);
+        //   3. the pre-0.1.4 BIP32 seed, which used the verifying key.
+        // Succeeding on anything but (1) sets `needs_rekey`, and the next save
+        // writes the blob back under the stored key.
+        let (mut private_cfg, needs_rekey) = match &public_config.private {
+            Some(blob) => {
+                let stored_seed = stored_key
+                    .as_ref()
+                    .map(crate::config::decode_protected_key)
+                    .transpose()?;
+                let oldest_seed = match &key_backend {
+                    KeyBackend::Bip32 { root, .. } => {
+                        Some(ProtectedConfig::get_seed_legacy(root, "m/0'/0'/0'")?)
                     }
-                }
-            } else {
-                (ProtectedConfig::default(), false)
-            };
+                    KeyBackend::Vta { .. } => None,
+                };
+                decrypt_protected_with_fallback(
+                    stored_seed.as_ref(),
+                    &legacy_seed,
+                    oldest_seed.as_ref(),
+                    blob,
+                )?
+            }
+            // A profile with no protected blob yet still gets a key, so its
+            // first write is already under the D12 scheme.
+            None => (ProtectedConfig::default(), stored_key.is_none()),
+        };
 
-        // If migrating from legacy seed, flag for re-encryption on next save
-        if needs_migration {
-            info!("Config will be re-encrypted with the updated seed derivation on next save");
-        }
+        // Mint the profile's own key now if it has none (or if a previous
+        // re-key was interrupted); the next save persists it and rewrites the
+        // protected blob under it.
+        let protected_key = if needs_rekey || stored_key.is_none() {
+            Some(crate::config::secured_config::new_protected_key())
+        } else {
+            stored_key
+        };
 
         // Cached "this DID has no verifiable name" results do not survive a
         // restart — see `prune_agent_name_negatives`. The first refresh sweep
@@ -601,6 +679,7 @@ impl Config {
                 account,
                 identities,
                 integrity,
+                protected_key,
                 active_persona: None,
                 key_backend,
                 public: public_config,
@@ -640,6 +719,101 @@ fn log_private_config_shape(private_cfg: &ProtectedConfig) {
 }
 
 #[cfg(test)]
+mod protected_key_fallback_tests {
+    //! D12/R7 — the key-fallback decision. A wrong answer here locks a user out
+    //! of their own profile, so every reachable combination is pinned.
+    use super::*;
+    use crate::config::secured_config::new_protected_key;
+
+    fn seed(byte: u8) -> SecretBox<Vec<u8>> {
+        SecretBox::new(Box::new(vec![byte; 32]))
+    }
+
+    fn blob_under(seed: &SecretBox<Vec<u8>>) -> String {
+        let mut cfg = ProtectedConfig::default();
+        cfg.account.top_context_id = "marker".to_string();
+        cfg.save(seed).expect("encrypt")
+    }
+
+    /// The normal, migrated case: stored key decrypts, nothing to re-key.
+    #[test]
+    fn a_stored_key_decrypts_and_needs_no_rekey() {
+        let stored = seed(1);
+        let blob = blob_under(&stored);
+        let (cfg, rekey) =
+            decrypt_protected_with_fallback(Some(&stored), &seed(2), None, &blob).expect("decrypt");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(!rekey);
+    }
+
+    /// A config written before D12: no stored key, legacy seed decrypts, and it
+    /// must be flagged for re-keying.
+    #[test]
+    fn a_pre_d12_config_falls_back_and_is_flagged() {
+        let legacy = seed(2);
+        let blob = blob_under(&legacy);
+        let (cfg, rekey) =
+            decrypt_protected_with_fallback(None, &legacy, None, &blob).expect("decrypt");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(rekey, "a pre-D12 config must be re-keyed");
+    }
+
+    /// **R7.** `Config::save` writes the secured blob before the public one, so
+    /// a crash between them leaves the NEW key stored and the OLD blob on disk.
+    /// The user must still get in.
+    #[test]
+    fn an_interrupted_rekey_still_opens_the_profile() {
+        let legacy = seed(2);
+        let blob = blob_under(&legacy);
+        // The new key was persisted; the blob was not rewritten.
+        let stored = crate::config::decode_protected_key(&new_protected_key()).expect("decode");
+
+        let (cfg, rekey) = decrypt_protected_with_fallback(Some(&stored), &legacy, None, &blob)
+            .expect("an interrupted re-key must not lock the user out");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(
+            rekey,
+            "the interrupted re-key must be completed on next save"
+        );
+    }
+
+    /// Pre-0.1.4 BIP32 configs used the verifying key. Still reachable.
+    #[test]
+    fn the_oldest_bip32_seed_is_still_tried() {
+        let oldest = seed(3);
+        let blob = blob_under(&oldest);
+        let (cfg, rekey) =
+            decrypt_protected_with_fallback(Some(&seed(1)), &seed(2), Some(&oldest), &blob)
+                .expect("decrypt");
+        assert_eq!(cfg.account.top_context_id, "marker");
+        assert!(rekey);
+    }
+
+    /// A blob under none of the keys is an error, not a silent empty config —
+    /// returning a default would present an account with no personas as though
+    /// that were the truth.
+    #[test]
+    fn an_undecryptable_blob_is_an_error_not_an_empty_config() {
+        let blob = blob_under(&seed(9));
+        let err = decrypt_protected_with_fallback(Some(&seed(1)), &seed(2), Some(&seed(3)), &blob);
+        assert!(err.is_err(), "must not fabricate an empty account");
+    }
+
+    /// A VTA-backed profile has no pre-0.1.4 form, so the legacy failure is
+    /// what surfaces — not a confusing error about a seed that never applied.
+    #[test]
+    fn a_vta_profile_reports_the_legacy_failure() {
+        let blob = blob_under(&seed(9));
+        let err =
+            decrypt_protected_with_fallback(None, &seed(2), None, &blob).expect_err("should fail");
+        assert!(
+            matches!(err, OpenVTCError::Decrypt(_)),
+            "unexpected error: {err}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod integrity_tests {
     //! The cross-check that turns a half-written save into a report instead of
     //! a fatal load. The hydration path itself needs a live TDK and a VTA, so
@@ -658,6 +832,7 @@ mod integrity_tests {
         (
             persona_id,
             PersonaRecord {
+                extra: serde_json::Map::new(),
                 persona_id,
                 did: did.to_string(),
                 did_document: None,

@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The admin credential was doing two irreconcilable jobs.** `ProtectedConfig`'s
+  encryption key was `HKDF(admin_credential_private_key, …)`, which made one
+  value both an **authorisation grant** designed to rotate (`acl/swap-key`) and
+  be re-issued to a recovering install, *and* a **data-at-rest key** that must
+  never change. Rotating the credential would have made the on-disk config
+  undecryptable, and a recovered install necessarily holds a different
+  credential — so recovery and existing local state were mutually exclusive.
+  The profile now carries its own random 32-byte key in `SecuredConfig`, beside
+  the credential bundle and under the same passphrase or token.
+
+  Migration is transparent and crash-safe. Load tries three keys, newest first:
+  the stored key, the pre-D12 derivation, and the pre-0.1.4 BIP32 seed. Anything
+  but the first flags a re-key, completed on the next save. Keeping the older
+  keys readable is what makes an *interrupted* re-key survivable — `Config::save`
+  writes the secured blob before the public one, so a crash between them leaves
+  the new key stored and the old blob on disk, and the user must still get in.
+
+- **Config records silently dropped fields written by newer builds.** Neither
+  `Account`, `PersonaRecord`, `CommunityRecord` nor `ProtectedConfig` carried
+  `deny_unknown_fields` or a catch-all, so serde discarded anything it did not
+  recognise. Harmless while one writer owns the config — which is why it never
+  bit — but a round trip through an older build strips a newer one's work, and
+  that becomes real the moment a record is shared between two installs. Each now
+  carries a `#[serde(flatten)] extra` that preserves unknown fields verbatim.
+  `CommunityRecord`'s had to go on its deserialization shadow, which parses
+  first; putting it on the record itself compiles and drops everything.
+
 - **One half-written persona took down the entire profile.** A profile is saved
   in two non-atomic writes — the config file (carrying the account, and with it
   the persona records) and the `SecuredConfig` blob in the OS credential store
