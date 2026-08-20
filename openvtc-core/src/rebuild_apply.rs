@@ -1,4 +1,4 @@
-//! Turn a [`RebuildPlan`](crate::rebuild::RebuildPlan) into an account.
+//! Turn a [`crate::rebuild::RebuildPlan`] into an account.
 //!
 //! The write half of recovery. [`rebuild::plan`](crate::rebuild::plan) works out
 //! what a Trust Context holds and verifies it; this turns that into the
