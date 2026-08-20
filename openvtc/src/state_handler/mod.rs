@@ -16,7 +16,7 @@ use tokio::sync::{
     broadcast,
     mpsc::{self, UnboundedReceiver},
 };
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// Tail-truncate a DID for log-message display, fixed at 30 chars.
 pub(crate) fn log_did(did: &str) -> std::borrow::Cow<'_, str> {
@@ -266,6 +266,41 @@ pub(crate) enum SetupWizardExit {
     Config(Box<Config>),
 }
 
+/// Build a startup [`Diagnosis`](openvtc_core::diagnostics::Diagnosis) for an
+/// error that arrived as an `anyhow::Error`.
+///
+/// The load task keeps the typed `OpenVTCError` inside the `anyhow` wrapper, so
+/// the classification that drives the whole failure screen is available here.
+/// Anything that is genuinely not an `OpenVTCError` (a TDK init failure, a join
+/// panic) still gets the generic diagnosis rather than no help at all.
+fn diagnose_startup(err: &anyhow::Error, profile: &str) -> openvtc_core::diagnostics::Diagnosis {
+    use openvtc_core::{
+        diagnostics::{DiagnosisContext, diagnose},
+        errors::OpenVTCError,
+    };
+    let ctx = DiagnosisContext::new(profile);
+    let mut diagnosis = match err.downcast_ref::<OpenVTCError>() {
+        Some(typed) => diagnose(typed, &ctx),
+        None => {
+            let mut d = diagnose(&OpenVTCError::Config(err.to_string()), &ctx);
+            d.error = format!("{err:#}");
+            d
+        }
+    };
+
+    // The report goes to the log and to a file as well as to the screen: the
+    // screen version scrolls away with the terminal, and a support request is
+    // far more useful with the whole thing attached than with a photograph of
+    // the top of it.
+    error!("startup failed\n{}", diagnosis.render_plain());
+    if let Some(path) = diagnosis.write_report(profile) {
+        diagnosis
+            .context
+            .push(("Full report".to_string(), path.display().to_string()));
+    }
+    diagnosis
+}
+
 impl StateHandler {
     pub fn new(
         profile: &str,
@@ -409,6 +444,10 @@ impl StateHandler {
                 // dropped inside the spawn and recv() immediately returns None.
                 let (token_touch_tx, mut token_touch_rx) = mpsc::unbounded_channel::<bool>();
 
+                // `deferred` (and its profile) moves into the load task, so the
+                // failure handler below needs its own copy to diagnose with.
+                let profile = self.profile.clone();
+
                 let mut load_handle = tokio::spawn(async move {
                     let on_progress = |major: &str, sub: &str| {
                         if let Err(e) = progress_tx.send((major.to_string(), sub.to_string())) {
@@ -469,7 +508,10 @@ impl StateHandler {
                         Some(&on_progress),
                     )
                     .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    // Keep the typed `OpenVTCError` rather than formatting it
+                    // away: the failure handler downcasts it to build a
+                    // cause-specific diagnosis, which a string cannot support.
+                    .map_err(anyhow::Error::new)?;
 
                     Ok::<_, anyhow::Error>((tdk, config, admin_session))
                 });
@@ -505,6 +547,8 @@ impl StateHandler {
                                 }
                                 Ok(Err(e)) => {
                                     progress.fail(&mut state.loading);
+                                    state.startup_diagnosis =
+                                        Some(std::sync::Arc::new(diagnose_startup(&e, &profile)));
                                     state.connection.status =
                                         state::MediatorStatus::Failed(format!("{e}"));
                                     let _ = self.state_tx.send(state.clone());
@@ -521,6 +565,12 @@ impl StateHandler {
                                 }
                                 Err(join_err) => {
                                     progress.fail(&mut state.loading);
+                                    state.startup_diagnosis = Some(std::sync::Arc::new(
+                                        diagnose_startup(
+                                            &anyhow::anyhow!("internal error: {join_err}"),
+                                            &profile,
+                                        ),
+                                    ));
                                     state.connection.status =
                                         state::MediatorStatus::Failed(
                                             format!("Internal error: {join_err}"),
@@ -560,7 +610,19 @@ impl StateHandler {
                 let config = Box::new(config);
                 // Sync all display state from the loaded config
                 state.main_page.sync_from_config(&config);
+                state.main_page.refresh_storage_warning(&self.profile);
                 state.main_page.log("Configuration loaded");
+                if let Some(warning) = state
+                    .main_page
+                    .content_panel
+                    .settings
+                    .storage_warning
+                    .clone()
+                {
+                    // Loud enough to be seen without opening Settings: losing a
+                    // profile to a reboot is not something to discover later.
+                    state.main_page.log(format!("WARNING: {warning}"));
+                }
 
                 (tdk, config, loaded_admin_vta)
             }

@@ -465,6 +465,11 @@ async fn handle_set_passphrase(
                 "Passphrase protection enabled",
                 dispatch_util::SyncLog::Plain("Passphrase protection enabled".to_string()),
             );
+            // Setting a passphrase can move the secret to durable storage (the
+            // file store only accepts an encrypted blob), so the volatile
+            // warning may have just become untrue. Re-probe rather than leave a
+            // stale warning telling the user to do what they just did.
+            state.main_page.refresh_storage_warning(profile);
         }
         Err(e) => {
             dispatch_util::record_error(
@@ -499,6 +504,19 @@ fn handle_remove_passphrase(
                 "Protection reverted to keyring only",
                 dispatch_util::SyncLog::Plain("Protection reverted to keyring only".to_string()),
             );
+            // The mirror of the set-passphrase case: dropping protection can
+            // push the secret back to a volatile store, and the user should be
+            // told that is what just happened.
+            state.main_page.refresh_storage_warning(profile);
+            if let Some(warning) = state
+                .main_page
+                .content_panel
+                .settings
+                .storage_warning
+                .clone()
+            {
+                state.main_page.log(format!("WARNING: {warning}"));
+            }
         }
         Err(e) => {
             dispatch_util::record_error(

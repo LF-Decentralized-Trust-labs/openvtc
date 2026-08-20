@@ -1043,6 +1043,15 @@ pub struct SettingsState {
     pub persona_agent_name: Option<String>,
     /// How the config is protected (Token/Encrypted/Plaintext)
     pub protection_type: String,
+
+    /// Warning shown when this profile's secret is in a store that will not
+    /// keep it — the Linux kernel keyring, which is RAM-only. `None` when the
+    /// store is durable.
+    ///
+    /// Refreshed deliberately (at startup, and after a protection change) rather
+    /// than on every config sync: answering it means reading the credential back
+    /// out of the OS store, which is not something to do on every keystroke.
+    pub storage_warning: Option<String>,
     /// Currently selected setting index
     pub selected_index: usize,
     /// Current panel mode

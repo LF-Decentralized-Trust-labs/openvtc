@@ -13,6 +13,7 @@ use openvtc_core::{
     config::{Config, ConfigProtectionType, UnlockCode, public_config::PublicConfig},
     errors::OpenVTCError,
     process_lock::{check_duplicate_instance, remove_lock_file},
+    secure_store::{Durability, StoreDescription},
 };
 #[cfg(feature = "openpgp-card")]
 use secrecy::SecretString;
@@ -113,20 +114,237 @@ async fn load_config_for_health(profile: &str, unlock_code_arg: Option<&str>) ->
     }
 }
 
+/// Environment variable that overrides automatic credential-store selection.
+///
+/// Values: `auto` (default), `secret-service`, `file`, `keyutils`. Anything else
+/// is an error rather than a silent fall-through to `auto` — a typo here would
+/// otherwise put a profile's keys somewhere the user did not intend.
+const STORE_OVERRIDE_ENV: &str = "OPENVTC_SECURE_STORE";
+
 /// Register the platform-specific keyring-core credential store as the
 /// process default. Must run before any `keyring_core::Entry::new` call.
-fn init_default_keyring_store() -> Result<()> {
+///
+/// `profile` is needed because the durable file-backed store lives beside that
+/// profile's config; this therefore runs *after* profile resolution, not before.
+fn init_default_keyring_store(profile: &str) -> Result<()> {
+    let requested = std::env::var(STORE_OVERRIDE_ENV).unwrap_or_else(|_| "auto".to_string());
+
     #[cfg(target_os = "macos")]
-    let store = apple_native_keyring_store::keychain::Store::new()
-        .map_err(|e| anyhow::anyhow!("init macOS keychain store: {e}"))?;
-    #[cfg(target_os = "linux")]
-    let store = linux_keyutils_keyring_store::Store::new()
-        .map_err(|e| anyhow::anyhow!("init linux keyutils store: {e}"))?;
+    let (store, description) = {
+        if requested != "auto" {
+            bail!(
+                "{STORE_OVERRIDE_ENV}={requested} is not supported on macOS;                  the Keychain is the only backend"
+            );
+        }
+        let store = apple_native_keyring_store::keychain::Store::new()
+            .map_err(|e| anyhow::anyhow!("init macOS keychain store: {e}"))?;
+        let description = StoreDescription {
+            label: "macOS Keychain".to_string(),
+            location: "login keychain (service \"openvtc\", account = profile name)".to_string(),
+            durability: Durability::Durable,
+            inspect_hint: Some(format!(
+                "security find-generic-password -s openvtc -a {profile}"
+            )),
+        };
+        (
+            store as std::sync::Arc<keyring_core::api::CredentialStore>,
+            description,
+        )
+    };
+
     #[cfg(target_os = "windows")]
-    let store = windows_native_keyring_store::Store::new()
-        .map_err(|e| anyhow::anyhow!("init Windows credential manager store: {e}"))?;
+    let (store, description) = {
+        if requested != "auto" {
+            bail!(
+                "{STORE_OVERRIDE_ENV}={requested} is not supported on Windows;                  the Credential Manager is the only backend"
+            );
+        }
+        let store = windows_native_keyring_store::Store::new()
+            .map_err(|e| anyhow::anyhow!("init Windows credential manager store: {e}"))?;
+        let description = StoreDescription {
+            label: "Windows Credential Manager".to_string(),
+            location: "generic credential \"openvtc\" for the current user".to_string(),
+            durability: Durability::Durable,
+            inspect_hint: Some("cmdkey /list | findstr openvtc".to_string()),
+        };
+        let _ = profile;
+        (
+            store as std::sync::Arc<keyring_core::api::CredentialStore>,
+            description,
+        )
+    };
+
+    #[cfg(target_os = "linux")]
+    let (store, description) = linux_store(profile, &requested)?;
+
     keyring_core::set_default_store(store);
+    openvtc_core::secure_store::record_active(description);
     Ok(())
+}
+
+/// Build the durable file-backed store for a profile, refusing to hold an
+/// unencrypted `SecuredConfig`.
+#[cfg(target_os = "linux")]
+fn file_store(
+    profile: &str,
+) -> Result<(
+    std::sync::Arc<openvtc_core::secure_store::file::Store>,
+    std::path::PathBuf,
+)> {
+    let dir = openvtc_core::secure_store::secrets_dir(profile)
+        .map_err(|e| anyhow::anyhow!("resolve secrets directory: {e}"))?;
+    let store = openvtc_core::secure_store::file::Store::new(
+        dir.clone(),
+        Some(openvtc_core::config::secured_config::require_encrypted_blob),
+    );
+    Ok((store, dir))
+}
+
+/// Pick a Linux credential store.
+///
+/// The order matters and is the point of this change. Previously OpenVTC always
+/// used the kernel keyring, whose own documentation calls it a cache that "will
+/// not persist across reboots" — so a profile's only copy of its seed was in
+/// RAM, and a reboot presented as a corrupt install. Now:
+///
+/// 1. **Secret Service** (gnome-keyring, KWallet, KeePassXC, oo7) when a daemon
+///    answers — the durable, standard desktop answer, and what the README has
+///    claimed all along.
+/// 2. Otherwise a **composite**: the encrypted-file store over the kernel
+///    keyring. A passphrase- or token-protected profile is written to disk and
+///    survives; an unprotected one stays in the kernel keyring rather than
+///    having its seed written out in the clear, and the user is told to set a
+///    passphrase.
+#[cfg(target_os = "linux")]
+fn linux_store(
+    profile: &str,
+    requested: &str,
+) -> Result<(
+    std::sync::Arc<keyring_core::api::CredentialStore>,
+    StoreDescription,
+)> {
+    use keyring_core::api::CredentialStore;
+    use std::sync::Arc;
+
+    let secret_service =
+        |explicit: bool| -> Result<Option<(Arc<CredentialStore>, StoreDescription)>> {
+            match dbus_secret_service_keyring_store::Store::new() {
+                Ok(store) => Ok(Some((
+                    store as Arc<CredentialStore>,
+                    StoreDescription {
+                        label: "Secret Service (GNOME Keyring / KWallet / KeePassXC)".to_string(),
+                        location: "your login keyring, typically ~/.local/share/keyrings"
+                            .to_string(),
+                        durability: Durability::Durable,
+                        inspect_hint: Some(format!(
+                            "secret-tool search service openvtc username {profile}"
+                        )),
+                    },
+                ))),
+                Err(e) if explicit => Err(anyhow::anyhow!(
+                    "{STORE_OVERRIDE_ENV}=secret-service was requested but no Secret Service \
+                 is reachable: {e}. Check that a keyring daemon is running and that \
+                 DBUS_SESSION_BUS_ADDRESS is set."
+                )),
+                Err(e) => {
+                    // Not an error: headless boxes legitimately have no daemon.
+                    // Say so, because the fallback has different properties.
+                    tracing::info!(
+                        "no Secret Service available ({e}); falling back to local storage"
+                    );
+                    Ok(None)
+                }
+            }
+        };
+
+    match requested {
+        "secret-service" => Ok(secret_service(true)?.expect("explicit request returns or errors")),
+
+        "file" => {
+            let (store, dir) = file_store(profile)?;
+            Ok((
+                store as Arc<CredentialStore>,
+                StoreDescription {
+                    label: "Encrypted file".to_string(),
+                    location: dir.display().to_string(),
+                    durability: Durability::Durable,
+                    inspect_hint: Some(format!("ls -l {}", dir.display())),
+                },
+            ))
+        }
+
+        "keyutils" => {
+            let store = linux_keyutils_keyring_store::Store::new()
+                .map_err(|e| anyhow::anyhow!("init linux keyutils store: {e}"))?;
+            Ok((
+                store as Arc<CredentialStore>,
+                StoreDescription {
+                    label: "Linux kernel keyring (keyutils)".to_string(),
+                    location: "kernel memory — NOT written to disk".to_string(),
+                    durability: Durability::UntilReboot,
+                    inspect_hint: Some("keyctl show @us 2>/dev/null; keyctl show @s".to_string()),
+                },
+            ))
+        }
+
+        "auto" => {
+            if let Some(found) = secret_service(false)? {
+                return Ok(found);
+            }
+            let (durable, dir) = file_store(profile)?;
+
+            // No kernel keyring either (some minimal containers): the file
+            // store alone is still better than refusing to start. An
+            // unprotected profile then cannot save at all — but it is told
+            // exactly why, and setting a passphrase fixes it, which beats the
+            // previous behaviour of failing here outright.
+            let volatile = match linux_keyutils_keyring_store::Store::new() {
+                Ok(store) => store,
+                Err(e) => {
+                    tracing::warn!(
+                        "no kernel keyring available ({e}); \
+                         this profile must have a passphrase or a token to be storable"
+                    );
+                    return Ok((
+                        durable as Arc<CredentialStore>,
+                        StoreDescription {
+                            label: "Encrypted file (no kernel keyring available)".to_string(),
+                            location: dir.display().to_string(),
+                            durability: Durability::Durable,
+                            inspect_hint: Some(format!("ls -l {}", dir.display())),
+                        },
+                    ));
+                }
+            };
+
+            let store = openvtc_core::secure_store::composite::Store::new(
+                durable as Arc<CredentialStore>,
+                volatile as Arc<CredentialStore>,
+            );
+            Ok((
+                store as Arc<CredentialStore>,
+                StoreDescription {
+                    label: "Encrypted file, falling back to the kernel keyring".to_string(),
+                    location: format!(
+                        "{} when the profile has a passphrase; kernel memory otherwise",
+                        dir.display()
+                    ),
+                    // Per-credential, not store-wide: `secure_store::probe`
+                    // reports which tier a given profile actually landed in.
+                    durability: Durability::Unknown,
+                    inspect_hint: Some(format!(
+                        "ls -l {}; keyctl show @us 2>/dev/null",
+                        dir.display()
+                    )),
+                },
+            ))
+        }
+
+        other => bail!(
+            "unknown {STORE_OVERRIDE_ENV}={other}; expected one of: \
+             auto, secret-service, file, keyutils"
+        ),
+    }
 }
 
 /// Redact file system paths from error messages for user display.
@@ -184,12 +402,6 @@ async fn main() -> Result<()> {
             }
         }
     }
-
-    // Register the platform's keyring-core credential store. keyring-core 1.0
-    // doesn't auto-pick a backend — every binary registers exactly one at
-    // startup. On Linux we use the kernel keyutils backend so headless
-    // sessions (no D-Bus, no GUI) work without extra setup.
-    init_default_keyring_store()?;
 
     // Parse the command line exactly once; thread the parsed values down to
     // the call sites that need them (profile resolution, setup detection, and
@@ -266,6 +478,12 @@ async fn main() -> Result<()> {
         bail!("Profile name may only contain [A-Za-z0-9._-] and must not contain '..'");
     }
 
+    // Register the platform's keyring-core credential store. keyring-core 1.0
+    // doesn't auto-pick a backend — every binary registers exactly one at
+    // startup. This runs *after* profile resolution because the durable
+    // file-backed store used on Linux lives beside that profile's config.
+    init_default_keyring_store(&profile)?;
+
     // `health` runs before the duplicate-instance check and never takes the
     // lock. The report is read-only, and the moment you most want it is while a
     // TUI is sitting on a join that never came back — refusing to run because
@@ -280,7 +498,7 @@ async fn main() -> Result<()> {
             .unwrap_or_default();
         let as_json = health_args.get_flag("json");
         let config = load_config_for_health(&profile, unlock_code_arg.as_deref()).await;
-        return health_cmd::run(config.as_ref(), &vtc_dids, as_json).await;
+        return health_cmd::run(&profile, config.as_ref(), &vtc_dids, as_json).await;
     }
 
     // Check if profile is currently active elsewhere?

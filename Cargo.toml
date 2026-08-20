@@ -98,6 +98,13 @@ hex = "0.4"
 # at startup via keyring_core::set_default_store.
 keyring-core = "1"
 apple-native-keyring-store = { version = "1", features = ["keychain"] }
+# Linux gets two backends, not one. Secret Service is the durable desktop
+# store; keyutils is the kernel keyring, which is RAM-only by design and is
+# now only a fallback for profiles we may not write to disk. See
+# `openvtc::linux_store`. dbus-secret-service (rather than the zbus variant)
+# because affinidi-tdk-common already pulls it in — one Secret Service client
+# in the graph, and a synchronous one, which suits our blocking save path.
+dbus-secret-service-keyring-store = "1"
 linux-keyutils-keyring-store = "1"
 windows-native-keyring-store = "1"
 multibase = "0.9"

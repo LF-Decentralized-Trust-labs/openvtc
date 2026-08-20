@@ -5424,6 +5424,7 @@ dependencies = [
  "clap",
  "console",
  "crossterm",
+ "dbus-secret-service-keyring-store",
  "dialoguer",
  "did-git-sign",
  "didwebvh-rs",

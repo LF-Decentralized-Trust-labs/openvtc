@@ -57,6 +57,10 @@ const BANNER: &[&str] = &[
 /// State-mapped props for the loading screen.
 #[derive(Clone, Debug)]
 pub struct Props {
+    /// Cause-specific troubleshooting for a startup failure, when there is one.
+    /// Its presence — not `MediatorStatus::Failed` — is what switches the screen
+    /// into its troubleshooting layout.
+    pub diagnosis: Option<std::sync::Arc<openvtc_core::diagnostics::Diagnosis>>,
     /// Current mediator/connection status, driving the phase + error display.
     pub status: MediatorStatus,
     /// Hierarchical, timed startup tasks (the last may still be in progress).
@@ -71,6 +75,7 @@ pub struct Props {
 impl From<&State> for Props {
     fn from(state: &State) -> Self {
         Props {
+            diagnosis: state.startup_diagnosis.clone(),
             status: state.connection.status.clone(),
             tasks: state.loading.clone(),
             tip_index: state.tip_index,
@@ -96,6 +101,14 @@ pub struct LoadingScreen {
     pub action_tx: UnboundedSender<Action>,
     /// State-mapped props.
     pub props: Props,
+    /// First body line shown, for scrolling a failure report that is taller
+    /// than the terminal. A truncated diagnosis helps nobody, and the remedies
+    /// — the part the user needs most — are at the bottom.
+    pub scroll: u16,
+    /// Body line count from the last frame, so scroll clamping matches what was
+    /// actually drawn at the terminal's actual width. Interior mutability
+    /// because `render` takes `&self`.
+    rendered_lines: std::cell::Cell<u16>,
 }
 
 impl Component for LoadingScreen {
@@ -106,6 +119,8 @@ impl Component for LoadingScreen {
         LoadingScreen {
             action_tx,
             props: Props::from(state),
+            scroll: 0,
+            rendered_lines: std::cell::Cell::new(0),
         }
     }
 
@@ -132,12 +147,195 @@ impl Component for LoadingScreen {
             KeyCode::Enter if self.props.complete => {
                 let _ = self.action_tx.send(Action::DismissLoading);
             }
+            // A failure report is usually taller than the viewport. Clamp
+            // against the rendered line count so scrolling cannot run off into
+            // blank space the user then has to scroll back out of.
+            KeyCode::Down | KeyCode::Char('j') if self.props.diagnosis.is_some() => {
+                self.scroll = (self.scroll + 1).min(self.max_scroll());
+            }
+            KeyCode::Up | KeyCode::Char('k') if self.props.diagnosis.is_some() => {
+                self.scroll = self.scroll.saturating_sub(1);
+            }
+            KeyCode::PageDown if self.props.diagnosis.is_some() => {
+                self.scroll = (self.scroll + 10).min(self.max_scroll());
+            }
+            KeyCode::PageUp if self.props.diagnosis.is_some() => {
+                self.scroll = self.scroll.saturating_sub(10);
+            }
+            KeyCode::Home if self.props.diagnosis.is_some() => self.scroll = 0,
+            KeyCode::End if self.props.diagnosis.is_some() => self.scroll = self.max_scroll(),
             _ => {}
         }
     }
 }
 
 impl LoadingScreen {
+    /// Width of the content column. A failure report is denser than a progress
+    /// list and needs the room; the normal startup view keeps its narrow,
+    /// centred column.
+    fn content_width(&self, available: u16) -> u16 {
+        if self.props.diagnosis.is_some() {
+            96u16.min(available.saturating_sub(2))
+        } else {
+            64u16.min(available.saturating_sub(2))
+        }
+    }
+
+    /// Largest useful scroll offset, taken from what the last frame actually
+    /// drew — an estimate would leave `End` short of the remedies on a narrow
+    /// terminal, which is exactly where they are hardest to reach.
+    fn max_scroll(&self) -> u16 {
+        // Leave a few lines on screen rather than scrolling to pure blank.
+        self.rendered_lines.get().saturating_sub(4)
+    }
+
+    /// Wrap `text` into lines of at most `width` columns.
+    ///
+    /// Callers add their own prefix spans (a list marker, a key column) and must
+    /// subtract those from `width` first: a prefix added afterwards would push
+    /// the line past the render area, and ratatui's `Wrap` would then re-wrap it
+    /// back to the left margin — undoing the hanging indent this exists to keep.
+    /// `Wrap` stays enabled underneath purely as a safety net for a terminal
+    /// narrower than we sized for.
+    fn wrap_to(text: &str, width: usize) -> Vec<String> {
+        let width = width.max(8);
+        let mut lines = vec![String::new()];
+        for word in text.split_whitespace() {
+            let line = lines.last_mut().expect("seeded with one line");
+            if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > width {
+                lines.push(word.to_string());
+            } else {
+                if !line.is_empty() {
+                    line.push(' ');
+                }
+                line.push_str(word);
+            }
+        }
+        lines
+    }
+
+    /// Wrapped lines, each carrying a prefix: `first` on line one and `rest` on
+    /// every continuation, so a list item stays visually one item.
+    fn wrap_with_prefix(
+        text: &str,
+        width: usize,
+        first: &str,
+        rest: &str,
+    ) -> Vec<(String, String)> {
+        let indent = first.chars().count().max(rest.chars().count());
+        Self::wrap_to(text, width.saturating_sub(indent))
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                (
+                    if i == 0 {
+                        first.to_string()
+                    } else {
+                        rest.to_string()
+                    },
+                    line,
+                )
+            })
+            .collect()
+    }
+
+    /// Render one labelled section: a heading, then indented body lines.
+    fn section(lines: &mut Vec<Line<'static>>, heading: &str, body: Vec<Line<'static>>) {
+        if body.is_empty() {
+            return;
+        }
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            heading.to_string(),
+            Style::new().fg(COLOR_BORDER).bold(),
+        ));
+        lines.extend(body);
+    }
+
+    /// The full troubleshooting report.
+    ///
+    /// Ordered by what the user needs first: what failed, what it means, the
+    /// state of the things involved, how to confirm it, and only then what to
+    /// do — with the destructive options last, where [`openvtc_core::diagnostics`]
+    /// puts them.
+    fn diagnosis_lines(
+        d: &openvtc_core::diagnostics::Diagnosis,
+        width: usize,
+    ) -> Vec<Line<'static>> {
+        let mut lines: Vec<Line> = Vec::new();
+        let red = Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED);
+        let body = Style::new().fg(COLOR_TEXT_DEFAULT);
+        let dim = Style::new().fg(COLOR_DARK_GRAY);
+
+        let plain = |text: String, style: Style| Line::from(Span::styled(text, style));
+        let prefixed = |(prefix, text): (String, String), pstyle: Style, tstyle: Style| {
+            Line::from(vec![
+                Span::styled(prefix, pstyle),
+                Span::styled(text, tstyle),
+            ])
+        };
+
+        lines.extend(
+            Self::wrap_to(&d.headline, width)
+                .into_iter()
+                .map(|l| plain(l, red.bold())),
+        );
+        lines.push(Line::default());
+        lines.extend(
+            Self::wrap_with_prefix(&d.error, width, "", "  ")
+                .into_iter()
+                .map(|p| prefixed(p, red, red)),
+        );
+
+        if !d.cause.is_empty() {
+            lines.push(Line::default());
+            lines.extend(
+                Self::wrap_to(&d.cause, width)
+                    .into_iter()
+                    .map(|l| plain(l, body)),
+            );
+        }
+
+        // Values line up in a column, and a wrapped value stays inside it
+        // rather than running back to the left margin.
+        let key_width = d.context.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        let mut details = Vec::new();
+        for (k, v) in &d.context {
+            let first = format!("  {k:<key_width$}  ");
+            let rest = " ".repeat(first.len());
+            details.extend(
+                Self::wrap_with_prefix(v, width, &first, &rest)
+                    .into_iter()
+                    .map(|p| prefixed(p, dim, body)),
+            );
+        }
+        Self::section(&mut lines, "Details", details);
+
+        let mut checks = Vec::new();
+        for c in &d.checks {
+            checks.extend(
+                Self::wrap_with_prefix(c, width, "  $ ", "    ")
+                    .into_iter()
+                    .map(|p| prefixed(p, dim, Style::new().fg(COLOR_SOFT_PURPLE))),
+            );
+        }
+        Self::section(&mut lines, "Check for yourself", checks);
+
+        let mut remedies = Vec::new();
+        for (i, r) in d.remedies.iter().enumerate() {
+            let first = format!("  {}. ", i + 1);
+            let rest = " ".repeat(first.len());
+            remedies.extend(
+                Self::wrap_with_prefix(r, width, &first, &rest)
+                    .into_iter()
+                    .map(|p| prefixed(p, dim, body)),
+            );
+        }
+        Self::section(&mut lines, "What to try, in order", remedies);
+
+        lines
+    }
+
     /// The human-readable phase line derived from the connection status.
     /// `Failed` is handled separately (rendered as a prominent error block).
     fn phase_line(status: &MediatorStatus) -> Line<'static> {
@@ -239,8 +437,8 @@ impl ComponentRender<()> for LoadingScreen {
     fn render(&self, frame: &mut Frame, _props: ()) {
         let area = frame.area();
 
-        // Centre a fixed-width content column; cap height to what we render.
-        let content_width = 64u16.min(area.width.saturating_sub(2));
+        // Centre the content column; a failure report gets a wider one.
+        let content_width = self.content_width(area.width);
         let [col] = Layout::horizontal([Length(content_width)])
             .flex(Flex::Center)
             .areas(area);
@@ -269,16 +467,22 @@ impl ComponentRender<()> for LoadingScreen {
         // On failure, show the full error + a recovery suggestion. The error is
         // intentionally NOT truncated here — this screen is where the full
         // message lives (the main status bar truncates elsewhere).
-        if let MediatorStatus::Failed(reason) = &self.props.status {
+        // On failure the screen becomes a troubleshooting report. It used to
+        // print one fixed line — "check your network and that your VTA/mediator
+        // are reachable" — for every failure including the many with no network
+        // in them, which is the practice dev-guide R6.4 exists to forbid. What
+        // is shown now is derived from the typed error.
+        if let Some(diagnosis) = &self.props.diagnosis {
+            // Padding is 1 either side, inside the already-centred column.
+            let text_width = usize::from(content_width.saturating_sub(2));
+            lines.extend(Self::diagnosis_lines(diagnosis, text_width));
+            lines.push(Line::default());
+        } else if let MediatorStatus::Failed(reason) = &self.props.status {
+            // Failed with no diagnosis attached: a phase-2 (post-load)
+            // connection failure. Show it plainly rather than inventing advice.
             lines.push(Line::styled(
                 reason.clone(),
                 Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED),
-            ));
-            lines.push(Line::default());
-            lines.push(Line::styled(
-                "Check your network and that your VTA/mediator are reachable, \
-                 then restart OpenVTC. Press F10 to quit.",
-                Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED).bold(),
             ));
             lines.push(Line::default());
         }
@@ -300,8 +504,9 @@ impl ComponentRender<()> for LoadingScreen {
             lines.push(Line::default());
         }
 
-        // Rotating tip.
-        if !TIPS.is_empty() {
+        // Rotating tip — suppressed on failure. "Tip: your keys never leave
+        // your device" under "your keys could not be found" is not a good look.
+        if !TIPS.is_empty() && self.props.diagnosis.is_none() {
             let tip = TIPS[self.props.tip_index % TIPS.len()];
             lines.push(Line::styled(
                 tip,
@@ -319,13 +524,23 @@ impl ComponentRender<()> for LoadingScreen {
             ));
         }
 
+        self.rendered_lines
+            .set(u16::try_from(lines.len()).unwrap_or(u16::MAX));
         let body = Paragraph::new(lines)
             .wrap(Wrap { trim: false })
+            .scroll((self.scroll, 0))
             .block(Block::new().padding(Padding::new(1, 1, 1, 0)));
         frame.render_widget(body, body_area);
 
         // Footer.
-        let footer = if self.props.complete {
+        let footer = if self.props.diagnosis.is_some() {
+            Line::from(vec![
+                Span::styled("[↑/↓ PgUp/PgDn]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" scroll   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
+                Span::styled("[F10]", Style::new().fg(COLOR_BORDER).bold()),
+                Span::styled(" quit", Style::new().fg(COLOR_TEXT_DEFAULT)),
+            ])
+        } else if self.props.complete {
             Line::from(vec![
                 Span::styled("[ENTER]", Style::new().fg(COLOR_BORDER).bold()),
                 Span::styled(" continue   ", Style::new().fg(COLOR_TEXT_DEFAULT)),
@@ -339,5 +554,207 @@ impl ComponentRender<()> for LoadingScreen {
             ])
         };
         frame.render_widget(Paragraph::new(footer).centered(), footer_area);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The failure screen is the whole point of the diagnostics work, so these
+    //! render it for real and read the terminal buffer back. A report that is
+    //! built correctly but clipped off the bottom of the screen helps nobody.
+    use super::*;
+    use crate::state_handler::state::State;
+    use crossterm::event::KeyModifiers;
+    use openvtc_core::{
+        diagnostics::{DiagnosisContext, diagnose},
+        errors::{OpenVTCError, SecureStoreFault},
+    };
+    use ratatui::{Terminal, backend::TestBackend};
+    use tokio::sync::mpsc::unbounded_channel;
+
+    /// The failure the user reported: config file present, credential gone.
+    fn missing_credential_state() -> State {
+        let err = OpenVTCError::SecureStore {
+            fault: SecureStoreFault::Missing,
+            profile: "default".to_string(),
+            detail: "No matching credential found".to_string(),
+        };
+        let mut state = State::default();
+        state.connection.status = MediatorStatus::Failed(err.to_string());
+        state.startup_diagnosis = Some(std::sync::Arc::new(diagnose(
+            &err,
+            &DiagnosisContext::new("default"),
+        )));
+        state
+    }
+
+    /// Render at `width`×`height` and return the drawn rows, trailing spaces
+    /// trimmed.
+    fn rows(screen: &LoadingScreen, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|frame| screen.render(frame, ()))
+            .expect("render");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn screen(state: &State) -> LoadingScreen {
+        let (tx, _rx) = unbounded_channel();
+        LoadingScreen::new(state, tx)
+    }
+
+    #[test]
+    fn failure_screen_shows_the_cause_not_a_network_hint() {
+        let state = missing_credential_state();
+        // Flattened: these sentences wrap, and the assertion is about the
+        // content being present, not about where the column breaks it.
+        let text = flat(&rows(&screen(&state), 100, 60));
+        assert!(
+            text.contains("No matching credential found"),
+            "the raw error must still be shown:\n{text}"
+        );
+        assert!(
+            !text.contains("Check your network"),
+            "the old blanket hint must be gone:\n{text}"
+        );
+        assert!(text.contains("Details"), "context block missing:\n{text}");
+        assert!(
+            text.contains("What to try, in order"),
+            "remedies missing:\n{text}"
+        );
+        assert!(
+            text.contains("Profile") && text.contains("default"),
+            "the profile must be named:\n{text}"
+        );
+    }
+
+    /// The tip line is charming during a load and tone-deaf under a fatal
+    /// error — "your keys never leave your device" beneath "your keys could not
+    /// be found" is how the reported screenshot looked.
+    #[test]
+    fn failure_screen_suppresses_the_rotating_tip() {
+        let state = missing_credential_state();
+        let text = rows(&screen(&state), 100, 60).join("\n");
+        for tip in TIPS {
+            assert!(!text.contains(tip), "tip shown on a failure screen: {tip}");
+        }
+    }
+
+    /// A normal startup keeps the tip and shows no diagnosis.
+    #[test]
+    fn healthy_screen_is_unchanged() {
+        let mut state = State::default();
+        state.connection.status = MediatorStatus::Initializing("Starting…".to_string());
+        // The tip wraps inside the narrow column, so compare on the flattened
+        // text rather than on any single row.
+        let text = flat(&rows(&screen(&state), 100, 40));
+        assert!(
+            text.contains(TIPS[0]),
+            "tip missing from a healthy screen:\n{text}"
+        );
+        assert!(!text.contains("What to try, in order"));
+    }
+
+    /// Rendered rows as one whitespace-normalised string, so an assertion about
+    /// a sentence is not defeated by the column wrapping it.
+    fn flat(rows: &[String]) -> String {
+        rows.join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// The remedies are the part the user needs, and they sit at the bottom of
+    /// a report that is taller than most terminals. Scrolling must reach them.
+    #[test]
+    fn remedies_are_reachable_by_scrolling_on_a_short_terminal() {
+        let state = missing_credential_state();
+        let mut screen = screen(&state);
+
+        let unscrolled = rows(&screen, 100, 24).join("\n");
+        assert!(
+            !unscrolled.contains("Only if none of the above apply"),
+            "this test is pointless if the report already fits"
+        );
+
+        screen.handle_key_event(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        assert!(screen.scroll > 0, "End must scroll a too-tall report");
+        let scrolled = rows(&screen, 100, 24).join("\n");
+        assert!(
+            scrolled.contains("Only if none of the above apply"),
+            "the last remedy must be reachable:\n{scrolled}"
+        );
+    }
+
+    /// Scrolling must not run past the report into blank space the user then
+    /// has to scroll back out of.
+    #[test]
+    fn scrolling_is_clamped_at_both_ends() {
+        let state = missing_credential_state();
+        let mut screen = screen(&state);
+        // Clamping is measured against what was drawn, so draw first —
+        // otherwise this passes trivially with both sides at zero.
+        let _ = rows(&screen, 100, 24);
+        assert!(
+            screen.max_scroll() > 0,
+            "report should be taller than 24 rows"
+        );
+
+        screen.handle_key_event(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(screen.scroll, 0, "must not scroll above the top");
+
+        for _ in 0..500 {
+            screen.handle_key_event(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        }
+        assert_eq!(screen.scroll, screen.max_scroll(), "must clamp at the end");
+    }
+
+    /// A remedy that wraps must stay one visual item: the continuation line is
+    /// indented under the text, not flushed to the margin. Prefix spans have to
+    /// be budgeted out of the wrap width for this to hold — get that wrong and
+    /// ratatui's own `Wrap` re-wraps the line and undoes the indent.
+    #[test]
+    fn wrapped_remedies_keep_their_hanging_indent() {
+        let state = missing_credential_state();
+        let drawn = rows(&screen(&state), 100, 60);
+        let first = drawn
+            .iter()
+            .position(|r| r.trim_start().starts_with("1. "))
+            .expect("first remedy rendered");
+        let continuation = &drawn[first + 1];
+        assert!(
+            !continuation.trim().is_empty(),
+            "the first remedy is expected to wrap at this width"
+        );
+        assert!(
+            continuation.starts_with("        "),
+            "continuation line lost its indent: {continuation:?}"
+        );
+        // And nothing may run past the column we sized for.
+        for row in &drawn {
+            assert!(row.chars().count() <= 100, "row overflows: {row:?}");
+        }
+    }
+
+    /// Scroll keys are inert on a healthy startup, where they would otherwise
+    /// silently swallow keystrokes the user meant for something else.
+    #[test]
+    fn scroll_keys_do_nothing_without_a_diagnosis() {
+        let state = State::default();
+        let mut screen = screen(&state);
+        screen.handle_key_event(KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
+        assert_eq!(screen.scroll, 0);
     }
 }

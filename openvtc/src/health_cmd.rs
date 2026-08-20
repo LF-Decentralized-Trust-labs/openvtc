@@ -26,7 +26,14 @@ use crate::colors::{CLI_BLUE, CLI_ORANGE, CLI_PURPLE, CLI_RED};
 ///
 /// `config` is `None` when the account could not be loaded; the report then
 /// covers only the `--vtc` DIDs given on the command line.
-pub async fn run(config: Option<&Config>, vtc_args: &[String], as_json: bool) -> Result<()> {
+pub async fn run(
+    profile: &str,
+    config: Option<&Config>,
+    vtc_args: &[String],
+    as_json: bool,
+) -> Result<()> {
+    let local = local_report(profile);
+
     let mut subjects: Vec<Subject> = Vec::new();
 
     if let Some(config) = config {
@@ -63,11 +70,28 @@ pub async fn run(config: Option<&Config>, vtc_args: &[String], as_json: bool) ->
         ));
     }
 
+    // No subjects means no *network* checks — but the local section above is
+    // exactly what a user with an unloadable profile needs, and it is the run
+    // where they need it most. Print it and stop, rather than refusing to
+    // report anything because the half that failed is the half we can't check.
     if subjects.is_empty() {
-        anyhow::bail!(
-            "nothing to check: no account could be loaded and no --vtc was given. \
-             Pass --vtc <did> to check a community directly."
-        );
+        if as_json {
+            println!("{}", serde_json::to_string_pretty(&local.as_json())?);
+        } else {
+            local.render();
+            eprintln!(
+                "{}",
+                style(
+                    "\nNo network checks ran: no account could be loaded and no --vtc was \
+                     given. Pass --vtc <did> to check a community directly."
+                )
+                .color256(CLI_ORANGE)
+            );
+        }
+        if local.is_healthy() {
+            return Ok(());
+        }
+        std::process::exit(1);
     }
 
     // Progress goes to stderr, the report to stdout. That keeps
@@ -77,17 +101,158 @@ pub async fn run(config: Option<&Config>, vtc_args: &[String], as_json: bool) ->
     let report = build_report_with_progress(&subjects, &|step| trace(&step)).await;
 
     if as_json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
+        // Additive: the existing report keys stay where they are, with the
+        // local section alongside them, so anything already parsing this
+        // output keeps working.
+        let mut value = serde_json::to_value(&report)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("local".to_string(), local.as_json());
+        }
+        println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
+        local.render();
         render(&report, config.is_none());
     }
 
     // A broken chain is a failed check: exit non-zero so this is usable in a
     // script or a CI smoke test, not only by eye.
-    if report.is_healthy() {
+    if report.is_healthy() && local.is_healthy() {
         Ok(())
     } else {
         std::process::exit(1);
+    }
+}
+
+/// Where this profile's secrets live and whether they are actually there.
+///
+/// The first question on a failed startup is local, not remote — "are my keys
+/// still on this machine?" — and until now `openvtc health` could not answer
+/// it. It also reports *durability*, because a store that legitimately holds
+/// nothing after a reboot is a different situation from one that lost it.
+struct LocalReport {
+    profile: String,
+    store: Option<&'static openvtc_core::secure_store::StoreDescription>,
+    probe: openvtc_core::secure_store::EntryProbe,
+    config_path: Option<std::path::PathBuf>,
+}
+
+fn local_report(profile: &str) -> LocalReport {
+    let config_path = openvtc_core::config::public_config::profile_dir(profile)
+        .ok()
+        .map(|dir| {
+            dir.join(if profile == "default" {
+                "config.json".to_string()
+            } else {
+                format!("config-{profile}.json")
+            })
+        });
+    LocalReport {
+        profile: profile.to_string(),
+        store: openvtc_core::secure_store::describe_active(),
+        probe: openvtc_core::secure_store::probe(profile),
+        config_path,
+    }
+}
+
+impl LocalReport {
+    /// Unhealthy when the two halves of a profile disagree: a config file with
+    /// no credential behind it, or a store that will not answer. A profile that
+    /// does not exist at all is not a fault — that is a first run.
+    fn is_healthy(&self) -> bool {
+        use openvtc_core::secure_store::EntryStatus;
+        let has_config = self.config_path.as_ref().is_some_and(|p| p.exists());
+        match &self.probe.status {
+            EntryStatus::Present => true,
+            EntryStatus::Missing => !has_config,
+            EntryStatus::Unavailable(_) => false,
+        }
+    }
+
+    fn as_json(&self) -> serde_json::Value {
+        use openvtc_core::secure_store::EntryStatus;
+        serde_json::json!({
+            "profile": self.profile,
+            "config_file": self.config_path.as_ref().map(|p| p.display().to_string()),
+            "config_file_present": self.config_path.as_ref().is_some_and(|p| p.exists()),
+            "store": self.store.map(|s| s.label.clone()),
+            "store_location": self.store.map(|s| s.location.clone()),
+            "credential": match &self.probe.status {
+                EntryStatus::Present => "present",
+                EntryStatus::Missing => "missing",
+                EntryStatus::Unavailable(_) => "unavailable",
+            },
+            "credential_error": match &self.probe.status {
+                EntryStatus::Unavailable(e) => Some(e.clone()),
+                _ => None,
+            },
+            "credential_path": self.probe.path,
+            // Durability describes a credential that exists. Reporting the
+            // store's lifetime next to "credential: missing" reads as though
+            // something durable is sitting there.
+            "durability": match &self.probe.status {
+                EntryStatus::Present => Some(self.probe.durability.lifetime_phrase()),
+                _ => None,
+            },
+            "volatile": match &self.probe.status {
+                EntryStatus::Present => Some(self.probe.durability.is_volatile()),
+                _ => None,
+            },
+            "healthy": self.is_healthy(),
+        })
+    }
+
+    fn render(&self) {
+        use openvtc_core::secure_store::EntryStatus;
+        println!("{}", style("Local configuration").color256(CLI_BLUE).bold());
+        println!("  profile          {}", self.profile);
+        if let Some(path) = &self.config_path {
+            let mark = if path.exists() { "present" } else { "MISSING" };
+            println!("  config file      {} ({mark})", path.display());
+        }
+        if let Some(store) = self.store {
+            println!("  secure store     {}", store.label);
+            println!("  store location   {}", store.location);
+        }
+        match &self.probe.status {
+            EntryStatus::Present => {
+                println!(
+                    "  credential       {} ({})",
+                    style("present").color256(CLI_PURPLE),
+                    self.probe.durability.lifetime_phrase()
+                );
+                if let Some(path) = &self.probe.path {
+                    println!("  credential file  {path}");
+                }
+                if self.probe.durability.is_volatile() {
+                    println!(
+                        "  {}",
+                        style(
+                            "WARNING: this profile's keys are NOT written to disk and will be \
+                             lost. Export a backup: Settings -> Export config."
+                        )
+                        .color256(CLI_ORANGE)
+                    );
+                }
+            }
+            EntryStatus::Missing => {
+                println!(
+                    "  credential       {}",
+                    style("NOT FOUND").color256(CLI_RED)
+                );
+            }
+            EntryStatus::Unavailable(e) => {
+                println!(
+                    "  credential       {} ({e})",
+                    style("store unavailable").color256(CLI_RED)
+                );
+            }
+        }
+        if let Some(store) = self.store
+            && let Some(hint) = &store.inspect_hint
+        {
+            println!("  check yourself   $ {hint}");
+        }
+        println!();
     }
 }
 

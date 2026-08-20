@@ -88,6 +88,29 @@ pub struct MainPageState {
 }
 
 impl MainPageState {
+    /// Re-check where this profile's secret is actually stored, and warn if
+    /// that place will not keep it.
+    ///
+    /// The Linux kernel keyring is RAM-only by design, and OpenVTC used to keep
+    /// a profile's only copy of its seed there — so a reboot destroyed the
+    /// account and presented as a corrupt install. Where a durable store cannot
+    /// be used (no Secret Service, and no passphrase, so the encrypted-file
+    /// store must refuse the blob), the user is at least told, and told the two
+    /// things that fix it.
+    pub fn refresh_storage_warning(&mut self, profile: &str) {
+        let probe = openvtc_core::secure_store::probe(profile);
+        self.content_panel.settings.storage_warning = if probe.durability.is_volatile() {
+            Some(format!(
+                "This profile's keys are {} and are NOT on disk. \
+                 Set a passphrase (Protection, above) to store them durably, \
+                 and export a backup now.",
+                probe.durability.lifetime_phrase()
+            ))
+        } else {
+            None
+        };
+    }
+
     /// Push a timestamped entry to the activity log (O(1) bounded insertion).
     pub fn log(&mut self, message: impl Into<String>) {
         self.log_detailed_inner(message.into(), None);

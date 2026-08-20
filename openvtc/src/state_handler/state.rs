@@ -50,6 +50,15 @@ pub struct State {
     /// main page.
     pub loading_complete: bool,
 
+    /// Cause-specific troubleshooting for a startup failure, built from the
+    /// *typed* error by [`openvtc_core::diagnostics::diagnose`].
+    ///
+    /// Separate from [`MediatorStatus::Failed`], which carries only a display
+    /// string: the failure screen needs the store/profile/path context and the
+    /// per-cause checks and remedies, and stringifying the error at the failure
+    /// site is exactly what used to make every failure look like a network one.
+    pub startup_diagnosis: Option<Arc<openvtc_core::diagnostics::Diagnosis>>,
+
     /// Hardware Token Admin Pin (Arc-wrapped so clones share one allocation)
     #[cfg(feature = "openpgp-card")]
     pub token_admin_pin: Option<Arc<SecretString>>,

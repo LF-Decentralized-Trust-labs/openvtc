@@ -59,22 +59,71 @@ openvtc -p my-profile
 
 ### Secure Storage
 
-Sensitive configuration (keys, credentials) is stored in the OS secure store:
+A profile lives in two halves: a **config file** on disk
+(`~/.config/openvtc/config.json`) and its **secret key material** — the BIP32
+seed or VTA credential bundle — in an OS credential store. Both are needed.
+Copying one without the other produces `No matching credential found` at
+startup; `openvtc health` says so explicitly.
 
-| Platform | Backend | Requirements |
-|----------|---------|--------------|
-| macOS | Keychain | Always available |
-| Windows | Credential Manager | Always available |
-| Linux (desktop) | Secret Service (GNOME Keyring / KDE Wallet) | D-Bus + secret service daemon |
-| Linux (headless) | Kernel keyring (`keyutils`) | Available on all Linux kernels ≥ 2.6 |
+| Platform | Backend | Durable? | Requirements |
+|----------|---------|----------|--------------|
+| macOS | Keychain | Yes | Always available |
+| Windows | Credential Manager | Yes | Always available |
+| Linux (desktop) | Secret Service (GNOME Keyring / KWallet / KeePassXC) | Yes | D-Bus session + a keyring daemon |
+| Linux, no Secret Service, profile **with** a passphrase or token | Encrypted file in `~/.config/openvtc/secrets/` (mode `0600`) | Yes | none |
+| Linux, no Secret Service, profile **without** either | Kernel keyring (`keyutils`) | **No — lost on reboot** | none |
 
-On headless Linux (servers, containers, CI) where no GUI secret service is
-available, the tool automatically falls back to the kernel keyring. No
-additional configuration is needed.
+On Linux, OpenVTC tries Secret Service first. If no daemon answers (headless
+servers, containers, CI, SSH sessions with no `DBUS_SESSION_BUS_ADDRESS`), it
+uses the encrypted-file store — but **only for a profile whose secret is
+actually encrypted**, meaning one protected by a passphrase or a hardware
+token. An unprotected profile's seed is never written to disk in the clear; it
+stays in the kernel keyring, and OpenVTC warns you that it is there.
 
-If you encounter `Couldn't open OS Secure Store` errors, ensure either:
-- A secret service daemon is running (`gnome-keyring-daemon`, `kwalletd`), or
-- The `keyutils` kernel module is loaded (`modprobe keyutils`)
+> **The kernel keyring does not persist.** The backend
+> [documents itself](https://docs.rs/linux-keyutils-keyring-store) as RAM-only:
+> the session keyring dies at logout, and the persistent keyring expires after
+> `/proc/sys/kernel/keys/persistent_keyring_expiry` (3 days by default). A
+> profile stored there is lost on reboot and **cannot be recovered**. If
+> OpenVTC warns that a profile is stored this way, do one of:
+>
+> 1. **Set a passphrase** — Settings → Protection. The secret moves to the
+>    encrypted-file store and survives reboots.
+> 2. **Run a Secret Service daemon** — `gnome-keyring-daemon`, `kwalletd`,
+>    KeePassXC, or `oo7-daemon`.
+> 3. **Export a backup** — Settings → Export Config — and keep it elsewhere.
+
+Override the automatic choice with `OPENVTC_SECURE_STORE` (Linux only):
+
+| Value | Effect |
+|-------|--------|
+| `auto` (default) | Secret Service, else encrypted file over kernel keyring |
+| `secret-service` | Require Secret Service; fail if none is reachable |
+| `file` | Require the encrypted-file store; refuses an unprotected profile |
+| `keyutils` | Force the kernel keyring (volatile — testing only) |
+
+#### When the secure store fails
+
+`openvtc health` reports which store is in use, whether this profile's
+credential is present, and how long it will survive — and it runs even when the
+profile cannot be decrypted, which is when you need it. On a startup failure,
+OpenVTC also writes the full diagnosis to
+`~/.config/openvtc/last-startup-failure.txt`; attach that to a bug report.
+
+To look at the entry yourself:
+
+```bash
+# macOS
+security find-generic-password -s openvtc -a default
+# Linux (Secret Service)
+secret-tool search service openvtc username default
+# Linux (kernel keyring)
+keyctl show @us; keyctl show @s
+# Linux (encrypted file)
+ls -l ~/.config/openvtc/secrets/
+# Windows
+cmdkey /list | findstr openvtc
+```
 
 ## Feature Flags
 

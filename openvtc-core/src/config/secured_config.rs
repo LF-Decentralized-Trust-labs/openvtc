@@ -30,6 +30,36 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 /// Constants for storing secure info in the OS Secure Store
 const SERVICE: &str = "openvtc";
 
+/// Reject an unencrypted `SecuredConfig` blob.
+///
+/// This is the [`SecretPolicy`](crate::secure_store::file::SecretPolicy) the
+/// file-backed store is built with. The file store exists so Linux profiles
+/// survive a reboot, but "durable" must not silently become "your BIP32 seed is
+/// now sitting in a file in the clear": a profile with no passphrase and no
+/// hardware token stays on the volatile store and gets told how to fix that.
+///
+/// The check is on the stored envelope, not on the caller's intent, so it holds
+/// for every path that reaches the store.
+///
+/// # Errors
+///
+/// Returns the reason to show the user when the blob is unencrypted or does not
+/// parse as a `SecuredConfig` envelope at all.
+pub fn require_encrypted_blob(bytes: &[u8]) -> Result<(), String> {
+    match serde_json::from_slice::<SecuredConfigFormat>(bytes) {
+        Ok(SecuredConfigFormat::PasswordEncrypted { .. })
+        | Ok(SecuredConfigFormat::TokenEncrypted { .. }) => Ok(()),
+        Ok(SecuredConfigFormat::PlainText { .. }) => Err(
+            "this profile has no passphrase, so its secret would be written to disk \
+             unencrypted; set one under Settings -> Config Protection to store it durably"
+                .to_string(),
+        ),
+        Err(e) => Err(format!(
+            "refusing to store a blob that is not a SecuredConfig envelope: {e}"
+        )),
+    }
+}
+
 /// Returns the `keyring` service name openvtc stores its `SecuredConfig`
 /// under. Used by sibling modules that need to address the same entry.
 #[must_use]
@@ -394,11 +424,8 @@ impl SecuredConfig {
         unlock: Option<&Vec<u8>>,
         #[cfg(feature = "openpgp-card")] touch_prompt: &(dyn Fn() + Send + Sync),
     ) -> Result<(), OpenVTCError> {
-        let entry = Entry::new(SERVICE, profile).map_err(|e| {
-            OpenVTCError::Config(format!(
-                "Couldn't open OS Secure Store for profile ({profile}). Reason: {e}"
-            ))
-        })?;
+        let entry =
+            Entry::new(SERVICE, profile).map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
 
         // Serialize SecuredConfig to byte array
         let input = serde_json::to_vec(&self)?;
@@ -435,11 +462,7 @@ impl SecuredConfig {
         // Save this to the OS Secure Store
         entry
             .set_secret(serde_json::to_string_pretty(&formatted)?.as_bytes())
-            .map_err(|e| {
-                OpenVTCError::Config(format!(
-                    "Couldn't save encrypted config to the OS Secure Store. Reason: {e}"
-                ))
-            })?;
+            .map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
         Ok(())
     }
 
@@ -449,7 +472,10 @@ impl SecuredConfig {
     /// current tagged format, then the legacy untagged shape (with `bool` =
     /// "needs migration"); errors only if neither parses. No key material is
     /// touched — that happens later in [`load`] under `unlock`.
-    fn parse_format(secret: &[u8]) -> Result<(SecuredConfigFormat, bool), OpenVTCError> {
+    fn parse_format(
+        secret: &[u8],
+        profile: &str,
+    ) -> Result<(SecuredConfigFormat, bool), OpenVTCError> {
         match serde_json::from_slice::<SecuredConfigFormat>(secret) {
             Ok(format) => Ok((format, false)),
             Err(tagged_err) => match serde_json::from_slice::<LegacySecuredConfigFormat>(secret) {
@@ -464,9 +490,14 @@ impl SecuredConfig {
                         "Format of SecuredConfig in OS Secure store is invalid! \
                          Tagged: {tagged_err}; legacy: {legacy_err}"
                     );
-                    Err(OpenVTCError::Config(format!(
-                        "Couldn't load openvtc secured configuration. Reason: {tagged_err}"
-                    )))
+                    Err(OpenVTCError::SecureStore {
+                        fault: crate::errors::SecureStoreFault::Corrupt,
+                        profile: profile.to_string(),
+                        detail: format!(
+                            "stored blob parses as neither the current nor the legacy \
+                             format: {tagged_err}"
+                        ),
+                    })
                 }
             },
         }
@@ -477,7 +508,7 @@ impl SecuredConfig {
     /// format; the encrypted key material is not decrypted. Exposed for fuzzing
     /// the deserialization surface directly.
     pub fn parse(bytes: &[u8]) -> Result<(), OpenVTCError> {
-        Self::parse_format(bytes).map(|_| ())
+        Self::parse_format(bytes, "").map(|_| ())
     }
 
     /// Loads secret info from the OS Secure Store
@@ -492,26 +523,24 @@ impl SecuredConfig {
         unlock: Option<&UnlockCode>,
         #[cfg(feature = "openpgp-card")] touch_prompt: &impl TokenInteractions,
     ) -> Result<Self, OpenVTCError> {
-        let entry = Entry::new(SERVICE, profile).map_err(|e| {
-            OpenVTCError::Config(format!(
-                "Couldn't access OS Secure Store for profile ({profile}). Reason: {e}",
-            ))
-        })?;
+        let entry =
+            Entry::new(SERVICE, profile).map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
 
         let secret = match entry.get_secret() {
             Ok(s) => s,
             Err(e) => {
-                error!("Couldn't find Secure Config in the OS Secret Store. Fatal Error: {e}");
-                return Err(OpenVTCError::Config(format!(
-                    "Couldn't find openvtc secured configuration. Reason: {e}"
-                )));
+                // Typed, not stringly: `NoEntry` (the credential is gone) and
+                // `NoStorageAccess` (the store is locked) need opposite advice,
+                // and the old single `Config` string made them look identical.
+                error!("Couldn't read the SecuredConfig from the OS secure store: {e}");
+                return Err(OpenVTCError::from_keyring(&e, profile));
             }
         };
 
         // Try the current tagged format first, falling back to the legacy
         // untagged shape (flagged for migration). Anything that fails both is
         // genuinely invalid.
-        let (raw_secured_config, needs_migration) = Self::parse_format(secret.as_slice())?;
+        let (raw_secured_config, needs_migration) = Self::parse_format(secret.as_slice(), profile)?;
 
         // Layer-2 downgrade defence: cross-check the stored variant against
         // the caller's credentials before any decryption or re-save.

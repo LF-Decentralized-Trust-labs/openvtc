@@ -6,7 +6,52 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **A Linux profile's keys were kept only in the kernel keyring, which does not
+  persist.** `linux-keyutils-keyring-store` documents itself as RAM-only —
+  *"completely in-memory and will not persist across reboots. Consider the
+  keyring a secure cache"* — and OpenVTC registered it unconditionally on Linux
+  as the sole home of a profile's BIP32 seed / VTA credential bundle. A reboot,
+  a logout, or three days of the persistent keyring's default expiry therefore
+  destroyed the account, and it surfaced as `Config Error: Couldn't find openvtc
+  secured configuration. Reason: No matching credential found` — which reads
+  like a corrupt install rather than the expected data loss it was. Linux now
+  tries **Secret Service** first (the durable desktop store, and what the README
+  had claimed all along), and where none is reachable falls back to a new
+  **encrypted-file store** under `~/.config/openvtc/secrets/` at mode `0600`.
+  That store refuses an unencrypted blob, so a profile with no passphrase and no
+  token is never silently written to disk in the clear — it stays in the kernel
+  keyring and the user is now told so, in the activity log at startup and in
+  Settings beside the two actions that fix it (set a passphrase; export a
+  backup). Setting a passphrase migrates the secret to durable storage and
+  clears the volatile copy. Override with `OPENVTC_SECURE_STORE=auto|
+  secret-service|file|keyutils`.
+
+- **Every startup failure printed the same advice, including the ones with no
+  network in them.** The loading screen's single hint — *"Check your network and
+  that your VTA/mediator are reachable"* — was shown for a missing credential, a
+  locked keychain, a wrong passphrase and a corrupt blob alike, pointing the user
+  away from the machine the problem was on. This is what the stack development
+  guide's **R6.4** forbids. `OpenVTCError` gained a typed `SecureStore { fault,
+  .. }` variant (missing / unavailable / ambiguous / corrupt / rejected) so the
+  cases stay distinguishable, and a new `diagnostics` module turns each into its
+  own report: what failed, what it means, the state of the profile's config file
+  and credential store, commands to confirm it, and remedies in order — with
+  restore-a-backup always ahead of the destructive reset, and no reset offered at
+  all for a locked store or a wrong passphrase, where the keys are intact. The
+  report is scrollable, is written to
+  `~/.config/openvtc/last-startup-failure.txt` for bug reports, and the rotating
+  "your keys never leave your device" tip no longer appears under a fatal error.
+
 ### Added
+
+- **`openvtc health` now reports local storage first.** Which credential store
+  is in use, where it keeps things, whether *this* profile's credential is
+  actually there, and how long it will survive — plus the command to check it
+  yourself. It runs when no account can be loaded at all, which used to abort
+  with "nothing to check" and is exactly the run where the answer is wanted.
+  `--json` gains a `local` object alongside the existing keys.
 
 - **An explicit `[Ctrl+V]` "paste an invitation" action on the join entry
   page.** Bracketed paste worked the whole time, but nothing on screen said so —
