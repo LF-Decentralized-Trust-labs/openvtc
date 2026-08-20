@@ -34,25 +34,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Secrets-first leaves the interrupted persona simply absent, with leftover keys
   reported as orphaned key records, and the load is clean.
 
-- **A Linux profile's keys were kept only in the kernel keyring, which does not
-  persist.** `linux-keyutils-keyring-store` documents itself as RAM-only —
-  *"completely in-memory and will not persist across reboots. Consider the
-  keyring a secure cache"* — and OpenVTC registered it unconditionally on Linux
-  as the sole home of a profile's BIP32 seed / VTA credential bundle. A reboot,
-  a logout, or three days of the persistent keyring's default expiry therefore
-  destroyed the account, and it surfaced as `Config Error: Couldn't find openvtc
-  secured configuration. Reason: No matching credential found` — which reads
-  like a corrupt install rather than the expected data loss it was. Linux now
-  tries **Secret Service** first (the durable desktop store, and what the README
-  had claimed all along), and where none is reachable falls back to a new
-  **encrypted-file store** under `~/.config/openvtc/secrets/` at mode `0600`.
-  That store refuses an unencrypted blob, so a profile with no passphrase and no
-  token is never silently written to disk in the clear — it stays in the kernel
-  keyring and the user is now told so, in the activity log at startup and in
-  Settings beside the two actions that fix it (set a passphrase; export a
-  backup). Setting a passphrase migrates the secret to durable storage and
-  clears the volatile copy. Override with `OPENVTC_SECURE_STORE=auto|
-  secret-service|file|keyutils`.
+- **OpenVTC silently chose where to keep your keys, and on Linux chose badly.**
+  `linux-keyutils-keyring-store` documents itself as RAM-only — *"completely
+  in-memory and will not persist across reboots. Consider the keyring a secure
+  cache"* — and OpenVTC registered it unconditionally on Linux as the sole home
+  of a profile's BIP32 seed / VTA credential bundle. A reboot, a logout, or three
+  days of the persistent keyring's default expiry destroyed the account, and it
+  surfaced as `Config Error: Couldn't find openvtc secured configuration.
+  Reason: No matching credential found` — which reads like a corrupt install
+  rather than the expected data loss it was.
+
+  Two changes, and the second matters more than the first.
+
+  **Durable, and the same as every other tool.** Store registration now
+  delegates to `vta_sdk::keyring_init::install_default_store` — the same call
+  `pnm-cli` makes — so `openvtc`, `pnm` and anything else on the SDK put secrets
+  in the same place on the same OS: Apple Keychain, Windows Credential Manager,
+  or DBus Secret Service. OpenVTC was the only tool in the workspace using the
+  kernel keyring. Every store it will now select is durable.
+
+  **Fail closed.** If the credential store cannot be opened, OpenVTC exits with
+  an explanation instead of quietly writing the keys somewhere weaker. A tool
+  that silently downgrades its own storage teaches users the secure backend is
+  optional, and the moment it matters they discover their secrets were somewhere
+  they never agreed to. Headless machines choose durable file storage
+  deliberately with `OPENVTC_SECURE_STORE=file` — a new encrypted-file store
+  under `~/.config/openvtc/secrets/` at mode `0600` that refuses to hold an
+  unencrypted profile, so key material is never written to disk in the clear.
+  `keyutils` remains selectable but is deprecated, warns loudly on every launch,
+  and exists only so a profile written by an older build can be started once and
+  exported.
 
 - **Every startup failure printed the same advice, including the ones with no
   network in them.** The loading screen's single hint — *"Check your network and

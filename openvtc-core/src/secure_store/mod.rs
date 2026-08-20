@@ -14,17 +14,23 @@
 //! - [`probe`] answers the only question that matters for a given profile —
 //!   is the credential there, and will it still be there after a reboot?
 //!
-//! [`file`] and [`composite`] provide the durable Linux fallback. Registration
-//! itself lives in the binary (it is the binary that picks a backend), which
-//! calls [`record_active`] so diagnostics can report the choice.
+//! [`file`] is the durable store an operator can select deliberately on a
+//! machine with no OS keyring. There is no automatic downgrade: registration
+//! lives in the binary, which fails closed when the OS store cannot be opened
+//! and calls [`record_active`] so diagnostics can report what was chosen.
 
-pub mod composite;
 pub mod file;
 
 use crate::{config::secured_config::service_name, errors::OpenVTCError};
 
-/// Value of [`composite::BACKEND_ATTR`] for a credential served by the durable
-/// file store.
+/// Attribute key under which a credential reports which backend served it.
+///
+/// Namespaced because Secret Service items carry arbitrary caller-set
+/// attributes: a third-party item with a bare `backend` key would otherwise be
+/// read as one of ours.
+pub const BACKEND_ATTR: &str = "openvtc-backend";
+
+/// Value of [`BACKEND_ATTR`] for a credential served by the durable file store.
 pub const BACKEND_FILE: &str = "file";
 use keyring_core::{Entry, api::CredentialPersistence};
 use std::sync::OnceLock;
@@ -164,8 +170,9 @@ pub fn probe(profile: &str) -> EntryProbe {
         Ok(attrs) => {
             // The composite store reports which tier answered; anything else
             // is as durable as the store said it was.
-            let durability = match attrs.get(composite::BACKEND_ATTR).map(String::as_str) {
-                Some(composite::BACKEND_VOLATILE) => Durability::UntilReboot,
+            // The file store names itself; anything else is as durable as the
+            // store said it was.
+            let durability = match attrs.get(BACKEND_ATTR).map(String::as_str) {
                 Some(BACKEND_FILE) => Durability::Durable,
                 _ => store_durability,
             };
@@ -201,6 +208,26 @@ pub fn secrets_dir(profile: &str) -> Result<std::path::PathBuf, OpenVTCError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The store policy, pinned as a test because it is a policy and not an
+    /// implementation detail: **OpenVTC never chooses a volatile store.**
+    ///
+    /// If the OS store cannot be opened, the binary fails closed and tells the
+    /// operator how to choose file storage deliberately. A store that reports
+    /// itself volatile can therefore only have been selected explicitly, and
+    /// must always be flagged to the user.
+    #[test]
+    fn every_default_store_is_durable() {
+        // Every store `vta_sdk::keyring_init::install_default_store` registers —
+        // Keychain, Credential Manager, Secret Service — reports `UntilDelete`,
+        // as does the file store an operator may select.
+        assert!(
+            !Durability::from(CredentialPersistence::UntilDelete).is_volatile(),
+            "a default store must be durable"
+        );
+        // The kernel keyring is not, which is why it is migration-only.
+        assert!(Durability::from(CredentialPersistence::UntilReboot).is_volatile());
+    }
 
     #[test]
     fn volatile_classification_matches_lifetime() {

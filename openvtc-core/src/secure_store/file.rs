@@ -10,18 +10,19 @@
 //! VTA credential bundle there, so every headless Linux user lost their account
 //! on reboot, surfacing as `No matching credential found` at startup.
 //!
-//! This store is the durable fallback for that case: the secret goes to a
-//! `0600` file under the profile's config directory, which survives reboots the
-//! way the rest of the config already does.
+//! This store is what an operator selects deliberately on such a machine
+//! (`OPENVTC_SECURE_STORE=file`): the secret goes to a `0600` file under the
+//! profile's config directory, which survives reboots the way the rest of the
+//! config already does. It is never chosen automatically — OpenVTC fails
+//! closed rather than downgrading its own storage behind the user's back.
 //!
 //! # The plaintext guard
 //!
-//! Writing a raw seed to disk would be a security downgrade taken silently, so
-//! the store will not do it. A [`SecretPolicy`] callback vets every secret
-//! before it is written; OpenVTC supplies one that refuses an unencrypted
-//! `SecuredConfig` blob. A profile with no passphrase or token therefore stays
-//! on the volatile store and is nagged to set one, rather than having its seed
-//! quietly written out in the clear.
+//! Even when chosen deliberately, this store will not hold a raw seed. A
+//! [`SecretPolicy`] callback vets every secret before it is written; OpenVTC
+//! supplies one that refuses an unencrypted `SecuredConfig` blob. A profile
+//! with no passphrase or token is therefore refused with an explanation
+//! naming the fix, rather than having its seed written out in the clear.
 
 use keyring_core::{
     Entry, Error, Result,
@@ -192,7 +193,7 @@ impl CredentialApi for Cred {
         self.get_secret()?;
         Ok(HashMap::from([
             (
-                crate::secure_store::composite::BACKEND_ATTR.to_string(),
+                crate::secure_store::BACKEND_ATTR.to_string(),
                 crate::secure_store::BACKEND_FILE.to_string(),
             ),
             ("path".to_string(), self.path.display().to_string()),

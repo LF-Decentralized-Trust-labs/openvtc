@@ -253,11 +253,17 @@ pub fn diagnose(err: &OpenVTCError, ctx: &DiagnosisContext) -> Diagnosis {
                     d.remedies = vec![
                         "Unlock your login keychain / keyring and retry.".to_string(),
                         "On Linux, confirm a Secret Service daemon is running \
-                         (gnome-keyring-daemon, kwalletd) and that DBUS_SESSION_BUS_ADDRESS \
-                         is set — over SSH or in a container it usually is not."
+                         (gnome-keyring-daemon, kwalletd, KeePassXC) and that \
+                         DBUS_SESSION_BUS_ADDRESS is set — over SSH or in a container it \
+                         usually is not."
                             .to_string(),
                         "If you are running OpenVTC under a different user (sudo, a service \
                          account), that user has a different credential store."
+                            .to_string(),
+                        "On a headless machine with no keyring at all, choose durable file \
+                         storage deliberately: OPENVTC_SECURE_STORE=file. OpenVTC will not \
+                         pick a weaker store for you — where your keys live is your \
+                         decision, not a side effect of what happened to be installed."
                             .to_string(),
                         "Do NOT run setup again — that would replace keys that are still \
                          present but temporarily unreachable."

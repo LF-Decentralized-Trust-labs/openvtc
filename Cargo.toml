@@ -192,6 +192,11 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 vta-sdk = { version = "0.25", features = [
   "session",
   "client",
+  # The SAME per-platform credential-store registration pnm-cli uses
+  # (`vta_sdk::keyring_init::install_default_store`), so every tool in the
+  # workspace puts secrets in the same place on the same OS. Pulls the
+  # apple-native / windows-native / dbus-secret-service store crates.
+  "keyring",
   "didcomm",
   "provision-client",
   # Routes the Trust-Task surface over TSP as a leg of the existing DIDComm
