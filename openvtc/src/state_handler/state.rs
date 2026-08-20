@@ -52,6 +52,17 @@ pub struct State {
     /// main page.
     pub loading_complete: bool,
 
+    /// This install's own VTA device binding, once registered (D13). Runtime
+    /// only; identifies us so we are excluded from the sibling list.
+    pub self_device_id: Option<String>,
+
+    /// Other installs currently using this account, newest report wins.
+    ///
+    /// Empty is the normal case. Non-empty means the mediator's one-socket-per-
+    /// DID ceiling is in play and messaging may be unstable — see
+    /// [`openvtc_core::devices`].
+    pub live_siblings: Vec<openvtc_core::devices::DeviceRecord>,
+
     /// What the load could not bring up, when it could not bring up everything.
     ///
     /// `Some` gates the startup screen on an explicit acknowledgement: a

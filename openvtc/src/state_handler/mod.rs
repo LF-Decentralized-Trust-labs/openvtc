@@ -214,6 +214,7 @@ mod credential_actions;
 /// means the move itself changed no call sites, so a regression in the messaging
 /// layer cannot hide inside an import churn diff.
 pub use openvtc_core::didcomm;
+mod device_presence;
 mod dispatch_util;
 mod inbox_actions;
 pub mod join;
@@ -709,6 +710,21 @@ impl StateHandler {
         } else {
             None
         };
+
+        // D13: make this install visible to the rest of the account, and notice
+        // the others. Spawned rather than awaited — registration is diagnostic,
+        // and a slow or device-slice-less VTA must not delay startup by a
+        // single frame. Uses its OWN client clone so the heartbeat loop can
+        // outlive any one borrow of the admin session.
+        let (presence_tx, mut presence_rx) =
+            mpsc::unbounded_channel::<device_presence::PresenceReport>();
+        if let Some(client) = admin_vta.as_ref() {
+            tokio::spawn(device_presence::run(
+                client.clone(),
+                self.profile.clone(),
+                presence_tx,
+            ));
+        }
 
         // Fetch VTA context name, reusing the always-on admin session.
         if let Some(client) = admin_vta.as_ref()
@@ -1283,6 +1299,44 @@ impl StateHandler {
                     if state.main_page.content_panel.vta.vic_refresh_queued {
                         state.main_page.content_panel.vta.vic_refresh_queued = false;
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
+                    }
+                },
+                // D13 presence: another install using this account, or a
+                // report that we could not tell. The task never touches
+                // `State` — everything lands here, in the single mutator.
+                Some(report) = presence_rx.recv() => {
+                    match report {
+                        device_presence::PresenceReport::Registered { device_id } => {
+                            debug!(%device_id, "this install is registered with the VTA");
+                            state.self_device_id = Some(device_id);
+                        }
+                        device_presence::PresenceReport::NewSiblings(siblings) => {
+                            if let Some(warning) =
+                                openvtc_core::devices::sibling_warning(&siblings)
+                            {
+                                state.main_page.log_detailed(
+                                    format!("WARNING: {warning}"),
+                                    siblings
+                                        .iter()
+                                        .map(|d| {
+                                            format!(
+                                                "{} — last seen {}",
+                                                d.label(),
+                                                d.last_seen_at.as_deref().unwrap_or("unknown")
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n"),
+                                );
+                            }
+                            state.live_siblings = siblings;
+                            let _ = self.state_tx.send(state.clone());
+                        }
+                        device_presence::PresenceReport::Unavailable(reason) => {
+                            // Said once, so an absence of sibling warnings is
+                            // not mistaken for an absence of siblings.
+                            debug!("device presence unavailable: {reason}");
+                        }
                     }
                 },
                 // Lifecycle log messages from the Messaging

@@ -23,6 +23,7 @@ pub mod config;
 // docs and is resolved in *this* file's scope, so every intra-doc link the
 // module writes about its own items breaks — which is what failed CI on #192
 // and again here.
+pub mod devices;
 pub mod diagnostics;
 pub mod didcomm;
 pub mod display;
