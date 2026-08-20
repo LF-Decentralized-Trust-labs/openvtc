@@ -22,6 +22,9 @@ pub enum SetupEvent {
 
     // VtaProvisioning
     VtaAuthCompleted,
+    /// The operator saw that the chosen Trust Context already holds an account
+    /// and chose to continue into it regardless (D5/D11).
+    ContextOccupiedAccepted,
 
     // Token pages (cfg-gated)
     #[cfg(feature = "openpgp-card")]
@@ -79,7 +82,27 @@ pub fn navigate(event: SetupEvent, state: &SetupState) -> NavResult {
         // credential is issued, go straight to protection then create the
         // account — minting a persona / did:webvh belongs to the State-B join
         // flow, which drives it itself rather than through wizard pages.
-        SetupEvent::VtaAuthCompleted => NavResult::GoTo(protection_entry()),
+        // D5: the probe runs during provisioning, so by the time the operator
+        // confirms we already know whether this context holds an account.
+        // Detour through the warning only when it does — a genuine first run
+        // never sees the page, and an unreachable listing (`Unknown`) does not
+        // gate setup, because failing to inform a decision must not prevent
+        // making it.
+        SetupEvent::VtaAuthCompleted => {
+            if state
+                .vta
+                .context_probe
+                .as_ref()
+                .is_some_and(openvtc_core::context_probe::ProbeOutcome::needs_confirmation)
+            {
+                NavResult::GoTo(SetupPage::ContextOccupied)
+            } else {
+                NavResult::GoTo(protection_entry())
+            }
+        }
+
+        // Acknowledged: carry on exactly where an empty context would have.
+        SetupEvent::ContextOccupiedAccepted => NavResult::GoTo(protection_entry()),
 
         // === Token pages ===
         #[cfg(feature = "openpgp-card")]
@@ -187,6 +210,64 @@ mod tests {
 
     fn is_complete(result: &NavResult) -> bool {
         matches!(result, NavResult::CompleteSetup)
+    }
+
+    /// D5 — the whole point of the probe. A context that already holds an
+    /// account must not be written into without the operator seeing it first.
+    #[test]
+    fn an_occupied_context_detours_through_the_warning() {
+        use openvtc_core::context_probe::{ContextContents, ProbeOutcome};
+        let mut state = empty_state();
+        state.vta.context_probe = Some(ProbeOutcome::Occupied(Box::new(ContextContents {
+            persona_dids: vec!["did:webvh:Qm:example.com:alice".to_string()],
+            credential_count: 3,
+            sub_context_count: 1,
+        })));
+
+        let r = navigate(SetupEvent::VtaAuthCompleted, &state);
+        assert!(
+            matches_goto(&r, SetupPage::ContextOccupied),
+            "an occupied context must stop and ask"
+        );
+    }
+
+    /// A genuine first run must be completely unchanged — no extra page, no
+    /// extra keystroke.
+    #[test]
+    fn an_empty_context_is_unaffected() {
+        use openvtc_core::context_probe::ProbeOutcome;
+        let mut state = empty_state();
+        state.vta.context_probe = Some(ProbeOutcome::Empty);
+
+        let r = navigate(SetupEvent::VtaAuthCompleted, &state);
+        assert!(matches_goto(&r, protection_entry()));
+    }
+
+    /// "We could not tell" must not gate setup: failing to inform the decision
+    /// cannot be allowed to prevent making it.
+    #[test]
+    fn an_inconclusive_probe_does_not_gate_setup() {
+        use openvtc_core::context_probe::ProbeOutcome;
+        let mut state = empty_state();
+        state.vta.context_probe = Some(ProbeOutcome::Unknown("refused".to_string()));
+
+        let r = navigate(SetupEvent::VtaAuthCompleted, &state);
+        assert!(matches_goto(&r, protection_entry()));
+    }
+
+    /// A VTA old enough that the probe never ran at all behaves as before.
+    #[test]
+    fn no_probe_at_all_behaves_as_before() {
+        let r = navigate(SetupEvent::VtaAuthCompleted, &empty_state());
+        assert!(matches_goto(&r, protection_entry()));
+    }
+
+    /// Acknowledging rejoins the normal flow at exactly the point an empty
+    /// context would have.
+    #[test]
+    fn accepting_an_occupied_context_rejoins_the_normal_flow() {
+        let r = navigate(SetupEvent::ContextOccupiedAccepted, &empty_state());
+        assert!(matches_goto(&r, protection_entry()));
     }
 
     #[test]

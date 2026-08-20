@@ -31,6 +31,9 @@ pub enum SetupPage {
     VtaAclInstructions,
     /// Live diagnostics list while `provision_client::run_connection_test` runs.
     VtaProvisioning,
+    /// The chosen Trust Context already holds an account (D5). Shown only when
+    /// the probe found something, so a genuine first run never sees it.
+    ContextOccupied,
 
     /// Optional PGP Token setup occurs here
     #[cfg(feature = "openpgp-card")]
@@ -132,6 +135,15 @@ pub struct VtaSetupState {
     /// `Arc` because `EphemeralSetupKey` isn't `Clone` and `SetupState`
     /// derives `Clone` for the watch channel.
     pub setup_key: Option<Arc<EphemeralSetupKey>>,
+    /// What the chosen Trust Context already contained, once provisioning has
+    /// authenticated far enough to look (D5–D7).
+    ///
+    /// `None` until the probe runs. `Occupied` routes the wizard through
+    /// [`SetupPage::ContextOccupied`] before anything is written, so pointing a
+    /// fresh install at a context already in use is a decision rather than a
+    /// silent collision.
+    pub context_probe: Option<openvtc_core::context_probe::ProbeOutcome>,
+
     /// Live diagnostics list streamed from `provision_client::run_connection_test`.
     pub diagnostics: Vec<DiagEntry>,
     /// Admin credential issued by the VTA on successful provisioning. The
