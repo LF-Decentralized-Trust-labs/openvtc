@@ -1,10 +1,15 @@
 # SPEC — VTA-Authoritative State and Reinstall Recovery
 
-> Status: **DRAFT v1** — for review. Decisions D1–D9 proposed, none settled.
-> Scope: the `openvtc` CLI and `openvtc-core` config model, **plus** two
-> required changes in `verifiable-trust-infrastructure` called out as
-> **external dependencies** (E1, E2). Per the repo CLAUDE.md, protocol-layer
-> work belongs in that repo; this doc specifies the contract between them.
+> Status: **DRAFT v2** — for review. Decisions D1–D12 proposed, none settled.
+> Scope: the `openvtc` CLI and `openvtc-core` config model. Sealed bootstrap
+> turns out to be **already implemented** in `pnm-cli` (see §4), so the only
+> external ask is E1, and it is small.
+>
+> **Changed in v2:** the admin credential is reframed as an authorisation grant
+> rather than an identity (§3); recovery becomes a branch in the existing setup
+> flow rather than a separate command (§5); "start fresh" no longer means
+> "destroy" (D11); and a latent coupling that currently prevents the whole model
+> from working is called out (§7, D12).
 
 ---
 
@@ -13,286 +18,329 @@
 Make the VTA the keeper of keys, identities, and credentials, and reduce
 OpenVTC's local state to a cache it can rebuild.
 
-The target user story, in full:
-
-> My laptop died. I install OpenVTC on a new machine, enrol it against my VTA's
-> Trust Context, and everything comes back — my personas, my communities, my
-> relationships, my credentials. I did not have to have kept a backup file.
-
-Today none of that survives. A profile is two halves — a config file and an OS
-credential-store secret — and losing either loses the account. The encrypted
-export (`Settings → Export Config`) is the only defence, and it requires the
-user to have thought of it in advance.
+> My laptop died. I install OpenVTC on a new machine, point it at my VTA and my
+> Trust Context, and it tells me the context already has content and offers to
+> recover it. I did not have to have kept a backup file.
 
 ### Non-goals
 
-- Multi-device *concurrent* editing with full conflict resolution. §6 defines a
-  deliberately narrow write-behind model; genuine multi-writer merge is out of
-  scope and called out as a risk (R2).
-- Changing the VTA's trust posture. §3 argues this moves no trust boundary,
-  because the boundary was already crossed.
-- Recovering a VTA that is itself lost. VTA-side durability is that repo's
-  concern (it has `backup_export`/`backup_import` already).
+- Multi-device *concurrent* editing with full merge (D8, R2).
+- Changing the VTA's trust posture — D1 argues this moves no boundary.
+- Recovering a lost VTA. That repo has `backup_export`/`backup_import`.
 
 ---
 
 ## 2. Where authority sits today
 
-Established by reading `openvtc-core/src/config/{loading,keys,secured_config}.rs`
-and `vta-sdk` 0.25.1.
+From `openvtc-core/src/config/{loading,keys,secured_config,protected_config}.rs`
+against `vta-sdk` 0.25.1.
 
 | State | Authoritative today | Target |
 |---|---|---|
-| Persona **private keys** | **VTA** — `KeySourceMaterial::VtaManaged` → `get_key_secret`, fetched on *every* startup | unchanged |
-| Persona DIDs + documents | **VTA** — `list_dids_webvh`, `get_did_webvh_log`; local copy is already a perf cache (PERF #3) | unchanged |
-| VICs (invitations) | **VTA** — credential vault, `cred_vault_{receive,query,get}` | unchanged |
-| Account model — persona list, labels, mediator refs | OpenVTC `ProtectedConfig` only | **→ VTA** |
+| Persona **private keys** | **VTA** — `KeySourceMaterial::VtaManaged` → `get_key_secret`, every startup | unchanged |
+| Persona DIDs + documents | **VTA** — `list_dids_webvh`, `get_did_webvh_log`; local copy is a perf cache | unchanged |
+| VICs (invitations) | **VTA** — credential vault | unchanged |
+| Account model — persona list, labels, mediator refs | OpenVTC only | **→ VTA** |
 | Community memberships — status, sub-context, VMC, request ids | OpenVTC only | **→ VTA** |
 | Relationships (R-DIDs, `did:peer`) | OpenVTC only | **→ VTA** |
 | VRCs issued / received | OpenVTC only | **→ VTA credential vault** |
-| Contacts, tasks, agent-name cache | OpenVTC only | stays local (pure cache, D8) |
-| **Admin credential bundle** | **OpenVTC keyring only** | **→ enrolment (§4)** |
+| Contacts, tasks, agent-name cache | OpenVTC only | stays local (D9) |
+| Admin credential bundle | OpenVTC keyring only | re-issuable (§3, §4) |
 
-**Half the target is already the reality.** Persona keys — the most sensitive
-material in the system — are escrowed at the VTA and re-fetched on every launch.
-The rows marked *→ VTA* are a migration, not a new architecture.
+**Half the target is already the reality.** The rows marked *→ VTA* are a
+migration, not a new architecture.
 
 ---
 
-## 3. D1 — The VTA may read this state
+## 3. D1 — What the admin credential actually is
 
-**Decision: store the account model as structured documents the VTA can read.**
+**The admin credential is an authorisation grant, not an identity.**
 
-The argument is short: the VTA already holds every persona's private signing,
-authentication, and encryption key. A party that can sign as you can do anything
-you can do. Withholding your *membership list* from that party protects nothing
-it could not already obtain by acting as you.
+It is a `did:key` whose subject holds an ACL entry against a context. The VTA
+owns that ACL. The credential can be rotated (`spec/acl/swap-key/0.1` —
+self-service rotation onto a new subject DID, proven by a `link_proof` VP-JWT)
+and re-issued (§4). Losing it is losing an authorisation, not an identity — the
+same shape as losing an SSH key that is listed in `authorized_keys`.
 
-Encrypting to a key only the client holds is the one alternative that would
-change the trust position — and it defeats the objective, because recovery would
-then require a secret the user kept, which is the situation we are trying to
-escape. That is the circularity in §4, reappearing.
+Your *identity* is the persona `did:webvh`s, and those live at the VTA along
+with their private keys.
 
-What this does mean, and must be stated in the UI:
+This is the load-bearing reframing. Everything else follows:
 
-- The VTA can see your community memberships and your relationship graph.
+- **Recovery is re-authorisation**, not key recovery (§4).
+- **The VTA may read the account model** (D2) — it already holds keys that can
+  sign as you, so withholding your membership list protects nothing it could not
+  obtain by acting as you.
+- **Nothing durable may be derived from the admin credential** — because it is
+  designed to change. This is currently violated; see §7.
+
+### D2 — The VTA may read this state
+
+Store the account model as documents the VTA can read. Encrypting to a key only
+the client holds is the one alternative that changes the trust position, and it
+defeats the objective: recovery would then need a secret the user kept.
+
+What this means, to be said plainly in the docs rather than buried:
+
+- The VTA can see your community memberships and relationship graph.
 - A VTA operator, or a VTA database leak, exposes that graph.
-- This is a property of using a hosted agent, and it should be said plainly in
-  the docs rather than discovered.
 
-**D1a**: contacts and the agent-name cache are *not* uploaded (§D8). They are
-local-only conveniences with no recovery value, and the contact list is the most
-socially sensitive thing OpenVTC holds.
+**D2a** — contacts and the agent-name cache are *not* uploaded. No recovery
+value, and the contact list is the most socially sensitive thing OpenVTC holds.
 
 ---
 
-## 4. The bootstrap problem, and the one answer
+## 4. Re-authorisation — already built
 
-Moving state to the VTA does not, by itself, deliver reinstall recovery.
+**Correction to v1**, which claimed sealed bootstrap was unimplemented. It is
+implemented, in `pnm-cli`. The `sealed-bootstrap.md` status header is stale.
 
-The admin `CredentialBundle` cannot be recovered *from* the VTA, because it is
-what authenticates you *to* the VTA. This is circular, not a gap — no amount of
-server-side storage resolves it. `provision_integration` requires an existing
-admin token, so re-provisioning is not self-service either.
+The working flow today:
 
-A fresh install therefore needs an **enrolment** step that does not depend on
-the lost secret.
+| Step | Who | Command |
+|---|---|---|
+| 1 | New install | `pnm bootstrap request --out req.json` — generates an ephemeral X25519 keypair, secret stays local at mode 0600; the file carries only a public key, a fresh nonce, and a label |
+| 2 | Operator | `pnm context reprovision --id <context> --recipient req.json` — mints an admin key for the **existing** context and seals the credential to that public key |
+| 3 | New install | `pnm bootstrap open --bundle <file> --expect-digest <hex>` — single-use; no silent TOFU |
 
-### E1 (external, VTI) — sealed-bootstrap Mode A
+`vta_sdk::sealed_transfer` carries it: HPKE/RFC 9180, DHKEM-X25519 +
+HKDF-SHA256 + ChaCha20-Poly1305, ASCII armor with chunk headers bound as AEAD
+AAD. `SealedPayloadV1::AdminCredential` already exists.
 
-`verifiable-trust-infrastructure/sealed-bootstrap.md` already specifies exactly
-this, currently marked *"Design — not yet implemented"*. Its **Mode A** is
-verbatim our case:
+Crucially, `reprovision` targets an **existing context and leaves its content
+alone**. The new admin credential is a new ACL entry against the same context.
+That is exactly "just reconnect and away you go".
 
-> **A. Online, non-TEE** — Operator adds a new client to an existing VTA.
-> Trust anchor: operator-issued one-time token (ephemeral, role+context-bound
-> ACL entry).
+### D3 — OpenVTC performs the recipient side natively
 
-The primitive is already shipped: `vta_sdk::sealed_transfer` (HPKE / RFC 9180,
-DHKEM-X25519 + HKDF-SHA256 + ChaCha20-Poly1305, ASCII-armored with chunk headers
-bound as AEAD AAD, single-use and replay-resistant). `SealedPayloadV1` already
-has an `AdminCredential(CredentialBundle)` variant.
+Rather than making users drive `pnm` for step 1 and 3, OpenVTC does them itself:
+generate the ephemeral key, display/export the request, accept the armored
+bundle, verify the digest, open it, store the credential. Step 2 stays with
+whoever administers the VTA — see D4.
 
-**What E1 needs to deliver:** the server-side issue-and-redeem path for a
-one-time enrolment token, and a `bootstrap` ACL role that cannot escalate.
+### E1 (external, VTI) — the only remaining ask
 
-**D2 — OpenVTC's side of enrolment.** `openvtc enrol --token <one-time-token>`:
+Today step 2 requires operator access to `pnm`. For self-service recovery on a
+VTA you already administer, a caller who can prove control of a **second
+registered factor** should be able to reprovision without a human in the loop.
+The VTA already has the primitives: `spec/device/register/0.2` and
+`spec/auth/passkey/login/{start,finish}/0.2`.
 
-1. Generate an ephemeral X25519 keypair; the private half never leaves the
-   process.
-2. Send `BootstrapRequest` with the public half + the token.
-3. Receive the armored `SealedBundle`, verify the producer assertion, open it.
-4. Persist the `CredentialBundle` to the secure store (§Durability — this is the
-   store work already merged: Secret Service → encrypted file).
-5. Run §5's rebuild.
+**Requested:** allow a passkey- or registered-device-authenticated caller to
+issue a reprovision for a context they already hold a factor against.
 
-**D3 — the token is out-of-band and that is correct.** The user must obtain the
-enrolment token from somewhere the lost laptop was not: the VTA's admin UI,
-another enrolled device, or an operator. There is no way around this that does
-not amount to "anyone who knows your DID can become you". The docs must say so
-rather than implying recovery is unconditional.
+**D4 — until then, an operator step is correct, not a workaround.** Anything
+that lets an unauthenticated caller re-issue an admin credential for a context
+means anyone who knows your context id can become you. The out-of-band step is
+the security boundary. Docs must say so rather than implying recovery is
+unconditional.
 
 ---
 
-## 5. D4 — Rebuild from a Trust Context
+## 5. D5 — Recovery is a branch in setup, not a command
 
-After enrolment (or on `openvtc rebuild` with an existing credential), OpenVTC
-reconstructs local state from the VTA. All calls exist in vta-sdk 0.25.1:
+There is no `openvtc recover` command, because there does not need to be. Setup
+already asks for the VTA DID and a context id, and already authenticates. The
+moment it holds a `VtaClient`, it can see whether that context has content.
+
+**Flow:**
+
+1. Operator supplies VTA DID + context id (unchanged).
+2. Authorise — existing provisioning, or §4's sealed bootstrap.
+3. **Probe the context** — `list_dids_webvh`, `memory_list`, `cred_vault_query`.
+4. If it is empty → continue as today. Nothing changes for a genuine first run.
+5. If it has content → present what was found and offer three choices (D11).
+
+**D6 — the probe is read-only and cheap**, three list calls against a context we
+have just authenticated to. It runs on every setup, not behind a flag, because a
+user who needs it is by definition not expecting it.
+
+**D7 — the summary is concrete.** "This Trust Context already contains 3
+personas, 2 community memberships and 14 credentials, last updated 3 days ago" —
+not "existing content found". The user is deciding whether this is *their*
+account; they need enough to tell.
+
+---
+
+## 6. D8 — Rebuild, storage, and offline
+
+### Rebuild
 
 | Step | Call | Rebuilds |
 |---|---|---|
-| 1 | `list_contexts()` | `account.top_context_id` |
+| 1 | `list_contexts()` | `top_context_id` |
 | 2 | `get_context(id)` | context DID, sub-contexts |
 | 3 | `list_dids_webvh(context)` | persona DIDs |
-| 4 | `get_did_webvh(did)` / resolve | `did_document`, and the mediator via the existing `did::mediator_from_document` |
+| 4 | `get_did_webvh(did)` | documents; mediator via existing `did::mediator_from_document` |
 | 5 | `list_keys(.., context)` | `key_info` as `VtaManaged { key_id }` |
-| 6 | `memory_list(context)` | the account model — §6 |
+| 6 | `memory_list(context)` | the account model |
 | 7 | `cred_vault_query({})` | VICs, VMCs, VRCs |
 
-Steps 1–5 and 7 need **no new VTA work**. Only step 6 does.
+Only step 6 needs new work; the rest exist.
 
-**D5 — rebuild is explicit and non-destructive.** It never runs implicitly at
-startup. A rebuild into a profile that already has local state presents a diff
-and requires confirmation. Silently overwriting local state from the server is
-how a stale VTA view destroys good local data.
+### Storage — agent memory, one key per record
 
----
+Three candidate stores; one fits:
 
-## 6. D6 — Storage: `vta/memory`, one key per record
+- **Secrets vault** (`vault_upsert_typed`) — a password manager
+  (`secret_kind: password|passkey|oauth-tokens`, required site-oriented
+  `targets`). **Rejected**: our records are not site credentials, and it would
+  pollute a user-facing vault UI.
+- **Credential vault** (`cred_vault_*`) — **adopted for VICs/VMCs/VRCs**, where
+  VICs already live.
+- **Agent memory** (`vta/memory/{put,list,delete}/0.1`) — per-context key/value,
+  ACL-gated on context access, isolation enforced server-side. **Adopted for the
+  account model.**
 
-The VTA has three candidate stores. Only one fits:
-
-- **Secrets vault** (`vault_upsert_typed`) — shaped as a password manager:
-  `secret_kind: password | passkey | oauth-tokens | …`, required site-oriented
-  `targets`. Our documents are not site credentials; using it would pollute a
-  user-facing vault UI. **Rejected.**
-- **Credential vault** (`cred_vault_*`) — correct for VCs, and already used for
-  VICs. **Adopted for VICs/VMCs/VRCs only.**
-- **Agent memory** (`vta/memory/{put,list,delete}/0.1`) — a per-context
-  key/value store, ACL-gated on context access, with per-context isolation
-  enforced server-side. **Adopted for the account model.**
-
-`memory_put(context_id, key, value: String)` takes a string value, so records
-are JSON documents.
-
-**D6a — one memory key per record, never one blob.** Keys:
+**D8a — one key per record, never one blob:**
 
 ```
-openvtc/v1/account          → { vta_did, vta_url, top_context_id, org_did }
+openvtc/v1/account
 openvtc/v1/persona/{persona_id}
-openvtc/v1/membership/{vtc_did_hash}/{persona_id}
+openvtc/v1/membership/{vtc_hash}/{persona_id}
 openvtc/v1/relationship/{r_did_hash}
 ```
 
-Three reasons, in order of importance:
+1. **Payload size** — a blob grows without bound, and this project has already
+   lost a join to a bridge file-size limit silently dropping an oversized
+   submit (PR #137).
+2. **Blast radius** — last-write-wins on a blob loses unrelated records.
+3. **Partial rebuild** — an unparseable record is skipped and reported through
+   the `LoadIntegrity` machinery already merged.
 
-1. **Payload size.** A single blob grows without bound, and this project has
-   already lost a join to a bridge file-size limit silently dropping an
-   oversized submit (PR #137). Per-record keys keep every write small.
-2. **Blast radius.** Last-write-wins on one blob loses unrelated records; on one
-   record it loses that record.
-3. **Partial rebuild.** A record that fails to parse is skipped and reported via
-   the existing `LoadIntegrity` machinery, rather than failing the whole
-   rebuild.
+**D8b** — every record carries `schema_version` and `updated_at`.
 
-**D6b — every record carries `schema_version` and `updated_at`.** Forward
-compatibility, and the input to conflict resolution.
+**E2 (external, VTI, minor):** `MemoryPutBody` is `{contextId, key, value}` with
+no precondition, so writes are last-write-wins. A `put/0.2` with an optional
+`expectedVersion` — matching the pattern the vault tasks already use — would
+close the multi-device gap. Until then D8a bounds the damage.
 
-### E2 (external, VTI) — optimistic concurrency on memory/put
+### D8c — Cache and write-behind
 
-`MemoryPutBody` is `{ contextId, key, value }` with no `expectedVersion`, so
-writes are last-write-wins. With two enrolled devices that silently loses edits.
+Local config becomes a full read cache plus a persisted pending-write queue.
+Reads never block on the network. Writes apply locally first (preserving today's
+coalesced save), then enqueue. Reconcile on connect: push, then pull and
+compare. Conflicts are never auto-merged — they surface through the same
+acknowledge-and-continue path as `LoadIntegrity`. Pending state is visible;
+silent divergence is what makes people distrust sync.
 
-**Requested:** `spec/vta/memory/put/0.2` with an optional `expectedVersion`, and
-a version on the listed entry, matching the precondition pattern the vault
-tasks already use (`vault_delete(expected_version)`).
-
-Until E2 lands, D6a's per-record keys bound the damage and §6.1 detects it.
-
-### 6.1 D7 — Cache and write-behind
-
-The local config becomes a **full read cache** plus a **pending-write queue**.
-
-- **Reads** never block on the network. Startup uses local state exactly as it
-  does today; the VTA is consulted in the background.
-- **Writes** apply locally first (preserving today's coalesced save, R11), then
-  enqueue a VTA write. The queue is persisted, so a crash does not lose it.
-- **Reconcile on connect**: push pending writes, then pull and compare.
-- **Conflicts** — a remote record whose `updated_at` is newer than our last sync
-  *and* differs from ours — are **never auto-merged**. They surface through the
-  same acknowledge-and-continue path as `LoadIntegrity`, naming both sides.
-- **Pending state is visible.** A profile with unpushed writes says so. Silent
-  divergence is the failure mode that makes people distrust sync.
-
-**D7a — the queue is not a general-purpose sync engine.** It handles the
+**D8d** — this is not a general-purpose sync engine. It handles the
 single-active-device case correctly and reports the multi-device case honestly.
-That is the whole commitment.
+
+### D9 — What stays local
+
+Contacts, agent-name cache, tasks, activity log, UI preferences, working-community
+selection. All pure cache; none has recovery value.
 
 ---
 
-## 7. D8 — What stays local
+## 7. D12 — Break the credential ⇄ local-encryption coupling
 
-- **Contacts** — socially sensitive, no recovery value, D1a.
-- **Agent-name cache** — re-resolved on launch by design; negatives are already
-  pruned at load.
-- **Tasks**, activity log, UI preferences, working-community selection.
-- **The `SecuredConfig` blob** — the credential bundle stays in the OS store.
-  The store work already merged (Secret Service → encrypted file → kernel
-  keyring) remains the first line of defence; enrolment is the second.
+**This currently blocks everything above, and it is a code change in this repo.**
+
+`ProtectedConfig::get_seed_from_credential` derives the local config's
+encryption key as:
+
+```
+HKDF-SHA256(admin_credential_private_key, "openvtc-protected-config-seed-v1")
+```
+
+So the admin credential is simultaneously:
+
+- an **authorisation grant**, designed to rotate and be re-issued (D1), and
+- a **data-at-rest encryption key**, which must never change.
+
+Those are irreconcilable. Two concrete consequences:
+
+- Rotating the admin key via `acl/swap-key` — which vta-sdk supports and
+  performs — makes the existing `public.private` blob **undecryptable**.
+- A recovered install necessarily holds a *different* admin key, so it can never
+  decrypt a pre-existing local config. Recovery and local state are mutually
+  exclusive.
+
+Not a live bug today: OpenVTC uses `AdminRotated` only at provision time, before
+any `ProtectedConfig` exists, and never rotates at runtime. It is a latent
+blocker that must clear before the rest of this spec is buildable.
+
+**Fix:** give `ProtectedConfig` its own randomly-generated 32-byte key, stored in
+`SecuredConfig` beside the credential bundle — the same keyring entry, already
+protected by the same passphrase or token. The admin credential then becomes
+purely an authorisation grant, freely rotatable and re-issuable.
+
+**Migration:** on load, try the stored key; fall back to the credential-derived
+seed; on fallback success, generate a fresh key and re-encrypt on next save.
+Exactly the shape of the legacy-seed migration already in `load_step2`.
 
 ---
 
-## 8. D9 — Migration
+## 8. D10, D11 — The setup branch, and what "fresh" means
 
-No breaking config reset. The account model gains a mirror, it does not move.
+**D10 — recover is the default.** The highlighted choice, because a user who
+reaches this screen with content in their context is overwhelmingly a returning
+user, not someone who typed the wrong context id.
 
-1. **Ship the writer.** Every mutation that touches personas, memberships, or
-   relationships also enqueues a `memory_put`. Local remains the read path.
-   Existing profiles back-fill on first connect.
-2. **Ship the reader** behind `openvtc rebuild`, explicit only (D5).
-3. **Ship enrolment** once E1 lands.
-4. **Only then** consider demoting the local file from source-of-truth to cache.
-   Steps 1–3 are useful on their own and none of them is a one-way door.
+**D11 — "start fresh" means a different context, not a destroyed one.**
+
+The three choices:
+
+| Choice | Effect | Guard |
+|---|---|---|
+| **Recover** (default) | Rebuild from this context (§6). Local state untouched at the VTA. | Confirmation showing the D7 summary. |
+| **Use a different context** | Create/choose another context id and set up normally. The existing context is left completely alone. | None needed — non-destructive. |
+| **Delete and start over** | Destroy the context's DIDs, keys and credentials, then set up fresh. | `preview_delete_context` first, showing exactly what dies; then typed confirmation. Never the default, never one keypress. |
+
+The middle option is the important one. "Start fresh" in most tools means
+"destroy what is there", and here that would mean irreversibly destroying
+persona DIDs and their keys because someone re-ran setup. Making it mean *use a
+different context* removes the destructive path from the common flow entirely
+and leaves deletion as a deliberate, separate act.
+
+**D11a** — deletion is never implicit in setup, even with a typed confirmation,
+if the context contains personas that are members of a community. Leave the
+community first, so the VTC learns about it.
 
 ---
 
-## 9. Work split
+## 9. Migration and work split
 
-**verifiable-trust-infrastructure** (protocol layer — correct target per CLAUDE.md):
+No breaking config reset. Steps are independently useful; none is a one-way door.
 
-- **E1** — sealed-bootstrap Mode A: one-time enrolment token issue + redeem, and
-  the non-escalating `bootstrap` ACL role.
-- **E2** — `vta/memory/put/0.2` with `expectedVersion`.
-- *Nice to have*: pagination on `memory/list`, and a documented value-size limit
-  so clients can chunk deliberately rather than discovering the limit as a
-  dropped write.
+1. **D12 first** — decouple the ProtectedConfig key. Nothing else works until it
+   lands, and it is self-contained.
+2. **Ship the writer** — every mutation to personas, memberships or
+   relationships also enqueues a `memory_put`. Local stays the read path;
+   existing profiles back-fill on first connect.
+3. **Ship the probe + branch** (§5, D10/D11) — useful immediately even before
+   recovery is complete, because "this context already has content" is
+   information a user always wants.
+4. **Ship rebuild** (§6) behind the recover branch.
+5. **Ship the recipient side of sealed bootstrap** (D3).
+6. **Only then** consider demoting the local file from source-of-truth to cache.
 
-**openvtc**:
+**openvtc**: D12 decoupling · account model → agent memory · VRCs/VMCs → credential
+vault · setup probe and branch · rebuild · sealed-bootstrap recipient side ·
+write-behind queue and conflict surfacing.
 
-- Mirror the account model to `vta/memory` (D6, D9 step 1).
-- Move VRCs and VMCs into the credential vault, alongside VICs.
-- `openvtc rebuild` (D4/D5).
-- `openvtc enrol --token` (D2), once E1 lands.
-- Write-behind queue + reconcile + conflict surfacing (D7), reusing the
-  `LoadIntegrity` acknowledge path already merged.
+**verifiable-trust-infrastructure**: E1 (passkey/device-authenticated
+reprovision) · E2 (`memory/put/0.2` with `expectedVersion`) · fix the stale
+"not yet implemented" status header on `sealed-bootstrap.md`.
 
 ---
 
 ## 10. Risks
 
-- **R1 — the enrolment token is a full account takeover if leaked.** It must be
-  single-use, short-lived, context-bound, and non-escalating. This is E1's whole
-  security burden and it deserves its own review.
-- **R2 — multi-device divergence.** Mitigated, not solved, by D6a + D7. E2
-  reduces it further. A real merge model is a separate piece of work.
-- **R3 — the VTA now sees the relationship graph.** Accepted under D1; must be
-  documented, not buried.
-- **R4 — a VTA outage becomes a sync outage.** Bounded by D7: reads and writes
-  both work offline; only propagation waits.
-- **R5 — rebuild from a stale VTA view.** Bounded by D5: explicit, diffed,
-  confirmed.
+- **R1 — reprovision is account takeover if unguarded.** D4 keeps a human or a
+  second factor in the loop. E1 must not weaken this to "knows the context id".
+- **R2 — multi-device divergence.** Mitigated, not solved, by D8a/D8c; E2 helps.
+- **R3 — the VTA sees the relationship graph.** Accepted under D2; document it.
+- **R4 — a VTA outage becomes a sync outage.** Bounded by D8c.
+- **R5 — a mis-typed context id shows someone else's summary.** The D7 summary
+  must not leak content the caller is not authorised for; the probe is
+  ACL-gated, so an unauthorised context returns nothing rather than a teaser.
 - **R6 — `internal: true` keys are unrecoverable by design.** vta-sdk documents
-  them as *"excluded from backup and cannot be recovered from the mnemonic or
-  otherwise"*. If OpenVTC ever mints such a key, that persona is outside this
-  entire scheme. Today it does not — and it should not start without revisiting
-  this doc.
+  them as excluded from backup and unrecoverable from the mnemonic. OpenVTC sets
+  `internal: None` explicitly today, with a comment saying why. If that changes,
+  revisit this whole spec.
+- **R7 — D12's migration must not lock anyone out.** The fallback path has to
+  survive a profile that is mid-migration when it crashes; the existing
+  legacy-seed migration is the template.
