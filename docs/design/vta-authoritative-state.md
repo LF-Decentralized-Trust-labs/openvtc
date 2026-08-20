@@ -1,7 +1,7 @@
 # SPEC — VTA-Authoritative State and Reinstall Recovery
 
-> Status: **DRAFT v5** — for review. Decisions D1–D22; D17–D22 agreed in review.
-> External asks reworked in v5 (E1–E4), see below.
+> Status: **DRAFT v6** — for review. Decisions D1–D22; D17–D22 agreed in review.
+> External asks E1–E4; **E2 is the substantial one** and is specified in §6.
 > Scope: the `openvtc` CLI and `openvtc-core` config model, plus three asks on
 > `verifiable-trust-infrastructure` — **E2 is blocking**, E1 and E3 are not.
 > Sealed bootstrap turns out to be **already implemented** in `pnm-cli` (§4).
@@ -11,6 +11,14 @@
 > flow rather than a separate command (§5); "start fresh" no longer means
 > "destroy" (D11); and a latent coupling that currently prevents the whole model
 > from working is called out (§7, D12).
+>
+> **Changed in v6:** E1 is reframed as **DTTE** — reprovision becomes a
+> consent-requiring Trust Task rather than new authentication machinery, which
+> collapses it to a policy registration (and improves D20, since the approver's
+> decision is itself signed). New D23: nominate a recovery approver *before* you
+> need one. E2 gains three layers — atomic records, batch transport,
+> and out-of-band blobs — plus JSON merge-patch, so latency comes down without
+> giving up per-record versioning (E2c–E2g).
 >
 > **Changed in v5:** the external asks. **E2 is now a store design, not a field**
 > — agent memory is the wrong home for application metadata, because clearing an
@@ -150,22 +158,64 @@ generate the ephemeral key, display/export the request, accept the armored
 bundle, verify the digest, open it, store the credential. Step 2 stays with
 whoever administers the VTA — see D4.
 
-### E1 (external, VTI) — self-service reprovision · **deferred**
+### E1 (external, VTI) — reprovision as a DTTE-consentable task
 
-Recovery works today, but step 2 above needs a human with operator access to
-`pnm`. E1 would remove that human *only where it is safe to*: if you can already
-prove control of a **second thing the VTA knows about you** — a passkey you
-registered, or another enrolled device — that is evidence of the same strength,
-and you should be able to reprovision unattended. The primitives exist
-(`spec/device/register/0.2`, `spec/auth/passkey/login/{start,finish}/0.2`); what
-is missing is permission to use them as authorisation for a reprovision.
+v5 proposed a bespoke "passkey- or device-authenticated reprovision". Review
+pointed out the right shape: this is just **DTTE** — Delegated Trust-Task
+Execution — which already exists.
 
-Concretely: recovering your laptop from your phone, with no operator involved,
-because the phone is already an enrolled device.
+The machinery is built. Approvals are *"one rule list keyed on **Trust Task type
+URI**"* in the reserved `approvals` policy row; `requires: consent` routes
+through the PDP to the consent ceremony —
+`task-consent/request/0.1` (outbound push, VTA-signed),
+`task-consent/decision/0.1` (**DI-signed by the approver**),
+`task-consent/granted/0.1` (notice). And provisioning is already a dispatched
+Trust Task: `TASK_PROVISION_INTEGRATION_0_2`.
 
-**Deferred.** It is convenience, not capability — the operator path already
-delivers the recovery story. Revisit when there is a second enrolled device in
-the picture to authenticate *with*, which today there usually is not.
+So E1 collapses from *new authentication machinery* to **register the
+provisioning task URI as consent-requiring, with a recovery approver set**.
+Everything else is existing behaviour.
+
+Three properties make it a better fit than what v5 proposed:
+
+- **Approver-set membership alone authorizes a decision — an ACL entry is not
+  required** (VTI #907). A recovery approver does not need to be an admin of the
+  context, which is exactly right: the phone approving your laptop's recovery
+  should not itself hold admin rights.
+- **Consent binds to the payload digest, not a session.** The approver approves
+  *this* reprovision — this context, this recipient public key — rather than
+  elevating anything. Delegated step-up was deliberately deleted in favour of
+  this, and for recovery it is the difference between "approve one act" and
+  "grant a capability".
+- **The approver only ever sees a challenge-salted `wire_digest`**, never the
+  internal `payload_digest` that keys storage.
+
+**E1a — it improves D20 as a side effect.** `task-consent/decision/0.1` is signed
+by the approver, so an approved recovery produces a *second* independently
+verifiable artifact alongside the sealed bundle's producer assertion: proof that
+a human approved, and which one. Better evidence than an audit row.
+
+**E1b — caveats.** Approvals are inert unless `policy.enforcement = true`, which
+defaults to false, so this is opt-in per deployment. The `pnm approvals` surface
+is **Trust-Task transport only** — the SDK's REST arm is unimplemented and a REST
+client gets a 404. Fine for OpenVTC, which speaks DIDComm, but it means a
+REST-only VTA cannot configure this today.
+
+### D23 — Nominate a recovery approver *before* you need one
+
+The whole scheme is worthless if it is set up after the laptop is gone. An
+approver set established at recovery time is not a recovery mechanism; it is a
+formality.
+
+OpenVTC therefore treats it as a first-class setup concern: after a successful
+setup, prompt to nominate a recovery approver — another device, a colleague, a
+phone — and surface the current approver set in Settings alongside D17's
+revocation view. The two belong together: *who can let a new device in* and
+*which devices are currently in* are the same question asked in two directions.
+
+**D23a — say what it does and does not cover.** A nominated approver can
+authorise a new install against your context. They cannot read your data, and
+they do not hold your keys. Users will assume one or both unless told.
 
 **D4 — until then, an operator step is correct, not a workaround.** Anything
 that lets an unauthenticated caller re-issue an admin credential for a context
@@ -233,7 +283,9 @@ Three candidate stores; one fits:
 - **A new application-state store** (`spec/vta/appstate/*` — E2) — versioned,
   namespaced, prefix-listable. **Adopted for the account model**, and blocking.
 
-**D8a — one key per record, never one blob:**
+**D8a — one key per record, never one account-model blob.** Batching (E2c) and
+attached blobs (E2e) do not change this: the record remains the unit that carries
+a version and a conflict. Keys:
 
 ```
 namespace = "openvtc"
@@ -294,12 +346,82 @@ later.
 | Documented size limit | A stated per-record cap, and an explicit error on exceeding it. | This project has already lost a join to a size limit that dropped a write silently. |
 | Not for secrets | Stated in the protocol docs. | Three stores, three jobs; the boundary has to be written down or it will erode. |
 
-**E2a — the value stays opaque.** The store does not parse it. `schemaVersion`
-and the D19 flatten-through live inside the value, owned by the application.
-A dumb store is one that does not need a migration when OpenVTC's model changes.
+#### Three layers, kept distinct
+
+Batching and blobs do not weaken D8a — they sit either side of it. The record
+stays the unit of *correctness*; batching is a unit of *transport*; blobs are a
+different class of data entirely.
+
+| Layer | Unit | Versioned | In `list` |
+|---|---|---|---|
+| **Record** | one small JSON document, one key | Yes — individually | Yes |
+| **Batch** | N records in one round trip | Per record, unchanged | n/a |
+| **Blob** | one large opaque payload attached to a key | With its record | **No** — reference only |
+
+**E2c — batch get and put.** `get_many(keys[])` and `put_many(writes[])`, each
+write carrying its own `expectedVersion`, and the response carrying a per-record
+result. This is the latency answer: a rebuild or a write-behind flush becomes one
+round trip instead of N, without giving up per-record versioning.
+
+`put_many` takes an explicit **mode**, because the two callers want opposite
+things:
+
+- `independent` (**default**) — each write is applied or rejected on its own
+  merits. One conflicted record does not block the other nine. This is what a
+  write-behind flush of unrelated edits wants, and it preserves exactly the
+  blast-radius property D8a was written for.
+- `atomic` — all preconditions must hold or nothing is written. Needed when
+  records carry a joint invariant: minting a persona *and* the membership that
+  references it should not half-land, which is the same two-writes-one-truth
+  problem that produced `LoadIntegrity` locally.
+
+Defaulting to `independent` is deliberate. An atomic default would mean a single
+stale record silently blocking an entire flush, and the user would see "sync is
+stuck" with no indication which record is at fault.
+
+**E2d — `list` returns values, optionally.** `includeValues` on `list` so a
+prefix scan is one call rather than a scan plus N gets. Off for a browse, on for
+a rebuild. This is the single biggest latency win on the recovery path.
+
+**E2e — blobs travel out of band.** A record may carry an attached blob,
+addressed by the same key and versioned with its record, but **never returned by
+`list`** — only a `blobRef` with its size and digest. Fetching is explicit.
+
+The transport pattern already exists in this codebase: `backup_export_via_descriptor`
+returns a descriptor with a `transport_url` and token, and the bytes move through
+`download_blob` / `upload_blob` outside the trust-task envelope, with a
+wire-level digest check independent of any inner MAC. Reusing it keeps large
+payloads away from the message-size limit that has already silently dropped a
+write in this project.
+
+**Caveat worth stating up front:** that descriptor path is documented as
+REST-only — *"the descriptor pattern doesn't have a DIDComm path"*. OpenVTC runs
+over DIDComm by default, so blobs need either a DIDComm descriptor story or an
+explicit statement that they are REST-only. Not a blocker for the account model,
+which has no blobs; it matters the moment something large is stored.
+
+**E2f — JSON-aware, schema-agnostic.** Values are JSON by contract, and the
+store may act on that structure without understanding *what* the structure
+means:
+
+- **Merge-patch on put** (RFC 7386). Sending a patch rather than a whole record
+  cuts payload, and — more valuably — cuts *conflicts*: two instances editing
+  different fields of one record no longer collide at all.
+- **Field projection on list.** Return only named paths, so a browse does not
+  drag every field of every record.
+
+**E2a — the store understands JSON, not your schema.** Refined from v5's "the
+value stays opaque". `schemaVersion` and the D19 flatten-through are still the
+application's business, and the store never migrates, validates, or interprets a
+record's meaning. It only manipulates generic JSON structure on request.
 
 **E2b — `vta/memory` is left exactly as it is.** This is additive. Agent memory
 keeps its semantics, including being safe to clear.
+
+**E2g — change notification is a later addition, not part of this.** Polling on
+reconnect is adequate for the write-behind model, and `device/set-wake` already
+provides the hook (`WakeHandle`) if push becomes worthwhile. Noted so the store's
+shape does not preclude it.
 
 **Until this lands, the account model does not move.** Along with D12, it is one
 of two blockers on the whole spec.
@@ -675,9 +797,9 @@ and listener ownership (D15, D16).
 
 | Ask | What | Status |
 |---|---|---|
-| **E2** | A new application-state store — `spec/vta/appstate/*` with versions, `expectedVersion`, prefix + `sinceVersion` listing, and tombstones. Agent memory is the wrong home. | **Blocking** |
+| **E2** | A new application-state store — `spec/vta/appstate/*`: versions and `expectedVersion`, prefix + `sinceVersion` listing, tombstones, batch get/put with per-record results, optional values in `list`, out-of-band blobs, and JSON merge-patch. Agent memory is the wrong home. | **Blocking** |
 | **E3** | Mediator: keep the established authenticated connection and refuse the newcomer, rather than evicting the incumbent | High — fixes a live bug |
-| E1 | Self-service reprovision authenticated by a second registered factor | Deferred — convenience, not capability |
+| E1 | Register the provisioning task URI as consent-requiring, so recovery runs through the existing DTTE ceremony with a recovery approver set | Small — the machinery exists |
 | E4 | A pluggable audit sink (trait + backends), *not* tamper-evidence in the protocol | When convenient |
 | — | Fix the stale *"Design — not yet implemented"* header on `sealed-bootstrap.md` | Trivial |
 
