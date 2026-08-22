@@ -33,21 +33,32 @@ anyhow.workspace = true
 # own repo (OpenVTC/verifiable-git-infrastructure); openvtc is a downstream
 # consumer of the published crate.
 #
-# Floor is 0.4.3: the first release built on vta-sdk 0.23, so it is what
-# finally leaves ONE vta-sdk in this binary. 0.4.2 requires `vta-sdk ^0.21`,
-# which is where the 0.21 copy came from once #213 took the workspace to 0.23 —
-# `cargo tree -i vta-sdk` reported 0.21.21 and 0.23.0 side by side, the former
-# reachable only through this crate. (#214 cleared the matching duplicate on the
-# `vta-service` dev-dependency; this clears the other half.) Two sdks are not
-# merely untidy: `vti-common` re-exports `vta_sdk::acl::{ActScope, ApproveScope,
-# ContextDirection}` as its own public API, so the copies carry types that
-# cannot unify.
+# Floor is 0.4.6: the first release built on vta-sdk 0.27, so it is what leaves
+# ONE vta-sdk in this binary. This is the third consecutive cycle where that
+# sentence had to be rewritten — 0.4.3 was the first on 0.23, 0.4.5 the first on
+# 0.25 — so read it as a standing obligation rather than a historical note: when
+# the workspace's vta-sdk minor moves, VGI has to publish before this line can
+# follow, and until it does the graph carries two sdks.
+#
+# The floor must name the exact release, never a lower caret. `"0.4.3"` admitted
+# 0.4.5, which requires `vta-sdk ^0.25` — so while this workspace was already on
+# 0.27, `cargo tree -d -e normal,build,dev` reported 0.25.1 beside 0.27.0 (and
+# `trust-tasks-rs` 0.9.0 beside 0.11.1 beneath it), reachable only through this
+# one edge. A caret that permits any release below the current sdk line lets a
+# clean checkout resolve straight back onto that duplicate.
+#
+# Two sdks are not merely untidy: `vti-common` re-exports
+# `vta_sdk::acl::{ActScope, ApproveScope, ContextDirection}` as its own public
+# API, so the copies carry types that cannot unify. The reason this particular
+# duplicate never broke a build is narrow and not worth relying on — we use only
+# `did_git_sign::{config, init}`, so no type crosses the boundary. One new import
+# is all it would take.
 #
 # Earlier floors are below this one by construction and kept in git history
-# rather than as a wall of satisfied constraints — 0.4.2 was the release on
-# vta-sdk 0.21.10 (and so on trust-tasks-rs 0.4), where 0.4.0/0.4.1 were on
-# `^0.19` and put a second vta-sdk *and* a second trust-tasks in the binary.
-did-git-sign = "0.4.3"
+# rather than as a wall of satisfied constraints — 0.4.5 was the first release on
+# vta-sdk 0.25, 0.4.3 the first on 0.23, and 0.4.0/0.4.1 were on `^0.19` and put
+# a second vta-sdk *and* a second trust-tasks in the binary.
+did-git-sign = "0.4.6"
 base64.workspace = true
 byteorder.workspace = true
 chrono.workspace = true
