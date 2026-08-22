@@ -66,12 +66,24 @@ affinidi-messaging-delivery = "0.1.14"
 # 0.1.5 the enum is exhaustively matched already and that arm is an
 # unreachable pattern, which `-D warnings` rejects.
 affinidi-messaging-core = "0.1.6"
-# Floor is 0.19.9 (affinidi-tdk-rs #717): the release that moves the messaging
-# crates from `trust-tasks-rs` 0.9 to 0.11. That is not a courtesy bump — this
-# workspace is on 0.11, `affinidi-messaging-sdk` carries `trust-tasks-rs` types
-# in its own API (`MediatorAcl` reaches `atm.trust_tasks().account_update`), and
-# a copy left on 0.9 is a *second* semver-incompatible `trust-tasks-rs` whose
-# types do not unify. Same class of failure as the `vta-sdk` note below.
+# Floor is 0.19.10 (affinidi-tdk-rs #718): the release where a closed websocket
+# says why it closed. The transport matched the close frame as `Message::Close(_)`
+# and discarded it — `debug!("WebSocket connection closed by server")` — so a
+# refused duplicate arrived here as a socket that simply vanished, and the loop
+# reconnected into a duel. The mediator's `Close` now carries a reason, each with
+# its own problem-report code, and the sdk surfaces the close code and reason at
+# WARN. `duplicate-channel` is preserved verbatim for the genuinely-replaced
+# case, so the matches on it below are unaffected. Filed from this side as
+# `OpenVTC/verifiable-trust-infrastructure#1028`; the eviction *policy* is
+# deliberately unchanged, because displacement is what triggers the mediator's
+# stored-mail redelivery for clients that do not pull explicitly.
+#
+# 0.19.9 (#717) is the release that moves the messaging crates from
+# `trust-tasks-rs` 0.9 to 0.11. That is not a courtesy bump — this workspace is
+# on 0.11, `affinidi-messaging-sdk` carries `trust-tasks-rs` types in its own
+# API (`MediatorAcl` reaches `atm.trust_tasks().account_update`), and a copy
+# left on 0.9 is a *second* semver-incompatible `trust-tasks-rs` whose types do
+# not unify. Same class of failure as the `vta-sdk` note below.
 #
 # 0.19.8 (#716) is the fix underneath it, and the one this repo chased for weeks:
 # `_refresh_authentication` discarded `force_refresh`, so the websocket
@@ -83,7 +95,7 @@ affinidi-messaging-core = "0.1.6"
 # Earlier floors are below this one by construction: 0.19.4 (#694) was the
 # `live_stream_next*` read guard that blocked `stop_websocket` for the remainder
 # of a 10s poll window, so quitting the TUI mid-window paid it.
-affinidi-messaging-sdk = "0.19.9"
+affinidi-messaging-sdk = "0.19.10"
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
 futures-util = "0.3"
 # Agent names (DID shortcuts). `agent-names` carries the parse /
