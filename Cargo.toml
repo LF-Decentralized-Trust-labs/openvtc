@@ -233,12 +233,12 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # the 0.21.x line's `provision/integration/0.2` casing (VTI #917) and `null`
 # `CreateKeyBody` members (VTI #919).
 #
-# One consumer still holds this graph back: `did-git-sign` 0.4.5 requires
-# `vta-sdk ^0.25`, so `cargo tree -d` reports 0.25.1 alongside 0.27.0 and a
-# `trust-tasks-rs` 0.9 beneath it. No type crosses that boundary — we use only
-# `did_git_sign::{config, init}` — so it builds and tests clean, but it is the
-# duplicate this file exists to prevent and it clears when VGI cuts a release on
-# 0.27, exactly as #216 did for the 0.23 move.
+# The graph holds exactly one `vta-sdk` and one `trust-tasks-rs`, and keeping it
+# that way took a release in another repo: `did-git-sign` 0.4.5 required
+# `vta-sdk ^0.25`, so until VGI published 0.4.6 on 0.27 this workspace carried
+# 0.25.1 beside 0.27.0. That is the third consecutive cycle it has done so — see
+# the floor note on `did-git-sign` in `openvtc/Cargo.toml`, which is where the
+# obligation is written down.
 vta-sdk = { version = "0.27", features = [
   "session",
   "client",

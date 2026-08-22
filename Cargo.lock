@@ -416,7 +416,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "url",
  "uuid",
 ]
@@ -505,7 +505,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -2685,9 +2685,9 @@ dependencies = [
 
 [[package]]
 name = "did-git-sign"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af3af0736305b0e190928fb1d8795a6f5d35762f26d3fc45d52d1ef9379021d2"
+checksum = "3c286e9d2e2257a8b08c318da6c92171fbec55fc864163ba58ee6555c9d5c3a3"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -2709,7 +2709,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vgi-core",
- "vta-sdk 0.25.1",
+ "vta-sdk",
  "windows-native-keyring-store",
  "zeroize",
 ]
@@ -5459,7 +5459,7 @@ dependencies = [
  "tui-input",
  "url",
  "uuid",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "windows-native-keyring-store",
  "x25519-dalek 2.0.1",
  "zeroize",
@@ -5515,10 +5515,10 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trust-tasks-capability-client",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "url",
  "uuid",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vta-service",
  "wiremock",
  "x25519-dalek 2.0.1",
@@ -8332,7 +8332,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -8346,7 +8346,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -8365,7 +8365,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tower",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "uuid",
 ]
 
@@ -8383,23 +8383,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
- "trust-tasks-rs 0.11.1",
-]
-
-[[package]]
-name = "trust-tasks-rs"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6fafd737292481f82d012e197981c7955d2f3f00a7c45708aa46916c4bdd0a9d"
-dependencies = [
- "async-trait",
- "chrono",
- "jsonschema",
- "regress",
- "serde",
- "serde_json",
- "serde_with",
- "thiserror 2.0.20",
+ "trust-tasks-rs",
 ]
 
 [[package]]
@@ -8704,9 +8688,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vgi-core"
-version = "0.4.5"
+version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "99b7f19034decc19684bb2092ab3eb5a525d58a89699946ef6a1219e990da349"
+checksum = "f6610cc81d2a1e816cd0c820a38de1bf22d60155bc5aa957751662f9e72224ed"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -8730,7 +8714,7 @@ checksum = "fb035957b9233d977562b9f921e0568607b78cac7f4e861697d13330a0550ff3"
 dependencies = [
  "tracing",
  "uuid",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -8755,7 +8739,7 @@ dependencies = [
  "vta-config",
  "vta-keys",
  "vta-keyspaces",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vta-support",
  "vti-common",
  "zeroize",
@@ -8783,7 +8767,7 @@ dependencies = [
  "sha2 0.11.0",
  "thiserror 2.0.20",
  "tokio",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
  "x25519-dalek 3.0.0",
 ]
@@ -8800,7 +8784,7 @@ dependencies = [
  "sha2 0.11.0",
  "toml",
  "tracing",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
 ]
@@ -8832,7 +8816,7 @@ dependencies = [
  "uuid",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
  "vti-secrets",
  "x25519-dalek 3.0.0",
@@ -8864,51 +8848,8 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
-]
-
-[[package]]
-name = "vta-sdk"
-version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "732ada630aaad06a9516e4e38baf77410c872a6dab044ce37b13b94beec1a1ce"
-dependencies = [
- "affinidi-crypto",
- "affinidi-data-integrity",
- "affinidi-did-common",
- "affinidi-did-resolver-cache-sdk",
- "affinidi-messaging-core",
- "affinidi-messaging-delivery",
- "affinidi-messaging-didcomm",
- "affinidi-openid4vci",
- "affinidi-openid4vp",
- "affinidi-secrets-resolver",
- "affinidi-tdk",
- "affinidi-vc",
- "agent-names",
- "base64 0.22.1",
- "chrono",
- "ciborium",
- "curve25519-dalek 5.0.0",
- "didwebvh-rs",
- "ed25519-dalek 3.0.0",
- "futures-util",
- "getrandom 0.4.3",
- "hpke",
- "multibase",
- "reqwest",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "trust-tasks-rs 0.9.0",
- "url",
- "uuid",
- "x25519-dalek 3.0.0",
- "zeroize",
 ]
 
 [[package]]
@@ -8919,6 +8860,7 @@ checksum = "8c9118a296fa721073c4902c0cc3f7d446c7a92627f52b5e97d4d6ccc7a2782a"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
+ "affinidi-did-common",
  "affinidi-did-resolver-cache-sdk",
  "affinidi-messaging-core",
  "affinidi-messaging-delivery",
@@ -8929,6 +8871,7 @@ dependencies = [
  "affinidi-secrets-resolver",
  "affinidi-tdk",
  "affinidi-vc",
+ "agent-names",
  "apple-native-keyring-store",
  "base64 0.22.1",
  "chrono",
@@ -8950,7 +8893,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "url",
  "utoipa",
  "uuid",
@@ -9026,7 +8969,7 @@ dependencies = [
  "trust-tasks-didcomm",
  "trust-tasks-https",
  "trust-tasks-proof",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "url",
  "urlencoding",
  "utoipa",
@@ -9039,7 +8982,7 @@ dependencies = [
  "vta-keys",
  "vta-keyspaces",
  "vta-policy",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vta-support",
  "vta-sweepers",
  "vta-vault",
@@ -9070,7 +9013,7 @@ dependencies = [
  "tracing",
  "vta-config",
  "vta-keyspaces",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
 ]
 
@@ -9116,7 +9059,7 @@ dependencies = [
  "tracing",
  "uuid",
  "vta-keyspaces",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
  "x509-parser 0.18.1",
 ]
@@ -9135,7 +9078,7 @@ dependencies = [
  "tracing",
  "url",
  "vta-keyspaces",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "vti-common",
  "zeroize",
 ]
@@ -9173,12 +9116,12 @@ dependencies = [
  "tokio",
  "tracing",
  "trust-tasks-capability-client",
- "trust-tasks-rs 0.11.1",
+ "trust-tasks-rs",
  "url",
  "utoipa",
  "utoipa-axum",
  "uuid",
- "vta-sdk 0.27.0",
+ "vta-sdk",
  "webauthn-rs",
  "zeroize",
 ]
