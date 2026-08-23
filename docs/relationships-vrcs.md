@@ -1,6 +1,14 @@
 # Relationships and VRCs
 
-The OpenVTC tool enables you to establish relationships with other DIDs (e.g., peers, coworkers, or community members) and communicate privately through the DIDComm protocol using your **Persona DID (P-DID)** or **Relationship DID (R-DID)**.
+> **Note:** The command examples in this guide predate the TUI and are being
+> rewritten. The `openvtc relationships` and `openvtc vrcs` subcommands no
+> longer exist — relationships are managed from the Relationships panel and the
+> Inbox in the TUI. The flow and the concepts below are still accurate; only the
+> invocations are stale.
+
+The OpenVTC tool enables you to establish relationships with other DIDs (e.g., peers, coworkers, or community members) and communicate privately through the DIDComm protocol.
+
+Each relationship gets its own **Relationship DID (R-DID)** by default — a pairwise identifier used only with that one contact. You can choose to use your **Persona DID (P-DID)** instead; see [Choosing your identifier](#choosing-your-identifier) for what that costs.
 
 Once a relationship is established, you can request a **Verifiable Relationship Credential (VRC)**, a peer-to-peer credential that attests to verifiable trust relationships between personhood credential holders.
 
@@ -32,6 +40,7 @@ sequenceDiagram
 
 ## Table of Contents
 
+- [Choosing your identifier](#choosing-your-identifier)
 - [Establish Relationship](#establish-relationship)
   - [1. Send Relationship Request (Requestor)](#1-send-relationship-request-requestor)
   - [2. Accept Relationship Request (Respondent)](#2-accept-relationship-request-respondent)
@@ -43,27 +52,53 @@ sequenceDiagram
   - [3. Claim and Store VRC (Requestor)](#3-claim-and-store-vrc-requestor)
 - [List and View VRCs](#list-and-view-vrcs)
 
+## Choosing your identifier
+
+Every relationship is established under one of two identifiers, chosen when you
+send the request or accept an incoming one. The default is the pairwise R-DID.
+
+| | **Pairwise R-DID** (default) | **Your persona DID** |
+| --- | --- | --- |
+| What the contact sees | A fresh `did:peer` used only with them | Your published `did:webvh` |
+| Linkable to your other relationships | No — each contact sees a different identifier | Yes — every contact sees the same string |
+| Resolvable by anyone | No | Yes, and it often carries your verified agent name |
+| Recognisable as you | No, unless you tell them | Yes, immediately |
+
+The cost of reusing the persona DID is that correlation stops being an inference
+and becomes a lookup: two contacts who compare notes see the same identifier and
+can resolve it to a named identity. That is why pairwise is the default.
+
+The reason to choose the persona DID anyway is recognition — a contact who
+already knows your published DID or agent name can verify it is really you
+without a separate introduction.
+
+Once a relationship holds an R-DID, subsequent messages always use it. There is
+no fallback to the persona DID mid-relationship.
+
+**Note:** The three handshake messages (request, accept, finalise) are routed
+between persona DIDs regardless of this choice, because the mediator has to
+route them before a pairwise channel exists. The R-DID takes over once the
+relationship is established. Full pairwise operation, including the VRC issuer
+field, depends on protocol work tracked in
+[verifiable-trust-infrastructure#1054](https://github.com/OpenVTC/verifiable-trust-infrastructure/issues/1054).
+
 ## Establish Relationship
 
 Follow these steps to establish a relationship with another Persona DID.
 
 ### 1. Send Relationship Request (Requestor)
 
-Send a relationship request to another DID:
+In the Relationships panel, start a new request and fill in:
 
-```bash
-openvtc relationships request --respondent <Persona_DID> --alias <Respondent_Alias>
-```
+| Field | Description |
+| --- | --- |
+| DID | The respondent's persona DID, or an agent name such as `example.com/@bob` |
+| Alias | A local name for this relationship |
+| Reason | Why you are asking |
+| Contact you as | `Pairwise R-DID` (default) or `Your persona DID` — press Space to change |
 
-This command sends a relationship request and sets an alias for the relationship.
-
-**Optional:** Generate a local Relationship DID (R-DID) for private communication:
-
-```bash
-openvtc relationships request --respondent <Persona_DID> --alias <Respondent_Alias> --generate-did
-```
-
-When an R-DID is present, subsequent communication uses the R-DID for privacy; otherwise, it uses your P-DID.
+The last field is the choice described in [Choosing your identifier](#choosing-your-identifier).
+It defaults to minting a fresh R-DID for this contact.
 
 **Note:** Initiating a relationship request automatically adds the respondent to your Contacts list.
 
@@ -87,9 +122,15 @@ For more details, see the [CLI documentation](./openvtc-tool-commands.md#openvtc
 
    The tool fetches messages from the mediator. If you have a relationship request, you'll see a task with type **`Relationship Request`**.
 
-   Select the task ID and click **Accept this relationship request**.
+   Open the task to see the request detail.
 
-2. Choose whether to generate an R-DID for private communication.
+2. Accept it with either identifier:
+
+   - `a` — accept with a pairwise R-DID (the default, private path)
+   - `p` — accept as your persona DID
+
+   See [Choosing your identifier](#choosing-your-identifier) for the trade-off.
+   The detail view states both outcomes at the point of choice.
 
 3. Enter an alias for the requestor to easily identify this relationship.
 

@@ -911,7 +911,19 @@ impl MainPage {
                     let _ = self.action_tx.send(Action::Inbox(InboxAction::Back));
                     true
                 }
-                KeyCode::Char('A') if is_rel_inbound => {
+                // Accepting with a pairwise R-DID is the default path (#241);
+                // `A` stays wired to it so existing muscle memory keeps giving
+                // the private outcome it always gave.
+                KeyCode::Char('p') if is_rel_inbound => {
+                    let _ = self
+                        .action_tx
+                        .send(Action::Inbox(InboxAction::AcceptRelationship {
+                            task_id,
+                            generate_r_did: false,
+                        }));
+                    true
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') if is_rel_inbound => {
                     let _ = self
                         .action_tx
                         .send(Action::Inbox(InboxAction::AcceptRelationship {
@@ -921,14 +933,7 @@ impl MainPage {
                     true
                 }
                 KeyCode::Char('a') => {
-                    if is_rel_inbound {
-                        let _ =
-                            self.action_tx
-                                .send(Action::Inbox(InboxAction::AcceptRelationship {
-                                    task_id,
-                                    generate_r_did: false,
-                                }));
-                    } else if is_vrc_issued {
+                    if is_vrc_issued {
                         let _ = self
                             .action_tx
                             .send(Action::Inbox(InboxAction::AcceptVrc { task_id }));
