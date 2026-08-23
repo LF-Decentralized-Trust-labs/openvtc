@@ -1864,9 +1864,15 @@ mod tests {
     /// requires, issued by [`COMMUNITY`] and not yet expired.
     fn pasteable_vic(id: &str) -> serde_json::Value {
         json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            // The DTG wire form, as `dtg-credentials` mints it — both required
+            // contexts and the `DTGCredential` base type. A fixture that omits
+            // them is not a VIC a community could have issued.
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
             "id": id,
-            "type": ["VerifiableCredential", "InvitationCredential"],
+            "type": ["VerifiableCredential", "DTGCredential", "InvitationCredential"],
             "issuer": COMMUNITY,
             "credentialSubject": { "id": "did:webvh:example.com:alice" },
             "validUntil": "2099-01-01T00:00:00Z",
