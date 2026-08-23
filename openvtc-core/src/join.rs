@@ -398,6 +398,17 @@ pub fn invitation_is_expired(vic: &Value, now: DateTime<Utc>) -> bool {
     }
 }
 
+/// The two `@context` entries DTG Credentials §Common Structure requires of
+/// every DTG credential, and the base `type` every one of them carries.
+///
+/// `dtg-credentials` builds all three into the credentials it mints but does
+/// not export them, so they are named here rather than spelled out inline.
+/// Removing this duplication needs a public constant upstream —
+/// OpenVTC/dtg-credentials#10.
+pub const W3C_VC_V2_CONTEXT: &str = "https://www.w3.org/ns/credentials/v2";
+pub const DTG_CONTEXT: &str = "https://firstperson.network/credentials/dtg/v1";
+pub const DTG_BASE_TYPE: &str = "DTGCredential";
+
 /// Whether a JSON value is an InvitationCredential (its `type` array carries
 /// the `InvitationCredential` tag). Used to validate a pasted/loaded VIC
 /// before stashing it (join flow) or storing it in the vault (VIC manager).
@@ -435,11 +446,19 @@ pub fn is_invitation_credential(value: &Value) -> bool {
 pub fn validate_invitation_credential(vic: &Value) -> Result<(), String> {
     let mut missing: Vec<&str> = Vec::new();
 
-    // @context — present, an array, first element the v2 base URL.
-    match vic.get("@context").and_then(Value::as_array) {
-        Some(ctx)
-            if ctx.first().and_then(Value::as_str) == Some("https://www.w3.org/ns/credentials/v2") => {}
-        _ => missing.push("@context (must be an array whose first item is \"https://www.w3.org/ns/credentials/v2\")"),
+    // @context — an array whose first element is the W3C v2 base URL, and
+    // which carries the DTG context. Both are REQUIRED of every DTG credential
+    // by §Common Structure; only the W3C half was checked until now, so a
+    // credential that was not a DTG credential at all could pass as a VIC.
+    let ctx = vic.get("@context").and_then(Value::as_array);
+    match ctx {
+        Some(c) if c.first().and_then(Value::as_str) == Some(W3C_VC_V2_CONTEXT) => {}
+        _ => missing.push(
+            "@context (must be an array whose first item is \"https://www.w3.org/ns/credentials/v2\")",
+        ),
+    }
+    if !ctx.is_some_and(|c| c.iter().any(|v| v.as_str() == Some(DTG_CONTEXT))) {
+        missing.push("@context entry \"https://firstperson.network/credentials/dtg/v1\"");
     }
     if !is_invitation_credential(vic) {
         missing
@@ -450,6 +469,13 @@ pub fn validate_invitation_credential(vic: &Value) -> Result<(), String> {
         .is_some_and(|t| t.iter().any(|v| v.as_str() == Some("VerifiableCredential")))
     {
         missing.push("type entry \"VerifiableCredential\"");
+    }
+    if !vic
+        .get("type")
+        .and_then(Value::as_array)
+        .is_some_and(|t| t.iter().any(|v| v.as_str() == Some(DTG_BASE_TYPE)))
+    {
+        missing.push("type entry \"DTGCredential\"");
     }
     if invitation_issuer(vic).is_none() {
         missing.push("issuer (a DID string or an object with an `id`)");
@@ -625,9 +651,16 @@ mod tests {
     /// requires. Distinct from [`sample_vic`], which is intentionally minimal.
     fn complete_vic() -> Value {
         json!({
-            "@context": ["https://www.w3.org/ns/credentials/v2"],
+            // The DTG wire form, as `dtg-credentials` mints it. This fixture
+            // previously carried only the W3C half and still called itself
+            // complete — the validator agreed, because it checked only the
+            // same half.
+            "@context": [
+                "https://www.w3.org/ns/credentials/v2",
+                "https://firstperson.network/credentials/dtg/v1"
+            ],
             "id": "urn:uuid:vic-1",
-            "type": ["VerifiableCredential", "InvitationCredential"],
+            "type": ["VerifiableCredential", "DTGCredential", "InvitationCredential"],
             "issuer": "did:webvh:example.com:community",
             "credentialSubject": { "id": "did:webvh:example.com:alice" },
             "validUntil": "2099-01-01T00:00:00Z",
@@ -643,6 +676,29 @@ mod tests {
         let mut v = complete_vic();
         v["issuer"] = json!({ "id": "did:webvh:example.com:community" });
         assert!(validate_invitation_credential(&v).is_ok());
+    }
+
+    /// DTG Credentials §Common Structure is normative for *every* DTG
+    /// credential: `@context` MUST include the DTG context and `type` MUST
+    /// include `DTGCredential`. A credential carrying neither is not a DTG
+    /// credential at all, whatever its subtype claims.
+    #[test]
+    fn validate_rejects_a_vic_missing_the_dtg_common_structure() {
+        let mut no_ctx = complete_vic();
+        no_ctx["@context"] = json!(["https://www.w3.org/ns/credentials/v2"]);
+        let err = validate_invitation_credential(&no_ctx).expect_err("missing DTG context");
+        assert!(
+            err.contains("firstperson.network/credentials/dtg/v1"),
+            "error should name the missing context: {err}"
+        );
+
+        let mut no_base = complete_vic();
+        no_base["type"] = json!(["VerifiableCredential", "InvitationCredential"]);
+        let err = validate_invitation_credential(&no_base).expect_err("missing DTGCredential");
+        assert!(
+            err.contains("DTGCredential"),
+            "error should name the missing base type: {err}"
+        );
     }
 
     #[test]
