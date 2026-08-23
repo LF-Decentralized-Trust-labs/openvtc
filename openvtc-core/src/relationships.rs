@@ -136,6 +136,45 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+/// Verification-method id of a relationship DID's **signing** key.
+///
+/// `DID::generate_did_peer_from_secrets` rewrites each secret's id to a
+/// did:peer verification-method id as it mints the DID — `#key-1` for the
+/// verification key, `#key-2` for key agreement. That convention is already
+/// load-bearing in two places (the reload path in [`Relationships::
+/// generate_profiles`], which only re-registers a secret whose id starts with
+/// the R-DID, and [`Relationships::repair_key_info_ids`], which re-keys to it),
+/// so it is named here rather than spelled out a fourth time.
+///
+/// Only meaningful for a relationship DID. A persona's signing key is resolved
+/// from its DID document instead — see `Config::get_persona_keys`.
+pub fn relationship_signing_vm_id(r_did: &str) -> String {
+    format!("{r_did}#key-1")
+}
+
+/// Verification-method id of a relationship DID's **key-agreement** key.
+/// See [`relationship_signing_vm_id`].
+pub fn relationship_encryption_vm_id(r_did: &str) -> String {
+    format!("{r_did}#key-2")
+}
+
+/// The signing secret held for a relationship DID, or `None` when it is not in
+/// the TDK's resolver — which for an established relationship means its key
+/// material was lost (see [`Relationship::needs_reestablishment`]).
+///
+/// Lives here rather than at the call site so the `#key-1` convention and the
+/// `SecretsResolver` access stay in one crate.
+pub async fn relationship_signing_secret(
+    tdk: &affinidi_tdk::TDK,
+    r_did: &str,
+) -> Option<affinidi_tdk::secrets_resolver::secrets::Secret> {
+    use affinidi_tdk::secrets_resolver::SecretsResolver;
+    tdk.get_shared_state()
+        .secrets_resolver()
+        .get_secret(&relationship_signing_vm_id(r_did))
+        .await
+}
+
 /// Outcome of [`Relationships::repair_key_info_ids`].
 #[derive(Debug, Default)]
 pub struct KeyInfoRepairReport {

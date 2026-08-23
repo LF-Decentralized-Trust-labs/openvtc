@@ -78,9 +78,13 @@ no fallback to the persona DID mid-relationship.
 **Note:** The three handshake messages (request, accept, finalise) are routed
 between persona DIDs regardless of this choice, because the mediator has to
 route them before a pairwise channel exists. The R-DID takes over once the
-relationship is established. Full pairwise operation, including the VRC issuer
-field, depends on protocol work tracked in
-[verifiable-trust-infrastructure#1054](https://github.com/OpenVTC/verifiable-trust-infrastructure/issues/1054).
+relationship is established, and the VRC is issued under it — so the durable
+credential, which is the artifact that would otherwise correlate you across
+every relationship you hold, names only the pairwise identifier.
+
+The handshake DIDs are observed once, by the mediator, at establishment. The
+credential lasts as long as either party keeps it. That asymmetry is why the
+issuer field mattered more than the routing does.
 
 ## Establish Relationship
 
@@ -174,7 +178,11 @@ Task Id: 020bb98e-5460-4d42-b369-bf4a65b4909c Type: Relationship request finaliz
 
 ## Request Verifiable Relationship Credential (VRC)
 
-A VRC is a peer-to-peer credential that attests to verifiable trust relationships between P-DIDs (e.g., coworkers, peers, or community members).
+A VRC is a peer-to-peer credential attesting to a verifiable trust relationship
+between two parties (coworkers, peers, community members). It names each side by
+the identifier that side uses in *this* relationship — the pairwise R-DID by
+default, or the persona DID if that was chosen when the relationship was
+established.
 
 ### Prerequisite
 
@@ -237,7 +245,7 @@ Issued VRC
     "DTGCredential",
     "RelationshipCredential"
   ],
-  "issuer": "did:webvh:QmQzm...",
+  "issuer": "did:peer:2.Vz6Mkgt...",
   "validFrom": "2025-12-02T08:58:43Z",
   "validUntil": "2026-12-02T00:00:00Z",
   "credentialSubject": {
