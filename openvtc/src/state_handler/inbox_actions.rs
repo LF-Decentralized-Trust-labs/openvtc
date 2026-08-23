@@ -728,15 +728,43 @@ async fn prepare_accept_vrc_request(
     };
 
     // Create + sign the VRC on the loop thread (local crypto, not network).
+    //
+    // The VRC is issued under **the identity this relationship uses**, not the
+    // persona DID. It is the durable artifact both parties retain and may
+    // publish to the community trust graph, so a persona-attributed issuer
+    // correlated every relationship a persona had, indefinitely, from a
+    // credential that outlives the handshake that produced it. The subject was
+    // already the peer's R-DID; only the issuer half was persona-attributed,
+    // which meant the pairwise channel led straight back to the persona.
+    //
+    // This could not be fixed here until the VTC stopped requiring it: its
+    // publish path pinned the VRC issuer to the authenticated session DID, so
+    // a VRC issued under a relationship DID was rejected. Lifted in
+    // OpenVTC/verifiable-trust-infrastructure#1061.
     let valid_from = Utc::now();
     let mut vrc = DTGCredential::new_vrc(
-        config.persona_did().to_string(),
+        our_r_did.to_string(),
         their_r_did.to_string(),
         valid_from,
         None,
     );
-    let persona_keys = config.get_persona_keys(tdk).await?;
-    vrc.sign(&persona_keys.signing.secret, None).await?;
+    // `our_did` is the persona DID for a relationship established without a
+    // dedicated R-DID, so sign as whichever identity it actually is — the same
+    // discriminator `listener_id_for_did` routes sends on.
+    if config.is_persona_did(&our_r_did) {
+        let persona_keys = config.get_persona_keys(tdk).await?;
+        vrc.sign(&persona_keys.signing.secret, None).await?;
+    } else {
+        let secret = openvtc_core::relationships::relationship_signing_secret(tdk, &our_r_did)
+            .await
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no signing secret held for relationship DID {our_r_did} \
+                         — the relationship needs re-establishing"
+                )
+            })?;
+        vrc.sign(&secret, None).await?;
+    }
     let msg = vrc.message(&our_r_did, &their_r_did, Some(&task_id))?;
     let listener_id = super::didcomm::listener_id_for_did(&our_r_did, config);
 

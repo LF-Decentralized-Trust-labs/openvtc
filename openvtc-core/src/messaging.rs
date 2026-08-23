@@ -699,12 +699,22 @@ pub fn vet_vrc_issued(
     }
     let remote_p_did = Arc::clone(&relationship.remote_p_did);
 
-    // Gate 2: issuer must be the authenticated sender's persona DID.
-    if vrc.issuer() != remote_p_did.as_str() {
+    // Gate 2: the issuer must be the identity the sender uses *in this
+    // relationship* — their R-DID, or their persona DID for a relationship
+    // established without one (`remote_did` equals `remote_p_did` there).
+    //
+    // This used to demand the persona DID, which forced the durable credential
+    // to name an identity shared across every one of the sender's
+    // relationships. Binding it to `remote_did` is also strictly tighter:
+    // Gate 1 matched `from_did` — the authenticated DIDComm sender — against
+    // this same field, so the credential is now pinned to the channel it
+    // arrived on rather than to a persona that could have issued it anywhere.
+    if vrc.issuer() != relationship.remote_did.as_str() {
         return Err(format!(
-            "credential issuer ({}) is not the sender's persona DID ({})",
+            "credential issuer ({}) is not the DID the sender uses in this \
+             relationship ({})",
             vrc.issuer(),
-            remote_p_did
+            relationship.remote_did
         ));
     }
 
@@ -1975,10 +1985,51 @@ mod tests {
             },
         );
 
-        let vrc = unsigned_vrc(sender_p);
+        // Issued under the sender's relationship DID — the pairwise form.
+        let vrc = unsigned_vrc(sender_r);
         let resolved = vet_vrc_issued(&rels, &tasks, &vrc, &from, Some(request.as_str()))
             .expect("legitimate VRC must pass vetting");
         assert_eq!(resolved, Some(request));
+    }
+
+    /// A VRC issued under the sender's *persona* DID, on a relationship that
+    /// uses a relationship DID, is refused.
+    ///
+    /// This is the behaviour change: the persona-issued credential is exactly
+    /// what correlated every relationship a persona had, because the VRC is the
+    /// durable artifact both parties keep and may publish to the trust graph.
+    /// Accepting it would leave the pairwise channel leading straight back to
+    /// the persona.
+    #[test]
+    fn vrc_issued_under_the_senders_persona_did_is_refused() {
+        let sender_p = "did:webvh:example:sender-persona";
+        let sender_r = "did:peer:2.SENDER_RELATIONSHIP";
+        let from = Arc::new(sender_r.to_string());
+        let rel = relationship(sender_p, sender_r, RelationshipState::Established);
+        let rels = relationships_with(&rel);
+
+        let vrc = unsigned_vrc(sender_p);
+        let err = vet_vrc_issued(&rels, &Tasks::default(), &vrc, &from, None)
+            .expect_err("a persona-issued VRC must not pass vetting");
+        assert!(
+            err.contains("is not the DID the sender uses in this relationship"),
+            "unexpected rejection reason: {err}"
+        );
+    }
+
+    /// A relationship established without a dedicated relationship DID has
+    /// `remote_did == remote_p_did`, so the persona-issued VRC still passes.
+    /// The gate binds to the identity used in the relationship, whichever it is.
+    #[test]
+    fn vrc_issued_under_the_persona_passes_when_that_is_the_relationship_did() {
+        let sender_p = "did:webvh:example:sender-persona";
+        let from = Arc::new(sender_p.to_string());
+        let rel = relationship(sender_p, sender_p, RelationshipState::Established);
+        let rels = relationships_with(&rel);
+
+        let vrc = unsigned_vrc(sender_p);
+        vet_vrc_issued(&rels, &Tasks::default(), &vrc, &from, None)
+            .expect("a relationship with no R-DID must still accept its persona-issued VRC");
     }
 
     // --- inbound VRC-issued proof verification (task R2 gate 4) ---
