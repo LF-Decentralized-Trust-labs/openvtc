@@ -204,12 +204,8 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
             if uses_r_did {
                 lines.push(Line::from(""));
                 lines.push(
-                    Line::from("  ⚠ Sender is using a relationship DID for privacy.")
-                        .fg(COLOR_ORANGE),
-                );
-                lines.push(
-                    Line::from("    Use A (Shift+A) to accept with your own R-DID.")
-                        .fg(COLOR_ORANGE),
+                    Line::from("  Sender is using a pairwise relationship DID for privacy.")
+                        .fg(COLOR_DARK_GRAY),
                 );
             }
             if let Some(reason) = reason {
@@ -222,10 +218,31 @@ pub fn render_task_detail(task: &ActiveTaskView) -> Vec<Line<'static>> {
                 Span::styled("Task:  ", Style::new().fg(COLOR_DARK_GRAY)),
                 Span::styled(task_id.clone(), Style::new().fg(COLOR_DARK_GRAY)),
             ]));
+            // Spell out both outcomes: the accept key that costs nothing extra
+            // is the private one, and the opt-out states its cost (#241).
             lines.push(Line::from(""));
             lines.push(
-                Line::from("a: accept  A: accept (R-DID)  r: reject  d: dismiss  Esc: back")
+                Line::from("  a: accept with a pairwise R-DID — used only with this")
                     .fg(COLOR_DARK_GRAY),
+            );
+            lines.push(
+                Line::from("     contact, so your relationships cannot be linked by")
+                    .fg(COLOR_DARK_GRAY),
+            );
+            lines.push(Line::from("     identifier.").fg(COLOR_DARK_GRAY));
+            lines.push(
+                Line::from("  p: accept as your persona DID — a published address they")
+                    .fg(COLOR_ORANGE),
+            );
+            lines.push(
+                Line::from("     can resolve and compare with other contacts.").fg(COLOR_ORANGE),
+            );
+            lines.push(Line::from(""));
+            lines.push(
+                Line::from(
+                    "a: accept (R-DID)  p: accept (persona DID)  r: reject  d: dismiss  Esc: back",
+                )
+                .fg(COLOR_DARK_GRAY),
             );
         }
         ActiveTaskView::VRCRequestInbound {

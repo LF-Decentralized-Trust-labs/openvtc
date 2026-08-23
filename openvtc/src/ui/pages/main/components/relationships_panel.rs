@@ -469,19 +469,48 @@ fn render_form(
     } else {
         Style::new().fg(COLOR_DARK_GRAY)
     };
-    let toggle_value = if generate_r_did { "Yes" } else { "No" };
+    let toggle_value = if generate_r_did {
+        "Pairwise R-DID (recommended)"
+    } else {
+        "Your persona DID"
+    };
     lines.push(Line::from(vec![
         Span::styled(if is_active { "▸ " } else { "  " }, field_style),
-        Span::styled("[Space] Generate random R-DID: ".to_string(), field_style),
+        Span::styled("[Space] Contact you as: ".to_string(), field_style),
         Span::styled(toggle_value.to_string(), value_style),
     ]));
+
+    // Spell out the trade-off at the point of choice — the cost of reusing the
+    // persona DID is invisible at the moment the decision is made (#241).
+    lines.push(Line::from(""));
+    if generate_r_did {
+        lines.push(
+            Line::from("  A fresh DID used only with this contact. Your persona DID is")
+                .fg(COLOR_DARK_GRAY),
+        );
+        lines.push(
+            Line::from("  not reused, so this relationship cannot be matched against")
+                .fg(COLOR_DARK_GRAY),
+        );
+        lines.push(Line::from("  your other ones by identifier.").fg(COLOR_DARK_GRAY));
+    } else {
+        lines.push(
+            Line::from("  ⚠ This contact sees your persona DID — a published address")
+                .fg(COLOR_ORANGE),
+        );
+        lines.push(
+            Line::from("    anyone can resolve, and compare with other contacts to")
+                .fg(COLOR_ORANGE),
+        );
+        lines.push(Line::from("    link your relationships together.").fg(COLOR_ORANGE));
+    }
 
     lines.push(Line::from(""));
     lines.push(
         Line::from("DID accepts an agent name too, e.g. example.com/@bob").fg(COLOR_DARK_GRAY),
     );
     lines.push(
-        Line::from("Tab: next field  Space: toggle R-DID  Enter (on R-DID): submit  Esc: cancel")
+        Line::from("Tab: next field  Space: change  Enter (on last field): submit  Esc: cancel")
             .fg(COLOR_DARK_GRAY),
     );
 

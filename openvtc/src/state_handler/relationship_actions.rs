@@ -1053,7 +1053,12 @@ fn handle_start_new_request(state: &mut State) {
         did_input: String::new(),
         alias_input: String::new(),
         reason_input: String::new(),
-        generate_r_did: false,
+        // Pairwise by default (#241). The persona DID is a published,
+        // resolvable `did:webvh` that often carries a verified agent name, so
+        // reusing it across contacts makes correlation a lookup rather than an
+        // inference. Opting out stays available on field 3, labelled with what
+        // it costs.
+        generate_r_did: true,
         active_field: 0,
     };
 }
@@ -1603,6 +1608,75 @@ mod tests {
         config.private.relationships.relationships.insert(key, rel);
     }
 
+    /// Register an *established* relationship whose `our_did` is a pairwise
+    /// R-DID (distinct from the persona DID), i.e. the post-handshake steady
+    /// state that #241's "no silent revert" rule is about.
+    fn register_pairwise_relationship(config: &mut Config, remote_p_did: &str, our_r_did: &str) {
+        let key = Arc::new(remote_p_did.to_string());
+        let rel = RelRecord {
+            task_id: Arc::new("task-1".to_string()),
+            our_did: Arc::new(our_r_did.to_string()),
+            remote_p_did: Arc::clone(&key),
+            // Their pairwise DID, not their persona DID.
+            remote_did: Arc::new(format!("{remote_p_did}-rdid")),
+            created: Utc::now(),
+            state: RelationshipState::Established,
+            our_persona: config.active_persona,
+            needs_reestablishment: false,
+        };
+        config.private.relationships.relationships.insert(key, rel);
+    }
+
+    /// #241 criterion 3 — once a relationship holds an R-DID, a subsequent
+    /// message must not revert to the persona DID. Guards the property on the
+    /// ping path: the message `from`, the recipient, and the listener the send
+    /// is routed through all come from the relationship record, never from the
+    /// persona. A fallback here would re-expose the persona DID mid-relationship
+    /// and defeat the pairwise default.
+    #[tokio::test]
+    async fn established_pairwise_relationship_never_pings_from_the_persona_did() {
+        let mut config = Box::new(test_config());
+        let mut state = State::default();
+        let (event_tx, _event_rx) = tokio::sync::mpsc::unbounded_channel();
+        let service = openvtc_core::didcomm::Messaging::start(event_tx);
+
+        let remote = "did:peer:remote";
+        let our_r_did = "did:peer:our-rdid";
+        register_pairwise_relationship(&mut config, remote, our_r_did);
+
+        let job = prepare_ping(&mut config, &service, &mut state, remote).expect("ping prepares");
+
+        let RelationshipJob::Send(send) = job else {
+            panic!("ping must produce a Send job");
+        };
+
+        assert_eq!(
+            send.message.from.as_deref(),
+            Some(our_r_did),
+            "an established relationship must speak as its R-DID, not the persona DID"
+        );
+        assert_eq!(
+            send.to_did.as_str(),
+            format!("{remote}-rdid"),
+            "the ping must address the remote's R-DID, not their persona DID"
+        );
+        assert_eq!(
+            send.listener_id,
+            openvtc_core::didcomm::listener_id_for_did(our_r_did, &config),
+            "the send must route through the relationship listener"
+        );
+        assert!(
+            matches!(
+                send.effect,
+                RelationshipEffect::Ping {
+                    using_rdid: true,
+                    ..
+                }
+            ),
+            "the effect must record that the pairwise DID was used"
+        );
+    }
+
     /// A successful Ping outcome creates the TrustPing task + activity log and
     /// sets the panel status to "Ping sent" — the same final state the old inline
     /// `handle_ping` success arm produced.
@@ -1992,10 +2066,12 @@ mod tests {
     fn start_new_request_and_cancel_back() {
         let mut state = State::default();
         handle_start_new_request(&mut state);
+        // Pairwise is the default (#241) — a new request mints an R-DID unless
+        // the operator deliberately turns it off.
         assert!(matches!(
             rel_mode(&state),
             RelationshipsMode::NewRequest {
-                generate_r_did: false,
+                generate_r_did: true,
                 active_field: 0,
                 ..
             }
@@ -2099,11 +2175,12 @@ mod tests {
     fn toggle_r_did_flips_flag() {
         let mut state = State::default();
         handle_start_new_request(&mut state);
+        // Starts pairwise (#241), so the first toggle is the opt-out.
         handle_toggle_r_did(&mut state);
         assert!(matches!(
             rel_mode(&state),
             RelationshipsMode::NewRequest {
-                generate_r_did: true,
+                generate_r_did: false,
                 ..
             }
         ));
@@ -2111,7 +2188,7 @@ mod tests {
         assert!(matches!(
             rel_mode(&state),
             RelationshipsMode::NewRequest {
-                generate_r_did: false,
+                generate_r_did: true,
                 ..
             }
         ));
