@@ -67,6 +67,19 @@ pub const PERSONHOOD_CHALLENGE_TYPE: &str =
 pub const PERSONHOOD_ASSERT_TYPE: &str =
     "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1";
 
+/// The community's reply to a challenge request.
+///
+/// Spelled out rather than built with `format!` because the inbound router
+/// matches on it: a `const` can be compared directly, and the pair below is
+/// pinned against the request types by a test so a typo cannot make a reply
+/// simply never arrive.
+pub const PERSONHOOD_CHALLENGE_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1#response";
+
+/// The community's reply to an assertion.
+pub const PERSONHOOD_ASSERT_RESPONSE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1#response";
+
 /// W3C VC Data Model 2.0 context — the presentation's `@context`.
 const VC_V2_CONTEXT_URL: &str = "https://www.w3.org/ns/credentials/v2";
 
@@ -479,6 +492,22 @@ mod tests {
             Some(&format!("{MEMBER}#key-0")),
         )
         .expect("test secret")
+    }
+
+    /// Each response type is its request type plus `#response`. The inbound
+    /// router matches these as constants, so a typo would not fail anything —
+    /// the reply would simply never be routed, and the ceremony would hang
+    /// with no error anywhere.
+    #[test]
+    fn response_types_are_their_request_types() {
+        assert_eq!(
+            PERSONHOOD_CHALLENGE_RESPONSE_TYPE,
+            format!("{PERSONHOOD_CHALLENGE_TYPE}#response")
+        );
+        assert_eq!(
+            PERSONHOOD_ASSERT_RESPONSE_TYPE,
+            format!("{PERSONHOOD_ASSERT_TYPE}#response")
+        );
     }
 
     /// The code is a pure function of the challenge id — that is the whole

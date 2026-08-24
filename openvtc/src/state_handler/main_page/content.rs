@@ -170,6 +170,42 @@ pub struct CommunitiesState {
     /// Whether archived communities are included in the list (R-C-8). Off by
     /// default; toggled so archived records stay discoverable.
     pub show_archived: bool,
+    /// The personhood challenge this member is part-way through answering, if
+    /// any. `Some` between the community's challenge reply arriving and the
+    /// assertion being sent or the challenge lapsing.
+    ///
+    /// Deliberately **not** persisted to the account. The challenge is
+    /// single-use with a ten-minute life, so a copy surviving a restart could
+    /// only ever be a stale one — and showing a member a match code the
+    /// community has already forgotten is worse than showing none.
+    pub personhood_challenge: Option<PersonhoodChallengeView>,
+}
+
+/// A live personhood challenge, as the panel shows it.
+#[derive(Clone, Debug)]
+pub struct PersonhoodChallengeView {
+    /// Which membership it belongs to. A member may hold several, and a
+    /// challenge minted for one community means nothing to another.
+    pub vtc_did: String,
+    pub persona: openvtc_core::config::account::PersonaId,
+    /// The nonce the presentation must carry.
+    pub challenge_id: uuid::Uuid,
+    /// The eight characters to read aloud, derived from `challenge_id`.
+    pub match_code: String,
+    /// When the community stops accepting a presentation for it.
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl PersonhoodChallengeView {
+    /// Whether the community would still accept a presentation for this.
+    ///
+    /// The panel checks at render time rather than on a timer: a lapsed
+    /// challenge should stop offering to be answered the moment a person looks
+    /// at it, and the alternative — a countdown task per challenge — is state
+    /// to keep in sync for no gain.
+    pub fn is_live(&self, now: chrono::DateTime<chrono::Utc>) -> bool {
+        now < self.expires_at
+    }
 }
 
 /// Quick community-switcher overlay state (R-C-7). `Some` while the Ctrl+K popup

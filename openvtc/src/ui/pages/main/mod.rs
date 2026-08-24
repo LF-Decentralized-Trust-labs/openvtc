@@ -684,6 +684,28 @@ impl MainPage {
                     .send(Action::CommunityConfirmWithdraw(selected));
                 true
             }
+            KeyCode::Char('p') if sel_active => {
+                // Ask this community for a personhood challenge. Active-only:
+                // a community that has not admitted us has no personhood state
+                // to assert against.
+                let _ = self
+                    .action_tx
+                    .send(Action::RequestPersonhoodChallenge(selected));
+                true
+            }
+            // Assert is offered only while a live challenge is in hand.
+            // Gating on the challenge rather than on the row means the key does
+            // nothing surprising when there is nothing to answer — and the
+            // panel only advertises it in the same condition.
+            KeyCode::Char('P')
+                if comms
+                    .personhood_challenge
+                    .as_ref()
+                    .is_some_and(|c| c.is_live(chrono::Utc::now())) =>
+            {
+                let _ = self.action_tx.send(Action::AssertPersonhood);
+                true
+            }
             KeyCode::Char('x') if sel_inactive => {
                 // Archive an inactive community (R-C-8).
                 let _ = self.action_tx.send(Action::ArchiveCommunity(selected));

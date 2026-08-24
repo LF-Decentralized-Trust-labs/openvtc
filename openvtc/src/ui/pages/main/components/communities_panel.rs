@@ -38,6 +38,8 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
 
+    push_personhood_challenge(&mut lines, state);
+
     if state.items.is_empty() {
         return render_empty(lines);
     }
@@ -243,6 +245,41 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
     lines
 }
 
+/// Show the live personhood challenge, if there is one.
+///
+/// The match code is the point of this block. It is the thing a member reads
+/// aloud to whoever is vetting them, so it is rendered on its own line, spaced,
+/// and in the panel's emphasis colour rather than folded into the status text —
+/// a code that has to be picked out of a sentence is a code that gets misread.
+///
+/// A lapsed challenge renders as lapsed rather than vanishing. Silently
+/// removing it would leave a member who has just been read a code looking at a
+/// panel that never mentioned one, with no way to tell that time ran out from
+/// never having received it.
+fn push_personhood_challenge(lines: &mut Vec<Line<'static>>, state: &CommunitiesState) {
+    let Some(challenge) = &state.personhood_challenge else {
+        return;
+    };
+
+    if challenge.is_live(chrono::Utc::now()) {
+        lines.push(Line::from(" Personhood challenge").fg(COLOR_DARK_GRAY));
+        lines.push(
+            Line::from(format!("   {}", challenge.match_code))
+                .style(Style::new().fg(COLOR_SOFT_PURPLE).bold()),
+        );
+        lines.push(
+            Line::from("   Confirm this code with whoever is vetting you, then press P.")
+                .fg(COLOR_DARK_GRAY),
+        );
+    } else {
+        lines.push(
+            Line::from(" Personhood challenge expired — press p for a fresh one.")
+                .fg(COLOR_DARK_GRAY),
+        );
+    }
+    lines.push(Line::from(""));
+}
+
 /// The key hints for the selected row, gated exactly as the key handler gates
 /// the keys themselves (`ui::pages::main::handle_communities_key`).
 ///
@@ -272,6 +309,7 @@ fn key_hints(state: &CommunitiesState) -> String {
         if community.is_active {
             hints.push("m: issue VMC".to_string());
             hints.push("c: capabilities".to_string());
+            hints.push("p: personhood".to_string());
             hints.push("l: leave".to_string());
         }
         if community.is_pending {
@@ -281,6 +319,18 @@ fn key_hints(state: &CommunitiesState) -> String {
             hints.push("x: archive".to_string());
             hints.push("d: delete".to_string());
         }
+    }
+
+    // Gated on the challenge, not on the row — matching the key handler,
+    // which offers `P` only while there is something to answer. A live
+    // challenge belongs to the membership that asked for it, so this stays
+    // offered while the member navigates the list.
+    if state
+        .personhood_challenge
+        .as_ref()
+        .is_some_and(|c| c.is_live(chrono::Utc::now()))
+    {
+        hints.push("P: assert personhood".to_string());
     }
 
     hints.push("j: join".to_string());
@@ -430,5 +480,109 @@ mod key_hint_tests {
             ..CommunitiesState::default()
         });
         assert!(hints.contains("v: hide archived"), "{hints}");
+    }
+
+    // ─── personhood ──────────────────────────────────────────────────────
+
+    use crate::state_handler::main_page::content::PersonhoodChallengeView;
+    use openvtc_core::config::account::PersonaId;
+
+    fn challenge(expires_in_minutes: i64) -> PersonhoodChallengeView {
+        PersonhoodChallengeView {
+            vtc_did: "did:webvh:acme".to_string(),
+            persona: PersonaId(uuid::Uuid::nil()),
+            challenge_id: uuid::Uuid::nil(),
+            match_code: "5CY1-GZEE".to_string(),
+            expires_at: chrono::Utc::now() + chrono::Duration::minutes(expires_in_minutes),
+        }
+    }
+
+    fn state_with(
+        community: Option<CommunitySummary>,
+        c: Option<PersonhoodChallengeView>,
+    ) -> CommunitiesState {
+        CommunitiesState {
+            items: Arc::from(community.map(|x| vec![x]).unwrap_or_default()),
+            selected_index: 0,
+            personhood_challenge: c,
+            ..CommunitiesState::default()
+        }
+    }
+
+    /// `p` is Active-only, matching the key handler. Offering it on a Pending
+    /// row would be a silent no-op — the defect this file's hint gating was
+    /// written to remove.
+    #[test]
+    fn personhood_is_offered_only_on_an_active_row() {
+        assert!(hints_for(row(true, false, false)).contains("p: personhood"));
+        for (active, inactive, pending) in [(false, true, false), (false, false, true)] {
+            let hints = hints_for(row(active, inactive, pending));
+            assert!(
+                !hints.contains("p: personhood"),
+                "personhood needs an Active membership: {hints}"
+            );
+        }
+    }
+
+    /// `P` is gated on holding a live challenge, not on the row — exactly as
+    /// the key handler gates it. Advertising it with nothing to answer would
+    /// be the same class of dead key.
+    #[test]
+    fn assert_is_offered_only_while_a_live_challenge_is_held() {
+        let active = row(true, false, false);
+
+        assert!(
+            !key_hints(&state_with(Some(active.clone()), None)).contains("P: assert"),
+            "nothing to assert against"
+        );
+        assert!(
+            key_hints(&state_with(Some(active.clone()), Some(challenge(5))))
+                .contains("P: assert personhood"),
+        );
+        assert!(
+            !key_hints(&state_with(Some(active), Some(challenge(-1)))).contains("P: assert"),
+            "an expired challenge cannot be answered"
+        );
+    }
+
+    /// The match code is what a member reads aloud, so it has to be on screen
+    /// — and on its own line rather than buried in a sentence.
+    #[test]
+    fn a_live_challenge_shows_its_match_code() {
+        let rendered: Vec<String> = render(&state_with(
+            Some(row(true, false, false)),
+            Some(challenge(5)),
+        ))
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+
+        assert!(
+            rendered.iter().any(|l| l.trim() == "5CY1-GZEE"),
+            "the code must stand alone: {rendered:#?}"
+        );
+    }
+
+    /// An expired challenge says so rather than disappearing. A member who has
+    /// just been read a code, looking at a panel that never mentions one,
+    /// cannot tell "it lapsed" from "it never arrived".
+    #[test]
+    fn an_expired_challenge_says_so_rather_than_vanishing() {
+        let rendered: Vec<String> = render(&state_with(
+            Some(row(true, false, false)),
+            Some(challenge(-1)),
+        ))
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+
+        assert!(
+            rendered.iter().any(|l| l.contains("expired")),
+            "the lapse must be visible: {rendered:#?}"
+        );
+        assert!(
+            !rendered.iter().any(|l| l.contains("5CY1-GZEE")),
+            "a dead code must not still read as answerable: {rendered:#?}"
+        );
     }
 }

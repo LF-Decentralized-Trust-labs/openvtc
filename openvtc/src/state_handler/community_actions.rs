@@ -33,6 +33,32 @@ pub(crate) enum Verb {
     /// `members/vmc` — issue the reciprocal membership credential, signed by the
     /// member.
     IssueVmc { signing_secret: Box<Secret> },
+    /// `members/personhood/challenge` — ask for the nonce an assertion must
+    /// carry. The reply arrives asynchronously and lands via
+    /// [`crate::state_handler::message_dispatch`]; nothing here waits for it.
+    RequestPersonhoodChallenge,
+    /// `members/personhood/assert` — present the evidence over that nonce.
+    ///
+    /// `credentials` are presented whole: `eddsa-jcs-2022` credentials cannot
+    /// be redacted, so a member discloses each one entire or not at all.
+    AssertPersonhood {
+        signing_secret: Box<Secret>,
+        challenge_id: uuid::Uuid,
+        credentials: Vec<serde_json::Value>,
+    },
+}
+
+/// What a job did, for the apply path to report.
+///
+/// Replaces the `leaving: bool` this carried when there were two verbs. A
+/// boolean cannot say which of four things happened, and the arm that got it
+/// wrong would report the wrong thing to the member rather than fail.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Performed {
+    Leave,
+    IssueVmc,
+    RequestPersonhoodChallenge,
+    AssertPersonhood,
 }
 
 /// Everything the send needs, resolved on the loop thread.
@@ -49,7 +75,24 @@ pub(crate) struct CommunityJob {
 impl CommunityJob {
     /// Do the send. I/O only.
     pub(crate) async fn run(self) -> CommunityOutcome {
-        let leaving = matches!(self.verb, Verb::Leave);
+        let performed = match &self.verb {
+            Verb::Leave => Performed::Leave,
+            Verb::IssueVmc { .. } => Performed::IssueVmc,
+            Verb::RequestPersonhoodChallenge => Performed::RequestPersonhoodChallenge,
+            Verb::AssertPersonhood { .. } => Performed::AssertPersonhood,
+        };
+        // The personhood verbs share one route; building it once keeps the
+        // member/community/mediator triple from being re-spelled per arm.
+        let route = openvtc_core::personhood::Route {
+            atm: &self.atm,
+            profile: &self.profile,
+            member_did: &self.member_did,
+            vtc_did: &self.vtc_did,
+            mediator_did: &self.mediator,
+            // TSP selection is the session's to make; this path sends over the
+            // established DIDComm leg, as the other community verbs do.
+            tsp_mediator_did: None,
+        };
         let result = match &self.verb {
             Verb::Leave => openvtc_core::join::submit_self_remove(
                 &self.atm,
@@ -71,11 +114,31 @@ impl CommunityJob {
             )
             .await
             .map(|_| ()),
+            Verb::RequestPersonhoodChallenge => {
+                // The member asks for their own. An administrator minting one
+                // for somebody else is a community-side action, not something
+                // this client offers.
+                openvtc_core::personhood::request_challenge(&route, &self.member_did)
+                    .await
+                    .map(|_| ())
+            }
+            Verb::AssertPersonhood {
+                signing_secret,
+                challenge_id,
+                credentials,
+            } => openvtc_core::personhood::assert_personhood(
+                &route,
+                signing_secret,
+                challenge_id,
+                credentials.clone(),
+            )
+            .await
+            .map(|_| ()),
         };
         CommunityOutcome {
             vtc_did: self.vtc_did,
             persona: self.persona,
-            leaving,
+            performed,
             error: result.err().map(|e| format!("{e}")),
         }
     }
@@ -85,8 +148,8 @@ impl CommunityJob {
 pub(crate) struct CommunityOutcome {
     vtc_did: String,
     persona: PersonaId,
-    /// `true` for a leave, whose success also changes the membership record.
-    leaving: bool,
+    /// Which verb ran — a leave also changes the membership record.
+    performed: Performed,
     error: Option<String>,
 }
 
@@ -108,8 +171,8 @@ impl CommunityOutcome {
         fn status(state: &mut State, msg: String) {
             state.main_page.content_panel.communities.status_message = Some(msg);
         }
-        match (self.error, self.leaving) {
-            (None, true) => {
+        match (self.error, self.performed) {
+            (None, Performed::Leave) => {
                 // The record moves on the send, not on a receipt: the community's
                 // acknowledgement is advisory, and a member who has announced a
                 // departure should not still be shown as a member if it never
@@ -122,17 +185,33 @@ impl CommunityOutcome {
                 state.main_page.sync_from_config(config);
                 return Some((self.vtc_did, self.persona));
             }
-            (None, false) => {
+            (None, Performed::IssueVmc) => {
                 status(
                     state,
                     "Membership credential issued and sent to the community.".to_string(),
                 );
             }
-            (Some(e), true) => {
+            (None, Performed::RequestPersonhoodChallenge) => {
+                // Only the *send* succeeded. The challenge itself arrives in
+                // the community's reply, so the message says what is being
+                // waited for rather than implying the ceremony has moved on.
+                status(
+                    state,
+                    "Asked the community for a personhood challenge — waiting for its reply."
+                        .to_string(),
+                );
+            }
+            (None, Performed::AssertPersonhood) => {
+                status(
+                    state,
+                    "Personhood assertion sent — waiting for the community's decision.".to_string(),
+                );
+            }
+            (Some(e), Performed::Leave) => {
                 state.main_page.log_error("Leave failed", e.as_str());
                 status(state, format!("Couldn't leave: {e}"));
             }
-            (Some(e), false) => {
+            (Some(e), Performed::IssueVmc) => {
                 state
                     .main_page
                     .log_error("Issue membership credential failed", e.as_str());
@@ -140,6 +219,21 @@ impl CommunityOutcome {
                     state,
                     format!("Couldn't issue the membership credential: {e}"),
                 );
+            }
+            (Some(e), Performed::RequestPersonhoodChallenge) => {
+                state
+                    .main_page
+                    .log_error("Personhood challenge request failed", e.as_str());
+                status(state, format!("Couldn't ask for a challenge: {e}"));
+            }
+            (Some(e), Performed::AssertPersonhood) => {
+                // The challenge is single-use, but a send that never left does
+                // not spend it — so the member keeps the one they have and can
+                // retry rather than starting the ceremony again.
+                state
+                    .main_page
+                    .log_error("Personhood assertion failed", e.as_str());
+                status(state, format!("Couldn't assert personhood: {e}"));
             }
         }
         None
@@ -153,13 +247,23 @@ mod tests {
 
     const VTC: &str = "did:webvh:QmScidCommunity:example.com:acme";
 
-    fn outcome(leaving: bool, error: Option<&str>) -> CommunityOutcome {
+    fn outcome(performed: Performed, error: Option<&str>) -> CommunityOutcome {
         CommunityOutcome {
             vtc_did: VTC.to_string(),
             persona: PersonaId(uuid::Uuid::nil()),
-            leaving,
+            performed,
             error: error.map(ToString::to_string),
         }
+    }
+
+    /// Read the status line the panel would show.
+    fn status_of(state: &State) -> Option<&str> {
+        state
+            .main_page
+            .content_panel
+            .communities
+            .status_message
+            .as_deref()
     }
 
     /// A successful leave asks the loop to tear the session down. Nothing else
@@ -170,7 +274,7 @@ mod tests {
         let mut config = test_config();
         let mut save = SaveScheduler::new("test");
 
-        let deregister = outcome(true, None).apply(&mut state, &mut config, &mut save);
+        let deregister = outcome(Performed::Leave, None).apply(&mut state, &mut config, &mut save);
 
         assert_eq!(deregister.map(|(v, _)| v).as_deref(), Some(VTC));
         assert!(save.is_pending(), "the record change must be persisted");
@@ -184,8 +288,11 @@ mod tests {
         let mut config = test_config();
         let mut save = SaveScheduler::new("test");
 
-        let deregister =
-            outcome(true, Some("peer unreachable")).apply(&mut state, &mut config, &mut save);
+        let deregister = outcome(Performed::Leave, Some("peer unreachable")).apply(
+            &mut state,
+            &mut config,
+            &mut save,
+        );
 
         assert!(deregister.is_none());
         assert!(
@@ -207,7 +314,8 @@ mod tests {
         let mut config = test_config();
         let mut save = SaveScheduler::new("test");
 
-        let deregister = outcome(false, None).apply(&mut state, &mut config, &mut save);
+        let deregister =
+            outcome(Performed::IssueVmc, None).apply(&mut state, &mut config, &mut save);
 
         assert!(deregister.is_none());
         assert!(!save.is_pending(), "nothing to persist");
@@ -229,8 +337,11 @@ mod tests {
         let mut config = test_config();
         let mut save = SaveScheduler::new("test");
 
-        let deregister =
-            outcome(false, Some("vault refused")).apply(&mut state, &mut config, &mut save);
+        let deregister = outcome(Performed::IssueVmc, Some("vault refused")).apply(
+            &mut state,
+            &mut config,
+            &mut save,
+        );
 
         assert!(deregister.is_none());
         assert!(
@@ -240,5 +351,77 @@ mod tests {
                 .iter()
                 .any(|e| e.summary.contains("vault refused")),
         );
+    }
+
+    /// A successful challenge request has **not** obtained a challenge — only
+    /// sent the ask. The reply carries the nonce, so a status line claiming
+    /// otherwise would have the member looking for a match code that has not
+    /// arrived.
+    #[test]
+    fn a_sent_challenge_request_says_it_is_waiting() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = SaveScheduler::new("test");
+
+        outcome(Performed::RequestPersonhoodChallenge, None).apply(
+            &mut state,
+            &mut config,
+            &mut save,
+        );
+
+        let msg = status_of(&state).expect("a status line");
+        assert!(
+            msg.contains("waiting"),
+            "the send is not the challenge; got: {msg}"
+        );
+        assert!(
+            !save.is_pending(),
+            "asking for a challenge changes nothing worth persisting"
+        );
+    }
+
+    /// Likewise for the assertion: the community decides, and its decision
+    /// arrives later.
+    #[test]
+    fn a_sent_assertion_says_it_is_waiting_on_the_community() {
+        let mut state = State::default();
+        let mut config = test_config();
+        let mut save = SaveScheduler::new("test");
+
+        outcome(Performed::AssertPersonhood, None).apply(&mut state, &mut config, &mut save);
+
+        let msg = status_of(&state).expect("a status line");
+        assert!(
+            msg.contains("waiting"),
+            "a sent assertion is not an asserted personhood; got: {msg}"
+        );
+    }
+
+    /// Each verb reports its own failure. With the previous `leaving: bool`
+    /// this could not be expressed — two of the four would have had to borrow
+    /// another's wording and tell the member the wrong thing went wrong.
+    #[test]
+    fn each_verb_reports_its_own_failure() {
+        for (performed, expected) in [
+            (Performed::Leave, "Couldn't leave"),
+            (Performed::IssueVmc, "Couldn't issue"),
+            (
+                Performed::RequestPersonhoodChallenge,
+                "Couldn't ask for a challenge",
+            ),
+            (Performed::AssertPersonhood, "Couldn't assert personhood"),
+        ] {
+            let mut state = State::default();
+            let mut config = test_config();
+            let mut save = SaveScheduler::new("test");
+
+            outcome(performed, Some("peer unreachable")).apply(&mut state, &mut config, &mut save);
+
+            let msg = status_of(&state).expect("a status line");
+            assert!(
+                msg.contains(expected),
+                "{performed:?} should report {expected:?}, got: {msg}"
+            );
+        }
     }
 }
