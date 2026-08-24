@@ -1,0 +1,483 @@
+/*!
+ * Personhood assertion — the member side of the VTC's personhood ceremony.
+ *
+ * A community that vets its members can mark them as people. The claim lands
+ * as a `PersonhoodCredential` type on the member's VMC, which is what DTG
+ * Credentials means by a PHC ("a PHC is simply a VMC issued by a VTC whose
+ * governance enforces real human personhood and exactly one membership per
+ * person"). Nothing here decides whether the member *is* a person — the
+ * community's `personhood.rego` does, over the evidence this module presents.
+ *
+ * ## The ceremony
+ *
+ * 1. `vtc/members/personhood/challenge/0.1` → the community mints a
+ *    single-use nonce with a ten-minute life.
+ * 2. Out of band, two humans confirm they are talking about the same
+ *    ceremony — see [`match_code`].
+ * 3. `vtc/members/personhood/assert/0.1` → the member presents a signed VP
+ *    carrying that nonce and whatever credentials the community's policy
+ *    wants to see.
+ *
+ * Both verbs ride the same Trust Task document path as the join ceremony
+ * ([`crate::join`]): DIDComm wraps the document in an authcrypt envelope, TSP
+ * carries it bare. The sender is cryptographically proven either way, so no
+ * separate holder-binding signature rides along.
+ *
+ * ## Why the challenge is written twice
+ *
+ * The published task says the presentation's `proof.challenge` must be the
+ * paired `challengeId`, and that this is what "stops one captured and
+ * replayed into another". In W3C Data Integrity that holds because the proof
+ * options are canonicalised with the document, so `challenge` is signed.
+ *
+ * `affinidi_data_integrity` has no `challenge` proof option, and the VTC
+ * verifies over the presentation with the whole `proof` block removed — so a
+ * value written only to `proof.challenge` is **not covered by the
+ * signature**, and swapping it on a captured presentation would go unnoticed.
+ *
+ * So [`build_presentation`] writes the challenge to `proof.challenge` (what
+ * the spec names) *and* to top-level `nonce` (what the signature actually
+ * covers), and the VTC requires both to agree. Do not "simplify" this by
+ * dropping one: `proof.challenge` alone is unsigned, and `nonce` alone is
+ * off-spec.
+ */
+
+use std::sync::Arc;
+
+use affinidi_data_integrity::crypto_suites::CryptoSuite;
+use affinidi_data_integrity::{DataIntegrityProof, SignOptions};
+use affinidi_tdk::{
+    didcomm::Message,
+    messaging::{ATM, profiles::ATMProfile},
+    secrets_resolver::secrets::Secret,
+};
+use chrono::Utc;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use trust_tasks_rs::TrustTask;
+use uuid::Uuid;
+
+use crate::errors::OpenVTCError;
+
+/// `vtc/members/personhood/challenge/0.1`.
+pub const PERSONHOOD_CHALLENGE_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/members/personhood/challenge/0.1";
+
+/// `vtc/members/personhood/assert/0.1`.
+pub const PERSONHOOD_ASSERT_TYPE: &str =
+    "https://trusttasks.org/spec/vtc/members/personhood/assert/0.1";
+
+/// W3C VC Data Model 2.0 context — the presentation's `@context`.
+const VC_V2_CONTEXT_URL: &str = "https://www.w3.org/ns/credentials/v2";
+
+// ─── The spoken match code ───────────────────────────────────────────────
+
+/// Domain separation for the match-code derivation. Must match the VTC's
+/// `vtc_service::members::match_code::DOMAIN_TAG` byte for byte — the two
+/// sides only agree because they compute the same digest over the same
+/// input.
+const MATCH_DOMAIN_TAG: &[u8] = b"vtc-personhood-match/v1\0";
+
+/// Crockford base32 — no `I`, `L`, `O`, `U`, so nothing in a code is
+/// confusable when it is said out loud.
+const CROCKFORD: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+
+/// Characters in the code, excluding the separator.
+const CODE_CHARS: usize = 8;
+
+/// Bits drawn from the digest — the exact capacity of eight base32
+/// characters.
+const CODE_BITS: usize = CODE_CHARS * 5;
+
+/// Derive the eight-character code for a challenge id, formatted
+/// `XXXX-XXXX`.
+///
+/// The `challengeId` is a UUID: fine on a wire, hopeless read aloud. This is
+/// what the two people in the room actually say to each other, and it is
+/// **derived** from the challenge rather than transferred — anyone already
+/// holding the id computes the same characters, and anyone who does not
+/// cannot. Nothing on the VTC checks it; it proves nothing that
+/// `proof.challenge` does not already prove. It exists so a human can tell
+/// that the ceremony their client is about to answer is the one the
+/// administrator in front of them just started, the way a Bluetooth pairing
+/// code does.
+///
+/// The VTC returns the same value in the challenge reply's `ext` under
+/// `org.openvtc.match-code`; [`match_code`] recomputing it locally means the
+/// member's client can show it even when the reply's `ext` is absent, and
+/// means a disagreement between the two is visible rather than silent.
+pub fn match_code(challenge_id: &Uuid) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(MATCH_DOMAIN_TAG);
+    hasher.update(challenge_id.as_bytes());
+    let digest = hasher.finalize();
+
+    let mut out = String::with_capacity(CODE_CHARS + 1);
+    for (i, bit_offset) in (0..CODE_BITS).step_by(5).enumerate() {
+        let mut idx = 0u8;
+        for bit in 0..5 {
+            let abs = bit_offset + bit;
+            let byte = digest[abs / 8];
+            idx = (idx << 1) | ((byte >> (7 - (abs % 8))) & 1);
+        }
+        if i == 4 {
+            out.push('-');
+        }
+        out.push(CROCKFORD[idx as usize] as char);
+    }
+    out
+}
+
+/// Read the match code the VTC sent in a challenge reply's `ext`, if it is
+/// there.
+///
+/// Prefer comparing this against [`match_code`] rather than trusting either
+/// alone: they are computed by different implementations from the same
+/// challenge id, so a mismatch means the two sides disagree about the
+/// derivation and the spoken confirmation is worthless. Absent is fine — an
+/// older VTC simply does not send it.
+pub fn match_code_from_reply(ext: &Value) -> Option<String> {
+    ext.get("org.openvtc.match-code")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+}
+
+// ─── Trust Task documents ────────────────────────────────────────────────
+
+/// Wrap a payload in the Trust Task document envelope the VTC's dispatcher
+/// reads. Mirrors [`crate::join`]'s builder — the VTC rejects a bare payload
+/// as `malformedRequest` ("missing field `id`"), so the shape is not
+/// optional for any verb.
+fn build_document<T: serde::Serialize>(
+    type_uri: &str,
+    issuer_did: &str,
+    recipient_did: &str,
+    document_id: &str,
+    payload: T,
+) -> Result<Value, OpenVTCError> {
+    let type_uri = type_uri
+        .parse()
+        .map_err(|e| OpenVTCError::Config(format!("trust task type URI parse: {e}")))?;
+    let mut doc = TrustTask::new(document_id.to_string(), type_uri, payload);
+    doc.issuer = Some(issuer_did.to_string());
+    doc.recipient = Some(recipient_did.to_string());
+    doc.issued_at = Some(Utc::now());
+    serde_json::to_value(&doc)
+        .map_err(|e| OpenVTCError::Config(format!("trust task document serialize: {e}")))
+}
+
+/// Everything needed to get a document from this member to that community.
+///
+/// Grouped rather than passed as loose arguments because both verbs need the
+/// identical set, and a six-parameter tail of same-typed `&str` DIDs is one
+/// transposed pair away from sending a member's presentation to their own
+/// mediator's DID.
+pub struct Route<'a> {
+    pub atm: &'a ATM,
+    pub profile: &'a Arc<ATMProfile>,
+    /// The member acting — the authcrypt sender / TSP sender VID, and so the
+    /// identity the community proves this request came from.
+    pub member_did: &'a str,
+    /// The community being addressed.
+    pub vtc_did: &'a str,
+    /// The member's own mediator, for the DIDComm leg.
+    pub mediator_did: &'a str,
+    /// The community's advertised TSP mediator, when it advertises `#tsp`.
+    ///
+    /// `Some` sends the bare Trust Task document over TSP; `None` wraps it
+    /// in DIDComm. Discovery belongs to the caller — same rule as
+    /// [`crate::join::submit_join_request`] — so a VTC that does not
+    /// advertise `#tsp` degrades to DIDComm rather than failing.
+    pub tsp_mediator_did: Option<&'a str>,
+}
+
+impl Route<'_> {
+    /// Send a built document over whichever transport this route selects.
+    async fn send(
+        &self,
+        body: Value,
+        type_uri: &str,
+        document_id: String,
+    ) -> Result<(), OpenVTCError> {
+        match self.tsp_mediator_did {
+            Some(tsp_mediator) => {
+                crate::tsp::send_trust_task(
+                    self.atm,
+                    self.profile,
+                    &body,
+                    self.vtc_did,
+                    tsp_mediator,
+                )
+                .await?;
+            }
+            None => {
+                let now = Utc::now().timestamp().max(0) as u64;
+                let msg = Message::build(document_id, type_uri.to_string(), body)
+                    .from(self.member_did.to_string())
+                    .to(self.vtc_did.to_string())
+                    .created_time(now)
+                    .finalize();
+                crate::pack_and_send(
+                    self.atm,
+                    self.profile,
+                    &msg,
+                    self.member_did,
+                    self.vtc_did,
+                    self.mediator_did,
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Ask the community for a personhood challenge
+/// (`vtc/members/personhood/challenge/0.1`).
+///
+/// Returns the correlation handle the VTC's reply threads on — the same
+/// value on either transport, for the reason [`crate::join`] documents: the
+/// DIDComm message id is set to the Trust Task document id, so DIDComm's
+/// `thid` and TSP's `threadId` coincide.
+///
+/// The reply carries the `challengeId` to sign against and, from a VTC new
+/// enough to send it, the match code in `ext`. Nothing is awaited here; the
+/// reply arrives asynchronously like every other Trust Task response.
+///
+/// `subject_did` is who the challenge is for. A member asking for their own
+/// is the ordinary case; an administrator may ask for another member's,
+/// which is the in-person ceremony — the community mints it, the
+/// administrator reads the code to the person in front of them, and that
+/// person's own client answers it. Minting for someone else confers
+/// nothing: the nonce is bound to the subject, and only a presentation
+/// signed by the subject's key can spend it.
+pub async fn request_challenge(route: &Route<'_>, subject_did: &str) -> Result<Uuid, OpenVTCError> {
+    let request_id = Uuid::new_v4();
+    let document_id = format!("urn:uuid:{request_id}");
+    let body = build_document(
+        PERSONHOOD_CHALLENGE_TYPE,
+        route.member_did,
+        route.vtc_did,
+        &document_id,
+        json!({ "did": subject_did }),
+    )?;
+
+    route
+        .send(body, PERSONHOOD_CHALLENGE_TYPE, document_id)
+        .await?;
+
+    Ok(request_id)
+}
+
+/// Build and sign the presentation the assert verb carries.
+///
+/// `credentials` are the whole signed VCs to present — `eddsa-jcs-2022`
+/// credentials cannot be redacted, so each one is presented entire. Which of
+/// them satisfy the community is the community's `personhood.rego` to
+/// decide; presenting more than it needs discloses more than it needs, so
+/// callers should pass what the community asked for rather than the wallet.
+///
+/// The challenge is written to both `nonce` and `proof.challenge` — see this
+/// module's header for why neither alone is sufficient.
+pub async fn build_presentation(
+    signing_secret: &Secret,
+    member_did: &str,
+    challenge_id: &Uuid,
+    credentials: Vec<Value>,
+) -> Result<Value, OpenVTCError> {
+    let challenge = challenge_id.to_string();
+
+    // Sign over this exact shape minus `proof` — JCS canonicalisation is
+    // sensitive to field presence, so the proof is inserted afterwards and
+    // anything that must be signed has to be in here.
+    let vp = json!({
+        "@context": [VC_V2_CONTEXT_URL],
+        "type": ["VerifiablePresentation"],
+        "holder": member_did,
+        "verifiableCredential": credentials,
+        "nonce": challenge,
+    });
+
+    let proof = DataIntegrityProof::sign(
+        &vp,
+        signing_secret,
+        SignOptions::new()
+            .with_proof_purpose("authentication")
+            .with_cryptosuite(CryptoSuite::EddsaJcs2022),
+    )
+    .await
+    .map_err(|e| OpenVTCError::Config(format!("sign personhood presentation: {e}")))?;
+
+    let mut proof_value = serde_json::to_value(&proof)
+        .map_err(|e| OpenVTCError::Config(format!("serialize presentation proof: {e}")))?;
+    // `challenge` is not a field `DataIntegrityProof` carries, so it is
+    // added to the serialised proof rather than set through `SignOptions`.
+    // That is precisely why it is unsigned, and why `nonce` above exists.
+    proof_value
+        .as_object_mut()
+        .ok_or_else(|| OpenVTCError::Config("proof did not serialize to an object".into()))?
+        .insert("challenge".to_string(), Value::String(challenge));
+
+    let mut signed = vp;
+    signed
+        .as_object_mut()
+        .expect("presentation is an object")
+        .insert("proof".to_string(), proof_value);
+    Ok(signed)
+}
+
+/// Assert personhood (`vtc/members/personhood/assert/0.1`).
+///
+/// The community verifies the presentation against `member_did`'s resolved
+/// key, consumes the challenge, runs its personhood policy, and — if it
+/// allows — re-mints the member's VMC carrying `PersonhoodCredential` and
+/// their role credential. The reply carries both.
+///
+/// The member is always the subject. The community refuses an assertion sent
+/// by anyone else, because `assert/0.1` declares `actsAsSubject: true`: this
+/// is the member exercising authority over their own personhood state.
+pub async fn assert_personhood(
+    route: &Route<'_>,
+    signing_secret: &Secret,
+    challenge_id: &Uuid,
+    credentials: Vec<Value>,
+) -> Result<Uuid, OpenVTCError> {
+    let presentation =
+        build_presentation(signing_secret, route.member_did, challenge_id, credentials).await?;
+
+    let request_id = Uuid::new_v4();
+    let document_id = format!("urn:uuid:{request_id}");
+    let body = build_document(
+        PERSONHOOD_ASSERT_TYPE,
+        route.member_did,
+        route.vtc_did,
+        &document_id,
+        json!({ "did": route.member_did, "presentation": presentation }),
+    )?;
+
+    route
+        .send(body, PERSONHOOD_ASSERT_TYPE, document_id)
+        .await?;
+
+    Ok(request_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MEMBER: &str = "did:key:z6MkjchhfUsD6mmvni8mCdXHw216Xrm9bQe2mBH1P5RDjVJG";
+
+    fn secret() -> Secret {
+        Secret::from_multibase(
+            // Deterministic test key; the DID above is its `did:key` form.
+            "z3u2en7t5LR2WtQH5PfFqMqwVHBeXouLzo6haApm8XHqvjxq",
+            Some(&format!("{MEMBER}#key-0")),
+        )
+        .expect("test secret")
+    }
+
+    /// The code is a pure function of the challenge id — that is the whole
+    /// mechanism. If it ever stops being one, the administrator and the
+    /// member see different characters and the spoken confirmation quietly
+    /// stops meaning anything.
+    #[test]
+    fn match_code_is_deterministic() {
+        let id = Uuid::parse_str("6f1c4f9e-7c2a-4f4b-9a3e-2b1d0c5e8a77").expect("uuid");
+        assert_eq!(match_code(&id), match_code(&id));
+    }
+
+    /// Shape a human reads aloud, from an alphabet with nothing mishearable
+    /// in it.
+    #[test]
+    fn match_code_is_four_dash_four_from_crockford() {
+        let code = match_code(&Uuid::new_v4());
+        assert_eq!(code.len(), CODE_CHARS + 1);
+        assert_eq!(code.as_bytes()[4], b'-');
+        for c in code.bytes().filter(|c| *c != b'-') {
+            assert!(CROCKFORD.contains(&c), "{} is outside Crockford", c as char);
+        }
+        for c in *b"ILOU" {
+            assert!(!CROCKFORD.contains(&c), "{} is confusable", c as char);
+        }
+    }
+
+    /// **The cross-implementation pin.** This value was produced by the
+    /// VTC's `vtc_service::members::match_code::derive`. The two sides agree
+    /// only because they compute the same digest over the same bytes, and
+    /// nothing else in either repo would catch them drifting — a changed
+    /// domain tag or alphabet on either side yields eight plausible
+    /// characters that simply never match, which reads to an operator as
+    /// "the code is wrong" rather than "the code is broken".
+    #[test]
+    fn match_code_agrees_with_the_vtc() {
+        let id = Uuid::parse_str("6f1c4f9e-7c2a-4f4b-9a3e-2b1d0c5e8a77").expect("uuid");
+        assert_eq!(match_code(&id), "5CY1-GZEE");
+    }
+
+    /// The challenge must land in both places: `proof.challenge` because
+    /// that is what the published task names, and `nonce` because that is
+    /// what the signature covers. A presentation carrying only the first is
+    /// replayable; one carrying only the second is off-spec.
+    #[tokio::test]
+    async fn presentation_carries_the_challenge_signed_and_unsigned() {
+        let id = Uuid::new_v4();
+        let vp = build_presentation(&secret(), MEMBER, &id, vec![])
+            .await
+            .expect("build presentation");
+
+        assert_eq!(
+            vp["nonce"].as_str(),
+            Some(id.to_string().as_str()),
+            "the signed copy of the challenge is missing"
+        );
+        assert_eq!(
+            vp["proof"]["challenge"].as_str(),
+            Some(id.to_string().as_str()),
+            "the copy the published task names is missing"
+        );
+        assert_eq!(vp["holder"].as_str(), Some(MEMBER));
+    }
+
+    /// `nonce` is inside the signed body, so tampering with it invalidates
+    /// the proof — which is the entire reason it carries the challenge.
+    /// `proof.challenge` is outside it and cannot do this job alone.
+    #[tokio::test]
+    async fn the_signed_nonce_is_covered_by_the_proof() {
+        let id = Uuid::new_v4();
+        let vp = build_presentation(&secret(), MEMBER, &id, vec![])
+            .await
+            .expect("build presentation");
+
+        let proof: DataIntegrityProof =
+            serde_json::from_value(vp["proof"].clone()).expect("parse proof");
+        let holder = secret();
+        let pubkey = holder.get_public_bytes().to_vec();
+
+        let mut tampered = vp.clone();
+        tampered.as_object_mut().unwrap().remove("proof");
+        assert!(
+            proof
+                .verify_with_public_key(
+                    &tampered,
+                    &pubkey,
+                    affinidi_data_integrity::VerifyOptions::new()
+                )
+                .is_ok(),
+            "the untampered presentation must verify"
+        );
+
+        tampered["nonce"] = Value::String(Uuid::new_v4().to_string());
+        assert!(
+            proof
+                .verify_with_public_key(
+                    &tampered,
+                    &pubkey,
+                    affinidi_data_integrity::VerifyOptions::new()
+                )
+                .is_err(),
+            "swapping the nonce must break the proof — otherwise the challenge is not bound \
+             to anything and a captured presentation is replayable"
+        );
+    }
+}
