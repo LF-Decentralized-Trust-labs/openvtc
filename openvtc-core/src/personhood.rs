@@ -362,6 +362,110 @@ pub async fn assert_personhood(
     Ok(request_id)
 }
 
+// ─── Replies ─────────────────────────────────────────────────────────────
+
+/// Take the task-specific payload out of a VTC Trust Task reply body.
+///
+/// Same normalisation [`crate::messaging`] applies: anything dispatched
+/// through the VTC's `dispatch_trust_task_core` comes back as the whole
+/// `#response` document with the members nested under `payload`, while a
+/// hand-built reply carries the bare body. None of the bare bodies has a
+/// `payload` member, so the test is unambiguous — and it makes this
+/// transport-agnostic, since a TSP frame carries the response document raw.
+fn reply_payload(body: &Value) -> Value {
+    match body.get("payload") {
+        Some(payload) => payload.clone(),
+        None => body.clone(),
+    }
+}
+
+/// What the community answered a challenge request with.
+#[derive(Debug, Clone)]
+pub struct ChallengeReply {
+    /// The nonce to sign against.
+    pub challenge_id: Uuid,
+    /// When the community stops accepting a presentation for it.
+    pub expires_at: chrono::DateTime<Utc>,
+    /// The code to say out loud, derived locally from [`Self::challenge_id`].
+    pub match_code: String,
+}
+
+/// Parse a `members/personhood/challenge/0.1#response`.
+///
+/// When the community sends its own copy of the match code, it is compared
+/// against the one derived here and a disagreement is an error rather than a
+/// shrug. The two are computed by different implementations, so if they
+/// differ, the spoken confirmation is worthless — and the failure is
+/// otherwise invisible, because both sides still show eight plausible
+/// characters and the people in the room just conclude they have the wrong
+/// ceremony.
+pub fn parse_challenge_reply(body: &Value) -> Result<ChallengeReply, OpenVTCError> {
+    let payload = reply_payload(body);
+
+    let challenge_id = payload
+        .get("challengeId")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| OpenVTCError::Config("challenge reply has no challengeId".into()))?
+        .parse::<Uuid>()
+        .map_err(|e| OpenVTCError::Config(format!("challengeId is not a UUID: {e}")))?;
+
+    let expires_at = payload
+        .get("expiresAt")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| OpenVTCError::Config("challenge reply has no expiresAt".into()))?
+        .parse::<chrono::DateTime<Utc>>()
+        .map_err(|e| OpenVTCError::Config(format!("expiresAt is not a timestamp: {e}")))?;
+
+    let derived = match_code(&challenge_id);
+    if let Some(theirs) = payload.get("ext").and_then(match_code_from_reply)
+        && theirs != derived
+    {
+        return Err(OpenVTCError::Config(format!(
+            "match code disagreement: the community says {theirs}, this client derives \
+             {derived} from the same challenge — the two implementations have drifted and \
+             the spoken confirmation cannot be trusted"
+        )));
+    }
+
+    Ok(ChallengeReply {
+        challenge_id,
+        expires_at,
+        match_code: derived,
+    })
+}
+
+/// What the community answered an assertion with: the flag, and the freshly
+/// re-issued credentials that now carry it.
+#[derive(Debug, Clone)]
+pub struct AssertReply {
+    pub did: String,
+    /// Always `true` on success — the community answers a refusal with a
+    /// `trust-task-error` document, not with `personhood: false`.
+    pub personhood: bool,
+    /// The re-minted VMC, carrying `PersonhoodCredential` in its `type`.
+    pub vmc: Value,
+    /// The re-minted role credential.
+    pub role_vec: Value,
+}
+
+/// Parse a `members/personhood/assert/0.1#response`.
+pub fn parse_assert_reply(body: &Value) -> Result<AssertReply, OpenVTCError> {
+    let payload = reply_payload(body);
+    Ok(AssertReply {
+        did: payload
+            .get("did")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| OpenVTCError::Config("assert reply has no did".into()))?
+            .to_string(),
+        personhood: payload
+            .get("personhood")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        vmc: payload.get("vmc").cloned().unwrap_or(Value::Null),
+        role_vec: payload.get("roleVec").cloned().unwrap_or(Value::Null),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +541,85 @@ mod tests {
             "the copy the published task names is missing"
         );
         assert_eq!(vp["holder"].as_str(), Some(MEMBER));
+    }
+
+    const CHALLENGE: &str = "6f1c4f9e-7c2a-4f4b-9a3e-2b1d0c5e8a77";
+
+    /// The reply as `vtc-service` actually sends it: the whole `#response`
+    /// document, task members nested under `payload`.
+    fn challenge_response_document(ext: Value) -> Value {
+        json!({
+            "id": "urn:uuid:00000000-0000-4000-8000-000000000000",
+            "type": format!("{PERSONHOOD_CHALLENGE_TYPE}#response"),
+            "payload": {
+                "challengeId": CHALLENGE,
+                "expiresAt": "2026-08-24T10:15:00Z",
+                "ext": ext,
+            }
+        })
+    }
+
+    #[test]
+    fn challenge_reply_yields_the_nonce_and_the_spoken_code() {
+        let reply = parse_challenge_reply(&challenge_response_document(
+            json!({ "org.openvtc.match-code": "5CY1-GZEE" }),
+        ))
+        .expect("parse challenge reply");
+
+        assert_eq!(reply.challenge_id.to_string(), CHALLENGE);
+        assert_eq!(reply.match_code, "5CY1-GZEE");
+    }
+
+    /// A community that does not send its copy is fine — the code is derived
+    /// locally, so an older VTC costs nothing.
+    #[test]
+    fn challenge_reply_without_the_community_copy_still_derives_the_code() {
+        let mut doc = challenge_response_document(json!({}));
+        doc["payload"]
+            .as_object_mut()
+            .expect("payload object")
+            .remove("ext");
+
+        let reply = parse_challenge_reply(&doc).expect("parse challenge reply");
+        assert_eq!(reply.match_code, "5CY1-GZEE");
+    }
+
+    /// A community whose copy *disagrees* is not fine. Both sides would
+    /// still show eight plausible characters, so without this the operator
+    /// concludes they have the wrong ceremony rather than that the two
+    /// implementations have drifted.
+    #[test]
+    fn challenge_reply_refuses_a_match_code_disagreement() {
+        let err = parse_challenge_reply(&challenge_response_document(
+            json!({ "org.openvtc.match-code": "0000-0000" }),
+        ))
+        .expect_err("a disagreement must not pass silently");
+
+        assert!(
+            err.to_string().contains("drifted"),
+            "the error should name the cause, got: {err}"
+        );
+    }
+
+    /// The bare-body shape, for a reply built outside the dispatcher.
+    #[test]
+    fn a_reply_without_a_payload_wrapper_is_read_whole() {
+        let bare = json!({
+            "did": MEMBER,
+            "personhood": true,
+            "vmc": { "type": ["VerifiableCredential", "MembershipCredential",
+                              "PersonhoodCredential"] },
+            "roleVec": { "type": ["VerifiableCredential", "EndorsementCredential"] },
+        });
+        let reply = parse_assert_reply(&bare).expect("parse assert reply");
+
+        assert!(reply.personhood);
+        assert_eq!(reply.did, MEMBER);
+        assert_eq!(
+            reply.vmc["type"][2].as_str(),
+            Some("PersonhoodCredential"),
+            "the re-minted VMC is what carries the claim"
+        );
     }
 
     /// `nonce` is inside the signed body, so tampering with it invalidates
