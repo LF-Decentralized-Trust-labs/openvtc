@@ -1117,18 +1117,62 @@ impl StateHandler {
                             let msg_to = message.to.as_ref().and_then(|v| v.first()).cloned().unwrap_or_default();
                             let msg_thid = message.thid.clone().unwrap_or_else(|| "none".into());
 
-                            let mut inactivated = Vec::new();
-                            let mut capability_replies = Vec::new();
-                            match message_dispatch::process_inbound_message(
+                            let mut effects = message_dispatch::InboundEffects::default();
+                            let dispatched = message_dispatch::process_inbound_message(
                                 &mut config,
                                 &tdk,
                                 &didcomm_service,
                                 &mut seen_messages,
                                 &message,
-                                &mut inactivated,
-                                &mut capability_replies,
+                                &mut effects,
                             )
-                            .await
+                            .await;
+                            let message_dispatch::InboundEffects {
+                                inactivated,
+                                capability_replies,
+                                personhood_challenges,
+                            } = effects;
+
+                            // A live challenge is display state, not account
+                            // state: single-use, ten-minute life, and worthless
+                            // after a restart. It is folded in here rather than
+                            // persisted, and unconditionally — a reply that
+                            // arrived is a reply the member should see whether
+                            // or not the message also changed the config.
+                            for reply in personhood_challenges {
+                                // The challenge belongs to the persona it was
+                                // addressed to. Without one we cannot sign for
+                                // it, so there is nothing to offer the member —
+                                // and silently showing an unanswerable code
+                                // would be worse than saying nothing.
+                                let Some(persona) = config.account.persona_id_for_did(&msg_to)
+                                else {
+                                    warn!(
+                                        vtc = %msg_from,
+                                        to = %msg_to,
+                                        "personhood challenge addressed to a DID this account \
+                                         holds no persona for — ignoring",
+                                    );
+                                    continue;
+                                };
+                                state.main_page.content_panel.communities.personhood_challenge =
+                                    Some(crate::state_handler::main_page::content::PersonhoodChallengeView {
+                                        vtc_did: msg_from.clone(),
+                                        persona,
+                                        challenge_id: reply.challenge_id,
+                                        match_code: reply.match_code.clone(),
+                                        expires_at: reply.expires_at,
+                                    });
+                                state.main_page.content_panel.communities.status_message = Some(
+                                    format!(
+                                        "Personhood challenge received — confirm the code {} with \
+                                         whoever is vetting you, then assert.",
+                                        reply.match_code
+                                    ),
+                                );
+                            }
+
+                            match dispatched
                             {
                                 Ok(true) => {
                                     // R11: a config-mutating inbound message used
@@ -2129,6 +2173,7 @@ impl StateHandler {
                     // silent — a dead key is indistinguishable from a broken one.
                     Action::Inbox(..) | Action::Relationship(..) | Action::Credential(..) |
                     Action::IssueMemberVmc(..) | Action::CapabilitiesOpen(..) |
+                    Action::RequestPersonhoodChallenge(..) | Action::AssertPersonhood |
                     Action::CapabilitiesRefresh | Action::CapabilitiesToggleCommit |
                     Action::SetActiveCommunity(..) | Action::ToggleFavourite(..) |
                     Action::AcknowledgeCommunity(..) | Action::LeaveCommunity(..) |

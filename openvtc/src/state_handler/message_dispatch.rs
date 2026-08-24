@@ -20,6 +20,9 @@ use openvtc_core::messaging::{
     handle_join_submit_receipt, handle_join_trust_task_error, handle_join_verdict,
     is_trust_task_error_type, require_thid, validate_did, verify_vrc_proof, vet_vrc_issued,
 };
+use openvtc_core::personhood::{
+    PERSONHOOD_ASSERT_RESPONSE_TYPE, PERSONHOOD_CHALLENGE_RESPONSE_TYPE,
+};
 use openvtc_core::{
     MessageType,
     config::{Config, account::VtcDid},
@@ -77,6 +80,26 @@ pub(crate) async fn issue_member_vmc_for(
     .await
 }
 
+/// What an inbound message asks the loop to do, beyond mutating `Config`.
+///
+/// These are things this function cannot do itself: tearing down a session
+/// needs the session manager, and the live personhood challenge belongs to
+/// `State` rather than to the account. Collected here rather than as three
+/// trailing `&mut Vec` parameters — same reason the community verbs grew a
+/// `Performed` enum, and it keeps the signature within clippy's argument
+/// budget as more effects arrive.
+#[derive(Default)]
+pub struct InboundEffects {
+    /// Communities that resolved to an inactive status; the loop deregisters
+    /// their sessions (R-S-3).
+    pub inactivated: Vec<(VtcDid, openvtc_core::config::account::PersonaId)>,
+    /// Capability replies, keyed by the request id they thread on.
+    pub capability_replies: Vec<(String, openvtc_core::capabilities::CapabilityReply)>,
+    /// Personhood challenges the community answered with. Display state with a
+    /// ten-minute life — never persisted.
+    pub personhood_challenges: Vec<openvtc_core::personhood::ChallengeReply>,
+}
+
 /// Process an inbound DIDComm message.
 ///
 /// Auto-processes messages that don't need human input (pong, accept, finalize, reject).
@@ -89,9 +112,13 @@ pub async fn process_inbound_message(
     service: &Messaging,
     seen: &mut SeenMessages,
     message: &Message,
-    inactivated: &mut Vec<(VtcDid, openvtc_core::config::account::PersonaId)>,
-    capability_replies: &mut Vec<(String, openvtc_core::capabilities::CapabilityReply)>,
+    effects: &mut InboundEffects,
 ) -> Result<bool, anyhow::Error> {
+    let InboundEffects {
+        inactivated,
+        capability_replies,
+        personhood_challenges,
+    } = effects;
     // Drop messages outside the replay / freshness window before doing
     // any state-mutating work. Saves us from acting on stale captures
     // and from clock-skew–induced retries.
@@ -268,6 +295,46 @@ pub async fn process_inbound_message(
             inactivated.push((from_did.to_string(), persona));
         }
         return Ok(outcome.changed);
+    }
+
+    // VTC personhood challenge reply: carries the nonce an assertion must be
+    // signed over, and the match code to read aloud. Reported up rather than
+    // applied here — the challenge is display state with a ten-minute life,
+    // and this function owns `Config`, which is the thing that gets persisted.
+    // A single-use nonce has no business surviving a restart.
+    if message.typ == PERSONHOOD_CHALLENGE_RESPONSE_TYPE {
+        match openvtc_core::personhood::parse_challenge_reply(&message.body) {
+            Ok(reply) => {
+                debug!(
+                    vtc = %from_did,
+                    challenge = %reply.challenge_id,
+                    "personhood challenge received",
+                );
+                personhood_challenges.push(reply);
+            }
+            // Includes the match-code disagreement, which is a real finding
+            // rather than a malformed message: it means this client and the
+            // community derive different codes from the same challenge, so
+            // the spoken confirmation would be meaningless.
+            Err(e) => warn!(vtc = %from_did, "unusable personhood challenge reply: {e}"),
+        }
+        return Ok(false);
+    }
+
+    // VTC personhood assertion result. The re-issued VMC carrying
+    // `PersonhoodCredential` arrives separately as a credential-issue message,
+    // which is what actually updates the wallet — this is the decision.
+    if message.typ == PERSONHOOD_ASSERT_RESPONSE_TYPE {
+        match openvtc_core::personhood::parse_assert_reply(&message.body) {
+            Ok(reply) => info!(
+                vtc = %from_did,
+                did = %reply.did,
+                personhood = reply.personhood,
+                "personhood asserted",
+            ),
+            Err(e) => warn!(vtc = %from_did, "unusable personhood assert reply: {e}"),
+        }
+        return Ok(false);
     }
 
     // VTC member-VMC receipt (`members/vmc/1.0#response`): the VTC acknowledging

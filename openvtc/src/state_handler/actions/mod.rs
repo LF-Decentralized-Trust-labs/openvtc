@@ -260,6 +260,16 @@ pub enum Action {
     /// send it to the community's VTC over DIDComm (`members/vmc/1.0`). Indexed
     /// into the Communities display list.
     IssueMemberVmc(usize),
+    /// Ask the community at display index `usize` for a personhood challenge
+    /// (`members/personhood/challenge/0.1`). The reply arrives asynchronously
+    /// and lands as the panel's live challenge.
+    RequestPersonhoodChallenge(usize),
+    /// Answer the live personhood challenge (`members/personhood/assert/0.1`).
+    ///
+    /// Takes no index: the challenge already names the membership it belongs
+    /// to, and answering it against whichever row happens to be highlighted is
+    /// exactly the confusion the stored `vtc_did` exists to prevent.
+    AssertPersonhood,
     /// Open the capabilities view for the community at display index `usize`
     /// and fire the `governance/capability/list` query.
     CapabilitiesOpen(usize),

@@ -440,6 +440,123 @@ pub(crate) async fn handle_action(ctx: &mut ActionCtx<'_>, action: Action) -> Ha
                 }
             }
         }
+        Action::RequestPersonhoodChallenge(i) => {
+            // Ask the community for the nonce an assertion must carry. No key
+            // is needed yet — nothing is signed until the challenge comes back.
+            let target = ctx
+                .config
+                .account
+                .communities_for_display(
+                    ctx.state.main_page.content_panel.communities.show_archived,
+                )
+                .get(i)
+                .filter(|c| c.status.is_active())
+                .map(|c| (c.vtc_did.clone(), c.persona_ref));
+            if let Some((vtc, persona_id)) = target {
+                match capability_sender(ctx.config, ctx.tdk, persona_id) {
+                    Some((atm, profile, member_did, mediator)) => spawn_community_job(
+                        ctx.dispatch_tx,
+                        ctx.in_flight,
+                        ctx.state,
+                        community_actions::CommunityJob {
+                            atm,
+                            profile,
+                            member_did,
+                            mediator,
+                            vtc_did: vtc,
+                            persona: persona_id,
+                            verb: community_actions::Verb::RequestPersonhoodChallenge,
+                        },
+                    ),
+                    None => {
+                        ctx.state.main_page.content_panel.communities.status_message = Some(
+                            "Messaging unavailable — cannot ask for a challenge right now."
+                                .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+        Action::AssertPersonhood => {
+            // The challenge names its own membership, so the target comes from
+            // the challenge rather than from whichever row is highlighted.
+            let challenge = ctx
+                .state
+                .main_page
+                .content_panel
+                .communities
+                .personhood_challenge
+                .clone();
+            let Some(challenge) = challenge else {
+                ctx.state.main_page.content_panel.communities.status_message =
+                    Some("No personhood challenge in hand — ask for one first.".to_string());
+                return Handled::Continue;
+            };
+            if !challenge.is_live(chrono::Utc::now()) {
+                // Drop it rather than send: the community would refuse it, and
+                // leaving a dead challenge on screen invites a second attempt
+                // that fails the same way.
+                ctx.state
+                    .main_page
+                    .content_panel
+                    .communities
+                    .personhood_challenge = None;
+                ctx.state.main_page.content_panel.communities.status_message =
+                    Some("That personhood challenge expired — ask for a fresh one.".to_string());
+                return Handled::Continue;
+            }
+
+            // Present the credentials this community itself issued to this
+            // membership and let its policy choose among them. A client-side
+            // filter would have to guess at a policy it cannot read, and
+            // guessing wrong means withholding the very credential that would
+            // have satisfied it — the identity-verification endorsement an
+            // administrator issued after vetting the member in person.
+            //
+            // Scoped to this membership rather than the whole wallet: another
+            // community's credentials are not evidence here, and sending them
+            // would disclose one community's membership to another.
+            let credentials: Vec<serde_json::Value> = ctx
+                .config
+                .account
+                .membership(&challenge.vtc_did, challenge.persona)
+                .map(|m| m.credentials.values().cloned().collect())
+                .unwrap_or_default();
+
+            match (
+                capability_sender(ctx.config, ctx.tdk, challenge.persona),
+                ctx.config
+                    .get_persona_keys_for(challenge.persona, ctx.tdk)
+                    .await,
+            ) {
+                (Some((atm, profile, member_did, mediator)), Ok(keys)) => spawn_community_job(
+                    ctx.dispatch_tx,
+                    ctx.in_flight,
+                    ctx.state,
+                    community_actions::CommunityJob {
+                        atm,
+                        profile,
+                        member_did,
+                        mediator,
+                        vtc_did: challenge.vtc_did.clone(),
+                        persona: challenge.persona,
+                        verb: community_actions::Verb::AssertPersonhood {
+                            signing_secret: Box::new(keys.signing.secret.clone()),
+                            challenge_id: challenge.challenge_id,
+                            credentials,
+                        },
+                    },
+                ),
+                (_, Err(e)) => {
+                    ctx.state.main_page.content_panel.communities.status_message =
+                        Some(format!("Couldn't sign the personhood presentation: {e}"));
+                }
+                (None, _) => {
+                    ctx.state.main_page.content_panel.communities.status_message =
+                        Some("Messaging unavailable — cannot assert right now.".to_string());
+                }
+            }
+        }
         Action::WithdrawJoin(i) => {
             // Cancel a Pending join: best-effort notify the VTC, set
             // the record `Withdrawn`, and tear down its now-dead
