@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Every launch after the first warned that the account was open somewhere
+  else — naming this machine.** `device/register` is deliberately not
+  idempotent: a `DeviceBinding` hangs off the caller's ACL entry, there is
+  exactly one per DID, and the VTA refuses a second claim with
+  `device/register:alreadyRegistered`. OpenVTC read that refusal as a failure,
+  so from the second launch on it held no device id — and the sibling filter
+  excluded "us" by id alone. With nothing to exclude, this install reported its
+  *own* binding as another live instance, on every start, with no second process
+  anywhere. The one situation the warning exists for (two installs evicting each
+  other from the mediator's one socket per DID) was the one it stopped being
+  able to tell you about, because the same sentence appeared when nothing was
+  wrong.
+
+  A row now carries the DID that owns it (`consumerDid`), which is exact rather
+  than a guess: one binding per ACL entry means a row naming the DID we
+  authenticate as *is* us, on every launch. The already-registered refusal is
+  understood as the ordinary case it is (typed 409 over REST, either spelling of
+  the reject code over DIDComm/TSP), and the listing recovers our own device id
+  so a later launch names us the way a first one does. An install that can
+  identify itself by neither id nor DID still reports everything live — a missed
+  warning is the costlier direction.
+
 - **Every reciprocal membership credential we sent a community was rejected, and
   nothing here said so.** A community stores a member's VMC keyed by the
   credential's own top-level `id`, and refuses one that has none. Ours never had

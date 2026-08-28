@@ -61,6 +61,18 @@ pub const LIVENESS_WINDOW: Duration = Duration::from_secs(900);
 pub struct DeviceRecord {
     /// The VTA's identifier for this binding.
     pub device_id: String,
+    /// The DID whose ACL entry owns this binding (`consumerDid` on the wire).
+    ///
+    /// This is what makes "is that row me?" answerable. A binding hangs off an
+    /// ACL entry and there is exactly one per DID, so an install that
+    /// authenticates as this DID *is* this row — no guessing from display names,
+    /// which are not unique (host + profile recurs across machines).
+    ///
+    /// Optional because a VTA predating the field omits it; a row with no
+    /// `consumerDid` simply cannot be matched this way and falls back to the
+    /// device id.
+    #[serde(default)]
+    pub consumer_did: Option<String>,
     /// Human-readable name the device chose for itself.
     #[serde(default)]
     pub display_name: String,
@@ -95,6 +107,22 @@ impl DeviceRecord {
             .as_deref()
             .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&chrono::Utc))
+    }
+
+    /// Whether this row is this install, by either identifier we might hold.
+    ///
+    /// A `None` on our side never matches: not knowing our DID must not make
+    /// every row ours and silence the warning entirely. Likewise a row carrying
+    /// no `consumerDid` is not ours on that basis alone.
+    #[must_use]
+    pub fn is_self(&self, self_device_id: Option<&str>, self_did: Option<&str>) -> bool {
+        if self_device_id.is_some_and(|id| id == self.device_id) {
+            return true;
+        }
+        match (self.consumer_did.as_deref(), self_did) {
+            (Some(owner), Some(ours)) => owner == ours,
+            _ => false,
+        }
     }
 
     /// Whether this device has been seen within [`LIVENESS_WINDOW`] of `now`.
@@ -155,16 +183,32 @@ pub fn display_name(profile: &str) -> String {
     format!("OpenVTC on {host} ({profile})")
 }
 
-/// Claim or refresh this install's device binding.
+/// What a registration attempt found.
+#[derive(Clone, Debug)]
+pub enum Registration {
+    /// The VTA claimed a fresh binding for this DID — a first launch.
+    Claimed(DeviceRecord),
+    /// This DID already holds a binding. **The ordinary case on every launch
+    /// after the first**, and not an error.
+    AlreadyRegistered,
+}
+
+/// Claim this install's device binding.
 ///
-/// Idempotent: the caller always acts on its own binding, so re-registering on
-/// every launch simply refreshes the display name and platform.
+/// `device/register` is **deliberately not idempotent**: a `DeviceBinding` hangs
+/// off the caller's ACL entry, there is exactly one per DID, and the VTA refuses
+/// a second claim with `device/register:alreadyRegistered` (the spec's answer for
+/// a device that lost its key is to rotate and retry, not to re-register). So the
+/// second and every later launch is *expected* to be refused, and treating that
+/// refusal as a failure is what made this install invisible to itself — see
+/// [`live_siblings`].
 ///
 /// # Errors
 ///
-/// Any VTA failure. Callers log and continue — see the module docs.
-pub async fn register(client: &VtaClient, profile: &str) -> Result<DeviceRecord, OpenVTCError> {
-    let response = client
+/// Any VTA failure other than the already-registered conflict. Callers log and
+/// continue — see the module docs.
+pub async fn register(client: &VtaClient, profile: &str) -> Result<Registration, OpenVTCError> {
+    let response = match client
         .device_register(
             consumer_kind(),
             &display_name(profile),
@@ -172,10 +216,38 @@ pub async fn register(client: &VtaClient, profile: &str) -> Result<DeviceRecord,
             None,
         )
         .await
-        .map_err(|e| OpenVTCError::Vta(format!("device registration failed: {e}")))?;
+    {
+        Ok(response) => response,
+        Err(e) if is_already_registered(&e) => return Ok(Registration::AlreadyRegistered),
+        Err(e) => {
+            return Err(OpenVTCError::Vta(format!(
+                "device registration failed: {e}"
+            )));
+        }
+    };
 
     parse_binding(&response)
+        .map(Registration::Claimed)
         .ok_or_else(|| OpenVTCError::Vta("device registration returned no binding".to_string()))
+}
+
+/// Whether a `device/register` failure is "this DID is already registered".
+///
+/// Matched three ways because the answer arrives from whichever VTA this install
+/// enrolled against and the transport changes its shape: a typed `Conflict` over
+/// REST, and a protocol reject carrying the code over DIDComm/TSP — in either
+/// the current lowerCamelCase spelling or the pre-#279 snake_case one that a VTA
+/// on an older build still emits. A missed match does not crash; it silently
+/// restores the false "another instance is running" warning, which is exactly the
+/// kind of failure no smoke test catches.
+///
+/// Mirrors `vta_sdk::agent_session`'s private matcher of the same name.
+fn is_already_registered(e: &vta_sdk::error::VtaError) -> bool {
+    if e.is_conflict() {
+        return true;
+    }
+    let msg = e.to_string();
+    msg.contains("alreadyRegistered") || msg.contains("already_registered")
 }
 
 /// Refresh this install's `lastSeenAt`.
@@ -228,18 +300,32 @@ fn parse_binding(response: &serde_json::Value) -> Option<DeviceRecord> {
 
 /// Other installs currently using this account.
 ///
-/// `self_device_id` is this install's binding, excluded from the result — it is
-/// always live, and reporting it would make "another instance is running" fire
-/// on every single launch.
+/// This install's own binding is excluded — it is always live, and reporting it
+/// would make "another instance is running" fire on every single launch. It is
+/// identified two ways, and the DID is the one that matters:
+///
+/// - **`self_did`** — the DID this install authenticates to the VTA as. A binding
+///   belongs to exactly one ACL entry, so a row naming our DID *is* us. True on
+///   every launch.
+/// - **`self_device_id`** — the id returned when we claimed the binding. Only a
+///   first launch learns it, because a later `device/register` is refused rather
+///   than answered (see [`register`]). Kept as the fallback for a VTA whose rows
+///   carry no `consumerDid`.
+///
+/// Relying on the id alone is what produced the false positive: from the second
+/// launch on, the id was `None`, nothing was excluded, and this install reported
+/// *itself* as another instance — naming its own host and profile, with no second
+/// process anywhere.
 #[must_use]
 pub fn live_siblings(
     devices: &[DeviceRecord],
     self_device_id: Option<&str>,
+    self_did: Option<&str>,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Vec<DeviceRecord> {
     devices
         .iter()
-        .filter(|d| Some(d.device_id.as_str()) != self_device_id)
+        .filter(|d| !d.is_self(self_device_id, self_did))
         .filter(|d| d.is_live_at(now))
         .cloned()
         .collect()
@@ -275,6 +361,7 @@ mod tests {
     fn record(id: &str, last_seen: Option<chrono::DateTime<Utc>>) -> DeviceRecord {
         DeviceRecord {
             device_id: id.to_string(),
+            consumer_did: None,
             display_name: format!("OpenVTC on {id}"),
             platform: Some("linux".to_string()),
             registered_at: None,
@@ -340,7 +427,7 @@ mod tests {
     fn our_own_binding_is_never_a_sibling() {
         let now = Utc::now();
         let devices = vec![record("self", Some(now)), record("other", Some(now))];
-        let siblings = live_siblings(&devices, Some("self"), now);
+        let siblings = live_siblings(&devices, Some("self"), None, now);
         assert_eq!(siblings.len(), 1);
         assert_eq!(siblings[0].device_id, "other");
     }
@@ -352,7 +439,7 @@ mod tests {
             record("self", Some(now)),
             record("old-laptop", Some(now - ChronoDuration::days(3))),
         ];
-        assert!(live_siblings(&devices, Some("self"), now).is_empty());
+        assert!(live_siblings(&devices, Some("self"), None, now).is_empty());
     }
 
     #[test]
@@ -401,6 +488,7 @@ mod tests {
     fn a_binding_with_no_name_falls_back_to_its_id() {
         let d = DeviceRecord {
             device_id: "dev-1".to_string(),
+            consumer_did: None,
             display_name: String::new(),
             platform: None,
             registered_at: None,
@@ -426,5 +514,98 @@ mod tests {
         let name = display_name("work");
         assert!(name.starts_with("OpenVTC on "), "{name}");
         assert!(name.ends_with("(work)"), "{name}");
+    }
+
+    /// The reported false positive, pinned. From the second launch on, this
+    /// install has **no** device id — `device/register` refuses to answer a
+    /// second claim — so identifying ourselves by id alone left us reporting our
+    /// own binding as another instance, naming our own host and profile.
+    #[test]
+    fn our_own_binding_is_ours_by_did_when_we_never_learned_its_id() {
+        let now = Utc::now();
+        let mut mine = record("dev-1", Some(now));
+        mine.consumer_did = Some("did:key:zSelf".to_string());
+
+        assert!(
+            live_siblings(&[mine], None, Some("did:key:zSelf"), now).is_empty(),
+            "the binding owned by the DID we authenticate as is this install"
+        );
+    }
+
+    /// The other half: suppressing ourselves must not suppress a real one.
+    #[test]
+    fn another_dids_binding_is_still_a_sibling() {
+        let now = Utc::now();
+        let mut mine = record("dev-1", Some(now));
+        mine.consumer_did = Some("did:key:zSelf".to_string());
+        let mut theirs = record("dev-2", Some(now));
+        theirs.consumer_did = Some("did:key:zOther".to_string());
+
+        let siblings = live_siblings(&[mine, theirs], None, Some("did:key:zSelf"), now);
+        assert_eq!(siblings.len(), 1);
+        assert_eq!(siblings[0].device_id, "dev-2");
+    }
+
+    /// Neither side of the match may be allowed to swallow the warning: an
+    /// install that knows neither its id nor its DID reports everything live,
+    /// which is the safe direction — a missed warning is the failure that costs
+    /// the user an eviction loop.
+    #[test]
+    fn an_unidentifiable_install_still_reports_what_is_live() {
+        let now = Utc::now();
+        let mut row = record("dev-1", Some(now));
+        row.consumer_did = Some("did:key:zOther".to_string());
+
+        assert_eq!(live_siblings(&[row.clone()], None, None, now).len(), 1);
+        assert_eq!(
+            live_siblings(&[row], None, Some("did:key:zSelf"), now).len(),
+            1
+        );
+    }
+
+    /// A row carrying no `consumerDid` (an older VTA) is not ours on that basis,
+    /// so the device id stays the fallback.
+    #[test]
+    fn a_row_without_an_owner_falls_back_to_the_device_id() {
+        let now = Utc::now();
+        let row = record("dev-1", Some(now));
+        assert!(row.is_self(Some("dev-1"), None));
+        assert!(!row.is_self(None, Some("did:key:zSelf")));
+    }
+
+    #[test]
+    fn the_owning_did_parses_off_the_wire() {
+        let raw = serde_json::json!({
+            "deviceId": "dev-1",
+            "consumerDid": "did:key:zSelf",
+            "displayName": "OpenVTC on host (default)",
+        });
+        let d: DeviceRecord = serde_json::from_value(raw).expect("tolerant parse");
+        assert_eq!(d.consumer_did.as_deref(), Some("did:key:zSelf"));
+    }
+
+    /// `device/register` is refused, not answered, on every launch after the
+    /// first. Reading that refusal as a failure is what left this install
+    /// unable to recognise itself, so both spellings of the code and the typed
+    /// REST conflict must all be understood.
+    #[test]
+    fn an_already_registered_refusal_is_recognised_across_transports() {
+        use vta_sdk::error::VtaError;
+
+        assert!(is_already_registered(&VtaError::Conflict("dup".into())));
+        for code in [
+            "device/register:alreadyRegistered",
+            "device/register:already_registered",
+        ] {
+            assert!(
+                is_already_registered(&VtaError::Protocol(format!(
+                    "trust task rejected: {code} — a DeviceBinding already exists"
+                ))),
+                "{code} must read as already-registered"
+            );
+        }
+        assert!(!is_already_registered(&VtaError::Protocol(
+            "trust task rejected: something else".into()
+        )));
     }
 }
