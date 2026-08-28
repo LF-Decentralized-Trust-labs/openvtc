@@ -97,7 +97,19 @@ skip-tree = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# trql-client rides a rev-pinned git dependency until the trust-registry
-# release pipeline can publish >= 0.8 to crates.io (the published 0.7.0
-# predates the crate's library and must not be used).
-allow-git = ["https://github.com/affinidi/affinidi-trust-registry-rs"]
+# Both entries are rev-pinned git sources standing in for a release that has not
+# happened yet, and both are meant to be deleted rather than lived with.
+#
+# * `verifiable-git-infrastructure` — `did-git-sign`'s published 0.4.6 requires
+#   `vta-sdk ^0.27`, which does not build against this workspace's 0.31. The
+#   `[patch.crates-io]` block in the root `Cargo.toml` takes VGI#33's head
+#   instead; delete both when VGI publishes 0.4.7. The rationale is written out
+#   in full there.
+# * `affinidi-trust-registry-rs` — `trql-client` rides a rev-pinned git
+#   dependency until the trust-registry release pipeline publishes a version
+#   built on the current trust-tasks line. It reaches this workspace only
+#   through VGI, whose own manifest pins the same rev.
+allow-git = [
+    "https://github.com/OpenVTC/verifiable-git-infrastructure",
+    "https://github.com/affinidi/affinidi-trust-registry-rs",
+]

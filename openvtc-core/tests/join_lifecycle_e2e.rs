@@ -177,6 +177,11 @@ async fn respond_status(
         status: status.to_string(),
         needs: Vec::new(),
         presentation_definition: None,
+        // Refusal detail (vta-sdk 0.31): carried only on a `rejected`
+        // status, which this helper does not exercise.
+        code: None,
+        reason: None,
+        decided_at: None,
     };
     let response = Message::build(
         Uuid::new_v4().to_string(),

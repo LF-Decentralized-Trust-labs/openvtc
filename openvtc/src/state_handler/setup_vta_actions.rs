@@ -4,7 +4,7 @@ use crate::state_handler::{
 };
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
-use vta_sdk::client::VtaClient;
+use vta_sdk::client::{ClientIdentity, VtaClient};
 use vta_sdk::provision_client::{
     DiagStatus, EphemeralSetupKey, Protocol, ProvisionAsk, VtaEvent, VtaIntent, VtaReply,
     apply_update, pending_list, provision_admin_rotated_via_rest, run_connection_test,
@@ -450,9 +450,26 @@ pub(crate) async fn handle_vta_start_provision(
                     state.setup.vta.messages.push(MessageType::Info(
                         "VTA authentication successful.".to_string(),
                     ));
-                    let client = VtaClient::new(&vta_url);
-                    client.set_token(token_result.access_token);
-                    client
+                    // `new` + `set_token` is the shape vta-sdk 0.31 stopped
+                    // accepting: a bearer token authenticates the connection,
+                    // but SPEC §7.2 items 5b/7a want an in-band `recipient` and
+                    // a document `proof`, which the client can only produce
+                    // from the identity it signs as. Without it the very next
+                    // Trust-Task dispatch on this client — the context probe
+                    // below — fails with "authenticated but carries no
+                    // ClientIdentity". `connect_auto`'s REST arm builds exactly
+                    // this; this branch is hand-rolled only because the wizard
+                    // needs the token itself to cache.
+                    VtaClient::authenticated(
+                        &vta_url,
+                        ClientIdentity {
+                            client_did: admin.admin_did.clone(),
+                            private_key_multibase: admin.admin_private_key_mb.clone(),
+                            vta_did: vta_did.clone(),
+                        },
+                        token_result.access_token,
+                    )
+                    .await
                 }
                 Err(e) => {
                     state

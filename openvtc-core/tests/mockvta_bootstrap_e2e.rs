@@ -32,7 +32,7 @@
 //! NOTE: depends on the `vta-service` git dev-dependency (the VTA server crate
 //! is not on crates.io); its git source is allow-listed in `deny.toml`.
 
-use vta_sdk::client::{CreateContextRequest, CreateDidWebvhRequest, VtaClient};
+use vta_sdk::client::{ClientIdentity, CreateContextRequest, CreateDidWebvhRequest, VtaClient};
 use vta_sdk::protocols::did_management::create::WebvhPathMode;
 use vta_sdk::provision_client::{
     EphemeralSetupKey, ProvisionAsk, provision_admin_rotated_via_rest,
@@ -90,12 +90,26 @@ async fn bootstrap_creates_top_context_and_lists_webvh_server() {
     // Authenticated client. `mint_token` with an empty contexts vec is
     // super-admin (top-level context creation is super-admin only); it bypasses
     // the DIDComm-packed live handshake the REST-only mock can't unpack.
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkOpenVtcAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    //
+    // The token authenticates the *connection*; from vta-sdk 0.31 a dispatched
+    // Trust-Task document also needs an in-band `recipient` and a `proof` (SPEC
+    // §7.2 items 5b/7a), which the client can only produce from a
+    // `ClientIdentity`. So the admin is a real, self-resolving `did:key` whose
+    // private key the client holds, and the token is minted for *that* DID —
+    // item 6 rejects a document whose in-band issuer disagrees with the
+    // identity the transport authenticated as.
+    let admin = EphemeralSetupKey::generate().expect("generate admin key");
+    let token = mock.ctx.mint_token(&admin.did, "admin", vec![]).await;
+    let client = VtaClient::authenticated(
+        mock.base_url(),
+        ClientIdentity {
+            client_did: admin.did.clone(),
+            private_key_multibase: admin.private_key_multibase().to_string(),
+            vta_did: mock.vta_did().to_string(),
+        },
+        token,
+    )
+    .await;
 
     // State-A: create the account's top-level context.
     let ctx = client
@@ -137,12 +151,20 @@ async fn persona_did_webvh_mint_round_trips() {
     // server-managed mint publishes and resolves entirely in-process (VTI#431).
     let mock = MockVta::start_with_webvh_host().await;
 
-    let token = mock
-        .ctx
-        .mint_token("did:key:z6MkOpenVtcMintAdmin", "admin", vec![])
-        .await;
-    let client = VtaClient::new(mock.base_url());
-    client.set_token_async(token).await;
+    // Signed-document identity as above: a real `did:key` the client can sign
+    // as, and a token minted for the same DID.
+    let admin = EphemeralSetupKey::generate().expect("generate admin key");
+    let token = mock.ctx.mint_token(&admin.did, "admin", vec![]).await;
+    let client = VtaClient::authenticated(
+        mock.base_url(),
+        ClientIdentity {
+            client_did: admin.did.clone(),
+            private_key_multibase: admin.private_key_multibase().to_string(),
+            vta_did: mock.vta_did().to_string(),
+        },
+        token,
+    )
+    .await;
 
     // State-B: mint the persona did:webvh against the hosting server.
     let minted = client
