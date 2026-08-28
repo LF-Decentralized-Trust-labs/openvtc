@@ -129,17 +129,44 @@ pub(crate) fn format_lifecycle_log(
                 None => " (no transport error reported)".to_string(),
             };
             LifecycleLine {
-                summary: format!("Listener {} disconnected{reason}", who(config, listener_id)),
+                // "still" is load-bearing: a drop is held for the reconnect
+                // grace before it reaches here, so this line means the listener
+                // did not come back on its own, not merely that it dropped.
+                summary: format!(
+                    "Listener {} is still disconnected{reason}",
+                    who(config, listener_id)
+                ),
                 detail: Some(match error {
                     Some(e) => format!("{}\nerror: {e}", detail_for(config, listener_id)),
                     None => format!(
                         "{}\nerror: none reported — the connection closed without a transport \
-                         error",
+                         error, and did not come back within the reconnect grace period",
                         detail_for(config, listener_id)
                     ),
                 }),
             }
         }
+        LifecycleLog::Reconnected {
+            listener_id,
+            down_for,
+        } => LifecycleLine {
+            // One calm line for the pair. Says what was observed and nothing
+            // more: the *cause* is not on the wire, so naming one here would be
+            // a claim this code cannot back.
+            summary: format!(
+                "Listener {} reconnected after {:.1}s",
+                who(config, listener_id),
+                down_for.as_secs_f64()
+            ),
+            detail: Some(format!(
+                "{}\ndown for: {:.1}s\nA drop this brief is the expected reconnect: the \
+                 mediator's access token is refreshed before it expires and the socket is \
+                 re-established as part of that, roughly every 12 minutes per listener. A drop \
+                 that does not come back is reported as a disconnect instead.",
+                detail_for(config, listener_id),
+                down_for.as_secs_f64()
+            )),
+        },
         LifecycleLog::CyclingRapidly { listener_id } => LifecycleLine {
             summary: format!(
                 "WARNING: Listener {} cycling rapidly — possible duplicate connection",
@@ -3521,6 +3548,64 @@ mod tests {
                 .is_some_and(|d| d.contains("none reported")),
             "{:?}",
             line.detail
+        );
+    }
+
+    /// The routine reconnect gets one calm line. It used to arrive as a
+    /// disconnect *plus* a recovery every ~12 minutes — making the log's most
+    /// alarming line the one it printed most often, which is how a real
+    /// disconnect loses its meaning.
+    #[test]
+    fn a_brief_reconnect_reads_as_one_event_not_a_fault() {
+        const DID: &str = "did:webvh:QmScidDDDDDDDDDDDDDDDDDDDDDDDD:example.com:brief";
+        let config = crate::state_handler::dispatch_util::test_config();
+
+        let line = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Reconnected {
+                listener_id: DID.to_string(),
+                down_for: std::time::Duration::from_millis(2100),
+            },
+        );
+        assert!(
+            line.summary.contains("reconnected after 2.1s"),
+            "{}",
+            line.summary
+        );
+        assert!(
+            !line.summary.to_lowercase().contains("warning")
+                && !line.summary.contains("disconnected"),
+            "a routine reconnect must not read as a fault: {}",
+            line.summary
+        );
+        assert!(
+            line.detail
+                .as_deref()
+                .is_some_and(|d| d.contains("token is refreshed")),
+            "{:?}",
+            line.detail
+        );
+    }
+
+    /// A drop only reaches the log after the reconnect grace, so the line has to
+    /// say the listener is *still* down — otherwise it reads as the transient it
+    /// has already been proven not to be.
+    #[test]
+    fn a_reported_drop_says_it_is_still_down() {
+        const DID: &str = "did:webvh:QmScidEEEEEEEEEEEEEEEEEEEEEEEE:example.com:gone";
+        let config = crate::state_handler::dispatch_util::test_config();
+
+        let line = format_lifecycle_log(
+            &config,
+            &didcomm::LifecycleLog::Disconnected {
+                listener_id: DID.to_string(),
+                error: None,
+            },
+        );
+        assert!(
+            line.summary.contains("is still disconnected"),
+            "{}",
+            line.summary
         );
     }
 

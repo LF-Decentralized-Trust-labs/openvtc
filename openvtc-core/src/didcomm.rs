@@ -162,6 +162,32 @@ const LIFECYCLE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_m
 /// usually a duplicate connection fighting itself for one DID.
 const CYCLING_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// A drop that recovers within this is reported as a **reconnect**, not a fault.
+///
+/// The messaging stack reconnects on purpose, on a schedule. The mediator's
+/// access token lives ~900 s and the SDK's websocket transport refreshes it
+/// proactively at 80% of that, tearing the socket down and bringing it back as
+/// part of the refresh: one drop per token per listener, every ~12 minutes, back
+/// inside a second or two. That is the healthy steady state — it is what
+/// affinidi-tdk-rs #716 *reduced* the count to, from four — and it is not
+/// something an operator can act on.
+///
+/// Reporting it as `disconnected (no transport error reported)` made the
+/// activity log's most alarming line the one it printed most often, which is the
+/// failure mode that costs a real disconnect its meaning. So a drop is held
+/// briefly before it is reported: if the listener returns first, the pair
+/// becomes one calm line, and the `Disconnected` line keeps its meaning of "it
+/// is *still* down".
+///
+/// 15 s is chosen to sit far above what a refresh costs (1-2 s observed) and far
+/// below the supervisor's [`REBUILD_GRACE`] of 90 s, so nothing this suppresses
+/// is anything the supervisor would have acted on either.
+const RECONNECT_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How often held-back drops are re-examined. Bounds how late a real
+/// disconnect can be reported: [`RECONNECT_GRACE`] plus one of these.
+const PENDING_DROP_SWEEP: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Buffered connection transitions per subscriber. Transitions are rare (a
 /// listener connects, drops, reconnects), so this is generous; a subscriber that
 /// still lags reports the gap rather than silently missing a state change.
@@ -1505,6 +1531,17 @@ pub enum LifecycleLog {
         listener_id: String,
         error: Option<String>,
     },
+    /// A listener dropped and came back quickly — reported as the single event
+    /// it is, rather than as a fault followed by a recovery.
+    // Not an intra-doc link: `RECONNECT_GRACE` is private, and a public item
+    // linking to it fails `rustdoc -D warnings`.
+    /// The window is `RECONNECT_GRACE`.
+    Reconnected {
+        listener_id: String,
+        /// How long it was down, so the line is evidence rather than a claim
+        /// about why.
+        down_for: std::time::Duration,
+    },
     /// A listener dropped again within the cycling window — usually a duplicate
     /// connection fighting itself.
     CyclingRapidly { listener_id: String },
@@ -1518,45 +1555,137 @@ pub enum LifecycleLog {
     Missed { count: u64 },
 }
 
+/// A drop that has happened but has not been reported yet — see
+/// [`RECONNECT_GRACE`].
+#[derive(Debug, Clone)]
+struct HeldDrop {
+    at: std::time::Instant,
+    error: Option<String>,
+}
+
+/// Turns raw connection transitions into the lines an operator should see.
+///
+/// Split out of the logger task, and driven by an explicit `now`, because the
+/// interesting behaviour is entirely about *timing* — which is the one thing a
+/// spawned task with a real clock cannot be asked about in a test.
+#[derive(Debug, Default)]
+struct DropDebounce {
+    held: HashMap<String, HeldDrop>,
+    /// Drop timestamps, for the rapid-cycling heuristic. Independent of what is
+    /// held: cycling is about how often a listener drops, not about how the
+    /// drops are reported.
+    last_disconnect: HashMap<String, std::time::Instant>,
+}
+
+impl DropDebounce {
+    /// A listener dropped. Emits `CyclingRapidly` immediately when this is the
+    /// second drop inside [`CYCLING_WINDOW`] — a duelling connection is exactly
+    /// what must not be held back — and holds the drop itself.
+    fn on_disconnect(
+        &mut self,
+        listener_id: String,
+        error: Option<String>,
+        now: std::time::Instant,
+    ) -> Vec<LifecycleLog> {
+        let mut out = Vec::new();
+        if let Some(previous) = self.last_disconnect.get(&listener_id)
+            && now.duration_since(*previous) < CYCLING_WINDOW
+        {
+            tracing::warn!(
+                listener = %crate::display::truncate_did(&listener_id, 32),
+                "rapid disconnect cycling detected"
+            );
+            out.push(LifecycleLog::CyclingRapidly {
+                listener_id: listener_id.clone(),
+            });
+        }
+        self.last_disconnect.insert(listener_id.clone(), now);
+        // A second drop with one already held keeps the *earlier* timestamp:
+        // the listener has been down since then, and reporting the later one
+        // would restart a clock that never stopped.
+        self.held
+            .entry(listener_id)
+            .or_insert(HeldDrop { at: now, error });
+        out
+    }
+
+    /// A listener connected. One line either way: the pair when a held drop is
+    /// still inside its grace, a plain connect otherwise (a first connect, or a
+    /// recovery from an outage already reported).
+    fn on_connect(&mut self, listener_id: String, now: std::time::Instant) -> LifecycleLog {
+        match self.held.remove(&listener_id) {
+            Some(drop) if now.duration_since(drop.at) < RECONNECT_GRACE => {
+                LifecycleLog::Reconnected {
+                    listener_id,
+                    down_for: now.duration_since(drop.at),
+                }
+            }
+            _ => LifecycleLog::Connected { listener_id },
+        }
+    }
+
+    /// Drops that have outlived their grace: the listener is *still* down, so
+    /// now the line is worth printing.
+    fn due(&mut self, now: std::time::Instant) -> Vec<LifecycleLog> {
+        let expired: Vec<String> = self
+            .held
+            .iter()
+            .filter(|(_, drop)| now.duration_since(drop.at) >= RECONNECT_GRACE)
+            .map(|(id, _)| id.clone())
+            .collect();
+        expired
+            .into_iter()
+            .map(|listener_id| {
+                let drop = self.held.remove(&listener_id).expect("just listed");
+                LifecycleLog::Disconnected {
+                    listener_id,
+                    error: drop.error,
+                }
+            })
+            .collect()
+    }
+}
+
 /// Subscribe to listener lifecycle transitions and forward them as
 /// structured log events via the provided sender. Detects rapid reconnect
-/// cycling. Returns the spawned task handle.
+/// cycling, and coalesces the routine reconnect the mediator's token refresh
+/// performs into one line (see the private `RECONNECT_GRACE`). Returns the
+/// spawned task handle.
 pub fn spawn_lifecycle_logger(
     service: &Messaging,
     log_tx: mpsc::UnboundedSender<LifecycleLog>,
 ) -> tokio::task::JoinHandle<()> {
     let mut status_rx = service.subscribe();
     tokio::spawn(async move {
-        // Disconnect timestamps, for the rapid-cycling heuristic.
-        let mut last_disconnect: HashMap<String, std::time::Instant> = HashMap::new();
+        let mut debounce = DropDebounce::default();
+        let mut sweep = tokio::time::interval(PENDING_DROP_SWEEP);
 
         loop {
-            match status_rx.recv().await {
-                Ok(ListenerStatus::Connected { listener_id }) => {
-                    let _ = log_tx.send(LifecycleLog::Connected { listener_id });
-                }
-                Ok(ListenerStatus::Disconnected { listener_id, error }) => {
-                    let now = std::time::Instant::now();
-                    let _ = log_tx.send(LifecycleLog::Disconnected {
-                        listener_id: listener_id.clone(),
-                        error,
-                    });
-                    if let Some(previous_drop) = last_disconnect.get(&listener_id)
-                        && now.duration_since(*previous_drop) < CYCLING_WINDOW
-                    {
-                        tracing::warn!(
-                            listener = %crate::display::truncate_did(&listener_id, 32),
-                            "rapid disconnect cycling detected"
+            tokio::select! {
+                event = status_rx.recv() => match event {
+                    Ok(ListenerStatus::Connected { listener_id }) => {
+                        let _ = log_tx.send(
+                            debounce.on_connect(listener_id, std::time::Instant::now()),
                         );
-                        let _ = log_tx.send(LifecycleLog::CyclingRapidly {
-                            listener_id: listener_id.clone(),
-                        });
                     }
-                    last_disconnect.insert(listener_id, now);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    let _ = log_tx.send(LifecycleLog::Missed { count });
+                    Ok(ListenerStatus::Disconnected { listener_id, error }) => {
+                        for log in debounce.on_disconnect(
+                            listener_id,
+                            error,
+                            std::time::Instant::now(),
+                        ) {
+                            let _ = log_tx.send(log);
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        let _ = log_tx.send(LifecycleLog::Missed { count });
+                    }
+                },
+                _ = sweep.tick() => {
+                    for log in debounce.due(std::time::Instant::now()) {
+                        let _ = log_tx.send(log);
+                    }
                 }
             }
         }
@@ -1927,6 +2056,196 @@ pub fn relationship_listener_config_from_secrets(
             crate::display::truncate_did(remote_p_did, 32)
         ),
         secrets,
+    }
+}
+
+#[cfg(test)]
+mod drop_debounce_tests {
+    use super::{CYCLING_WINDOW, DropDebounce, LifecycleLog, RECONNECT_GRACE};
+    use std::time::{Duration, Instant};
+
+    const LISTENER: &str = "did:webvh:QmListener";
+
+    /// The reported noise: one drop per mediator token, ~12 minutes apart, back
+    /// inside a couple of seconds. It must read as one reconnect, not as a
+    /// disconnect plus a recovery — and above all not as a fault, because there
+    /// is nothing an operator can do about a scheduled token refresh.
+    #[test]
+    fn a_routine_refresh_reconnect_is_one_calm_line() {
+        let mut debounce = DropDebounce::default();
+        let dropped = Instant::now();
+
+        assert!(
+            debounce
+                .on_disconnect(LISTENER.into(), None, dropped)
+                .is_empty(),
+            "a first drop is held, not reported"
+        );
+        assert!(
+            debounce.due(dropped + Duration::from_secs(1)).is_empty(),
+            "and stays held while it is still inside the grace"
+        );
+
+        let back = dropped + Duration::from_secs(2);
+        match debounce.on_connect(LISTENER.into(), back) {
+            LifecycleLog::Reconnected {
+                listener_id,
+                down_for,
+            } => {
+                assert_eq!(listener_id, LISTENER);
+                assert_eq!(down_for, Duration::from_secs(2));
+            }
+            other => panic!("expected one Reconnected line, got {other:?}"),
+        }
+
+        assert!(
+            debounce.due(back + RECONNECT_GRACE * 2).is_empty(),
+            "nothing is left to report once the pair has been reported"
+        );
+    }
+
+    /// The other half: a listener that does not come back must still be
+    /// reported, or the suppression would cost the log the one line that
+    /// matters.
+    #[test]
+    fn a_drop_that_does_not_recover_is_reported() {
+        let mut debounce = DropDebounce::default();
+        let dropped = Instant::now();
+        debounce.on_disconnect(LISTENER.into(), None, dropped);
+
+        assert!(
+            debounce
+                .due(dropped + RECONNECT_GRACE - Duration::from_millis(1))
+                .is_empty(),
+            "not yet — this is still within the grace"
+        );
+
+        let due = debounce.due(dropped + RECONNECT_GRACE);
+        assert!(
+            matches!(&due[..], [LifecycleLog::Disconnected { listener_id, error: None }] if listener_id == LISTENER),
+            "got {due:?}"
+        );
+        assert!(
+            debounce.due(dropped + RECONNECT_GRACE * 2).is_empty(),
+            "reported once, not on every sweep"
+        );
+    }
+
+    /// A transport error is the evidence for the line, so holding the drop must
+    /// not lose it.
+    #[test]
+    fn a_held_drop_keeps_its_transport_error() {
+        let mut debounce = DropDebounce::default();
+        let dropped = Instant::now();
+        debounce.on_disconnect(LISTENER.into(), Some("connection reset".into()), dropped);
+
+        let due = debounce.due(dropped + RECONNECT_GRACE);
+        assert!(
+            matches!(&due[..], [LifecycleLog::Disconnected { error: Some(e), .. }] if e == "connection reset"),
+            "got {due:?}"
+        );
+    }
+
+    /// A recovery after the outage was already reported is a plain connect —
+    /// the pair line would be a lie, because the drop was not brief.
+    #[test]
+    fn a_late_recovery_is_a_plain_connect() {
+        let mut debounce = DropDebounce::default();
+        let dropped = Instant::now();
+        debounce.on_disconnect(LISTENER.into(), None, dropped);
+        let _reported = debounce.due(dropped + RECONNECT_GRACE);
+
+        assert!(matches!(
+            debounce.on_connect(
+                LISTENER.into(),
+                dropped + RECONNECT_GRACE + Duration::from_secs(5)
+            ),
+            LifecycleLog::Connected { .. }
+        ));
+    }
+
+    /// A first connect has no drop behind it.
+    #[test]
+    fn a_first_connect_is_a_plain_connect() {
+        let mut debounce = DropDebounce::default();
+        assert!(matches!(
+            debounce.on_connect(LISTENER.into(), Instant::now()),
+            LifecycleLog::Connected { .. }
+        ));
+    }
+
+    /// Duelling sockets are exactly what must NOT be quietened: the cycling
+    /// warning fires on the drop, before any grace can absorb it.
+    #[test]
+    fn rapid_cycling_still_warns_immediately() {
+        let mut debounce = DropDebounce::default();
+        let first = Instant::now();
+        assert!(
+            debounce
+                .on_disconnect(LISTENER.into(), None, first)
+                .is_empty()
+        );
+        debounce.on_connect(LISTENER.into(), first + Duration::from_millis(500));
+
+        let second = first + Duration::from_secs(3);
+        let out = debounce.on_disconnect(LISTENER.into(), None, second);
+        assert!(
+            matches!(&out[..], [LifecycleLog::CyclingRapidly { listener_id }] if listener_id == LISTENER),
+            "a second drop inside the cycling window must warn at once, got {out:?}"
+        );
+    }
+
+    /// Two drops far enough apart are the healthy refresh cadence, not cycling.
+    #[test]
+    fn drops_outside_the_cycling_window_do_not_warn() {
+        let mut debounce = DropDebounce::default();
+        let first = Instant::now();
+        debounce.on_disconnect(LISTENER.into(), None, first);
+        debounce.on_connect(LISTENER.into(), first + Duration::from_secs(2));
+
+        let later = first + CYCLING_WINDOW + Duration::from_secs(1);
+        assert!(
+            debounce
+                .on_disconnect(LISTENER.into(), None, later)
+                .is_empty(),
+            "a drop outside the window is not cycling"
+        );
+    }
+
+    /// A second drop while one is already held must not restart the clock: the
+    /// listener has been down since the first, and re-dating it would let a
+    /// listener that drops every 14 s never be reported at all.
+    #[test]
+    fn a_repeated_drop_does_not_extend_the_grace() {
+        let mut debounce = DropDebounce::default();
+        let first = Instant::now();
+        debounce.on_disconnect(LISTENER.into(), None, first);
+        debounce.on_disconnect(LISTENER.into(), None, first + RECONNECT_GRACE / 2);
+
+        assert_eq!(
+            debounce.due(first + RECONNECT_GRACE).len(),
+            1,
+            "the hold is dated from the first drop"
+        );
+    }
+
+    /// Listeners are independent: one going quiet must not hold another's line.
+    #[test]
+    fn listeners_are_held_independently() {
+        let mut debounce = DropDebounce::default();
+        let now = Instant::now();
+        debounce.on_disconnect("a".into(), None, now);
+        debounce.on_disconnect("b".into(), None, now + RECONNECT_GRACE);
+
+        let due = debounce.due(now + RECONNECT_GRACE);
+        assert!(
+            matches!(&due[..], [LifecycleLog::Disconnected { listener_id, .. }] if listener_id == "a"),
+            "only the one past its grace, got {due:?}"
+        );
+        assert!(matches!(
+            debounce.on_connect("b".into(), now + RECONNECT_GRACE + Duration::from_secs(1)),
+            LifecycleLog::Reconnected { .. }
+        ));
     }
 }
 
