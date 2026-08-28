@@ -8,6 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The activity log reported the mediator's scheduled reconnect as a fault,
+  every twelve minutes.** The messaging stack reconnects on purpose: the
+  mediator's access token is refreshed at 80% of its ~900 s life and the SDK's
+  websocket transport re-establishes the socket as part of that refresh — one
+  drop per token per listener, back inside a second or two. That arrived as
+  `Listener '…' disconnected (no transport error reported)` followed by a
+  reconnect, which made the log's most alarming line the one it printed most
+  often. A real disconnect looked exactly like the routine one, so the line
+  stopped carrying information.
+
+  A drop is now held for 15 seconds before it is reported. If the listener
+  returns first, the pair becomes one calm line — `Listener '…' reconnected
+  after 2.1s` — which states what was observed and not a cause the transport
+  never surfaces. If it does not return, the line still appears and now says the
+  listener is *still* disconnected, which is the thing worth acting on. Nothing
+  is quietened that shouldn't be: the rapid-cycling warning still fires on the
+  drop itself, before any grace can absorb it, so duelling sockets shout as
+  loudly as before.
+
 - **Every launch after the first warned that the account was open somewhere
   else — naming this machine.** `device/register` is deliberately not
   idempotent: a `DeviceBinding` hangs off the caller's ACL entry, there is
