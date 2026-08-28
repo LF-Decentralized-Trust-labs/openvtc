@@ -719,9 +719,19 @@ impl StateHandler {
         let (presence_tx, mut presence_rx) =
             mpsc::unbounded_channel::<device_presence::PresenceReport>();
         if let Some(client) = admin_vta.as_ref() {
+            // The DID this install authenticates as. It owns our device binding,
+            // so it is how the presence task recognises our own row in the
+            // listing — the device id is only ever learned on a first launch.
+            let self_did = match &config.key_backend {
+                openvtc_core::config::KeyBackend::Vta { credential_did, .. } => {
+                    Some(credential_did.clone())
+                }
+                openvtc_core::config::KeyBackend::Bip32 { .. } => None,
+            };
             tokio::spawn(device_presence::run(
                 client.clone(),
                 self.profile.clone(),
+                self_did,
                 presence_tx,
             ));
         }

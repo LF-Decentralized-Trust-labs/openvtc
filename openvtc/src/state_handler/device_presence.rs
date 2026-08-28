@@ -42,10 +42,19 @@ pub enum PresenceReport {
 
 /// Register this install, then heartbeat and watch for siblings until cancelled.
 ///
+/// `self_did` is the DID this install authenticates to the VTA as — the durable
+/// answer to "which of these bindings is mine", because only a first launch ever
+/// learns its device id (see [`devices::register`]).
+///
 /// Returns when `tx` closes — i.e. when the state handler exits.
-pub async fn run(client: VtaClient, profile: String, tx: UnboundedSender<PresenceReport>) {
-    let self_id = match devices::register(&client, &profile).await {
-        Ok(record) => {
+pub async fn run(
+    client: VtaClient,
+    profile: String,
+    self_did: Option<String>,
+    tx: UnboundedSender<PresenceReport>,
+) {
+    let mut self_id = match devices::register(&client, &profile).await {
+        Ok(devices::Registration::Claimed(record)) => {
             info!(device_id = %record.device_id, "registered this install with the VTA");
             if tx
                 .send(PresenceReport::Registered {
@@ -56,6 +65,12 @@ pub async fn run(client: VtaClient, profile: String, tx: UnboundedSender<Presenc
                 return;
             }
             Some(record.device_id)
+        }
+        Ok(devices::Registration::AlreadyRegistered) => {
+            // Every launch after the first. The binding is ours and still there;
+            // we just were not told its id, and the listing below recovers it.
+            debug!("this install is already registered with the VTA");
+            None
         }
         Err(e) => {
             // Not fatal: a VTA without the device slice, or one briefly
@@ -74,7 +89,33 @@ pub async fn run(client: VtaClient, profile: String, tx: UnboundedSender<Presenc
     loop {
         match devices::list(&client).await {
             Ok(all) => {
-                let live = devices::live_siblings(&all, self_id.as_deref(), chrono::Utc::now());
+                // Recover our own id from the listing when registration did not
+                // hand it to us, so the loop names us the same way a first launch
+                // does — and so a VTA that stops returning `consumerDid` still
+                // has the id to fall back on.
+                if self_id.is_none()
+                    && let Some(mine) = all
+                        .iter()
+                        .find(|d| d.is_self(None, self_did.as_deref()))
+                        .map(|d| d.device_id.clone())
+                {
+                    debug!(device_id = %mine, "recovered this install's binding from the listing");
+                    if tx
+                        .send(PresenceReport::Registered {
+                            device_id: mine.clone(),
+                        })
+                        .is_err()
+                    {
+                        return;
+                    }
+                    self_id = Some(mine);
+                }
+                let live = devices::live_siblings(
+                    &all,
+                    self_id.as_deref(),
+                    self_did.as_deref(),
+                    chrono::Utc::now(),
+                );
                 let fresh = newly_appeared(&mut announced, &live);
                 if !fresh.is_empty() && tx.send(PresenceReport::NewSiblings(fresh)).is_err() {
                     return;
@@ -124,6 +165,7 @@ mod tests {
     fn record(id: &str) -> DeviceRecord {
         DeviceRecord {
             device_id: id.to_string(),
+            consumer_did: None,
             display_name: format!("OpenVTC on {id}"),
             platform: None,
             registered_at: None,
