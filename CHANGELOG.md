@@ -8,6 +8,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Every reciprocal membership credential we sent a community was rejected, and
+  nothing here said so.** A community stores a member's VMC keyed by the
+  credential's own top-level `id`, and refuses one that has none. Ours never had
+  one: `dtg-credentials` had no field for it at all, so a VMC built with
+  `new_vmc()` could not carry the W3C VC Data Model's credential identifier —
+  the property was not merely unset, there was nowhere to put it. Every
+  submission therefore failed the community's last check, *after* the issuer,
+  subject and Data Integrity proof checks had all passed. The member → community
+  half of the membership pair has never once landed, whether sent by hand or
+  auto-issued in answer to a `members/request-vmc`.
+
+  It was silent from both ends. The send reports success as soon as the frame is
+  accepted locally — "Membership credential issued and sent to the community." —
+  which says nothing about whether the community took it. The community's
+  rejection comes back as a problem-report threaded on the delivery, and this
+  client routes every inbound problem-report through the join handler, which
+  correlates against pending *join request* ids; a VMC's thread matches none, so
+  the report was discarded with a warn that names the correlation miss rather
+  than the failure. Two independent silences over one broken exchange.
+
+  `dtg-credentials` 0.3 adds the field (`with_id()`), and the member VMC now
+  gets a fresh `urn:uuid:` identifier before it is signed — before, necessarily,
+  since the proof covers it and an id spliced in afterwards would leave a
+  document whose proof no longer verifies. Regression tests assert the id is
+  present, fresh per issuance, and inside what the proof covers.
+
+  The two silences are not fixed here and are worth their own change: a send
+  `Ok` still reads as acceptance, and a problem-report on any thread other than a
+  join is still dropped.
+
 - **Stopping a listener left its mediator socket open, so the next listener for
   the same DID fought it forever.** `Messaging::remove_listener` dropped the
   identity's wire and nothing more. That closes nothing:

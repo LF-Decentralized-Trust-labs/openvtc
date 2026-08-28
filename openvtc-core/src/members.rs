@@ -43,19 +43,44 @@ pub async fn issue_and_send_member_vmc(
     vtc_did: &str,
     mediator_did: &str,
 ) -> Result<Uuid, OpenVTCError> {
+    let vc = build_member_vmc(signing_secret, member_did, vtc_did).await?;
+    submit_member_vmc(atm, profile, member_did, vtc_did, mediator_did, vc).await
+}
+
+/// Build + sign the reciprocal member VMC, without sending it. The signing half of
+/// [`issue_and_send_member_vmc`], split out so the credential's shape can be asserted
+/// without a mediator.
+///
+/// # The credential carries its own `id`
+///
+/// A community stores a member's VMC keyed by that `id`: it is what makes a re-sent
+/// credential idempotent rather than a duplicate, and a *different* one a renewal rather
+/// than a conflict. A VMC without one is refused, and the refusal comes back as a
+/// problem-report threaded on the delivery — which is not a thread this client correlates,
+/// so the rejection is invisible from here and the membership pair silently stays half
+/// formed.
+///
+/// The id has to be set before signing: the Data Integrity proof covers the credential
+/// minus its `proof`, so an id added afterwards leaves a document whose proof no longer
+/// verifies. `dtg-credentials` 0.3 is the first release with somewhere to put it.
+pub async fn build_member_vmc(
+    signing_secret: &Secret,
+    member_did: &str,
+    vtc_did: &str,
+) -> Result<Value, OpenVTCError> {
     let mut vmc = DTGCredential::new_vmc(
         member_did.to_string(),
         vtc_did.to_string(),
         Utc::now(),
         None,
         false,
-    );
+    )
+    .with_id(format!("urn:uuid:{}", Uuid::new_v4()));
     vmc.sign(signing_secret, None)
         .await
         .map_err(|e| OpenVTCError::Config(format!("sign member VMC: {e}")))?;
-    let vc = serde_json::to_value(&vmc)
-        .map_err(|e| OpenVTCError::Config(format!("serialize member VMC: {e}")))?;
-    submit_member_vmc(atm, profile, member_did, vtc_did, mediator_did, vc).await
+    serde_json::to_value(&vmc)
+        .map_err(|e| OpenVTCError::Config(format!("serialize member VMC: {e}")))
 }
 
 /// Send a member-issued VMC to the community's VTC over DIDComm
@@ -93,4 +118,93 @@ pub async fn submit_member_vmc(
 
     crate::pack_and_send(atm, profile, &msg, member_did, vtc_did, mediator_did).await?;
     Ok(msg_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use affinidi_tdk::secrets_resolver::secrets::Secret;
+
+    const MEMBER: &str = "did:example:member";
+    const COMMUNITY: &str = "did:example:community";
+
+    async fn signed_vmc() -> (Secret, Value) {
+        let secret = Secret::generate_ed25519(None, None);
+        let vc = build_member_vmc(&secret, MEMBER, COMMUNITY)
+            .await
+            .expect("build the member VMC");
+        (secret, vc)
+    }
+
+    /// The community keys a member's VMC by its top-level `id` and refuses one that has
+    /// none. Every VMC this client ever issued lacked it, because `dtg-credentials` had no
+    /// field for it — so every delivery was rejected, and the rejection arrived on a thread
+    /// this client does not correlate.
+    #[tokio::test]
+    async fn a_member_vmc_carries_a_top_level_id() {
+        let (_secret, vc) = signed_vmc().await;
+
+        let id = vc
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("the VMC carries a top-level `id`");
+        assert!(
+            id.starts_with("urn:uuid:"),
+            "the id should be a urn:uuid: URN, got {id}"
+        );
+        // `credentialSubject.id` names the *community*. It is a different property and does
+        // not stand in for the credential's own identifier.
+        assert_eq!(vc["credentialSubject"]["id"], COMMUNITY);
+    }
+
+    /// Two deliveries must not collide: the community treats a repeat of the same `id` as
+    /// idempotent and a different one as a renewal, so a fixed id would make every
+    /// re-issuance a no-op.
+    #[tokio::test]
+    async fn each_member_vmc_gets_a_fresh_id() {
+        let (_, first) = signed_vmc().await;
+        let (_, second) = signed_vmc().await;
+        assert_ne!(first["id"], second["id"]);
+    }
+
+    /// The id is inside what the proof covers, which is why it has to be set before signing
+    /// rather than spliced into the JSON on the way out. Parsing the delivered credential
+    /// back and verifying it is what the community does; it must pass.
+    #[tokio::test]
+    async fn the_signed_vmc_verifies_with_its_id_in_place() {
+        let (secret, vc) = signed_vmc().await;
+
+        let parsed: DTGCredential = serde_json::from_value(vc.clone()).expect("parse back");
+        parsed
+            .verify_proof_with_public_key(secret.get_public_bytes())
+            .expect("the delivered credential verifies as sent");
+
+        // Tampering with the id — or adding one after the fact, the same operation — breaks
+        // the proof, so there is no post-signing workaround for an issuer that omits it.
+        let mut tampered = vc;
+        tampered["id"] = Value::String("urn:uuid:00000000-0000-0000-0000-000000000000".into());
+        let parsed: DTGCredential = serde_json::from_value(tampered).expect("parse back");
+        assert!(
+            parsed
+                .verify_proof_with_public_key(secret.get_public_bytes())
+                .is_err(),
+            "a changed id must invalidate the proof"
+        );
+    }
+
+    /// The issuer / subject direction is what the community verifies the pair by: the member
+    /// issues, the community is the subject. Reversing it is a different credential.
+    #[tokio::test]
+    async fn the_member_issues_and_the_community_is_the_subject() {
+        let (_secret, vc) = signed_vmc().await;
+        assert_eq!(vc["issuer"], MEMBER);
+        assert_eq!(vc["credentialSubject"]["id"], COMMUNITY);
+        assert!(
+            vc["type"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "MembershipCredential")
+        );
+    }
 }

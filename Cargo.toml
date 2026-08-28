@@ -37,7 +37,7 @@ openvtc-core = { version = "0.3", path = "openvtc-core", default-features = fals
 #
 # The crate's documented VWC `digest` divergence from WD-01 does not reach
 # us either — `digest_multibase()` / `verify_digest()` have no call sites here.
-dtg-credentials = "0.2"
+dtg-credentials = "0.3"
 
 aes-gcm = "0.11"
 # The one direct requirement in this workspace that was behind its latest
