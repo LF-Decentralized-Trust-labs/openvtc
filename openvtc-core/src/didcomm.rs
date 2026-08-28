@@ -266,6 +266,54 @@ struct IdentityWire {
     /// used to. Rebuilding means constructing a fresh ATM, profile and transport,
     /// which needs the same inputs as the first time.
     spec: ListenerSpec,
+    /// This identity's outbox drain, held here rather than in
+    /// [`MessagingInner::tasks`] so removing the listener can abort *its* drain
+    /// and nobody else's.
+    ///
+    /// Load-bearing for teardown, not just tidiness: the drain owns a clone of
+    /// the `Arc<dyn MessageTransport>`, which owns the ATM. A drain left running
+    /// keeps the whole wire — and therefore its mediator socket — alive after the
+    /// listener is gone.
+    drain: tokio::task::JoinHandle<()>,
+}
+
+/// Stop a removed wire's drain and close its mediator websocket.
+///
+/// Everything here has to happen **before** the caller can install a listener for
+/// the same DID again, which is why it is not left to `Drop`:
+///
+/// - `affinidi-messaging-sdk` has no `Drop` for `ATM`. Dropping the handle stops
+///   nothing; the websocket task holds its own `Arc<SharedState>` and keeps
+///   running — and reconnecting — indefinitely.
+/// - The delivery layer's `remove_transport` aborts its forwarder and drops the
+///   service's `Arc` to the transport, but the drain task holds another.
+///
+/// So a removal that only forgot the wire left a live, auto-reconnecting socket
+/// holding the mediator's one-socket-per-DID slot. The next `add_listener` for
+/// that DID then opened a second one and the two evicted each other forever —
+/// which is what a user sees as a listener flapping every 30-60 s with "no
+/// transport error reported". The SDK documents the same failure on
+/// `ATM::graceful_shutdown`: an orphaned session "auto-reconnects on its own timer
+/// and holds the mediator's one-socket-per-DID slot for its profile".
+///
+/// Returns the ATM with its remaining teardown (the deletion handler) still to
+/// do. That step is bounded but not instant — up to the SDK's 5 s drain timeout —
+/// so the caller chooses whether to await it or let it finish detached. The
+/// socket, which is the part another listener contends for, is already closed
+/// either way.
+async fn quiesce_wire(listener_id: &str, wire: IdentityWire) -> ATM {
+    wire.drain.abort();
+    if let Err(e) = wire.profile.stop_websocket().await {
+        // Non-fatal and worth exactly one line: the ATM shutdown that follows
+        // stops the same websocket, so this is a "the fast path did not work"
+        // note rather than a leak in its own right.
+        debug!(
+            listener = %crate::display::truncate_did(listener_id, 32),
+            error = %e,
+            "closing the listener's websocket returned an error; the ATM shutdown will retry it"
+        );
+    }
+    wire.atm
 }
 
 /// The runtime messaging handle: one transport per identity, multiplexed through
@@ -319,7 +367,13 @@ struct MessagingInner {
     /// Listener ids with a pickup currently running, so a flapping socket
     /// cannot stack overlapping drains of the same mailbox.
     pickup_in_flight: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// Dispatcher + per-identity drains, aborted on [`Messaging::shutdown`].
+    /// The runtime's own long-lived tasks — dispatcher, connection poller,
+    /// transport supervisor, pickup collector — aborted on
+    /// [`Messaging::shutdown`].
+    ///
+    /// Per-identity drains are **not** here: they live on their
+    /// [`IdentityWire`], so that removing one listener aborts its drain without
+    /// touching another's (see [`quiesce_wire`]).
     tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
@@ -375,13 +429,29 @@ impl Messaging {
         self.inner.identities.read().await.keys().cloned().collect()
     }
 
-    /// Remove a listener: drop its transport (closing the socket) and forget its
-    /// wire. Queued outbox entries pinned to it stay queued — they are bound to an
-    /// identity, and re-routing them would send from the wrong sender — and settle
-    /// visibly when their delivery window expires.
+    /// Remove a listener: close its mediator socket, stop its drain, and forget
+    /// its wire. Queued outbox entries pinned to it stay queued — they are bound
+    /// to an identity, and re-routing them would send from the wrong sender — and
+    /// settle visibly when their delivery window expires.
+    ///
+    /// **Returns with the socket closed**, because every caller's next move is
+    /// either to add a listener for the same DID (`reconnect_persona_listener_io`,
+    /// the supervisor's rebuild, a re-join after a community was removed) or to
+    /// leave that DID unserved. Both are wrong if the old socket is still up: see
+    // Not an intra-doc link: `quiesce_wire` is private, and a public item linking
+    // to it fails `rustdoc -D warnings`.
+    /// `quiesce_wire` for what that costs.
+    ///
+    /// The ATM's remaining teardown finishes in a detached task. It is bounded
+    /// (5 s at worst, waiting on the SDK's deletion handler) but this is called
+    /// from the state-handler loop, which must not park on it (R13).
     pub async fn remove_listener(&self, listener_id: &str) {
         self.inner.service.remove_transport(listener_id);
-        self.inner.identities.write().await.remove(listener_id);
+        let removed = self.inner.identities.write().await.remove(listener_id);
+        if let Some(wire) = removed {
+            let atm = quiesce_wire(listener_id, wire).await;
+            tokio::spawn(async move { atm.graceful_shutdown().await });
+        }
     }
 
     /// This listener's live connection state, or `None` if not installed.
@@ -586,17 +656,23 @@ impl Messaging {
         Ok(handed_off)
     }
 
-    /// Stop every drain and the dispatcher, and drop all transports.
+    /// Stop every drain and the dispatcher, and close every transport.
+    ///
+    /// Unlike [`remove_listener`](Self::remove_listener) this **awaits** each
+    /// ATM's full shutdown: a caller that shuts the runtime down and then builds
+    /// a new one (the join flow does exactly that) would otherwise race its own
+    /// orphans for the same DIDs.
     pub async fn shutdown(&self) {
         let handles: Vec<_> = std::mem::take(&mut *self.inner.tasks.lock().expect("tasks mutex"));
         for handle in handles {
             handle.abort();
         }
-        let ids: Vec<String> = self.inner.identities.read().await.keys().cloned().collect();
-        for id in ids {
+        let wires: Vec<(String, IdentityWire)> =
+            self.inner.identities.write().await.drain().collect();
+        for (id, wire) in wires {
             self.inner.service.remove_transport(&id);
+            quiesce_wire(&id, wire).await.graceful_shutdown().await;
         }
-        self.inner.identities.write().await.clear();
     }
 }
 
@@ -846,23 +922,39 @@ pub async fn add_listener(service: &Messaging, spec: &ListenerSpec) -> Result<()
         .inner
         .service
         .add_transport(spec.id.clone(), transport.clone());
-    service.inner.identities.write().await.insert(
-        spec.id.clone(),
-        IdentityWire {
-            atm,
-            profile,
-            did: spec.did.clone(),
-            spec: spec.clone(),
-        },
-    );
 
+    // The drain belongs to this identity, so its handle rides on the wire: it has
+    // to die with the listener, and it holds the transport Arc that keeps the ATM
+    // (and its socket) alive until it does.
     let drain = tokio::spawn(drain_loop_via(
         service.inner.outbox.clone(),
         spec.id.clone(),
         transport,
         DRAIN_INTERVAL,
     ));
-    service.inner.tasks.lock().expect("tasks mutex").push(drain);
+    let displaced = service.inner.identities.write().await.insert(
+        spec.id.clone(),
+        IdentityWire {
+            atm,
+            profile,
+            did: spec.did.clone(),
+            spec: spec.clone(),
+            drain,
+        },
+    );
+
+    // Nothing should reach here holding this id — every caller checks
+    // `has_listener` or removes first — but an id inserted over silently drops the
+    // old wire, and a dropped wire is a socket that never closes. Tear it down and
+    // say so, rather than leaving the two to duel over the DID.
+    if let Some(old) = displaced {
+        tracing::warn!(
+            listener = %crate::display::truncate_did(&spec.id, 32),
+            "a listener was installed over an existing one; closing the one it replaced"
+        );
+        let atm = quiesce_wire(&spec.id, old).await;
+        tokio::spawn(async move { atm.graceful_shutdown().await });
+    }
 
     debug!(listener = %spec.id, "listener installed on the delivery layer");
     Ok(())

@@ -8,6 +8,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Stopping a listener left its mediator socket open, so the next listener for
+  the same DID fought it forever.** `Messaging::remove_listener` dropped the
+  identity's wire and nothing more. That closes nothing:
+  `affinidi-messaging-sdk` has no `Drop` for `ATM` — the websocket task holds its
+  own state and keeps reconnecting on its timer — and the identity's outbox drain
+  still held the transport that owns the ATM. So the socket stayed up, holding the
+  mediator's one-socket-per-DID slot, invisible to `has_listener`. Anything that
+  re-added that DID (a community going inactive and then being re-joined, a
+  mediator change, the supervisor's own rebuild — which leaked another socket per
+  attempt) opened a second one, and the mediator evicted each in favour of the
+  other indefinitely. It read as a network fault: `Listener '…' disconnected (no
+  transport error reported)` every 30-60 s, `cycling rapidly` warnings, and a
+  restart as the only cure.
+
+  Removal now aborts that listener's drain and closes its websocket **before it
+  returns**, then finishes the ATM's teardown detached so the state-handler loop
+  never parks on it; `shutdown` awaits the same teardown, because a caller that
+  rebuilds the runtime would otherwise race its own orphans. Installing over an
+  existing id — which no caller should do — tears the displaced wire down and
+  warns rather than dropping it silently. Covered by a mediator-backed regression
+  test that remove/re-adds one DID and fails if the new listener is evicted.
+
 - **The admin credential was doing two irreconcilable jobs.** `ProtectedConfig`'s
   encryption key was `HKDF(admin_credential_private_key, …)`, which made one
   value both an **authorisation grant** designed to rotate (`acl/swap-key`) and
