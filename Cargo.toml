@@ -40,10 +40,22 @@ openvtc-core = { version = "0.3", path = "openvtc-core", default-features = fals
 dtg-credentials = "0.2"
 
 aes-gcm = "0.11"
-argon2 = "0.5"
+# The one direct requirement in this workspace that was behind its latest
+# release. Safe to move even though it derives key material: Argon2id is a
+# specified KDF and `derive_argon2_key` calls `hash_password_into`, its plain
+# implementation — same algorithm, version and params in, same 32 bytes out. So
+# the unlock code and the `ProtectedConfig` seed are byte-identical across the
+# bump and every existing config still opens. What 0.6 actually breaks is the
+# `password-hash` 0.6 PHC-string surface, which we do not touch.
+#
+# It does not resolve the 0.5/0.6 duplicate, and is not trying to: 0.5.3 is
+# `affinidi-messaging-mediator-common`'s requirement, reaching us through
+# `affinidi-messaging-sdk`, and no line we control moves it. The bump puts us on
+# the same copy as `vta-service` rather than on the older one.
+argon2 = "0.6"
 # 0.8.5 is `vta-sdk` 0.27's and `vta-service` 0.19's own requirement — the floor
 # is set by the graph, and this line only records it.
-affinidi-tdk = "0.8.5"
+affinidi-tdk = "0.10"
 affinidi-data-integrity = "0.7"
 # The delivery layer (D1). Replaced `affinidi-messaging-didcomm-service`, the
 # type-routed framework both VTI services had already cut over from (#189).
@@ -95,7 +107,7 @@ affinidi-messaging-core = "0.1.6"
 # Earlier floors are below this one by construction: 0.19.4 (#694) was the
 # `live_stream_next*` read guard that blocked `stop_websocket` for the remainder
 # of a 10s poll window, so quitting the TUI mid-window paid it.
-affinidi-messaging-sdk = "0.19.10"
+affinidi-messaging-sdk = "0.21"
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
 futures-util = "0.3"
 # Agent names (DID shortcuts). `agent-names` carries the parse /
@@ -108,7 +120,7 @@ futures-util = "0.3"
 # this line states it. Stating it keeps the manifest honest about what the graph
 # actually resolves rather than implying 0.1.2 is still viable.
 agent-names = "0.1.3"
-affinidi-did-resolver-cache-sdk = { version = "0.8.19", features = [
+affinidi-did-resolver-cache-sdk = { version = "0.8.34", features = [
   "agent-names",
 ] }
 anyhow = "1.0"
@@ -200,8 +212,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # 0.9 → 0.11 move needed a third crate to follow as well: the messaging stack
 # carries `trust-tasks-rs` types in its own API, so `affinidi-messaging-sdk` has
 # a floor of 0.19.9 above for the same reason (affinidi-tdk-rs #717).
-trust-tasks-rs = "0.11"
-trust-tasks-capability-client = "0.9"
+trust-tasks-rs = "0.17"
+trust-tasks-capability-client = "0.17"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
@@ -251,7 +263,7 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # 0.25.1 beside 0.27.0. That is the third consecutive cycle it has done so — see
 # the floor note on `did-git-sign` in `openvtc/Cargo.toml`, which is where the
 # obligation is written down.
-vta-sdk = { version = "0.27", features = [
+vta-sdk = { version = "0.31", features = [
   "session",
   "client",
   # The SAME per-platform credential-store registration pnm-cli uses
@@ -289,3 +301,29 @@ openpgp-card-rpgp = "0.8"
 lto = true
 codegen-units = 1
 strip = "symbols"
+
+# `did-git-sign` 0.4.6 — the latest published release — requires `vta-sdk ^0.27`,
+# and that one edge re-splits `vta-sdk`, `affinidi-tdk`, `affinidi-messaging-sdk`
+# and `trust-tasks-rs` into two copies each against this workspace's 0.31. It does
+# not merely fail to unify types: `vta-keys` 0.2.9 does not compile against
+# `vti-common` 0.15, so the whole workspace fails to build.
+#
+# OpenVTC/verifiable-git-infrastructure#33 is the release that ends it — the VGI
+# workspace onto vta-sdk 0.31 and TDK 0.10, no source change, green on its own
+# pipeline. Its head is a better dependency than the stale published crate, so
+# this workspace takes it directly rather than waiting on the publish: the
+# requirement in `openvtc/Cargo.toml` still names `0.4.6` (the version VGI carries
+# at that rev), and this patch is what decides where that 0.4.6 comes from.
+#
+# Pinned by `rev`, never by `branch` — a further push to that PR must not silently
+# change what this builds against. VGI's own manifest pins `trql-client` the same
+# way, and both git sources are allow-listed in `deny.toml`.
+#
+# **Delete this whole block the moment VGI publishes 0.4.7 on vta-sdk 0.31**, and
+# raise the floor in `openvtc/Cargo.toml` to name that release. `publish = false`
+# here, so a git source costs this workspace nothing on its own release path — but
+# it is still a dependency on an unmerged branch, which is a thing to unwind
+# rather than to keep.
+[patch.crates-io]
+did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "462032cfd4adcec9bc00ee957e2e60b7e42c7dac" }
+vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "462032cfd4adcec9bc00ee957e2e60b7e42c7dac" }

@@ -194,7 +194,16 @@ pub async fn process_inbound_message(
     // document's `threadId` (== our request id). Foreign trust tasks riding
     // the same envelope type are ignored here.
     if message.typ == openvtc_core::capabilities::TRUST_TASK_ENVELOPE_TYPE {
-        if let Some((thid, reply)) = openvtc_core::capabilities::parse_envelope_reply(&message.body)
+        // trust-tasks-capability-client 0.17 folded the §4.9 correlation check
+        // into the parse: `parse_envelope_reply` now takes the thread id the
+        // caller is waiting on. This is a fan-in point that is waiting on
+        // nothing in particular, so the document is read first and classified
+        // against its own `threadId`; the correlation that matters is still
+        // `apply_capability_replies` matching it to the open view's
+        // `pending_thid`, and an uncorrelated reply is dropped there.
+        if let Some((thid, doc)) =
+            openvtc_core::capabilities::parse_envelope_document(&message.body)
+            && let Some(reply) = openvtc_core::capabilities::parse_capability_reply(&doc, &thid)
         {
             capability_replies.push((thid, reply));
         }

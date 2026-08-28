@@ -27,7 +27,7 @@ use crate::pack_and_send;
 pub use trust_tasks_capability_client::{
     CAPABILITY_DISABLE_TYPE, CAPABILITY_ENABLE_TYPE, CAPABILITY_LIST_TYPE, CapabilityReply,
     CapabilitySummary, TRUST_TASK_ENVELOPE_TYPE, build_list_document, build_toggle_document,
-    parse_capability_reply, parse_envelope_reply,
+    parse_capability_reply, parse_envelope_document, parse_envelope_reply,
 };
 
 /// Attach an `eddsa-jcs-2022` Data-Integrity proof over `doc` (minus the
