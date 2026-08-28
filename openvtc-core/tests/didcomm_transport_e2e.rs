@@ -360,3 +360,75 @@ async fn the_supervisor_does_not_churn_a_healthy_transport() {
         "the listener is still connected after several supervisor ticks"
     );
 }
+
+/// Removing a listener must actually close its socket — not just forget it.
+///
+/// The regression: `remove_listener` dropped the `IdentityWire` and nothing else.
+/// The SDK has no `Drop` for `ATM`, and the identity's outbox drain still held the
+/// transport, so the websocket stayed up and kept reconnecting on its own timer.
+/// Re-adding a listener for the same DID — a community going inactive and then
+/// being re-joined, a mediator change, the supervisor's rebuild — then opened a
+/// second socket, and the mediator's one-socket-per-DID rule made the two evict
+/// each other indefinitely. It presented as a listener flapping every 30-60 s with
+/// "no transport error reported".
+///
+/// This is deliberately behavioural: the wire is gone from the map either way, so
+/// the only way to tell a closed socket from an orphaned one is to ask the
+/// mediator, by re-adding the DID and seeing whether the new listener is left
+/// alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "slow: spawns a real mediator and watches the re-added listener for 30s"]
+async fn a_re_added_listener_does_not_duel_with_the_removed_one() {
+    init_test_tracing();
+    let mediator = MockMediator::start().await.expect("mediator start");
+    let alice = mediator.profile("alice").expect("alice");
+    let bob_did = mediator.profile("bob").expect("bob").did;
+
+    // Built here rather than via `start_production_service`, because the same spec
+    // has to be installed twice.
+    let listener = relationship_listener_config_from_secrets(
+        &alice.did,
+        &bob_did,
+        &alice.mediator_did,
+        alice.secrets.clone(),
+    );
+    let listener_id = listener.id.clone();
+
+    let (tx, _rx) = mpsc::unbounded_channel::<DIDCommEvent>();
+    let service = Messaging::start(tx);
+    add_listener(&service, &listener)
+        .await
+        .expect("the listener installs");
+    service
+        .wait_connected(&listener_id, Duration::from_secs(20))
+        .await
+        .expect("the listener connects");
+
+    service.remove_listener(&listener_id).await;
+    add_listener(&service, &listener)
+        .await
+        .expect("the listener re-installs");
+    service
+        .wait_connected(&listener_id, Duration::from_secs(20))
+        .await
+        .expect("the re-added listener connects");
+
+    // Watch from here: an orphan is not idle, it reconnects on its own timer, so
+    // the eviction shows up as a disconnect on the listener that is still wanted.
+    let mut status = service.subscribe();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+
+    while let Ok(event) = status.try_recv() {
+        if let openvtc_core::didcomm::ListenerStatus::Disconnected { listener_id, .. } = event {
+            panic!(
+                "the re-added listener was evicted — the removed listener's socket is still \
+                 open and contending for the DID ({listener_id})"
+            );
+        }
+    }
+    assert_eq!(
+        service.listener_state(&listener_id),
+        Some(openvtc_core::didcomm::ConnState::Connected),
+        "the re-added listener is still connected"
+    );
+}
