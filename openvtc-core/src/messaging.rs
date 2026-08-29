@@ -247,6 +247,42 @@ impl CredentialIssueOutcome {
     };
 }
 
+/// What an inbound DIDComm problem-report meant to the join handler.
+///
+/// A problem-report says "I refused the thing you sent me". This handler can
+/// only interpret one kind: a refusal threaded on a *pending join request*. It
+/// used to return an empty [`StatusOutcome`] for everything else and log a warn
+/// naming the correlation miss — so a community refusing anything else at all
+/// produced, on this client, nothing a user could see.
+///
+/// That is how the broken reciprocal-VMC exchange stayed invisible for its
+/// entire life: the VTC rejected every delivery, said so in a problem-report
+/// threaded on the delivery, and this client discarded each one as "not a join
+/// I know about" while the UI reported the send as a success.
+///
+/// So the miss is now reportable rather than swallowed. This handler still
+/// declines to *interpret* a report it cannot correlate — it genuinely does not
+/// know what failed — but it hands the code and comment back so the caller can
+/// put them where somebody will read them.
+pub struct ProblemReportOutcome {
+    /// The record change, if this report was a join refusal.
+    pub status: StatusOutcome,
+    /// `Some((code, comment))` when the report could not be matched to a
+    /// pending join — i.e. it refused something else this client sent, and
+    /// nothing here knows what. Surface it; do not drop it.
+    pub unclaimed: Option<(String, String)>,
+}
+
+impl ProblemReportOutcome {
+    /// A report this handler recognised and acted on.
+    fn claimed(status: StatusOutcome) -> Self {
+        Self {
+            status,
+            unclaimed: None,
+        }
+    }
+}
+
 /// Outcome of applying a VTC `join-requests/status-response` to a community.
 pub struct StatusOutcome {
     /// The community record changed and the config needs saving.
@@ -484,20 +520,23 @@ pub fn handle_join_problem_report(
     account: &mut Account,
     message: &Message,
     from_did: &str,
-) -> StatusOutcome {
+) -> ProblemReportOutcome {
     use vta_sdk::protocols::problem_report_codes as codes;
 
+    let (code, comment) = vta_sdk::protocols::extract_problem_report(&message.body);
+    let unclaimed = || ProblemReportOutcome {
+        status: StatusOutcome::NONE,
+        unclaimed: Some((code.clone(), comment.clone())),
+    };
+
     let Some(thid) = message.thid.as_deref() else {
-        warn!("join problem-report without thid — ignoring");
-        return StatusOutcome::NONE;
+        return unclaimed();
     };
     let Ok(placeholder) = Uuid::parse_str(thid) else {
-        return StatusOutcome::NONE;
+        return unclaimed();
     };
-    let (code, comment) = vta_sdk::protocols::extract_problem_report(&message.body);
     let Some(record) = account.membership_by_pending_request(from_did, placeholder) else {
-        warn!(vtc = %from_did, code = %code, "problem-report did not match a pending request id — ignoring");
-        return StatusOutcome::NONE;
+        return unclaimed();
     };
     let persona = record.persona_ref;
 
@@ -508,15 +547,15 @@ pub fn handle_join_problem_report(
             comment = %comment,
             "join rejected by VTC — invitation not accepted (now Rejected)"
         );
-        StatusOutcome {
+        ProblemReportOutcome::claimed(StatusOutcome {
             changed: true,
             inactivated: Some(persona),
-        }
+        })
     } else {
         // bad-request / internal / other: the submit didn't admit, but it's not a
         // policy rejection — surface the detail and leave the record Pending.
         warn!(vtc = %from_did, code = %code, comment = %comment, "join submit failed — left Pending");
-        StatusOutcome::NONE
+        ProblemReportOutcome::claimed(StatusOutcome::NONE)
     }
 }
 
@@ -1605,6 +1644,67 @@ mod tests {
         .finalize()
     }
 
+    /// A problem-report on a thread no pending join matches must be reported,
+    /// not swallowed.
+    ///
+    /// This is the exact shape that hid the broken reciprocal-VMC exchange: the
+    /// community refused every delivery and said so in a report threaded on the
+    /// delivery, which correlates to no join, so the handler returned "nothing
+    /// happened" and the only trace was a warn naming the correlation miss
+    /// rather than the failure.
+    #[test]
+    fn a_report_matching_no_pending_join_is_handed_back_not_dropped() {
+        let vtc = "did:webvh:example:vtc";
+        let rid = Uuid::new_v4();
+        let mut acct = pending_account(vtc, rid);
+
+        // Threaded on something else entirely — a members/vmc delivery, say.
+        let unrelated = Uuid::new_v4();
+        let out = handle_join_problem_report(
+            &mut acct,
+            &problem_report(
+                &unrelated.to_string(),
+                vtc,
+                "e.p.msg.bad-request",
+                "member vmc has no top-level `id`",
+            ),
+            vtc,
+        );
+
+        let (code, comment) = out
+            .unclaimed
+            .expect("an uncorrelated report must be reported");
+        assert_eq!(code, "e.p.msg.bad-request");
+        assert!(
+            comment.contains("member vmc"),
+            "the community's own words must survive: {comment}"
+        );
+        assert!(
+            !out.status.changed,
+            "it still must not touch the pending join it does not belong to"
+        );
+        assert!(matches!(
+            only(&acct, vtc).status,
+            CommunityStatus::Pending { .. }
+        ));
+    }
+
+    /// A report with no thread id at all cannot be correlated either, and is
+    /// equally not a reason to stay quiet.
+    #[test]
+    fn a_report_with_no_thread_id_is_still_reported() {
+        let vtc = "did:webvh:example:vtc";
+        let mut acct = pending_account(vtc, Uuid::new_v4());
+        let mut msg = problem_report("ignored", vtc, "e.p.msg.internal", "boom");
+        msg.thid = None;
+
+        let out = handle_join_problem_report(&mut acct, &msg, vtc);
+        assert!(
+            out.unclaimed.is_some(),
+            "no thid is not a reason to drop it"
+        );
+    }
+
     #[test]
     fn problem_report_forbidden_rejects() {
         let vtc = "did:webvh:example:vtc";
@@ -1621,8 +1721,8 @@ mod tests {
             ),
             vtc,
         );
-        assert!(out.changed);
-        assert!(out.inactivated.is_some());
+        assert!(out.status.changed);
+        assert!(out.status.inactivated.is_some());
         assert!(matches!(only(&acct, vtc).status, CommunityStatus::Rejected));
     }
 
@@ -1638,8 +1738,12 @@ mod tests {
             vtc,
         );
         assert!(
-            !out.changed,
+            !out.status.changed,
             "a client/transient error must not mark Rejected"
+        );
+        assert!(
+            out.unclaimed.is_none(),
+            "a report threaded on a known pending join is this handler's to interpret"
         );
         assert!(matches!(
             only(&acct, vtc).status,

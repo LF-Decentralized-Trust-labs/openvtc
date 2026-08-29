@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A community could refuse something and this client would say nothing.**
+  Every inbound DIDComm problem-report went through the *join* handler, which
+  correlates the thread id against a pending join request. A report threaded on
+  anything else — a `members/vmc` delivery, say — matched nothing, and was
+  dropped with a warn naming the correlation miss rather than the failure.
+
+  Paired with a send that reported success on a bare local `Ok`, that is how a
+  completely broken reciprocal-VMC exchange stayed invisible for its entire
+  life: the community rejected every delivery, said so, and the UI reported
+  each one as sent.
+
+  The join handler still declines to *interpret* a report it cannot correlate —
+  it genuinely does not know what failed — but it now hands the code and comment
+  back instead of swallowing them, and the dispatcher writes them to the
+  community log. "We don't know which request" is not a reason to say nothing.
+
+  Two related honesty fixes: issuing a membership credential now says "sent —
+  waiting for the community to acknowledge it" rather than claiming it was
+  received, matching the personhood verbs beside it; and the community's
+  acknowledgement receipt, previously an `info!` in a log file, is written to
+  the community log, since it is the only positive evidence the member ever gets
+  that their half of the pair landed.
+
 - **A reciprocal membership credential never closed the join request it
   answered.** `vtc/members/vmc/0.1` carries an optional `requestId` — the
   retired `join-requests/accept` semantics — and this client always sent
