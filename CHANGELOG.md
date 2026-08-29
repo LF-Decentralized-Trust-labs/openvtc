@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A renamed machine kept announcing its old name.** `displayName` is written
+  once, at registration, and `device/register` is intentionally refused from the
+  second launch on — so nothing could ever change it. Rename the machine, or run
+  the install under a different profile, and its binding went on identifying it
+  by a name that no longer picked it out of the list the name exists for.
+
+  The heartbeat now carries the current name (vta-sdk 0.32 /
+  `device_heartbeat_named`), which the VTA applies only when it differs and only
+  to the binding the caller authenticated as. A drift spotted in the listing is
+  corrected immediately rather than on the next beat: the correction only travels
+  on a heartbeat, so an install opened and closed inside five minutes would
+  otherwise never send one and the stale name would outlive every launch.
+
 - **The activity log reported the mediator's scheduled reconnect as a fault,
   every twelve minutes.** The messaging stack reconnects on purpose: the
   mediator's access token is refreshed at 80% of its ~900 s life and the SDK's
