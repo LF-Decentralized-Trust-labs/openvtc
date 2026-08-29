@@ -111,6 +111,8 @@ impl CommunityJob {
                 &self.member_did,
                 &self.vtc_did,
                 &self.mediator,
+                // Unprompted re-issue: there is no open join to close.
+                None,
             )
             .await
             .map(|_| ()),

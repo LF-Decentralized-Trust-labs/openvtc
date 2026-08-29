@@ -55,6 +55,7 @@ pub(crate) async fn issue_member_vmc_for(
     tdk: &TDK,
     vtc_did: &str,
     persona_id: openvtc_core::config::account::PersonaId,
+    closes_request: Option<uuid::Uuid>,
 ) -> Result<uuid::Uuid, openvtc_core::errors::OpenVTCError> {
     use openvtc_core::errors::OpenVTCError;
     let id = config
@@ -76,6 +77,7 @@ pub(crate) async fn issue_member_vmc_for(
         &member_did,
         vtc_did,
         &mediator,
+        closes_request,
     )
     .await
 }
@@ -237,7 +239,35 @@ pub async fn process_inbound_message(
             .memberships_for(&from_did)
             .iter()
             .any(|m| m.status.is_active());
-        let changed = handle_credential_issue(&mut config.account, message, &from_did);
+        let outcome = handle_credential_issue(&mut config.account, message, &from_did);
+        // Admission is the moment the member owes the community its half of
+        // the membership pair. Sending it here — naming the join request it
+        // closes — is what `vtc/members/vmc/0.1`'s `requestId` is for; without
+        // it the community's request sits `Approved` indefinitely, waiting for
+        // a reciprocal that only ever arrived unlinked, if at all.
+        //
+        // Best-effort by nature: the credential we just received is already
+        // stored and the membership is already Active. A failure to send ours
+        // back is logged and leaves the join open — recoverable, either by the
+        // member issuing manually or by the community asking with
+        // `members/request-vmc`.
+        if let Some((persona_id, request_id)) = outcome.closed_join {
+            match issue_member_vmc_for(config, tdk, &from_did, persona_id, Some(request_id)).await {
+                Ok(_) => info!(
+                    vtc = %from_did,
+                    %request_id,
+                    "sent our reciprocal membership credential, closing the join request"
+                ),
+                Err(e) => warn!(
+                    vtc = %from_did,
+                    %request_id,
+                    error = %e,
+                    "could not send our reciprocal membership credential — the community's \
+                     join request stays open"
+                ),
+            }
+        }
+        let changed = outcome.changed;
         if changed {
             let now_active = config
                 .account
@@ -366,7 +396,7 @@ pub async fn process_inbound_message(
                     .membership(&from_did, persona_id)
                     .is_some_and(|c| c.status.is_active()) =>
             {
-                match issue_member_vmc_for(config, tdk, &from_did, persona_id).await {
+                match issue_member_vmc_for(config, tdk, &from_did, persona_id, None).await {
                     Ok(_) => info!(
                         vtc = %from_did,
                         "auto-issued our membership credential in response to the VTC's request"

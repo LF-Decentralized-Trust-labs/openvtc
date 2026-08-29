@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A reciprocal membership credential never closed the join request it
+  answered.** `vtc/members/vmc/0.1` carries an optional `requestId` — the
+  retired `join-requests/accept` semantics — and this client always sent
+  `None`, so a community's join request sat `Approved` indefinitely after the
+  member was admitted and had sent their half back.
+
+  Not an oversight in the wire body: the id was *destroyed* before anything
+  could read it. `activate` replaces `Pending { request_id }` with `Active`, so
+  by the time the caller looked there was nothing to find.
+  `handle_credential_issue` now returns a `CredentialIssueOutcome` (modelled on
+  the `StatusOutcome` beside it) reporting the join it closed, captured before
+  activation, and admission sends the reciprocal VMC naming it.
+
+  **Behaviour change:** receiving the community's membership credential now
+  auto-issues ours back. That is what admission means — membership is a pair,
+  and the community is holding the request open waiting for our half — and this
+  client already auto-answers `members/request-vmc` the same way. Best-effort:
+  a failure is logged and leaves the join open, recoverable by issuing manually
+  or by the community asking.
+
 - **A relationship credential carried no identifier of its own.** `new_vrc`
   leaves `id` unset, so every VRC this client issued went out without one. A
   credential with no identifier cannot be stored under one — a peer keying

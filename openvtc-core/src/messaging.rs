@@ -215,6 +215,38 @@ pub fn handle_join_submit_receipt(
     true
 }
 
+/// What a `credential-exchange/issue` did, beyond mutating the account.
+///
+/// A `bool` could not carry the one thing the caller needs: membership between
+/// a persona and a VTC is a *pair* of credentials, and receiving the
+/// community's half is the moment the member owes theirs back. Closing the
+/// join that way is what `vtc/members/vmc/0.1`'s `requestId` is for.
+///
+/// The id has to be reported from here because activation destroys it —
+/// `activate` replaces `Pending { request_id }` with `Active`, so by the time
+/// the caller looks, there is nothing to read. That is why every reciprocal
+/// VMC this client has ever sent carried `requestId: None`, leaving the
+/// community's join request sitting `Approved` forever.
+///
+/// Modelled on [`StatusOutcome`], for the same reason it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CredentialIssueOutcome {
+    /// A record changed and the config needs saving.
+    pub changed: bool,
+    /// The membership just went Active, closing this join request — the
+    /// persona that owes the community its reciprocal VMC, and the request id
+    /// that delivery should name. `None` when this credential did not admit
+    /// anyone (a role VEC on an already-active membership, say).
+    pub closed_join: Option<(PersonaId, uuid::Uuid)>,
+}
+
+impl CredentialIssueOutcome {
+    pub const NONE: CredentialIssueOutcome = CredentialIssueOutcome {
+        changed: false,
+        closed_join: None,
+    };
+}
+
 /// Outcome of applying a VTC `join-requests/status-response` to a community.
 pub struct StatusOutcome {
     /// The community record changed and the config needs saving.
@@ -595,8 +627,15 @@ pub fn handle_join_trust_task_error(
 /// matching community and, for the membership credential (VMC), flip the
 /// membership to `Active`. The issuing VTC is the authcrypt sender; the
 /// credential must be issued by that VTC and to the community's own persona
-/// (anti-misdelivery). Returns `true` if a record was updated.
-pub fn handle_credential_issue(account: &mut Account, message: &Message, from_did: &str) -> bool {
+/// (anti-misdelivery).
+///
+/// See [`CredentialIssueOutcome`] for why this reports the join request it
+/// closed rather than just whether anything changed.
+pub fn handle_credential_issue(
+    account: &mut Account,
+    message: &Message,
+    from_did: &str,
+) -> CredentialIssueOutcome {
     // The known-holder delivery carries the VC at `credential_response.credential`.
     // `sealed` issues (invite / air-gap) are not handled here.
     let Some(credential) = message
@@ -606,7 +645,7 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         .cloned()
     else {
         warn!(vtc = %from_did, "credential-issue without credential_response.credential — ignoring");
-        return false;
+        return CredentialIssueOutcome::NONE;
     };
 
     // Anti-misdelivery: issuer must be this community's VTC. The credential's
@@ -619,7 +658,7 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
     });
     if issuer != Some(from_did) {
         warn!(vtc = %from_did, ?issuer, "issued credential's issuer is not the community VTC — ignoring");
-        return false;
+        return CredentialIssueOutcome::NONE;
     }
     let Some(subject) = credential
         .get("credentialSubject")
@@ -627,30 +666,43 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         .and_then(Value::as_str)
     else {
         warn!(vtc = %from_did, "issued credential has no subject — ignoring");
-        return false;
+        return CredentialIssueOutcome::NONE;
     };
     // The subject must be one of our personas, and that persona must hold a
     // membership with this community.
     let Some(persona_id) = account.persona_id_for_did(subject) else {
         warn!(vtc = %from_did, "issued credential subject is not our persona — ignoring");
-        return false;
+        return CredentialIssueOutcome::NONE;
     };
 
     // Classify the credential against the typed registry — the one place that
     // knows credential kinds, so a new kind is handled here without edits.
     let Some(kind) = crate::CredentialKind::from_credential(&credential) else {
         warn!(vtc = %from_did, "issued credential is of no known kind — ignoring");
-        return false;
+        return CredentialIssueOutcome::NONE;
     };
 
     let Some(record) = account.membership_mut(from_did, persona_id) else {
         warn!(vtc = %from_did, "credential-issue for a community we don't hold a matching membership with — ignoring");
-        return false;
+        return CredentialIssueOutcome::NONE;
     };
     record.credentials.insert(kind, credential);
-    if kind.activates_membership() && !record.status.is_active() {
+
+    // Capture the join request id *before* activating. `activate` replaces
+    // `Pending { request_id }` with `Active`, so this is the last moment the
+    // id exists — which is why a caller could not simply read it back
+    // afterwards and why the reciprocal VMC has always gone out with
+    // `requestId: None`.
+    let closed_join = if kind.activates_membership() && !record.status.is_active() {
+        let request_id = match record.status {
+            crate::config::account::CommunityStatus::Pending { request_id } => Some(request_id),
+            _ => None,
+        };
         record.activate(chrono::Utc::now());
-    }
+        request_id.map(|id| (persona_id, id))
+    } else {
+        None
+    };
     info!(
         vtc = %from_did,
         credential_kind = %kind.config_key(),
@@ -659,7 +711,10 @@ pub fn handle_credential_issue(account: &mut Account, message: &Message, from_di
         activates_membership = kind.activates_membership(),
         "stored issued credential",
     );
-    true
+    CredentialIssueOutcome {
+        changed: true,
+        closed_join,
+    }
 }
 
 /// Vet an inbound `VRCIssued` message against local state (task R2).
@@ -1670,6 +1725,89 @@ mod tests {
         })
     }
 
+    /// Admission must report the join request it closed.
+    ///
+    /// This is the whole reason the handler returns a struct rather than a
+    /// bool: `activate` replaces `Pending { request_id }` with `Active`, so the
+    /// id is destroyed by the very call that makes it relevant. A caller
+    /// looking afterwards finds nothing — which is why every reciprocal VMC
+    /// this client ever sent carried `requestId: None`, leaving the community's
+    /// join request `Approved` forever.
+    #[test]
+    fn admission_reports_the_join_request_it_closed() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+        let mut acct = account_with_persona(vtc, persona);
+
+        // The id the fixture's pending membership is waiting on.
+        let pending_id = match only(&acct, vtc).status {
+            crate::config::account::CommunityStatus::Pending { request_id } => request_id,
+            ref other => panic!("fixture should start Pending, got {other:?}"),
+        };
+        let persona_id = only(&acct, vtc).persona_ref;
+
+        let m = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "MembershipCredential"],
+                vtc,
+                persona,
+            ),
+        );
+        let outcome = handle_credential_issue(&mut acct, &m, vtc);
+
+        assert_eq!(
+            outcome.closed_join,
+            Some((persona_id, pending_id)),
+            "the outcome must carry the request id and the persona that owes the reciprocal"
+        );
+        // And the id really is gone from the record by now — the point of
+        // capturing it rather than reading it back.
+        assert!(only(&acct, vtc).status.is_active());
+    }
+
+    /// A credential that does not admit anyone closes no join. A role VEC
+    /// landing on an already-active membership must not re-send a reciprocal
+    /// VMC naming a request that was closed long ago.
+    #[test]
+    fn a_credential_that_admits_nobody_closes_no_join() {
+        let vtc = "did:webvh:example:vtc";
+        let persona = "did:webvh:example:persona";
+        let mut acct = account_with_persona(vtc, persona);
+
+        // Admit first, so the membership is already Active.
+        let vmc = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "MembershipCredential"],
+                vtc,
+                persona,
+            ),
+        );
+        assert!(
+            handle_credential_issue(&mut acct, &vmc, vtc)
+                .closed_join
+                .is_some()
+        );
+
+        // A second membership credential on an active membership: stored, but
+        // it admits nobody, so there is no join to close.
+        let again = issue(
+            vtc,
+            vc(
+                &["VerifiableCredential", "MembershipCredential"],
+                vtc,
+                persona,
+            ),
+        );
+        let outcome = handle_credential_issue(&mut acct, &again, vtc);
+        assert!(outcome.changed, "the credential is still stored");
+        assert_eq!(
+            outcome.closed_join, None,
+            "an already-active membership has no open join to close"
+        );
+    }
+
     #[test]
     fn credential_issue_vmc_activates_and_stores() {
         let vtc = "did:webvh:example:vtc";
@@ -1684,7 +1822,7 @@ mod tests {
                 persona,
             ),
         );
-        assert!(handle_credential_issue(&mut acct, &m, vtc));
+        assert!(handle_credential_issue(&mut acct, &m, vtc).changed);
 
         let rec = only(&acct, vtc);
         assert!(rec.status.is_active());
@@ -1708,7 +1846,7 @@ mod tests {
                 persona,
             ),
         );
-        assert!(handle_credential_issue(&mut acct, &m, vtc));
+        assert!(handle_credential_issue(&mut acct, &m, vtc).changed);
 
         let rec = only(&acct, vtc);
         assert!(
@@ -1734,7 +1872,7 @@ mod tests {
                 vc(&["VerifiableCredential", kind.vc_type()], vtc, persona),
             );
             assert!(
-                handle_credential_issue(&mut acct, &m, vtc),
+                handle_credential_issue(&mut acct, &m, vtc).changed,
                 "kind {kind:?} should be accepted",
             );
             let rec = only(&acct, vtc);
@@ -1765,7 +1903,7 @@ mod tests {
                 persona,
             ),
         );
-        assert!(!handle_credential_issue(&mut acct, &m, vtc));
+        assert!(!handle_credential_issue(&mut acct, &m, vtc).changed);
         assert!(!only(&acct, vtc).status.is_active());
     }
 
@@ -1784,7 +1922,7 @@ mod tests {
                 "did:webvh:someone-else",
             ),
         );
-        assert!(!handle_credential_issue(&mut acct, &m, vtc));
+        assert!(!handle_credential_issue(&mut acct, &m, vtc).changed);
         assert!(!only(&acct, vtc).status.is_active());
     }
 
