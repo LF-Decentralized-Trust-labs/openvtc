@@ -42,9 +42,19 @@ pub async fn issue_and_send_member_vmc(
     member_did: &str,
     vtc_did: &str,
     mediator_did: &str,
+    closes_request: Option<Uuid>,
 ) -> Result<Uuid, OpenVTCError> {
     let vc = build_member_vmc(signing_secret, member_did, vtc_did).await?;
-    submit_member_vmc(atm, profile, member_did, vtc_did, mediator_did, vc).await
+    submit_member_vmc(
+        atm,
+        profile,
+        member_did,
+        vtc_did,
+        mediator_did,
+        vc,
+        closes_request,
+    )
+    .await
 }
 
 /// Build + sign the reciprocal member VMC, without sending it. The signing half of
@@ -97,14 +107,19 @@ pub async fn submit_member_vmc(
     vtc_did: &str,
     mediator_did: &str,
     vc: Value,
+    closes_request: Option<Uuid>,
 ) -> Result<Uuid, OpenVTCError> {
-    // `request_id` closes an *approved join request* as a side effect of the
-    // delivery. Neither caller here is join-time — this is the manual "issue
-    // VMC" action and the auto-answer to a VTC `members/request-vmc` — so the
-    // delivery carries no request to close.
+    // `closes_request` closes an *approved join request* as a side effect of
+    // the delivery — `vtc/members/vmc/0.1`'s `requestId`, carrying the retired
+    // `join-requests/accept` semantics.
+    //
+    // It is `Some` only on the join-time delivery, where the community is
+    // still holding the request open waiting for our half. The manual "issue
+    // VMC" action and the auto-answer to a `members/request-vmc` have no
+    // request to close, and pass `None`.
     let body = serde_json::to_value(MemberVmcBody {
         vc,
-        request_id: None,
+        request_id: closes_request.map(|id| id.to_string()),
     })
     .map_err(|e| OpenVTCError::Config(format!("member vmc body serialize: {e}")))?;
 
