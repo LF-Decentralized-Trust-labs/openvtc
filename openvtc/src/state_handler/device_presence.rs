@@ -14,6 +14,11 @@
 //! instance while the first is running. Listing on each heartbeat costs one
 //! extra trust task per interval and turns the mediator's mutual-eviction loop
 //! from a mystery into a sentence.
+//!
+//! The listing has a second use: it is where this install sees the name its own
+//! binding is showing. `displayName` is written once, at registration, and
+//! re-registration is refused — so the heartbeat is the only thing that can
+//! correct a machine that has been renamed since.
 
 use openvtc_core::devices::{self, DeviceRecord};
 use std::collections::BTreeSet;
@@ -89,26 +94,38 @@ pub async fn run(
     loop {
         match devices::list(&client).await {
             Ok(all) => {
+                let mine = all
+                    .iter()
+                    .find(|d| d.is_self(self_id.as_deref(), self_did.as_deref()));
+
                 // Recover our own id from the listing when registration did not
                 // hand it to us, so the loop names us the same way a first launch
                 // does — and so a VTA that stops returning `consumerDid` still
                 // has the id to fall back on.
                 if self_id.is_none()
-                    && let Some(mine) = all
-                        .iter()
-                        .find(|d| d.is_self(None, self_did.as_deref()))
-                        .map(|d| d.device_id.clone())
+                    && let Some(recovered) = mine.map(|d| d.device_id.clone())
                 {
-                    debug!(device_id = %mine, "recovered this install's binding from the listing");
+                    debug!(device_id = %recovered, "recovered this install's binding from the listing");
                     if tx
                         .send(PresenceReport::Registered {
-                            device_id: mine.clone(),
+                            device_id: recovered.clone(),
                         })
                         .is_err()
                     {
                         return;
                     }
-                    self_id = Some(mine);
+                    self_id = Some(recovered);
+                }
+
+                // Correct a drifted `displayName` now rather than on the next
+                // beat. The name only travels on a heartbeat, so an install
+                // opened and closed inside one interval would never send one and
+                // the stale name would outlive every launch.
+                if mine.is_some_and(|d| devices::name_correction_due(d, &profile)) {
+                    debug!("this install's binding shows a stale name; correcting it");
+                    if let Err(e) = devices::heartbeat(&client, &profile).await {
+                        debug!("name correction failed; it will retry on the next beat: {e}");
+                    }
                 }
                 let live = devices::live_siblings(
                     &all,
@@ -128,7 +145,7 @@ pub async fn run(
         if tx.is_closed() {
             return;
         }
-        if let Err(e) = devices::heartbeat(&client).await {
+        if let Err(e) = devices::heartbeat(&client, &profile).await {
             // A missed beat is recoverable — the liveness window tolerates one
             // — so this is debug, not a warning the user needs to see.
             debug!("device heartbeat failed: {e}");

@@ -250,17 +250,41 @@ fn is_already_registered(e: &vta_sdk::error::VtaError) -> bool {
     msg.contains("alreadyRegistered") || msg.contains("already_registered")
 }
 
-/// Refresh this install's `lastSeenAt`.
+/// Refresh this install's `lastSeenAt`, and its `displayName` if it has drifted.
+///
+/// The name rides here because there is nowhere else it can. It is written once,
+/// at registration, and [`register`] is refused from the second launch on — so a
+/// renamed machine, or a profile renamed under it, would otherwise announce a
+/// name that no longer picks it out of the list the name exists for. The VTA
+/// applies it only when it differs, and only to the binding the caller
+/// authenticated as (VTI #1191).
+///
+/// Sent on every beat rather than only when we believe it changed: this side
+/// cannot know what the maintainer holds without asking, the payload is one short
+/// string on a five-minute timer, and a correction that depends on a local
+/// belief is one that stays wrong when the belief is.
 ///
 /// # Errors
 ///
 /// Any VTA failure.
-pub async fn heartbeat(client: &VtaClient) -> Result<(), OpenVTCError> {
+pub async fn heartbeat(client: &VtaClient, profile: &str) -> Result<(), OpenVTCError> {
     client
-        .device_heartbeat(Some(std::env::consts::OS))
+        .device_heartbeat_named(Some(std::env::consts::OS), Some(&display_name(profile)))
         .await
         .map(|_| ())
         .map_err(|e| OpenVTCError::Vta(format!("device heartbeat failed: {e}")))
+}
+
+/// Whether `row` — this install's own binding — is showing a stale name.
+///
+/// Split out so the presence loop can correct a drifted name *promptly* instead
+/// of waiting out a heartbeat interval. That matters more than it sounds: the
+/// correction only travels on a heartbeat, so an install that is opened and
+/// closed inside five minutes would never send one, and the stale name would
+/// survive every launch.
+#[must_use]
+pub fn name_correction_due(row: &DeviceRecord, profile: &str) -> bool {
+    row.display_name != display_name(profile)
 }
 
 /// Every device registered against this account.
@@ -507,6 +531,45 @@ mod tests {
             consumer_kind(),
             serde_json::json!({ "kind": "companion", "formFactor": "desktop" })
         );
+    }
+
+    /// A machine renamed since it registered is the case this exists for:
+    /// `displayName` is written once and re-registration is refused, so without
+    /// a correction the binding announces the old name forever.
+    #[test]
+    fn a_drifted_name_is_a_correction_due() {
+        let mut row = record("dev-1", Some(Utc::now()));
+        row.display_name = "OpenVTC on old-host (default)".to_string();
+        assert!(name_correction_due(&row, "default"));
+    }
+
+    /// And the steady state must be quiet: a name that already matches is not a
+    /// correction, or every listing would fire a heartbeat.
+    #[test]
+    fn a_current_name_is_not_a_correction() {
+        let mut row = record("dev-1", Some(Utc::now()));
+        row.display_name = display_name("default");
+        assert!(!name_correction_due(&row, "default"));
+    }
+
+    /// The profile is half the name, so switching profiles on one machine
+    /// drifts it just as a hostname change does.
+    #[test]
+    fn the_profile_half_of_the_name_drifts_too() {
+        let mut row = record("dev-1", Some(Utc::now()));
+        row.display_name = display_name("work");
+        assert!(name_correction_due(&row, "personal"));
+        assert!(!name_correction_due(&row, "work"));
+    }
+
+    /// A binding the VTA returned with no name at all still needs correcting —
+    /// `label()` would fall back to the device id, which is not a name anyone
+    /// can pick their laptop out of a list with.
+    #[test]
+    fn a_nameless_binding_is_a_correction_due() {
+        let mut row = record("dev-1", Some(Utc::now()));
+        row.display_name = String::new();
+        assert!(name_correction_due(&row, "default"));
     }
 
     #[test]
