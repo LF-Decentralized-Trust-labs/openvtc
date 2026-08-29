@@ -8,6 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **A relationship credential carried no identifier of its own.** `new_vrc`
+  leaves `id` unset, so every VRC this client issued went out without one. A
+  credential with no identifier cannot be stored under one — a peer keying
+  relationship credentials by `id` cannot make a re-issue idempotent, tell a
+  renewal from a duplicate, or reference the VRC from a witness credential's
+  `digest`.
+
+  Nothing rejects a VRC for it today, which is the point: that is exactly what
+  the reciprocal membership credential looked like right up until a community
+  started keying on it and every delivery began failing silently. VRC issuance
+  now goes through `openvtc_core::vrc::new_identified_vrc`, which sets a fresh
+  `urn:uuid:` id — before signing, since a Data Integrity proof covers it and
+  one added afterwards would leave a document whose proof no longer verifies.
+
 - **A renamed machine kept announcing its old name.** `displayName` is written
   once, at registration, and `device/register` is intentionally refused from the
   second launch on — so nothing could ever change it. Rename the machine, or run
