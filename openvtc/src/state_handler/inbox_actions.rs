@@ -699,7 +699,6 @@ async fn prepare_accept_vrc_request(
     state: &mut State,
     task_id: &str,
 ) -> Result<InboxJob> {
-    use dtg_credentials::DTGCredential;
     use openvtc_core::vrc::DtgCredentialMessage;
 
     let task_id = Arc::new(task_id.to_string());
@@ -742,12 +741,20 @@ async fn prepare_accept_vrc_request(
     // a VRC issued under a relationship DID was rejected. Lifted in
     // OpenVTC/verifiable-trust-infrastructure#1061.
     let valid_from = Utc::now();
-    let mut vrc = DTGCredential::new_vrc(
-        our_r_did.to_string(),
-        their_r_did.to_string(),
-        valid_from,
-        None,
-    );
+    // The VRC carries its own identifier, set before signing.
+    //
+    // Same shape as the membership-credential bug: `new_vrc` leaves `id`
+    // unset, and a credential with no identifier cannot be stored under one —
+    // so a peer that keys relationship credentials by `id` cannot make a
+    // re-issue idempotent, tell a renewal from a duplicate, or reference this
+    // VRC from a witness credential. Nothing rejects a VRC for it *today*,
+    // which is exactly what the reciprocal VMC looked like right up until a
+    // community started keying on it.
+    //
+    // Before signing, necessarily: a Data Integrity proof covers every member
+    // but `proof`, so an id spliced in afterwards leaves a document whose
+    // proof no longer verifies.
+    let mut vrc = openvtc_core::vrc::new_identified_vrc(&our_r_did, &their_r_did, valid_from, None);
     // `our_did` is the persona DID for a relationship established without a
     // dedicated R-DID, so sign as whichever identity it actually is — the same
     // discriminator `listener_id_for_did` routes sends on.

@@ -224,9 +224,69 @@ impl VRCRequestReject {
     }
 }
 
+/// Build an unsigned VRC that carries its own identifier.
+///
+/// `DTGCredential::new_vrc` leaves `id` unset, and a credential with no
+/// identifier cannot be stored under one — so a peer that keys relationship
+/// credentials by `id` cannot make a re-issue idempotent, tell a renewal from a
+/// duplicate, or reference this VRC from a witness credential's `digest`.
+///
+/// Nothing rejects a VRC for a missing `id` *today*. That is exactly what the
+/// reciprocal membership credential looked like, right up until a community
+/// started keying on it and every delivery began failing silently — so this is
+/// a gap being closed before it bites rather than after.
+///
+/// The id is set here, before signing, because it has to be: a Data Integrity
+/// proof covers every member but `proof`, so one spliced in afterwards leaves a
+/// document whose proof no longer verifies. Building and identifying in one
+/// call is what stops the two being separated later.
+pub fn new_identified_vrc(
+    issuer: &str,
+    subject: &str,
+    valid_from: chrono::DateTime<chrono::Utc>,
+    valid_until: Option<chrono::DateTime<chrono::Utc>>,
+) -> DTGCredential {
+    DTGCredential::new_vrc(
+        issuer.to_string(),
+        subject.to_string(),
+        valid_from,
+        valid_until,
+    )
+    .with_id(format!("urn:uuid:{}", uuid::Uuid::new_v4()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A VRC must carry a top-level `id`, distinct from
+    /// `credentialSubject.id` (which names the *subject*).
+    #[test]
+    fn an_issued_vrc_carries_its_own_identifier() {
+        let vrc = new_identified_vrc(
+            "did:key:zIssuerR",
+            "did:key:zSubjectR",
+            chrono::Utc::now(),
+            None,
+        );
+        let value = serde_json::to_value(&vrc).expect("serialise");
+
+        let id = value["id"].as_str().expect("a top-level id");
+        assert!(id.starts_with("urn:uuid:"), "got {id}");
+        assert_eq!(value["credentialSubject"]["id"], "did:key:zSubjectR");
+        assert_eq!(value["issuer"], "did:key:zIssuerR");
+    }
+
+    /// Two issuances must not collide, or a peer keying by `id` would read
+    /// every re-issue as a repeat of the first.
+    #[test]
+    fn each_issued_vrc_gets_a_fresh_identifier() {
+        let now = chrono::Utc::now();
+        let a = new_identified_vrc("did:key:zI", "did:key:zS", now, None);
+        let b = new_identified_vrc("did:key:zI", "did:key:zS", now, None);
+        assert_ne!(a.id(), b.id());
+        assert!(a.id().is_some());
+    }
 
     #[test]
     fn test_vrcs_default_empty() {
