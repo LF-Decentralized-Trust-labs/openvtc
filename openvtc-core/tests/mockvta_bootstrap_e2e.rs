@@ -102,11 +102,11 @@ async fn bootstrap_creates_top_context_and_lists_webvh_server() {
     let token = mock.ctx.mint_token(&admin.did, "admin", vec![]).await;
     let client = VtaClient::authenticated(
         mock.base_url(),
-        ClientIdentity {
-            client_did: admin.did.clone(),
-            private_key_multibase: admin.private_key_multibase().to_string(),
-            vta_did: mock.vta_did().to_string(),
-        },
+        ClientIdentity::did_key(
+            admin.did.clone(),
+            admin.private_key_multibase(),
+            mock.vta_did(),
+        ),
         token,
     )
     .await;
@@ -157,11 +157,11 @@ async fn persona_did_webvh_mint_round_trips() {
     let token = mock.ctx.mint_token(&admin.did, "admin", vec![]).await;
     let client = VtaClient::authenticated(
         mock.base_url(),
-        ClientIdentity {
-            client_did: admin.did.clone(),
-            private_key_multibase: admin.private_key_multibase().to_string(),
-            vta_did: mock.vta_did().to_string(),
-        },
+        ClientIdentity::did_key(
+            admin.did.clone(),
+            admin.private_key_multibase(),
+            mock.vta_did(),
+        ),
         token,
     )
     .await;

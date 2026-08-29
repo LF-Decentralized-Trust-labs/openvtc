@@ -263,7 +263,39 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # 0.25.1 beside 0.27.0. That is the third consecutive cycle it has done so — see
 # the floor note on `did-git-sign` in `openvtc/Cargo.toml`, which is where the
 # obligation is written down.
-vta-sdk = { version = "0.31", features = [
+#
+# 0.31 → 0.32 is the fifth. Two upstream edges declare `vta-sdk` and both had to
+# move first, because `"0.31"` on a 0.x crate excludes 0.32: `did-git-sign`
+# (VGI #33, whose head this workspace already patches to) and `vta-service`,
+# which `openvtc-core` dev-depends on for `MockVta` — 0.22 is built on 0.31, so
+# the dev graph would have split even with the shipped one clean. Both are moved
+# in this change. `trql-client`, the third git-pinned edge, does **not** depend
+# on `vta-sdk` at all, so trust-registry stays where it is.
+#
+# What 0.32 buys, all of it reaching this repo through calls it already makes:
+#
+# VTI #1184 + #1192 are one defect in two halves. `didcomm_transport` and
+# `tsp_transport` built every client with `identity: None`, so a dispatched
+# Trust Task carried no `issuer`, no `recipient` and no proof — which the VTA's
+# dispatch spine refuses as `malformedRequest` over DIDComm and, because the TSP
+# paths back-fill those two members, as `proofRequired` over TSP. Same bug, two
+# names, depending on transport. #1192 then stopped `address_trust_task`
+# rewriting `issuer`/`recipient` *after* signing, which had been turning a valid
+# proof into `proofInvalid` at the far end. Every Trust Task this repo dispatches
+# — agent names, devices, keys, join — goes through those transports.
+#
+# VTI #1193 lifts Trust-Task signing off `did:key`. The signer derived the
+# verification method as `<did>#<multibase>`, which only a `did:key` has, so a
+# provisioned `did:webvh` integration could not sign any of the 210
+# proof-requiring tasks. `ClientIdentity` gains `verification_method` for the
+# methods that must name one; the two sites here that built it by hand now use
+# `ClientIdentity::did_key`, which is the constructor for the one method whose
+# key *is* its identifier.
+#
+# VTI #1191 adds `device_heartbeat_named`, which is what lets this install
+# correct its own `displayName` — set once at registration and, until now,
+# unchangeable. Taken here; used in the follow-up.
+vta-sdk = { version = "0.32", features = [
   "session",
   "client",
   # The SAME per-platform credential-store registration pnm-cli uses
@@ -309,11 +341,15 @@ strip = "symbols"
 # `vti-common` 0.15, so the whole workspace fails to build.
 #
 # OpenVTC/verifiable-git-infrastructure#33 is the release that ends it — the VGI
-# workspace onto vta-sdk 0.31 and TDK 0.10, no source change, green on its own
+# workspace onto vta-sdk 0.32 and TDK 0.10, no source change, green on its own
 # pipeline. Its head is a better dependency than the stale published crate, so
 # this workspace takes it directly rather than waiting on the publish: the
 # requirement in `openvtc/Cargo.toml` still names `0.4.6` (the version VGI carries
 # at that rev), and this patch is what decides where that 0.4.6 comes from.
+#
+# The rev moved with the vta-sdk 0.32 bump. That is the whole reason this block
+# is cheap: a published `did-git-sign` would have made 0.32 wait on a full VGI
+# release cycle, as 0.23, 0.25 and 0.27 each did.
 #
 # Pinned by `rev`, never by `branch` — a further push to that PR must not silently
 # change what this builds against. VGI's own manifest pins `trql-client` the same
@@ -325,5 +361,5 @@ strip = "symbols"
 # it is still a dependency on an unmerged branch, which is a thing to unwind
 # rather than to keep.
 [patch.crates-io]
-did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "462032cfd4adcec9bc00ee957e2e60b7e42c7dac" }
-vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "462032cfd4adcec9bc00ee957e2e60b7e42c7dac" }
+did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "d2c091d795168357d8bf3d1c4fffce645f2415de" }
+vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "d2c091d795168357d8bf3d1c4fffce645f2415de" }

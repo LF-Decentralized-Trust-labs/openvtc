@@ -460,13 +460,22 @@ pub(crate) async fn handle_vta_start_provision(
                     // ClientIdentity". `connect_auto`'s REST arm builds exactly
                     // this; this branch is hand-rolled only because the wizard
                     // needs the token itself to cache.
+                    //
+                    // `did_key`, not a struct literal: vta-sdk 0.32 lifted
+                    // Trust-Task signing off `did:key` (VTI #1193), so an
+                    // identity now says which verification method its proof
+                    // names — `None` meaning "derive it", which only a
+                    // `did:key` can. Provisioning mints the admin as a
+                    // `did:key` (the bootstrap e2e asserts it), so this is the
+                    // constructor that fits, and it puts that assumption in the
+                    // call rather than leaving it implicit in an absent field.
                     VtaClient::authenticated(
                         &vta_url,
-                        ClientIdentity {
-                            client_did: admin.admin_did.clone(),
-                            private_key_multibase: admin.admin_private_key_mb.clone(),
-                            vta_did: vta_did.clone(),
-                        },
+                        ClientIdentity::did_key(
+                            admin.admin_did.clone(),
+                            admin.admin_private_key_mb.clone(),
+                            vta_did.clone(),
+                        ),
                         token_result.access_token,
                     )
                     .await
