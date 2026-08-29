@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Setup could not link this client to a VTA at all.** The last step of the
+  wizard — "Provision integration DID + admin credential" — failed on every
+  fresh install with `unsupportedType`, against a VTA that was otherwise
+  healthy and had already authenticated the setup key.
+
+  The cause was upstream and had nothing to do with the VTA being asked. The
+  `provision/integration` trust task moved to 0.3 and 0.2 was removed rather
+  than deprecated (the two disagree about the bundle digest and both close
+  their response schema, so no single response satisfies both). The VTA moved;
+  so did the SDK's REST runner. Its TSP runner did not, and its DIDComm runners
+  did not — each held its own version literal, and each had been correct on the
+  day it was written, because the two transports genuinely used to address
+  different versions of this operation.
+
+  Setup prefers TSP, so setup got the half that was left behind. Worse, the
+  refusal arrives *after* authentication succeeds, which the SDK classifies as
+  terminal — so it never fell back to the REST leg that would have worked, and
+  the checklist showed a clean run of ticks with a failure on the last line.
+
+  Fixed upstream in vta-sdk 0.32.1, which routes every transport through one
+  version constant and guards the client/server pair with a test. This release
+  floors the dependency there.
+
 - **A community could refuse something and this client would say nothing.**
   Every inbound DIDComm problem-report went through the *join* handler, which
   correlates the thread id against a pending join request. A report threaded on

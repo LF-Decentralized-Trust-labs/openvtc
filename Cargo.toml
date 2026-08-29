@@ -295,7 +295,22 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # VTI #1191 adds `device_heartbeat_named`, which is what lets this install
 # correct its own `displayName` — set once at registration and, until now,
 # unchangeable. Taken here; used in the follow-up.
-vta-sdk = { version = "0.32", features = [
+#
+# **The floor names the patch.** 0.32.0 cannot link this repo to a VTA at all.
+# VTI #1147 cut `provision/integration` to 0.3 and removed 0.2 outright, moved
+# the server and the REST runner, and left the TSP runner on 0.2 and both
+# DIDComm runners on 0.1 — so setup's last step died with `unsupportedType`
+# against a healthy VTA. The setup wizard prefers TSP, and the failure lands
+# *after* auth as a `PostAuthFailure`, which the runner treats as terminal — so
+# it never falls back to the REST leg that would have worked. Every fresh
+# install hit it. VTI #1200 routes all four dispatch sites through
+# `ProvisionSpecVersion::CURRENT` and guards it server-side; 0.32.1 is that fix.
+#
+# `"0.32"` would admit 0.32.0 and resolve to it on any machine with a stale
+# index — the same shape as the `did-git-sign` `"0.4.3"` floor that quietly
+# admitted 0.4.5 and let a duplicate `vta-sdk` into the graph unnoticed. A floor
+# that exists to exclude a specific broken release has to name it.
+vta-sdk = { version = "0.32.1", features = [
   "session",
   "client",
   # The SAME per-platform credential-store registration pnm-cli uses
