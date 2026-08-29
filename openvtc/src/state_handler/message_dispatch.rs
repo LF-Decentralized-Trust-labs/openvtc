@@ -305,10 +305,37 @@ pub async fn process_inbound_message(
     // is no longer silently dropped into a stuck `Pending`.
     if message.typ == PROBLEM_REPORT_TYPE {
         let outcome = handle_join_problem_report(&mut config.account, message, &from_did);
-        if let Some(persona) = outcome.inactivated {
+
+        // A report the join handler cannot claim refused *something else* we
+        // sent. This client does not know what — it keeps no record of
+        // outstanding requests by thread id — but "we don't know which" is not
+        // a reason to say nothing. Every problem-report is a community telling
+        // us it refused us, and the one thing worse than an unattributed
+        // rejection is an invisible one.
+        //
+        // This is how the reciprocal-VMC exchange stayed broken for its whole
+        // life: the VTC rejected every delivery and said so here, on a thread
+        // no join matched, and each report went into a `warn!` naming the
+        // correlation miss rather than the failure.
+        if let Some((code, comment)) = outcome.unclaimed {
+            warn!(
+                vtc = %from_did,
+                code = %code,
+                comment = %comment,
+                thid = message.thid.as_deref().unwrap_or("none"),
+                "community refused something we sent"
+            );
+            config.public.logs.insert(
+                LogFamily::Community,
+                format!("Community ({from_did}) refused something we sent [{code}]: {comment}"),
+            );
+            return Ok(true);
+        }
+
+        if let Some(persona) = outcome.status.inactivated {
             inactivated.push((from_did.to_string(), persona));
         }
-        return Ok(outcome.changed);
+        return Ok(outcome.status.changed);
     }
 
     // VTC trust-task-error: the framework failure document for a Trust Task join
@@ -380,7 +407,14 @@ pub async fn process_inbound_message(
     // the reciprocal VMC we sent. Informational — log and move on.
     if message.typ == MEMBER_VMC_RESPONSE_TYPE {
         info!(vtc = %from_did, "VTC acknowledged our membership credential (member VMC receipt)");
-        return Ok(false);
+        // The send reports only that a frame was accepted locally. This is the
+        // first and only evidence the community actually took the credential,
+        // so it belongs where the member can see it rather than in a log file.
+        config.public.logs.insert(
+            LogFamily::Community,
+            format!("Community ({from_did}) acknowledged your membership credential."),
+        );
+        return Ok(true);
     }
 
     // VTC → member: "please issue + send your VMC" (`members/request-vmc/1.0`).

@@ -188,9 +188,17 @@ impl CommunityOutcome {
                 return Some((self.vtc_did, self.persona));
             }
             (None, Performed::IssueVmc) => {
+                // Only the *send* succeeded. A DIDComm `Ok` means the frame was
+                // accepted for delivery locally; it says nothing about whether
+                // the community took the credential, and for the entire life of
+                // this feature it did not — every delivery was rejected and this
+                // line said otherwise. The wording now matches the two
+                // personhood verbs beside it, which have always been honest
+                // about the difference.
                 status(
                     state,
-                    "Membership credential issued and sent to the community.".to_string(),
+                    "Membership credential sent — waiting for the community to acknowledge it."
+                        .to_string(),
                 );
             }
             (None, Performed::RequestPersonhoodChallenge) => {
@@ -328,7 +336,10 @@ mod tests {
                 .communities
                 .status_message
                 .as_deref()
-                .is_some_and(|m| m.contains("issued")),
+                // The status must say the credential was *sent*, not accepted:
+                // a DIDComm `Ok` is a local hand-off. This assertion used to
+                // look for "issued", which is what the old wording claimed.
+                .is_some_and(|m| m.contains("sent") && m.contains("waiting")),
         );
     }
 
