@@ -8,6 +8,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Saving a profile on Linux corrupted the whole login keyring.** Not just the
+  OpenVTC entry — every secret in the collection became unreadable, and the
+  next unlock prompt from any application was really a *create a new keyring*
+  prompt, which orphaned the original one.
+
+  OpenVTC stored its `SecuredConfig` envelope pretty-printed, so the secret
+  handed to the credential store contained real newlines. gnome-keyring writes
+  an item's secret into its `.keyring` file verbatim but reads it back through
+  `GKeyFile` unescaping, so those newlines came back as extra lines of the
+  file, and the daemon rejected the file entirely:
+  `keyring was in an invalid or unrecognized format`.
+
+  Nothing about that is visible on macOS or Windows, whose stores treat a
+  secret as opaque bytes — which is why a formatting choice with no reader
+  survived this long.
+
+  The envelope is now written as compact single-line JSON, and the encoder
+  refuses to hand the store a secret containing a line break, a control
+  character, a backslash, or any non-ASCII byte at all: its payloads are
+  BASE64URL, so anything else is our bug, and it now fails the save instead of
+  corrupting a keyring. Existing entries are read back unchanged.
+
+  An already-corrupted keyring is orphaned, not destroyed;
+  `docs/secured-configuration-management.md` has the recovery steps.
+
 - **Setup could not link this client to a VTA at all.** The last step of the
   wizard — "Provision integration DID + admin credential" — failed on every
   fresh install with `unsupportedType`, against a VTA that was otherwise

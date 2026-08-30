@@ -74,6 +74,47 @@ pub fn require_encrypted_blob(bytes: &[u8]) -> Result<(), String> {
     }
 }
 
+/// Serialize a `SecuredConfigFormat` envelope into the exact bytes handed to
+/// the OS credential store: **compact, single-line JSON**.
+///
+/// The formatting is not cosmetic. gnome-keyring writes an item's secret into
+/// its `.keyring` file verbatim, but reads it back through `GKeyFile`
+/// *unescaping*, so a secret containing a raw newline reads back as extra
+/// lines of the keyring file and makes the whole file — every item in it, not
+/// just ours — unparseable:
+///
+/// ```text
+/// keyring was in an invalid or unrecognized format: .../Default_keyring.keyring
+/// ```
+///
+/// openvtc stored this envelope with `to_string_pretty`, so every save on a
+/// Secret Service backend wrote a multi-line secret and took the user's login
+/// keyring down with it. The guard below is the invariant the fix rests on:
+/// the envelope's payloads are all BASE64URL, so its compact encoding is pure
+/// ASCII with no control characters and no backslashes. Anything else is a bug
+/// on our side, and we fail the save rather than corrupt a keyring with it.
+fn encode_blob(format: &SecuredConfigFormat) -> Result<Vec<u8>, OpenVTCError> {
+    let bytes = serde_json::to_vec(format)?;
+
+    if let Some(pos) = bytes
+        .iter()
+        .position(|b| !b.is_ascii() || b.is_ascii_control() || *b == b'\\')
+    {
+        return Err(OpenVTCError::SecureStore {
+            fault: crate::errors::SecureStoreFault::Corrupt,
+            profile: String::new(),
+            detail: format!(
+                "refusing to write a secret containing a byte the OS credential store \
+                 cannot round-trip (0x{:02x} at offset {pos}); storing it would corrupt \
+                 the keyring",
+                bytes[pos]
+            ),
+        });
+    }
+
+    Ok(bytes)
+}
+
 /// Returns the `keyring` service name openvtc stores its `SecuredConfig`
 /// under. Used by sibling modules that need to address the same entry.
 #[must_use]
@@ -504,7 +545,7 @@ impl SecuredConfig {
 
         // Save this to the OS Secure Store
         entry
-            .set_secret(serde_json::to_string_pretty(&formatted)?.as_bytes())
+            .set_secret(&encode_blob(&formatted)?)
             .map_err(|e| OpenVTCError::from_keyring(&e, profile))?;
         Ok(())
     }
@@ -894,6 +935,64 @@ mod tests {
             assert!(serde_json::from_str::<SecuredConfigFormat>(blob).is_err());
             assert!(serde_json::from_str::<LegacySecuredConfigFormat>(blob).is_ok());
         }
+    }
+
+    // ── Keyring round-trip safety ─────────────────────────────────────────────
+
+    /// The stored secret must be a single line. gnome-keyring writes a secret
+    /// into its `.keyring` file verbatim and reads it back with `GKeyFile`
+    /// unescaping, so one raw newline in our blob makes the *whole file*
+    /// unparseable and takes every other item in the user's login keyring with
+    /// it. This is the regression test for that: the payloads are all
+    /// BASE64URL, so a correct encoding has no newline anywhere.
+    #[test]
+    fn encoded_blob_is_a_single_line() {
+        let formats = [
+            SecuredConfigFormat::PlainText {
+                text: BASE64_URL_SAFE_NO_PAD.encode(vec![0xffu8; 512]),
+            },
+            SecuredConfigFormat::PasswordEncrypted {
+                data: BASE64_URL_SAFE_NO_PAD.encode(vec![0x00u8; 512]),
+            },
+            SecuredConfigFormat::TokenEncrypted {
+                esk: BASE64_URL_SAFE_NO_PAD.encode([7u8; 32]),
+                data: BASE64_URL_SAFE_NO_PAD.encode(vec![0x0au8; 512]),
+            },
+        ];
+
+        for format in &formats {
+            let bytes = encode_blob(format).unwrap();
+            assert!(
+                !bytes.contains(&b'\n') && !bytes.contains(&b'\r'),
+                "stored secret must not contain a line break"
+            );
+            assert!(
+                bytes.iter().all(|b| b.is_ascii() && !b.is_ascii_control()),
+                "stored secret must be printable ASCII"
+            );
+            assert!(!bytes.contains(&b'\\'), "stored secret must not escape");
+            // Still the same envelope the loader expects.
+            assert!(SecuredConfig::parse(&bytes).is_ok());
+        }
+    }
+
+    /// A blob the credential store could not round-trip must fail the save
+    /// rather than reach the keyring. Reproduced by handing the encoder a
+    /// payload that is not base64 — which can only happen if a future variant
+    /// stops encoding its field.
+    #[test]
+    fn encode_blob_refuses_a_non_round_trippable_secret() {
+        let bad = SecuredConfigFormat::PlainText {
+            text: "line one\nline two".to_string(),
+        };
+        let err = encode_blob(&bad).unwrap_err();
+        assert!(matches!(
+            err,
+            OpenVTCError::SecureStore {
+                fault: crate::errors::SecureStoreFault::Corrupt,
+                ..
+            }
+        ));
     }
 
     /// Layer-2 gate: a tagged-but-weaker blob (e.g. PlainText where

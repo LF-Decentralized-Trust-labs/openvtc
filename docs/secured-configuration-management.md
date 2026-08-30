@@ -60,3 +60,51 @@ When the tool later needs to retrieve the configuration:
 ## Plaintext
 
 The plaintext option stores the configuration in plaintext format in the OS's secure storage. The plaintext option is not part of the OpenVTC setup by default.
+
+## Storage format (and why it is one line)
+
+Whichever of the three protections is in use, the value handed to the OS
+credential store is the same shape: a single-line, compact JSON envelope whose
+payloads are all BASE64URL. `openvtc-core/src/config/secured_config.rs`
+(`encode_blob`) is the only place that writes it, and it refuses to emit a
+secret containing a line break, a control character, a backslash, or any
+non-ASCII byte.
+
+That is a hard requirement, not a style preference. gnome-keyring writes an
+item's secret into `~/.local/share/keyrings/*.keyring` verbatim, but reads it
+back through `GKeyFile` *unescaping*. A secret with a raw newline in it
+therefore comes back as extra lines of the keyring file, and the daemon fails
+to parse the file at all:
+
+```text
+keyring was in an invalid or unrecognized format: .../Default_keyring.keyring
+```
+
+The blast radius is the whole collection, not just the OpenVTC item — every
+other secret in the user's login keyring becomes unreadable too.
+
+### Recovering a keyring OpenVTC has already corrupted
+
+Releases before this fix stored the envelope pretty-printed, so on a Secret
+Service backend the first save would break the login keyring. The data is
+orphaned, not destroyed. To recover:
+
+1. Stop the daemon so it cannot rewrite anything under you:
+   `systemctl --user stop gnome-keyring-daemon.service` (or log out).
+2. Copy the whole `~/.local/share/keyrings/` directory somewhere safe before
+   touching it.
+3. Look at the `default` file — a small pointer naming the active keyring. If
+   the unlock prompt was answered at some point after the breakage, the answer
+   created a *new* empty keyring and repointed `default` at it; note the
+   original name so you can point it back.
+4. In the original `.keyring` file, find the OpenVTC item's secret: it is the
+   value that spills across several lines instead of one. Either join it back
+   into a single line or delete that item's block entirely — the rest of the
+   file parses again either way.
+5. Point `default` back at the original keyring, restart the daemon, and
+   confirm with `secret-tool search --all service openvtc`.
+
+If the OpenVTC item itself cannot be salvaged, the profile's secret half is
+gone and the config file alone will not start it — see
+[backup-restore.md](backup-restore.md) for what that costs and what can be
+recovered from the VTA.
