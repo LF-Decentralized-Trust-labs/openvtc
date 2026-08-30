@@ -56,8 +56,27 @@ pub(crate) async fn issue_member_vmc_for(
     vtc_did: &str,
     persona_id: openvtc_core::config::account::PersonaId,
     closes_request: Option<uuid::Uuid>,
-) -> Result<uuid::Uuid, openvtc_core::errors::OpenVTCError> {
+) -> Result<(uuid::Uuid, serde_json::Value), openvtc_core::errors::OpenVTCError> {
     use openvtc_core::errors::OpenVTCError;
+    // The grant we are acknowledging, as the community sent it. Without one
+    // there is nothing to acknowledge: an acknowledgement names a specific
+    // grant by digest, and a community that has issued us none has no
+    // membership edge for us to complete.
+    let grant = config
+        .account
+        .membership(vtc_did, persona_id)
+        .and_then(|c| {
+            c.credentials
+                .get(&openvtc_core::CredentialKind::Membership)
+                .cloned()
+        })
+        .ok_or_else(|| {
+            OpenVTCError::Config(
+                "this community has not issued us a membership credential, so there is \
+                 nothing to acknowledge"
+                    .into(),
+            )
+        })?;
     let id = config
         .identities
         .get(&persona_id)
@@ -71,12 +90,15 @@ pub(crate) async fn issue_member_vmc_for(
         .ok_or_else(|| OpenVTCError::Config("messaging (ATM) unavailable".into()))?;
     let keys = config.get_persona_keys_for(persona_id, tdk).await?;
     openvtc_core::members::issue_and_send_member_vmc(
-        atm,
-        &profile,
+        &openvtc_core::members::Delivery {
+            atm,
+            profile: &profile,
+            member_did: &member_did,
+            vtc_did,
+            mediator_did: &mediator,
+        },
         &keys.signing.secret,
-        &member_did,
-        vtc_did,
-        &mediator,
+        &grant,
         closes_request,
     )
     .await
@@ -253,11 +275,20 @@ pub async fn process_inbound_message(
         // `members/request-vmc`.
         if let Some((persona_id, request_id)) = outcome.closed_join {
             match issue_member_vmc_for(config, tdk, &from_did, persona_id, Some(request_id)).await {
-                Ok(_) => info!(
-                    vtc = %from_did,
-                    %request_id,
-                    "sent our reciprocal membership credential, closing the join request"
-                ),
+                Ok((_, vmc)) => {
+                    // Keep our half. The send is the only moment this document
+                    // exists on this side, and a member who cannot show what
+                    // they sent cannot answer whether they consented, nor
+                    // re-send it without minting a different credential.
+                    if let Some(record) = config.account.membership_mut(&from_did, persona_id) {
+                        record.member_vmc = Some(vmc);
+                    }
+                    info!(
+                        vtc = %from_did,
+                        %request_id,
+                        "sent our reciprocal membership credential, closing the join request"
+                    )
+                }
                 Err(e) => warn!(
                     vtc = %from_did,
                     %request_id,
@@ -431,10 +462,15 @@ pub async fn process_inbound_message(
                     .is_some_and(|c| c.status.is_active()) =>
             {
                 match issue_member_vmc_for(config, tdk, &from_did, persona_id, None).await {
-                    Ok(_) => info!(
-                        vtc = %from_did,
-                        "auto-issued our membership credential in response to the VTC's request"
-                    ),
+                    Ok((_, vmc)) => {
+                        if let Some(record) = config.account.membership_mut(&from_did, persona_id) {
+                            record.member_vmc = Some(vmc);
+                        }
+                        info!(
+                            vtc = %from_did,
+                            "auto-issued our membership credential in response to the VTC's request"
+                        )
+                    }
                     Err(e) => warn!(
                         vtc = %from_did,
                         error = %e,

@@ -745,9 +745,14 @@ fn collect_vrcs(
     result
 }
 
-/// Build display summaries for the membership (VMC) + role (VEC) credentials a
-/// VTC issued to us, stored on each community record. Reuses [`VrcSummary`]:
-/// `alias` carries "`<community>` — Membership/Role" and `remote_p_did` the VTC.
+/// Build display summaries for a membership edge's credentials: the membership
+/// (VMC) + role (VEC) a VTC issued to us, and the VMC we issued back.
+///
+/// Both halves, because membership is a pair. The community's grant says we were
+/// admitted; our acknowledgement is the half that says we agreed, and it was the
+/// one credential in the exchange this client could not show — it was signed,
+/// sent, and dropped. Reuses [`VrcSummary`]: `alias` carries "`<community>` —
+/// Membership/Role/Acknowledgement" and `remote_p_did` the VTC.
 fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
     let mut result = Vec::new();
     for c in config.account.memberships() {
@@ -815,6 +820,100 @@ fn collect_membership_creds(config: &Config) -> Vec<VrcSummary> {
                 status,
                 kind: Some(kind.config_key().to_string()),
                 subject_is_self: config.is_persona_did(&subject),
+                valid_from,
+                valid_until,
+            });
+        }
+
+        // Our own half of the pair. Rendered from the same shape, so the tab
+        // shows one membership edge rather than "credentials we were given" and
+        // an invisible obligation.
+        if let Some(vc) = &c.member_vmc {
+            let issuer = vc
+                .get("issuer")
+                .and_then(|i| {
+                    i.as_str()
+                        .map(str::to_string)
+                        .or_else(|| i.get("id").and_then(|x| x.as_str()).map(str::to_string))
+                })
+                .unwrap_or_default();
+            let subject = vc
+                .pointer("/credentialSubject/id")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let valid_from = vc
+                .get("validFrom")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let valid_until = vc
+                .get("validUntil")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            let (validity, status) =
+                format_validity(&valid_from, valid_until.as_deref(), chrono::Utc::now());
+
+            // Does it still acknowledge the grant we hold? The digest names one
+            // grant; once the community re-issues, ours no longer matches and we
+            // owe a fresh one. Saying "stale" here is the only place a member
+            // learns that — the community sees it, and until now we did not.
+            let stale = c
+                .credentials
+                .get(&openvtc_core::CredentialKind::Membership)
+                .zip(
+                    vc.pointer("/credentialSubject/digest")
+                        .and_then(|d| d.as_str()),
+                )
+                .map(|(grant, claimed)| {
+                    dtg_credentials::digest_json(grant)
+                        .map(|expected| expected != claimed)
+                        // Undigestable grant: we cannot say it is stale, so we
+                        // do not. R6.3 — claim only what was checked.
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+
+            result.push(VrcSummary {
+                vrc_id: vc
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                remote_p_did: sanitize_display(&c.vtc_did, 256),
+                remote_agent_name: config
+                    .agent_name_for(&c.vtc_did)
+                    .map(|n| sanitize_display(n, 256)),
+                raw_json: content::RawCredential::Value(Arc::new(vc.clone())),
+                alias: Some(community.clone()),
+                issuer: sanitize_display(&issuer, 256),
+                issuer_agent_name: config
+                    .agent_name_for(&issuer)
+                    .map(|n| sanitize_display(n, 256)),
+                subject: sanitize_display(&subject, 256),
+                subject_agent_name: config
+                    .agent_name_for(&subject)
+                    .map(|n| sanitize_display(n, 256)),
+                validity,
+                // A stale acknowledgement is inside its own window and still
+                // completes nothing, so the window's answer would mislead. This
+                // is not a revocation check either — no status list is consulted
+                // — it is the digest binding, which is the whole of what makes
+                // this credential mean anything.
+                status: if stale {
+                    "superseded — the community re-issued".to_string()
+                } else {
+                    status
+                },
+                kind: Some(
+                    if stale {
+                        "Acknowledgement (stale)"
+                    } else {
+                        "Acknowledgement"
+                    }
+                    .to_string(),
+                ),
+                subject_is_self: false,
                 valid_from,
                 valid_until,
             });
@@ -1136,6 +1235,7 @@ mod tests {
         config.account.communities.insert(
             vtc_did.to_string(),
             vec![CommunityRecord {
+                member_vmc: None,
                 extra: serde_json::Map::new(),
                 vtc_did: vtc_did.to_string(),
                 display_name: display_name.map(str::to_owned),

@@ -399,6 +399,25 @@ pub(crate) async fn handle_action(ctx: &mut ActionCtx<'_>, action: Action) -> Ha
                 .filter(|c| c.status.is_active())
                 .map(|c| (c.vtc_did.clone(), c.persona_ref));
             if let Some((vtc, persona_id)) = target {
+                // The grant we are acknowledging, as the community sent it.
+                // Read here with the key, for the same reason: the job owns its
+                // inputs rather than borrowing `Config`. Without a grant there
+                // is nothing to acknowledge — an acknowledgement names one
+                // specific grant by digest.
+                let Some(grant) = ctx
+                    .config
+                    .account
+                    .membership(&vtc, persona_id)
+                    .and_then(|c| c.credentials.get(&openvtc_core::CredentialKind::Membership))
+                    .cloned()
+                else {
+                    ctx.state.main_page.content_panel.communities.status_message = Some(
+                        "This community hasn't issued you a membership credential yet — \
+                         there is nothing to acknowledge."
+                            .to_string(),
+                    );
+                    return Handled::Continue;
+                };
                 // The signing key is read here for the same reason as
                 // the capability toggle: it comes from the in-memory
                 // secrets resolver, not the network, and reading it
@@ -434,6 +453,7 @@ pub(crate) async fn handle_action(ctx: &mut ActionCtx<'_>, action: Action) -> Ha
                             persona: persona_id,
                             verb: community_actions::Verb::IssueVmc {
                                 signing_secret: Box::new(keys.signing.secret.clone()),
+                                grant: Box::new(grant),
                             },
                         },
                     );

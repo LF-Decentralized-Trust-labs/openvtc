@@ -31,8 +31,17 @@ pub(crate) enum Verb {
     /// and its session torn down; the community's receipt is advisory.
     Leave,
     /// `members/vmc` — issue the reciprocal membership credential, signed by the
-    /// member.
-    IssueVmc { signing_secret: Box<Secret> },
+    /// member, acknowledging `grant`.
+    ///
+    /// `grant` is the community-issued VMC as it arrived, resolved on the loop
+    /// thread with everything else this job needs. The acknowledgement carries a
+    /// digest of it, and that digest must cover the document the community will
+    /// recompute it over — so the wire form travels here rather than being
+    /// re-derived from a parse.
+    IssueVmc {
+        signing_secret: Box<Secret>,
+        grant: Box<serde_json::Value>,
+    },
     /// `members/personhood/challenge` — ask for the nonce an assertion must
     /// carry. The reply arrives asynchronously and lands via
     /// [`crate::state_handler::message_dispatch`]; nothing here waits for it.
@@ -93,6 +102,10 @@ impl CommunityJob {
             // established DIDComm leg, as the other community verbs do.
             tsp_mediator_did: None,
         };
+        // What the send produced, where it produces something worth keeping. The
+        // member's own acknowledgement is the one credential in this exchange
+        // that nothing on this side used to retain.
+        let mut issued: Option<serde_json::Value> = None;
         let result = match &self.verb {
             Verb::Leave => openvtc_core::join::submit_self_remove(
                 &self.atm,
@@ -104,18 +117,24 @@ impl CommunityJob {
             )
             .await
             .map(|_| ()),
-            Verb::IssueVmc { signing_secret } => openvtc_core::members::issue_and_send_member_vmc(
-                &self.atm,
-                &self.profile,
+            Verb::IssueVmc {
                 signing_secret,
-                &self.member_did,
-                &self.vtc_did,
-                &self.mediator,
+                grant,
+            } => openvtc_core::members::issue_and_send_member_vmc(
+                &openvtc_core::members::Delivery {
+                    atm: &self.atm,
+                    profile: &self.profile,
+                    member_did: &self.member_did,
+                    vtc_did: &self.vtc_did,
+                    mediator_did: &self.mediator,
+                },
+                signing_secret,
+                grant,
                 // Unprompted re-issue: there is no open join to close.
                 None,
             )
             .await
-            .map(|_| ()),
+            .map(|(_, vmc)| issued = Some(vmc)),
             Verb::RequestPersonhoodChallenge => {
                 // The member asks for their own. An administrator minting one
                 // for somebody else is a community-side action, not something
@@ -142,6 +161,7 @@ impl CommunityJob {
             persona: self.persona,
             performed,
             error: result.err().map(|e| format!("{e}")),
+            issued,
         }
     }
 }
@@ -153,6 +173,10 @@ pub(crate) struct CommunityOutcome {
     /// Which verb ran — a leave also changes the membership record.
     performed: Performed,
     error: Option<String>,
+    /// The credential the send produced, where it produced one — the member's
+    /// own acknowledgement. Carried back rather than written by the job, because
+    /// the job holds no `Config`: every record change happens on the apply path.
+    issued: Option<serde_json::Value>,
 }
 
 impl CommunityOutcome {
@@ -188,6 +212,14 @@ impl CommunityOutcome {
                 return Some((self.vtc_did, self.persona));
             }
             (None, Performed::IssueVmc) => {
+                // Keep our half before saying anything about it. This is the
+                // only moment the document exists on this side.
+                if let Some(vmc) = self.issued
+                    && let Some(c) = config.account.membership_mut(&self.vtc_did, self.persona)
+                {
+                    c.member_vmc = Some(vmc);
+                    save.mark_dirty();
+                }
                 // Only the *send* succeeded. A DIDComm `Ok` means the frame was
                 // accepted for delivery locally; it says nothing about whether
                 // the community took the credential, and for the entire life of
@@ -263,6 +295,7 @@ mod tests {
             persona: PersonaId(uuid::Uuid::nil()),
             performed,
             error: error.map(ToString::to_string),
+            issued: None,
         }
     }
 
