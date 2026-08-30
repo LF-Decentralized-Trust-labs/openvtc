@@ -285,6 +285,27 @@ pub struct CommunityRecord {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub credentials: BTreeMap<CredentialKind, serde_json::Value>,
 
+    /// The membership credential **we** issued to this community — the
+    /// member → community half of the membership edge, acknowledging the grant
+    /// in [`credentials`](Self::credentials).
+    ///
+    /// Kept rather than sent and forgotten. Three things need it:
+    ///
+    /// 1. **Answering "did I consent to this?"** This is the member's own
+    ///    consent artifact, and it was the one credential in the exchange that
+    ///    nothing on this side could show.
+    /// 2. **Re-sending.** Without a copy, "send it again" means minting a
+    ///    *different* credential with a different `id` — which the community
+    ///    reads as a renewal, not a re-send.
+    /// 3. **Knowing whether the edge still stands.** Its `digest` names one
+    ///    grant. Once the community re-issues, this no longer matches and the
+    ///    member owes a fresh acknowledgement — visible here, and nowhere else.
+    ///
+    /// Stored as the signed W3C VC JSON, exactly as it went out. `None` until
+    /// we have issued one, and on configs written before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub member_vmc: Option<serde_json::Value>,
+
     /// Fields written by a newer build, preserved verbatim (D19). See
     /// [`Account::extra`] for why.
     #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -333,6 +354,8 @@ struct CommunityRecordShadow {
     // error; the `From` impl below instead drops unknown keys with a warning.
     #[serde(default)]
     credentials: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    member_vmc: Option<serde_json::Value>,
     // Legacy pre-R19 flat fields, folded into `credentials` below.
     #[serde(default)]
     membership_credential: Option<serde_json::Value>,
@@ -389,6 +412,7 @@ impl From<CommunityRecordShadow> for CommunityRecord {
             vrcs_issued: shadow.vrcs_issued,
             vrcs_received: shadow.vrcs_received,
             credentials,
+            member_vmc: shadow.member_vmc,
         }
     }
 }
@@ -444,6 +468,7 @@ impl CommunityRecord {
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
             credentials: BTreeMap::new(),
+            member_vmc: None,
         }
     }
 
@@ -1045,6 +1070,7 @@ mod tests {
             vrcs_issued: Vrcs::default(),
             vrcs_received: Vrcs::default(),
             credentials: BTreeMap::new(),
+            member_vmc: None,
         }
     }
 
