@@ -993,8 +993,22 @@ impl StateHandler {
             }
         }
 
+        // Seed the indicator from the messaging layer's *live* state rather than
+        // assuming nothing is up yet. `ListenerStatus` is edge-triggered, and a
+        // State-A join has already brought its persona listener up and connected
+        // by the time this loop subscribes — the install step above binds to that
+        // socket instead of reinstalling it, so no second `Connected` edge is
+        // coming. Without this seed the session sits `Connecting` for the life of
+        // the process over a perfectly live socket, which is the "Inbox:
+        // Connecting…" that only a restart appeared to fix.
         state.connection.status = state::MediatorStatus::Connecting;
-        state.main_page.log("Connecting to the mediator…");
+        state.connection.messaging_active = false;
+        reconcile_sessions(&mut session_manager, &didcomm_service, &mut state);
+        if matches!(state.connection.status, state::MediatorStatus::Connected) {
+            state.main_page.log("Connected to the mediator.");
+        } else {
+            state.main_page.log("Connecting to the mediator…");
+        }
         let _ = self.state_tx.send(state.clone());
 
         // Track when a manual trust-ping was sent (for activity log latency display).
@@ -1029,6 +1043,13 @@ impl StateHandler {
         // Reply-window sweep for the capabilities view (cheap no-op when the
         // view is closed or idle).
         let mut capabilities_sweep = tokio::time::interval(std::time::Duration::from_secs(5));
+        // Backstop for the edge-triggered listener-status stream. A transition
+        // that reaches nobody — the broadcast receiver lagging, a listener
+        // adopted after its connect — would otherwise latch a session's status
+        // (and the indicator) wrong until the next real edge, which for a healthy
+        // socket may never come. Cheap: a read of the transports' live state, no
+        // I/O and no allocation beyond the listener ids.
+        let mut session_reconcile_tick = tokio::time::interval(std::time::Duration::from_secs(15));
         // Agent-name refresh sweep. The first tick fires immediately so names
         // resolve shortly after launch; thereafter it picks up newly-added DIDs
         // (a fresh relationship/contact) and re-verifies stale entries every few
@@ -1492,20 +1513,17 @@ impl StateHandler {
                         };
                         // Derive the global connection indicator from the
                         // aggregate of all persona-sessions (a per-community
-                        // status panel is future UI work). Leave a
-                        // `NoActiveCommunity` state untouched when no session
-                        // exists.
+                        // status panel is future UI work).
                         if changed {
-                            if session_manager.any_connected() {
-                                state.connection.status = state::MediatorStatus::Connected;
-                                state.connection.messaging_active = true;
-                            } else if session_manager.session_count() > 0 {
-                                state.connection.status = state::MediatorStatus::Connecting;
-                                state.connection.messaging_active = false;
-                            }
+                            apply_session_aggregate(&session_manager, &mut state);
                         }
                     }
                 },
+                _ = session_reconcile_tick.tick() => {
+                    // The loop tail broadcasts `state`, so a change here reaches
+                    // the UI without an explicit send.
+                    reconcile_sessions(&mut session_manager, &didcomm_service, &mut state);
+                }
                 // Coalesced-save debounce (R11). Fires when the debounce window
                 // since the first dirty mark of a burst elapses. Builds an owned
                 // snapshot on this (the single mutator) thread and runs the heavy
@@ -3266,6 +3284,40 @@ async fn deregister_inactive_community(
 /// `has_ctx` gates both: there is nothing to hand back without a runtime context.
 fn must_hand_off(joined_a_community: bool, holds_listener: bool, has_ctx: bool) -> bool {
     (joined_a_community || holds_listener) && has_ctx
+}
+
+/// Reconcile every registered session against the messaging layer's live
+/// connection state and re-derive the global indicator. Returns `true` if any
+/// session's status changed. See [`session_manager::SessionManager::reconcile`]
+/// for why the event stream alone is not enough.
+fn reconcile_sessions(
+    session_manager: &mut session_manager::SessionManager,
+    service: &openvtc_core::didcomm::Messaging,
+    state: &mut State,
+) -> bool {
+    let mut changed = false;
+    for lid in session_manager.listener_ids() {
+        let connected =
+            service.listener_state(&lid) == Some(openvtc_core::didcomm::ConnState::Connected);
+        changed |= session_manager.reconcile(&lid, connected);
+    }
+    if changed {
+        apply_session_aggregate(session_manager, state);
+    }
+    changed
+}
+
+/// Drive the global connection indicator from the aggregate of all
+/// persona-sessions. A `NoActiveCommunity` state is left untouched when no
+/// session exists — "no community" is not "not connected".
+fn apply_session_aggregate(session_manager: &session_manager::SessionManager, state: &mut State) {
+    if session_manager.any_connected() {
+        state.connection.status = state::MediatorStatus::Connected;
+        state.connection.messaging_active = true;
+    } else if session_manager.session_count() > 0 {
+        state.connection.status = state::MediatorStatus::Connecting;
+        state.connection.messaging_active = false;
+    }
 }
 
 async fn register_joined_session(
