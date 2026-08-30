@@ -310,7 +310,19 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # index — the same shape as the `did-git-sign` `"0.4.3"` floor that quietly
 # admitted 0.4.5 and let a duplicate `vta-sdk` into the graph unnoticed. A floor
 # that exists to exclude a specific broken release has to name it.
-vta-sdk = { version = "0.32.1", features = [
+#
+# 0.32.2 is the *reply* half of that same 0.3 cut (VTI #1202). #1200 moved the
+# dispatch sites; `result_uri_for` kept a hand-written table that tested only
+# for 0.2 and fell through to 0.1, so a provisioning reply went out as a 0.3
+# body labelled `provision/integration/0.1#response` — a message that cannot
+# satisfy the schema it names. This client does not *see* it, because it derives
+# the reply type it waits for with the same function and so agrees with the
+# server, wrongly, in both directions; it takes an independent client (the
+# browser wallet, reading the URI from the registry bindings) to notice. Which
+# is the reason to take it here anyway: a wire label this repo agrees with only
+# by sharing the bug is not a contract, and the next conformance witness or
+# non-Rust peer on the other end of a provisioning run is what collects on it.
+vta-sdk = { version = "0.32.2", features = [
   "session",
   "client",
   # The SAME per-platform credential-store registration pnm-cli uses
