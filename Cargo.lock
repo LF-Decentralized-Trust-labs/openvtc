@@ -8970,9 +8970,9 @@ dependencies = [
 
 [[package]]
 name = "vta-sdk"
-version = "0.32.1"
+version = "0.32.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bc7c4aebd8001a261148b9058fc8bbd83f7c8a4d6c072244dfd113c3ef5f87c"
+checksum = "5365d2103c2c0a876c866c8ce60787e4b27e23f1a224c00f105c0dfeb82d3442"
 dependencies = [
  "affinidi-crypto",
  "affinidi-data-integrity",
