@@ -197,6 +197,40 @@ impl SessionManager {
         self.sessions.len()
     }
 
+    /// The listener id of every registered session — the input to a reconcile
+    /// sweep against the messaging layer.
+    pub fn listener_ids(&self) -> Vec<String> {
+        self.sessions
+            .values()
+            .map(|s| s.listener_id.clone())
+            .collect()
+    }
+
+    /// Adopt the messaging layer's live view of whether `listener_id` is up.
+    ///
+    /// The `ListenerStatus` stream is **edge-triggered** by a poller that runs for
+    /// the life of the messaging runtime, so a listener that connected *before*
+    /// its session was registered here — the persona listener a State-A join
+    /// already brought up, which the install step binds to rather than
+    /// reinstalling — has had its one `Connected` event delivered to nobody, and
+    /// no further edge is coming while the socket stays up. Reconciling reads the
+    /// live state instead of waiting for an edge that has already gone by.
+    ///
+    /// `connected` is adopted directly; a session that is *not* live is only
+    /// downgraded from `Connected`, so a recorded `Failed` reason survives and a
+    /// retry already in progress (`Connecting`) is not re-reported as a fresh
+    /// drop. Returns `true` if the status changed.
+    pub fn reconcile(&mut self, listener_id: &str, connected: bool) -> bool {
+        if connected {
+            return self.mark_connected(listener_id);
+        }
+        let was_connected = self
+            .sessions
+            .values()
+            .any(|s| s.listener_id == listener_id && s.status.is_connected());
+        was_connected && self.mark_disconnected(listener_id)
+    }
+
     /// The bounded maximum number of concurrent sessions (D15).
     pub fn max_sessions(&self) -> usize {
         self.max_sessions
@@ -320,5 +354,69 @@ mod tests {
 
         // Deregistering something unknown is a harmless no-op.
         assert!(mgr.deregister(a, "vtc-unknown").is_none());
+    }
+
+    #[test]
+    fn reconcile_adopts_a_connect_that_never_produced_an_event() {
+        let mut mgr = SessionManager::new(8);
+        let a = pid();
+        mgr.register(a, "lid-a", "vtc-1".into());
+
+        // The listener was already up when the session was registered, so its
+        // one Connected edge went to nobody: without reconciling, this session
+        // stays Connecting for the life of the process over a live socket.
+        assert!(!mgr.any_connected());
+        assert!(mgr.reconcile("lid-a", true));
+        assert!(mgr.any_connected());
+
+        // Idempotent — a repeated sweep over an unchanged state reports nothing.
+        assert!(!mgr.reconcile("lid-a", true));
+    }
+
+    #[test]
+    fn reconcile_downgrades_only_from_connected() {
+        let mut mgr = SessionManager::new(8);
+        let a = pid();
+        let b = pid();
+        mgr.register(a, "lid-a", "vtc-1".into());
+        mgr.register(b, "lid-b", "vtc-2".into());
+        mgr.mark_connected("lid-a");
+        mgr.mark_failed("lid-b", "mediator refused auth");
+
+        // A live session that is no longer up drops to Disconnected.
+        assert!(mgr.reconcile("lid-a", false));
+        assert_eq!(mgr.sessions[&a].status, SessionStatus::Disconnected);
+
+        // A session that was never up keeps the reason it recorded — a sweep
+        // must not overwrite "why it failed" with a bare "not connected".
+        assert!(!mgr.reconcile("lid-b", false));
+        assert_eq!(
+            mgr.sessions[&b].status,
+            SessionStatus::Failed("mediator refused auth".to_string())
+        );
+
+        // A retry in progress is likewise left alone.
+        mgr.reconcile("lid-a", true);
+        assert!(mgr.sessions[&a].status.is_connected());
+
+        // An unknown listener matches nothing, in either direction.
+        assert!(!mgr.reconcile("lid-unknown", true));
+        assert!(!mgr.reconcile("lid-unknown", false));
+    }
+
+    #[test]
+    fn listener_ids_lists_one_id_per_session() {
+        let mut mgr = SessionManager::new(8);
+        let a = pid();
+        let b = pid();
+        // A reused persona serves two communities over one listener, so the
+        // sweep visits it once, not once per community.
+        mgr.register(a, "lid-a", "vtc-1".into());
+        mgr.register(a, "lid-a", "vtc-2".into());
+        mgr.register(b, "lid-b", "vtc-3".into());
+
+        let mut ids = mgr.listener_ids();
+        ids.sort();
+        assert_eq!(ids, vec!["lid-a".to_string(), "lid-b".to_string()]);
     }
 }
