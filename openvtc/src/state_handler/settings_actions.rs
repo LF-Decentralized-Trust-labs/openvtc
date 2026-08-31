@@ -30,34 +30,11 @@ pub fn update_friendly_name(config: &mut Config, name: &str) {
     info!(name = %name, "friendly name updated");
 }
 
-/// Update the mediator DID. Returns `false` when there was no persona to set it
-/// on, so the caller can say so instead of reporting a save that did not happen.
-///
-/// R11: mutates + logs only (see [`update_friendly_name`]). The subsequent
-/// reconnect (R13 background dispatch) does not depend on the file being on disk
-/// yet — it reads the in-memory config — so coalescing the save is safe.
-#[must_use = "a false return means nothing was written; do not report success"]
-pub fn update_mediator_did(config: &mut Config, did: &str) -> bool {
-    if !config.set_active_mediator_did(did) {
-        // R6.4: name the reason, not just the failure. The mediator DID hangs
-        // off a persona, and a State-A profile has none — so this is "not yet",
-        // not "rejected", and the log has to distinguish them.
-        config.public.logs.insert(
-            LogFamily::Config,
-            "Mediator DID not changed: this profile has no persona yet, and the \
-             mediator DID belongs to one"
-                .to_string(),
-        );
-        info!(did = %did, "mediator DID change ignored — no active persona");
-        return false;
-    }
-    config.public.logs.insert(
-        LogFamily::Config,
-        format!("Mediator DID changed to '{}'", did),
-    );
-    info!(did = %did, "mediator DID updated (reconnect needed)");
-    true
-}
+// There is deliberately no `update_mediator_did`. A persona's mediator is chosen
+// when the persona is minted and published in its DID document, so the Settings
+// row is read-only (see `settings_panel::MEDIATOR_ROW`). The one remaining write
+// path is the `OPENVTC_MEDIATOR_DID` override in `main.rs`, which calls
+// `Config::set_active_mediator_did` directly and warns when it does not apply.
 
 /// Update the organization DID.
 ///
@@ -194,9 +171,8 @@ fn handle_start_edit(state: &mut State) {
         0 => SettingsMode::EditFriendlyName {
             input: s.friendly_name.clone(),
         },
-        1 => SettingsMode::EditMediatorDid {
-            input: s.mediator_did.clone(),
-        },
+        // `MEDIATOR_ROW` (1) is deliberately absent: the mediator is read-only,
+        // so Enter on it falls through to `View` like any other unedittable row.
         2 => SettingsMode::EditOrgDid {
             input: s.org_did.clone(),
         },
@@ -216,9 +192,7 @@ fn handle_start_edit(state: &mut State) {
 
 fn handle_field_update(state: &mut State, value: String) {
     match &mut state.main_page.content_panel.settings.mode {
-        SettingsMode::EditFriendlyName { input }
-        | SettingsMode::EditMediatorDid { input }
-        | SettingsMode::EditOrgDid { input } => {
+        SettingsMode::EditFriendlyName { input } | SettingsMode::EditOrgDid { input } => {
             *input = value;
         }
         _ => {}
@@ -298,60 +272,37 @@ fn handle_protection_tab_switch(state: &mut State, next_field: usize) {
     }
 }
 
-/// Returns `true` if the mediator DID was actually changed and a reconnect is
-/// needed.
+/// Commit the in-progress settings edit.
 ///
-/// R11: the per-setting save is now coalesced (`Persist::SaveAndSync` marks the
+/// R11: the per-setting save is coalesced (`Persist::SaveAndSync` marks the
 /// config dirty rather than saving inline).
 ///
-/// The mediator DID is the one setting here that can decline to apply: it hangs
-/// off the active persona, and a State-A profile has none. That used to be
-/// swallowed — the write vanished, and the panel reported "Setting saved" over a
-/// field that read back empty, which is exactly how it was reported ("it did not
-/// take"). It also asked for a mediator reconnect that could not do anything,
-/// leaving the header on "Connecting…". Both now hang off whether the write
-/// landed.
+/// No row here can decline to apply, and none triggers a mediator reconnect. The
+/// mediator DID used to be the exception on both counts: it is a *per-persona*
+/// field, so on a profile with no persona the write vanished while the panel
+/// still said "Setting saved" over a field that read back empty ("it did not
+/// take"), and it still asked for a reconnect that had nothing new to dial —
+/// leaving the header on "Connecting…" under a success message. The row is now
+/// read-only (`MEDIATOR_ROW` never opens an edit mode), so that whole shape is
+/// gone rather than merely reported honestly.
 fn handle_submit_edit(
     config: &mut Box<Config>,
     state: &mut State,
     save: &mut SaveScheduler,
     value: &str,
-) -> bool {
+) {
     let idx = state.main_page.content_panel.settings.selected_index;
-    let applied = match idx {
-        0 => {
-            update_friendly_name(config, value);
-            true
-        }
-        1 => update_mediator_did(config, value),
-        2 => {
-            update_org_did(config, value);
-            true
-        }
-        _ => true,
-    };
+    match idx {
+        0 => update_friendly_name(config, value),
+        2 => update_org_did(config, value),
+        _ => {}
+    }
     let setting_name = match idx {
         0 => "Friendly name",
-        1 => "Mediator DID",
         2 => "Organization DID",
         _ => "Setting",
     };
     state.main_page.content_panel.settings.mode = SettingsMode::View;
-
-    if !applied {
-        // Nothing was written, so nothing is dirty: no save, no sync, and no
-        // reconnect. Say what would make the setting available instead of
-        // leaving the operator to infer it from a blank field.
-        state.main_page.content_panel.settings.status_message = Some(
-            "Mediator DID not changed — this profile has no persona yet. \
-             A persona gets its mediator when it is created."
-                .to_string(),
-        );
-        state
-            .main_page
-            .log("Mediator DID unchanged: no persona in this profile");
-        return false;
-    }
 
     dispatch_util::save_and_sync(
         &mut state.main_page,
@@ -362,8 +313,6 @@ fn handle_submit_edit(
         "Setting saved",
         dispatch_util::SyncLog::Plain(format!("{} updated", setting_name)),
     );
-    // Mediator DID is index 1 — caller should trigger reconnect
-    idx == 1
 }
 
 async fn handle_export_config_action(
@@ -799,14 +748,10 @@ pub(crate) async fn dispatch(
             handle_protection_tab_switch(state, next_field)
         }
         SettingsAction::PassphraseLen(len) => handle_passphrase_len(state, len),
-        SettingsAction::SubmitEdit { value } => {
-            if handle_submit_edit(config, state, save, &value) {
-                // The mediator DID was changed. Set the synchronous "Connecting"
-                // state now; the loop spawns the slow reconnect I/O (R13).
-                begin_reconnect_status(state);
-                return SettingsOutcome::ReconnectMediator;
-            }
-        }
+        // No editable setting changes the mediator any more, so committing one
+        // never implies a reconnect. `SettingsAction::ReconnectMediator` is the
+        // remaining (explicit, operator-driven) way to ask for one.
+        SettingsAction::SubmitEdit { value } => handle_submit_edit(config, state, save, &value),
         SettingsAction::ExportConfig { path, passphrase } => {
             handle_export_config_action(config, state, state_tx, save, profile, &path, &passphrase)
                 .await
@@ -878,54 +823,59 @@ mod tests {
         assert!(validate_file_path("/tmp/safe/../../../etc/shadow").is_err());
     }
 
-    /// The reported bug: on a profile with no persona, editing the Mediator DID
-    /// wrote nothing, and the panel said "Setting saved" over a field that read
-    /// back empty — so the operator was told the DID had taken when it had not.
-    /// It also asked for a mediator reconnect that had nothing new to dial.
+    /// The reported bug, closed at the source: pressing Enter on the Mediator
+    /// DID row must not open an edit mode at all. It used to, and on a profile
+    /// with no persona the write then vanished while the panel said "Setting
+    /// saved" over a field that read back empty ("it did not take").
     #[test]
-    fn mediator_did_edit_without_a_persona_does_not_claim_a_save() {
-        let mut config = Box::new(crate::state_handler::dispatch_util::test_config());
+    fn mediator_row_does_not_open_an_edit_mode() {
         let mut state = State::default();
-        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
-        // Index 1 is the Mediator DID row.
-        state.main_page.content_panel.settings.selected_index = 1;
+        state.main_page.content_panel.settings.mediator_did = "did:webvh:example:mediator".into();
+        state.main_page.content_panel.settings.selected_index =
+            crate::ui::pages::main::components::settings_panel::MEDIATOR_ROW;
 
-        let needs_reconnect = handle_submit_edit(
-            &mut config,
-            &mut state,
-            &mut save,
-            "did:webvh:example:mediator",
-        );
+        handle_start_edit(&mut state);
 
         assert!(
-            !needs_reconnect,
-            "nothing changed, so there is nothing to reconnect to"
-        );
-        let status = state
-            .main_page
-            .content_panel
-            .settings
-            .status_message
-            .as_deref()
-            .expect("the panel says something");
-        assert!(
-            !status.contains("Setting saved"),
-            "must not report a save that did not happen, got: {status}"
-        );
-        assert!(
-            status.contains("no persona"),
-            "must say why it did not apply, got: {status}"
-        );
-        assert_eq!(
-            config.mediator_did(),
-            "",
-            "and the value really is still unset"
+            matches!(settings(&state), SettingsMode::View),
+            "the mediator row is read-only, so Enter stays in View"
         );
     }
 
-    /// The other half: a row that *can* always apply still reports success and
-    /// keeps the existing coalesced-save behaviour. Guards against the honest
-    /// failure path swallowing the ordinary one.
+    /// A committed edit no longer implies a mediator reconnect — nothing
+    /// editable can move the mediator, so the reconnect that used to fire (and
+    /// hang on "Connecting…") has no trigger left.
+    #[tokio::test]
+    async fn submitting_an_edit_never_asks_for_a_reconnect() {
+        let mut config = Box::new(crate::state_handler::dispatch_util::test_config());
+        let mut state = State::default();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
+        let (state_tx, _rx) = watch::channel(State::default());
+
+        for idx in [0usize, 1, 2] {
+            state.main_page.content_panel.settings.selected_index = idx;
+            let outcome = dispatch(
+                SettingsAction::SubmitEdit {
+                    value: "value".to_string(),
+                },
+                &mut config,
+                &mut state,
+                &state_tx,
+                &mut save,
+                "test",
+            )
+            .await;
+            assert!(
+                matches!(outcome, SettingsOutcome::Continue),
+                "row {idx} must not request a mediator reconnect"
+            );
+        }
+        assert_eq!(config.mediator_did(), "", "and no row wrote a mediator DID");
+    }
+
+    /// The other half: an editable row still reports success and keeps the
+    /// existing coalesced-save behaviour, so removing the mediator edit has not
+    /// disturbed the ordinary path.
     #[test]
     fn friendly_name_edit_still_reports_a_save() {
         let mut config = Box::new(crate::state_handler::dispatch_util::test_config());
@@ -933,9 +883,8 @@ mod tests {
         let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
         state.main_page.content_panel.settings.selected_index = 0;
 
-        let needs_reconnect = handle_submit_edit(&mut config, &mut state, &mut save, "Alice");
+        handle_submit_edit(&mut config, &mut state, &mut save, "Alice");
 
-        assert!(!needs_reconnect, "only the mediator row reconnects");
         assert_eq!(
             state
                 .main_page
@@ -973,9 +922,9 @@ mod tests {
             (0, || SettingsMode::EditFriendlyName {
                 input: String::new(),
             }),
-            (1, || SettingsMode::EditMediatorDid {
-                input: String::new(),
-            }),
+            // Row 1 is the read-only Mediator DID: it falls through to `View`
+            // like any other unedittable row.
+            (1, || SettingsMode::View),
             (2, || SettingsMode::EditOrgDid {
                 input: String::new(),
             }),
@@ -1016,15 +965,12 @@ mod tests {
         ));
     }
 
-    /// `handle_field_update` writes the single-line input for the three edit
-    /// modes and is a no-op elsewhere.
+    /// `handle_field_update` writes the single-line input for the two remaining
+    /// edit modes and is a no-op elsewhere.
     #[test]
     fn field_update_writes_edit_input() {
         let edit_modes: &[ModeFn] = &[
             || SettingsMode::EditFriendlyName {
-                input: String::new(),
-            },
-            || SettingsMode::EditMediatorDid {
                 input: String::new(),
             },
             || SettingsMode::EditOrgDid {
@@ -1036,9 +982,9 @@ mod tests {
             state.main_page.content_panel.settings.mode = make();
             handle_field_update(&mut state, "new-value".to_string());
             let input = match settings(&state) {
-                SettingsMode::EditFriendlyName { input }
-                | SettingsMode::EditMediatorDid { input }
-                | SettingsMode::EditOrgDid { input } => input.clone(),
+                SettingsMode::EditFriendlyName { input } | SettingsMode::EditOrgDid { input } => {
+                    input.clone()
+                }
                 other => panic!("unexpected mode {other:?}"),
             };
             assert_eq!(input, "new-value");

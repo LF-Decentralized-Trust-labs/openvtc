@@ -30,7 +30,6 @@ impl Panel for SettingsPanel {
 pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
     match &state.mode {
         SettingsMode::EditFriendlyName { input } => render_edit("Friendly Name", input),
-        SettingsMode::EditMediatorDid { input } => render_edit("Mediator DID", input),
         SettingsMode::EditOrgDid { input } => render_edit("Org DID", input),
         SettingsMode::ExportConfig {
             path_input,
@@ -66,6 +65,10 @@ const WIPE_CONFIRM_TOKEN: &str = "WIPE";
 
 /// Width the settings rows truncate their values to.
 const VALUE_WIDTH: usize = 50;
+
+/// Index of the Mediator DID row in the settings list. Shared with
+/// `settings_actions`, which must not open an edit mode for it.
+pub(crate) const MEDIATOR_ROW: usize = 1;
 
 fn render_wipe_confirm(confirm_input: &str) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
@@ -140,9 +143,24 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
         VALUE_WIDTH,
     )
     .into_owned();
+    // The mediator is read-only: it is chosen when a persona is minted and baked
+    // into that persona's published DID document (the `#public-didcomm` service
+    // endpoint IS the mediator DID). Editing it here would move only where *we*
+    // connect, while everyone else keeps resolving the document, finding the old
+    // mediator, and delivering to a mailbox we no longer read — so the row shows
+    // the value and says where it comes from rather than offering an edit that
+    // silently desynchronises the profile from its own published address.
+    //
+    // An empty value is the no-persona case, which is a "not yet", not a blank
+    // setting; say so, because a bare empty row is what read as "it did not take".
+    let mediator = if state.mediator_did.is_empty() {
+        "— no persona yet".to_string()
+    } else {
+        state.mediator_did.clone()
+    };
     let settings = [
         ("Friendly Name", state.friendly_name.clone(), true),
-        ("Mediator DID", state.mediator_did.clone(), true),
+        ("Mediator DID", mediator, false),
         ("Org DID", state.org_did.clone(), true),
         ("Persona", persona, false),
     ];
@@ -183,6 +201,17 @@ fn render_view(state: &SettingsState) -> Vec<Line<'static>> {
             ),
             Span::styled(edit_hint, Style::new().fg(COLOR_DARK_GRAY)),
         ]));
+
+        // "(read-only)" answers *whether* it can be changed but not *why not*,
+        // which is the question a mediator row invites. Answer it on selection,
+        // where the operator is already looking, rather than in a doc nobody
+        // reaches from here.
+        if i == MEDIATOR_ROW && is_selected {
+            lines.push(Line::from(Span::styled(
+                "      set when the persona was created, and published in its DID document",
+                Style::new().fg(COLOR_DARK_GRAY),
+            )));
+        }
     }
 
     lines.push(Line::from(""));

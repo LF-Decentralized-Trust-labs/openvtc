@@ -1135,8 +1135,6 @@ pub enum SettingsMode {
     View,
     /// Editing the friendly name
     EditFriendlyName { input: String },
-    /// Editing the mediator DID
-    EditMediatorDid { input: String },
     /// Editing the org DID
     EditOrgDid { input: String },
     /// Export config form (path + passphrase length for masked display)

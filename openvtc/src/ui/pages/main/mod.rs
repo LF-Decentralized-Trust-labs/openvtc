@@ -257,7 +257,6 @@ impl Component for MainPage {
             MainMenu::Settings => {
                 match &self.props.main_page.content_panel.settings.mode {
                     SettingsMode::EditFriendlyName { input }
-                    | SettingsMode::EditMediatorDid { input }
                     | SettingsMode::EditOrgDid { input } => {
                         let updated = format!("{}{}", input, trimmed);
                         let _ = self
@@ -1509,9 +1508,7 @@ impl MainPage {
         let settings = &self.props.main_page.content_panel.settings;
 
         match &settings.mode {
-            SettingsMode::EditFriendlyName { input }
-            | SettingsMode::EditMediatorDid { input }
-            | SettingsMode::EditOrgDid { input } => {
+            SettingsMode::EditFriendlyName { input } | SettingsMode::EditOrgDid { input } => {
                 let current = input.clone();
                 match key.code {
                     KeyCode::Esc => {
@@ -2097,7 +2094,6 @@ fn view_id(page: &MainPageState) -> String {
         MainMenu::Settings => match &page.content_panel.settings.mode {
             SettingsMode::View => "view",
             SettingsMode::EditFriendlyName { .. } => "edit-name",
-            SettingsMode::EditMediatorDid { .. } => "edit-mediator",
             SettingsMode::EditOrgDid { .. } => "edit-org",
             SettingsMode::ExportConfig { .. } => "export",
             SettingsMode::ImportConfig { .. } => "import",
