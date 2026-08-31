@@ -625,8 +625,16 @@ pub fn create_termination() -> (Terminator, broadcast::Receiver<Interrupted>) {
 pub fn apply_env_overrides(config: &mut Config) {
     use openvtc_core::config::KeyBackend;
 
-    if let Ok(val) = std::env::var("OPENVTC_MEDIATOR_DID") {
-        config.set_active_mediator_did(&val);
+    if let Ok(val) = std::env::var("OPENVTC_MEDIATOR_DID")
+        && !config.set_active_mediator_did(&val)
+    {
+        // The override hangs off the active persona, so a State-A profile has
+        // nowhere to put it. Silently dropping an override the operator set on
+        // purpose is how it becomes a mystery later.
+        tracing::warn!(
+            did = %val,
+            "OPENVTC_MEDIATOR_DID ignored: this profile has no persona to set a mediator on"
+        );
     }
     if let Ok(val) = std::env::var("OPENVTC_VTA_URL")
         && let KeyBackend::Vta {

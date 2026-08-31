@@ -30,18 +30,33 @@ pub fn update_friendly_name(config: &mut Config, name: &str) {
     info!(name = %name, "friendly name updated");
 }
 
-/// Update the mediator DID.
+/// Update the mediator DID. Returns `false` when there was no persona to set it
+/// on, so the caller can say so instead of reporting a save that did not happen.
 ///
 /// R11: mutates + logs only (see [`update_friendly_name`]). The subsequent
 /// reconnect (R13 background dispatch) does not depend on the file being on disk
 /// yet — it reads the in-memory config — so coalescing the save is safe.
-pub fn update_mediator_did(config: &mut Config, did: &str) {
-    config.set_active_mediator_did(did);
+#[must_use = "a false return means nothing was written; do not report success"]
+pub fn update_mediator_did(config: &mut Config, did: &str) -> bool {
+    if !config.set_active_mediator_did(did) {
+        // R6.4: name the reason, not just the failure. The mediator DID hangs
+        // off a persona, and a State-A profile has none — so this is "not yet",
+        // not "rejected", and the log has to distinguish them.
+        config.public.logs.insert(
+            LogFamily::Config,
+            "Mediator DID not changed: this profile has no persona yet, and the \
+             mediator DID belongs to one"
+                .to_string(),
+        );
+        info!(did = %did, "mediator DID change ignored — no active persona");
+        return false;
+    }
     config.public.logs.insert(
         LogFamily::Config,
         format!("Mediator DID changed to '{}'", did),
     );
     info!(did = %did, "mediator DID updated (reconnect needed)");
+    true
 }
 
 /// Update the organization DID.
@@ -283,12 +298,19 @@ fn handle_protection_tab_switch(state: &mut State, next_field: usize) {
     }
 }
 
-/// Returns `true` if the mediator DID was changed and a reconnect is needed.
+/// Returns `true` if the mediator DID was actually changed and a reconnect is
+/// needed.
 ///
 /// R11: the per-setting save is now coalesced (`Persist::SaveAndSync` marks the
-/// config dirty rather than saving inline). The mutation can no longer fail
-/// (the `update_*` helpers are infallible now that they don't persist), so the
-/// former `Err` arm is gone.
+/// config dirty rather than saving inline).
+///
+/// The mediator DID is the one setting here that can decline to apply: it hangs
+/// off the active persona, and a State-A profile has none. That used to be
+/// swallowed — the write vanished, and the panel reported "Setting saved" over a
+/// field that read back empty, which is exactly how it was reported ("it did not
+/// take"). It also asked for a mediator reconnect that could not do anything,
+/// leaving the header on "Connecting…". Both now hang off whether the write
+/// landed.
 fn handle_submit_edit(
     config: &mut Box<Config>,
     state: &mut State,
@@ -296,12 +318,18 @@ fn handle_submit_edit(
     value: &str,
 ) -> bool {
     let idx = state.main_page.content_panel.settings.selected_index;
-    match idx {
-        0 => update_friendly_name(config, value),
+    let applied = match idx {
+        0 => {
+            update_friendly_name(config, value);
+            true
+        }
         1 => update_mediator_did(config, value),
-        2 => update_org_did(config, value),
-        _ => {}
-    }
+        2 => {
+            update_org_did(config, value);
+            true
+        }
+        _ => true,
+    };
     let setting_name = match idx {
         0 => "Friendly name",
         1 => "Mediator DID",
@@ -309,6 +337,22 @@ fn handle_submit_edit(
         _ => "Setting",
     };
     state.main_page.content_panel.settings.mode = SettingsMode::View;
+
+    if !applied {
+        // Nothing was written, so nothing is dirty: no save, no sync, and no
+        // reconnect. Say what would make the setting available instead of
+        // leaving the operator to infer it from a blank field.
+        state.main_page.content_panel.settings.status_message = Some(
+            "Mediator DID not changed — this profile has no persona yet. \
+             A persona gets its mediator when it is created."
+                .to_string(),
+        );
+        state
+            .main_page
+            .log("Mediator DID unchanged: no persona in this profile");
+        return false;
+    }
+
     dispatch_util::save_and_sync(
         &mut state.main_page,
         config,
@@ -832,6 +876,76 @@ mod tests {
     #[test]
     fn test_validate_file_path_rejects_hidden_traversal() {
         assert!(validate_file_path("/tmp/safe/../../../etc/shadow").is_err());
+    }
+
+    /// The reported bug: on a profile with no persona, editing the Mediator DID
+    /// wrote nothing, and the panel said "Setting saved" over a field that read
+    /// back empty — so the operator was told the DID had taken when it had not.
+    /// It also asked for a mediator reconnect that had nothing new to dial.
+    #[test]
+    fn mediator_did_edit_without_a_persona_does_not_claim_a_save() {
+        let mut config = Box::new(crate::state_handler::dispatch_util::test_config());
+        let mut state = State::default();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
+        // Index 1 is the Mediator DID row.
+        state.main_page.content_panel.settings.selected_index = 1;
+
+        let needs_reconnect = handle_submit_edit(
+            &mut config,
+            &mut state,
+            &mut save,
+            "did:webvh:example:mediator",
+        );
+
+        assert!(
+            !needs_reconnect,
+            "nothing changed, so there is nothing to reconnect to"
+        );
+        let status = state
+            .main_page
+            .content_panel
+            .settings
+            .status_message
+            .as_deref()
+            .expect("the panel says something");
+        assert!(
+            !status.contains("Setting saved"),
+            "must not report a save that did not happen, got: {status}"
+        );
+        assert!(
+            status.contains("no persona"),
+            "must say why it did not apply, got: {status}"
+        );
+        assert_eq!(
+            config.mediator_did(),
+            "",
+            "and the value really is still unset"
+        );
+    }
+
+    /// The other half: a row that *can* always apply still reports success and
+    /// keeps the existing coalesced-save behaviour. Guards against the honest
+    /// failure path swallowing the ordinary one.
+    #[test]
+    fn friendly_name_edit_still_reports_a_save() {
+        let mut config = Box::new(crate::state_handler::dispatch_util::test_config());
+        let mut state = State::default();
+        let mut save = crate::state_handler::save_coalesce::SaveScheduler::new("test");
+        state.main_page.content_panel.settings.selected_index = 0;
+
+        let needs_reconnect = handle_submit_edit(&mut config, &mut state, &mut save, "Alice");
+
+        assert!(!needs_reconnect, "only the mediator row reconnects");
+        assert_eq!(
+            state
+                .main_page
+                .content_panel
+                .settings
+                .status_message
+                .as_deref(),
+            Some("Setting saved")
+        );
+        assert_eq!(config.public.friendly_name, "Alice");
     }
 
     // ----------------------------------------------------------------

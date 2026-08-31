@@ -643,17 +643,35 @@ impl Config {
 
     /// Set the active persona's mediator DID, updating both the persisted
     /// `account` record and the runtime `IdentityContext` so subsequent reads
-    /// (and the next save) see the new value. No-op if no identity is active.
-    pub fn set_active_mediator_did(&mut self, did: &str) {
+    /// (and the next save) see the new value.
+    ///
+    /// Returns `false` when there is no active identity to set it on — a
+    /// State-A config carries an account but no persona (see
+    /// [`Config::mediator_did`], which reads back `""` there), and a mediator
+    /// DID is a *per-persona* field with nowhere to live until one exists.
+    ///
+    /// The caller must not report success on `false`. Swallowing it is what
+    /// made this look like a working setting that "did not take": the write
+    /// vanished, the field read back empty, and the UI still said "Setting
+    /// saved".
+    #[must_use = "a false return means the mediator DID was NOT set; do not report success"]
+    pub fn set_active_mediator_did(&mut self, did: &str) -> bool {
         let Some(id) = self.active_identity().map(|i| i.persona_id) else {
-            return;
+            return false;
         };
-        if let Some(persona) = self.account.personas.get_mut(&id) {
-            persona.mediator_did = Some(did.to_string());
-        }
+        // The account record is the half that survives a restart, so it decides
+        // the answer: updating only the runtime context would report a success
+        // the operator loses on next launch. Load builds `identities` by walking
+        // `account.personas`, so a missing record here is not reachable — this
+        // is what keeps the `true` honest rather than assumed.
+        let Some(persona) = self.account.personas.get_mut(&id) else {
+            return false;
+        };
+        persona.mediator_did = Some(did.to_string());
         if let Some(ctx) = self.identities.get_mut(&id) {
             ctx.mediator_did = Some(did.to_string());
         }
+        true
     }
 
     /// Whether `did` is one of our resolved persona DIDs (vs. a relationship
@@ -1787,6 +1805,64 @@ mod tests {
         assert!(config.active_identity().is_none());
         assert_eq!(config.persona_did(), "");
         assert_eq!(config.mediator_did(), "");
+    }
+
+    /// The *write* side of the State-A case. Reading back `""` was already
+    /// pinned above; what was not was that the write reports having done
+    /// nothing. It used to return `()`, so the settings panel said "Setting
+    /// saved" over a value that had gone nowhere.
+    #[test]
+    fn setting_mediator_did_without_a_persona_reports_that_it_did_not_apply() {
+        let mut config = test_config(BTreeMap::new());
+
+        assert!(
+            !config.set_active_mediator_did("did:webvh:example:mediator"),
+            "no persona to set a mediator on, so the write must report failure"
+        );
+        assert_eq!(
+            config.mediator_did(),
+            "",
+            "and must not have invented somewhere to store it"
+        );
+    }
+
+    /// The same write with a persona resolved applies to *both* the runtime
+    /// identity and the persisted account record — the next read and the next
+    /// save have to agree, or the setting reverts on restart.
+    #[test]
+    fn setting_mediator_did_with_a_persona_applies_to_runtime_and_account() {
+        let pid = account::PersonaId(uuid::Uuid::from_u128(1));
+        let mut identities = BTreeMap::new();
+        identities.insert(pid, test_identity(pid, "did:example:persona"));
+        let mut config = test_config(identities);
+        // Seed the account half too: load derives `identities` from
+        // `account.personas`, so a real config always has both.
+        config.account.personas.insert(
+            pid,
+            account::PersonaRecord {
+                persona_id: pid,
+                did: "did:example:persona".to_string(),
+                did_document: None,
+                key_refs: Vec::new(),
+                mediator_did: None,
+                origin_context_id: "openvtc/test".to_string(),
+                created_at: chrono::Utc::now(),
+                label: None,
+                extra: serde_json::Map::new(),
+            },
+        );
+
+        assert!(config.set_active_mediator_did("did:webvh:example:mediator"));
+        assert_eq!(config.mediator_did(), "did:webvh:example:mediator");
+        assert_eq!(
+            config
+                .account
+                .personas
+                .get(&pid)
+                .and_then(|p| p.mediator_did.as_deref()),
+            Some("did:webvh:example:mediator"),
+            "the persisted record must move too, or the change is lost on restart"
+        );
     }
 
     /// R7: with multiple personas resolved, `active_identity()` must be
