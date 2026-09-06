@@ -322,7 +322,7 @@ uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
 # is the reason to take it here anyway: a wire label this repo agrees with only
 # by sharing the bug is not a contract, and the next conformance witness or
 # non-Rust peer on the other end of a provisioning run is what collects on it.
-vta-sdk = { version = "0.32.2", features = [
+vta-sdk = { version = "0.32.4", features = [
   "session",
   "client",
   # The SAME per-platform credential-store registration pnm-cli uses
