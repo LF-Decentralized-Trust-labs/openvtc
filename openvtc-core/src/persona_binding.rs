@@ -234,6 +234,9 @@ mod tests {
             claim_count: 2,
             ..Default::default()
         };
-        assert_eq!(bare.describe(), "presents: an unlabelled profile (2 claims)");
+        assert_eq!(
+            bare.describe(),
+            "presents: an unlabelled profile (2 claims)"
+        );
     }
 }
