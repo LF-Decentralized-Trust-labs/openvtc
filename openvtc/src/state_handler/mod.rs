@@ -232,6 +232,7 @@ mod capability_actions;
 mod community_actions;
 mod create_persona;
 mod credential_actions;
+mod persona_binding_refresh;
 /// The DIDComm transport module, which now lives in `openvtc-core`.
 ///
 /// Re-exported under its former path so every `didcomm::…` / `super::didcomm::…`
@@ -1620,6 +1621,40 @@ impl StateHandler {
                                 let results =
                                     agent_name_refresh::resolve_batch(resolver, targets).await;
                                 background_dispatch::DispatchOutcome::AgentName(results)
+                            },
+                        );
+                    }
+
+                    // Ask what each persona presents. Shares this tick for the
+                    // same reason as the transport probe — the loop gains no
+                    // extra timer — and re-asks every sweep rather than on a
+                    // TTL, because the answer is the holder's own decision and
+                    // they may have changed it from `pnm` a moment ago. The
+                    // busy-guard keeps a slow agent from stacking sweeps.
+                    let binding_targets: Vec<persona_binding_refresh::BindingTarget> = config
+                        .account
+                        .memberships()
+                        .filter_map(|c| {
+                            config
+                                .account
+                                .personas
+                                .get(&c.persona_ref)
+                                .map(|p| (c.sub_context_id.clone(), p.did.clone()))
+                        })
+                        .collect();
+                    if !binding_targets.is_empty()
+                        && let Some(client) = admin_vta.as_ref()
+                        && in_flight.try_begin(background_dispatch::DispatchDomain::PersonaBinding)
+                    {
+                        let client = client.clone();
+                        background_dispatch::spawn_dispatch(
+                            dispatch_tx.clone(),
+                            background_dispatch::DispatchDomain::PersonaBinding,
+                            async move {
+                                background_dispatch::DispatchOutcome::PersonaBinding(
+                                    persona_binding_refresh::resolve_batch(client, binding_targets)
+                                        .await,
+                                )
                             },
                         );
                     }

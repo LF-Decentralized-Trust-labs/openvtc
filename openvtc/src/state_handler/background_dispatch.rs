@@ -97,6 +97,8 @@ pub(crate) enum DispatchDomain {
     /// inbound channel and is matched by thread id — so what this domain
     /// serialises is the sending, which retries against an unreachable peer.
     Capabilities,
+    /// What each persona presents, for the communities panel.
+    PersonaBinding,
     /// Invitation-credential (VIC) list refresh: one credential-vault query
     /// against the always-on admin VTA session (30 s timeout in the SDK).
     /// Read-only. Backgrounded because it is bound to *navigation* — Tab into
@@ -120,6 +122,7 @@ impl DispatchDomain {
             DispatchDomain::Credential => "Credential request",
             DispatchDomain::Community => "Community request",
             DispatchDomain::Capabilities => "Capability request",
+            DispatchDomain::PersonaBinding => "Persona binding refresh",
             DispatchDomain::Vic => "Invitation credential refresh",
         }
     }
@@ -218,6 +221,12 @@ pub(crate) enum DispatchOutcome {
     Community(crate::state_handler::community_actions::CommunityOutcome),
     /// A capability query or toggle was sent (or failed to send).
     Capabilities(crate::state_handler::capability_actions::CapabilityOutcome),
+    PersonaBinding(
+        std::collections::HashMap<
+            crate::state_handler::persona_binding_refresh::BindingTarget,
+            openvtc_core::persona_binding::BindingSummary,
+        >,
+    ),
     /// A VIC vault mutation finished (import / archive / unarchive / restore /
     /// delete / purge). Shares the `Vic` domain with the listing, so the
     /// re-read it asks for cannot start until this outcome frees it.
@@ -253,6 +262,7 @@ impl DispatchOutcome {
             DispatchOutcome::Credential(_) => DispatchDomain::Credential,
             DispatchOutcome::Community(_) => DispatchDomain::Community,
             DispatchOutcome::Capabilities(_) => DispatchDomain::Capabilities,
+            DispatchOutcome::PersonaBinding(_) => DispatchDomain::PersonaBinding,
             DispatchOutcome::Vic(_) => DispatchDomain::Vic,
             DispatchOutcome::VicMutation(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
@@ -444,6 +454,18 @@ pub(crate) fn apply_outcome(
         }
         DispatchOutcome::Credential(outcome) => outcome.apply(state, config, save),
         DispatchOutcome::Capabilities(outcome) => outcome.apply(state),
+        // Merged, not replaced. A sweep only carries the targets it was given,
+        // and replacing the map would blank every row the sweep did not cover
+        // — which reads on screen as those personas having stopped presenting
+        // anything.
+        DispatchOutcome::PersonaBinding(results) => {
+            state
+                .main_page
+                .content_panel
+                .communities
+                .bindings
+                .extend(results);
+        }
         DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
         DispatchOutcome::VicMutation(outcome) => outcome.apply(state),
         // Handled above, before the domain is finished. Listed because the

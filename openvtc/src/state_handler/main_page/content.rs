@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dtg_credentials::DTGCredential;
@@ -146,6 +147,24 @@ pub struct CapabilitiesState {
 /// memberships, in display order (favourites first).
 #[derive(Clone, Debug, Default)]
 pub struct CommunitiesState {
+    /// What each persona presents in each community's context, keyed by
+    /// `(sub_context_id, persona_did)` — the pair `persona/binding/get` is
+    /// addressed by, and the pair every membership row already carries.
+    ///
+    /// **Session state, deliberately not persisted.** The agent-name cache next
+    /// door IS persisted, and the difference is the point: a verified name is a
+    /// property of a DID document that rarely changes and costs a network
+    /// round-trip to establish, so showing it instantly at launch is worth
+    /// keeping on disk. A binding is the holder's own current decision, cheap
+    /// to fetch, and editable from `pnm` at any moment — a persisted copy would
+    /// show what they used to present, on the one panel whose job is to tell
+    /// them what they present now. `prune_agent_name_negatives` already draws
+    /// this line for negatives; this is the same argument applied to the whole
+    /// record.
+    ///
+    /// An absent entry is not "presents nothing" — see
+    /// [`BindingSummary::unknown`](openvtc_core::persona_binding::BindingSummary::unknown).
+    pub bindings: HashMap<(String, String), openvtc_core::persona_binding::BindingSummary>,
     /// Display summaries of the (non-archived) communities, in display order.
     /// `Arc<[…]>` so cloning the panel state (per frame / per event) is a
     /// pointer bump rather than a deep copy; rebuilt wholesale in
