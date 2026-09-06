@@ -108,10 +108,29 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
             Span::styled(attention, Style::new().fg(COLOR_ORANGE)),
         ]));
 
-        // Secondary line: status · member-since.
+        // Secondary line: status · member-since · what this face presents.
+        //
+        // The row above says WHICH of the holder's faces this community sees;
+        // this says WHAT that face tells them. Both halves are needed to answer
+        // "what does this community know about me", and until now only the
+        // first was on screen.
+        //
+        // An absent entry reads "presents: unknown" rather than being omitted.
+        // Omitting it would render identically to a persona bound to nothing,
+        // and "we have not asked yet" is not "you are sharing nothing" — see
+        // `BindingSummary::unknown`.
         let mut detail = format!("        {}", c.status_label);
         if !c.member_since.is_empty() {
             detail.push_str(&format!("  ·  since {}", c.member_since));
+        }
+        if !c.sub_context_id.is_empty() && !c.persona_did.is_empty() {
+            let key = (c.sub_context_id.clone(), c.persona_did.clone());
+            let summary = state
+                .bindings
+                .get(&key)
+                .cloned()
+                .unwrap_or_else(openvtc_core::persona_binding::BindingSummary::unknown);
+            detail.push_str(&format!("  ·  {}", summary.describe()));
         }
         if c.archived {
             detail.push_str("  ·  archived");
