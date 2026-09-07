@@ -87,7 +87,7 @@ impl IdentityChoice {
             Block::bordered()
                 .fg(COLOR_BORDER)
                 .padding(Padding::proportional(1))
-                .title(" Choose an identity for this community "),
+                .title(" Who should this community know you as? "),
             middle,
         );
         let inner = middle.inner(Margin::new(3, 2));
@@ -98,14 +98,14 @@ impl IdentityChoice {
             let label = opt.map(|o| o.label.as_str()).unwrap_or("this persona");
             let mut lines = vec![
                 Line::styled(
-                    "Reuse an existing identity?",
+                    "Use a persona this community can already be linked to?",
                     Style::new().fg(COLOR_ORANGE).bold(),
                 ),
                 Line::default(),
                 Line::styled(
                     format!(
-                        "Presenting \"{label}\" to this community links you across every \
-                         community that uses it."
+                        "Being known here as \"{label}\" makes you the same person to \
+                         anyone who sees both this community and the others using it."
                     ),
                     Style::new().fg(COLOR_TEXT_DEFAULT),
                 ),
@@ -113,13 +113,13 @@ impl IdentityChoice {
             if let Some(opt) = opt {
                 if opt.linked_communities.is_empty() {
                     lines.push(Line::styled(
-                        "It is not yet presented to any other community.",
+                        "No other community knows you by it yet.",
                         Style::new().fg(COLOR_DARK_GRAY),
                     ));
                 } else {
                     lines.push(Line::default());
                     lines.push(Line::styled(
-                        "Already presented to:",
+                        "Already known to:",
                         Style::new().fg(COLOR_DARK_GRAY),
                     ));
                     for c in &opt.linked_communities {
@@ -148,7 +148,7 @@ impl IdentityChoice {
         // Otherwise the body is the selectable list: each persona, then "mint new".
         let mut lines = vec![
             Line::styled(
-                "Select the identity to present to this community:",
+                "Choose the persona this community will know you as:",
                 Style::new().fg(COLOR_BORDER).bold(),
             ),
             Line::default(),
@@ -174,7 +174,7 @@ impl IdentityChoice {
                 format!("    {}", opt.did)
             } else {
                 format!(
-                    "    {}  ·  used by {} communit{}",
+                    "    {}  ·  known to {} communit{}",
                     opt.did,
                     opt.linked_communities.len(),
                     if opt.linked_communities.len() == 1 {
@@ -195,11 +195,11 @@ impl IdentityChoice {
             Style::new().fg(COLOR_SOFT_PURPLE)
         };
         lines.push(Line::from(Span::styled(
-            format!("{marker}✦ Create a new identity for this community"),
+            format!("{marker}✦ Be someone new to this community"),
             style,
         )));
         lines.push(Line::styled(
-            "    A fresh did:webvh, unlinked from your other communities",
+            "    A fresh did:webvh — nothing links it to your other communities",
             Style::new().fg(COLOR_DARK_GRAY),
         ));
         lines.push(Line::default());

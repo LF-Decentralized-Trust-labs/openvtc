@@ -388,7 +388,7 @@ fn render_empty(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
             .fg(COLOR_TEXT_DEFAULT),
     );
     lines.push(
-        Line::from("Find a Verifiable Trust Community and present an identity to join it.")
+        Line::from("Find a Verifiable Trust Community and choose who it will know you as.")
             .fg(COLOR_TEXT_DEFAULT),
     );
     lines.push(Line::from(""));
