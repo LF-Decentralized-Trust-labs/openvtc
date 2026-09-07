@@ -10,8 +10,9 @@
 //!
 //! # One domain for the whole pane
 //!
-//! Reads and writes share [`DispatchDomain::PersonaManage`], so a listing
-//! cannot overtake the write that invalidated it. A write asks for a re-read by
+//! Reads and writes share one dispatch domain
+//! ([`DispatchDomain::PersonaManage`](crate::state_handler::background_dispatch::DispatchDomain::PersonaManage)),
+//! so a listing cannot overtake the write that invalidated it. A write asks for a re-read by
 //! setting `refresh_queued` rather than starting one, because its own outcome
 //! is still holding the domain — the same shape the VIC manager uses.
 //!
