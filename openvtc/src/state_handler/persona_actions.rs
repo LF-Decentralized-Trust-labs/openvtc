@@ -1121,6 +1121,35 @@ mod tests {
         assert!(personas(&state).revealed_attribute.is_none());
     }
 
+    /// The editor opens on the value, never on the mask.
+    ///
+    /// A mask is a rendering and must never reach what is stored or sent —
+    /// which it would, silently and permanently, if a form filled from
+    /// `display_value` were saved: the holder's card number would become eight
+    /// bullets and the version check would raise nothing, because the write is
+    /// perfectly well-formed.
+    #[test]
+    fn the_editor_opens_on_the_value_not_on_the_mask() {
+        let mut attr = attribute("01A");
+        attr.claim_type = "payment.card".into();
+        attr.value = Some(serde_json::json!("4242424242424242"));
+        assert!(attr.is_masked(), "the fixture has to be a masked one");
+
+        let mut state = state_with(IdentityState {
+            attributes: vec![attr].into(),
+            show_values: true,
+            ..IdentityState::default()
+        });
+        apply(&mut state, &PersonaAction::AttributeEdit(0));
+
+        match &personas(&state).mode {
+            PersonaMode::Attribute(form) => {
+                assert_eq!(form.value.value(), "4242424242424242");
+            }
+            _ => panic!("expected the editor"),
+        }
+    }
+
     /// A reveal on a row that is not there changes nothing — an index into a
     /// list that has since shrunk must not open whatever now sits at it.
     #[test]

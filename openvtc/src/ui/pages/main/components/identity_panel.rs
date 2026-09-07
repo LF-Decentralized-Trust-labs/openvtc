@@ -1672,14 +1672,14 @@ mod tests {
         );
     }
 
-    /// A fact whose claim type is sensitive is masked in the holder's own list,
-    /// and the row says it is masked rather than reading as empty.
+    /// A fact whose claim type carries a mask style is masked in the holder's
+    /// own list, and the row says so rather than reading as empty.
     ///
     /// The failure this refuses is the quiet one: `••••••••` and "(no value)"
     /// occupy the same space, and a holder who reads the first as the second
     /// concludes they never stored the thing they are looking at.
     #[test]
-    fn a_sensitive_fact_is_masked_and_the_row_says_so() {
+    fn a_masked_fact_is_reduced_and_the_row_says_so() {
         let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             show_values: true,
@@ -1704,7 +1704,7 @@ mod tests {
         assert_eq!(
             out.matches("masked — s to show").count(),
             1,
-            "exactly the sensitive fact is marked: {out}"
+            "exactly the masked fact is marked: {out}"
         );
         assert!(
             !out.contains("(no value)"),
@@ -1741,7 +1741,7 @@ mod tests {
         assert!(out.contains("showing — s to mask"), "{out}");
         assert!(
             !out.contains("+61400123456"),
-            "the other sensitive fact stays masked: {out}"
+            "the other masked fact stays masked: {out}"
         );
 
         // A grant that no longer names the selected row opens nothing: a list

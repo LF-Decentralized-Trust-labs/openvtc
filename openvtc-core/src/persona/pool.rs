@@ -212,8 +212,8 @@ impl PoolAttribute {
     /// value.
     ///
     /// A separate method rather than a `reveal: bool` on
-    /// [`display_value`](Self::display_value), so that reading a sensitive
-    /// value in the clear is something a call site had to *name*. A boolean
+    /// [`display_value`](Self::display_value), so that reading a masked value
+    /// in the clear is something a call site had to *name*. A boolean
     /// gets passed through, and the caller that ends up passing `true` is
     /// rarely the one that meant to.
     #[must_use]
@@ -525,14 +525,14 @@ mod tests {
         assert!(parse_typed_value("maybe", ValueType::Boolean).is_err());
     }
 
-    /// A high-sensitivity value is masked by its type, and reads back whole
+    /// A value whose type carries a mask style is masked, and reads back whole
     /// only when a caller asks for that one value.
     ///
     /// The pairing is the point: the mask has to be liftable, or a holder
     /// cannot check their own card number; and lifting it has to be a
     /// different call, or it is not a decision anyone made.
     #[test]
-    fn a_sensitive_value_is_masked_until_it_is_asked_for() {
+    fn a_masked_value_is_only_whole_when_it_is_asked_for() {
         let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
         attr.claim_type = "payment.card".into();
         attr.value = Some(Value::String("4242424242424242".into()));
@@ -593,10 +593,10 @@ mod tests {
     }
 
     /// A stale value keeps saying it is stale. The reason it cannot be shown is
-    /// not that it is sensitive, and a mask over it would hide the one thing
-    /// the holder needs to act on.
+    /// not that it is masked, and a mask over it would hide the one thing the
+    /// holder needs to act on.
     #[test]
-    fn a_stale_sensitive_value_still_says_it_is_stale() {
+    fn a_stale_masked_value_still_says_it_is_stale() {
         let mut attr = PoolAttribute::from_wire(&wire("credentialBacked"));
         attr.claim_type = "gov.id.passport".into();
         attr.value = Some(Value::String("P1234567".into()));

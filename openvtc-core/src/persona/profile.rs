@@ -448,13 +448,13 @@ mod tests {
         assert!(claim.display_value().contains("can no longer be proven"));
     }
 
-    /// A face shows a sensitive value masked too, and says that it did.
+    /// A face masks what its type says to mask, and says that it did.
     ///
     /// The face detail view is a screen a holder opens to check what a
     /// community sees, which is exactly the screen someone else is most likely
     /// to be looking at over their shoulder.
     #[test]
-    fn a_sensitive_claim_is_masked_on_a_face() {
+    fn a_masked_claim_is_masked_on_a_face_too() {
         let claim = ResolvedClaim::from_wire(&serde_json::json!({
             "type": "phone.mobile",
             "value": "+61400123456",

@@ -207,8 +207,8 @@ pub enum PersonaAction {
     ToggleValues,
     /// Show the selected fact's value unmasked, or stop showing it.
     ///
-    /// One fact, not a mode: a claim type the registry calls sensitive is
-    /// masked even in a listing that asked for values, and this lifts that for
+    /// One fact, not a mode: a claim type carrying a mask style is shown
+    /// reduced even in a listing that asked for values, and this lifts that for
     /// the row under the cursor only. Moving the selection puts it back.
     RevealValue(usize),
 
