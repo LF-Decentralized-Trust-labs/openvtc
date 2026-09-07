@@ -144,7 +144,7 @@ impl InvitationChoice {
             {
                 lines.push(Line::styled(
                     format!(
-                        "    Issued to {} — presented via a linkage proof",
+                        "    Issued to {} — shown with a proof that links the two",
                         shorten_did(subject, 40)
                     ),
                     Style::new().fg(COLOR_ORANGE),

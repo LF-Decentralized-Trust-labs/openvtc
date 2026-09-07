@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The join flow and communities panel speak the persona vocabulary too.** The
+  pane was brought over in #280; this is the copy outside it —
+  *"Who should this community know you as?"*, *"Already known to:"*, and the
+  reuse warning in the sentence the table asks every surface to share:
+  *"the same person to anyone who sees both."*
+
+  `profile` elsewhere in the TUI is left alone on purpose: setup, backup and
+  `--profile` mean the **config profile**, a different thing that predates the
+  persona family and has its own meaning to operators.
+
+
+### Changed
+
 - **The identity pane speaks the words a person would use.** Following
   `design-docs/persona-vocabulary.md`, which fixes one vocabulary across the
   console, `pnm`, the mobile agent and this TUI: an *attribute* is a **fact**,
