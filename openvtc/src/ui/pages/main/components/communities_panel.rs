@@ -25,14 +25,14 @@ impl Panel for CommunitiesPanel {
         state: &ContentPanelState,
         _connection: &ConnectionState,
     ) -> Vec<Line<'static>> {
-        render(&state.communities, &state.personas.bindings)
+        render(&state.communities, &state.identity.bindings)
     }
 }
 
 /// Render the communities panel content.
 ///
 /// `bindings` is the persona pane's map, read here rather than copied: this
-/// panel and the persona pane render the same fact — what a face presents in a
+/// panel and the persona pane render the same fact — what a persona presents in a
 /// community — and two copies of it would drift the moment one was refreshed
 /// and the other was not.
 pub fn render(
@@ -119,10 +119,10 @@ pub fn render(
             Span::styled(attention, Style::new().fg(COLOR_ORANGE)),
         ]));
 
-        // Secondary line: status · member-since · what this face presents.
+        // Secondary line: status · member-since · what this persona presents.
         //
-        // The row above says WHICH of the holder's faces this community sees;
-        // this says WHAT that face tells them. Both halves are needed to answer
+        // The row above says WHICH of the holder's personas this community sees;
+        // this says WHAT that persona tells them. Both halves are needed to answer
         // "what does this community know about me", and until now only the
         // first was on screen.
         //

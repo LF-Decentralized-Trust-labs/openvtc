@@ -1257,7 +1257,7 @@ mod tests {
         }
 
         fn with_persona(&mut self) {
-            self.state.main_page.content_panel.personas.faces = vec![ManagedDid {
+            self.state.main_page.content_panel.identity.personas = vec![ManagedDid {
                 did: "did:webvh:QmScidPersona:example.com:alice".into(),
                 agent_name: None,
                 label: "Alice".into(),

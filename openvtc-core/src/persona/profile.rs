@@ -11,7 +11,7 @@
 //! attribute, a `pinVersion` pin of one, an `override` of its value, and an
 //! `inline` value that never enters the pool. [`put`] from here writes the
 //! first, and a picker over the pool is exactly what that form is: tick the
-//! facts this face shows. It keeps "edit once, everywhere" true, which is the
+//! facts this persona shows. It keeps "edit once, everywhere" true, which is the
 //! property a holder is relying on when they correct their address in one
 //! place.
 //!
@@ -55,7 +55,7 @@ pub struct ProfileSummary {
     /// that from a rejection asks the holder the wrong question first. With
     /// this, the one question put is the right one.
     pub referenced: Vec<String>,
-    /// Credentials listed as this profile's inventory — what the face can
+    /// Credentials listed as this profile's inventory — what the persona can
     /// prove, as distinct from the evidence behind a credential-backed value.
     pub credential_ref_count: usize,
     pub version: u64,
