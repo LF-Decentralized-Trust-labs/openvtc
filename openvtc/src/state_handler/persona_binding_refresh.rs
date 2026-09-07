@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use openvtc_core::persona_binding::{self, BindingSummary};
+use openvtc_core::persona::binding::{self, BindingSummary};
 use vta_sdk::client::VtaClient;
 
 /// A `(sub_context_id, persona_did)` pair to ask about.
@@ -39,7 +39,7 @@ pub async fn resolve_batch(
 ) -> HashMap<BindingTarget, BindingSummary> {
     let mut out = HashMap::with_capacity(targets.len());
     for (context_id, persona_did) in targets {
-        let summary = persona_binding::get_or_unknown(&client, &context_id, &persona_did).await;
+        let summary = binding::get_or_unknown(&client, &context_id, &persona_did).await;
         out.insert((context_id, persona_did), summary);
     }
     out

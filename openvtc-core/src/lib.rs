@@ -38,7 +38,7 @@ pub mod members;
 pub mod messaging;
 #[cfg(feature = "openpgp-card")]
 pub mod openpgp_card;
-pub mod persona_binding;
+pub mod persona;
 pub mod personhood;
 pub mod presentation;
 pub mod process_lock;

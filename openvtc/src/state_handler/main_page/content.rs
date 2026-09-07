@@ -163,8 +163,8 @@ pub struct CommunitiesState {
     /// record.
     ///
     /// An absent entry is not "presents nothing" — see
-    /// [`BindingSummary::unknown`](openvtc_core::persona_binding::BindingSummary::unknown).
-    pub bindings: HashMap<(String, String), openvtc_core::persona_binding::BindingSummary>,
+    /// [`BindingSummary::unknown`](openvtc_core::persona::binding::BindingSummary::unknown).
+    pub bindings: HashMap<(String, String), openvtc_core::persona::binding::BindingSummary>,
     /// Display summaries of the (non-archived) communities, in display order.
     /// `Arc<[…]>` so cloning the panel state (per frame / per event) is a
     /// pointer bump rather than a deep copy; rebuilt wholesale in

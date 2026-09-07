@@ -129,7 +129,7 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
                 .bindings
                 .get(&key)
                 .cloned()
-                .unwrap_or_else(openvtc_core::persona_binding::BindingSummary::unknown);
+                .unwrap_or_else(openvtc_core::persona::binding::BindingSummary::unknown);
             detail.push_str(&format!("  ·  {}", summary.describe()));
         }
         if c.archived {

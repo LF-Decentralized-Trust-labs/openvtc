@@ -224,7 +224,7 @@ pub(crate) enum DispatchOutcome {
     PersonaBinding(
         std::collections::HashMap<
             crate::state_handler::persona_binding_refresh::BindingTarget,
-            openvtc_core::persona_binding::BindingSummary,
+            openvtc_core::persona::binding::BindingSummary,
         >,
     ),
     /// A VIC vault mutation finished (import / archive / unarchive / restore /
