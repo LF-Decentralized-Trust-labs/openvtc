@@ -847,14 +847,10 @@ fn render_profile_form(state: &PersonasState, form: &ProfileForm) -> Vec<Line<'s
 
 fn render_bind_picker(state: &PersonasState, picker: &BindPicker) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
-    let Some(m) = state.memberships.get(picker.membership) else {
-        return lines;
-    };
-
     lines.push(
         Line::from(format!(
             " What should {} present to {}?",
-            m.face_label, m.community_name
+            picker.face_label, picker.community
         ))
         .fg(COLOR_SUCCESS)
         .bold(),

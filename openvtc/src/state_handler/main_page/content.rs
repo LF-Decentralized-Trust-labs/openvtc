@@ -660,8 +660,16 @@ pub struct ProfileForm {
 /// The profile picker for one membership: what should this face present here?
 #[derive(Clone, Debug, Default)]
 pub struct BindPicker {
-    /// Index into `memberships`.
-    pub membership: usize,
+    /// The binding this picker will write, named rather than indexed. The
+    /// membership list is rebuilt from `Config` on every sync — an inbound
+    /// message is enough — and an index into the old list would point at a
+    /// different membership in the new one, sending the holder's identity to a
+    /// community they were not looking at.
+    pub context_id: String,
+    pub persona_did: String,
+    /// Display only: who is being shown something, and as whom.
+    pub community: String,
+    pub face_label: String,
     /// Cursor over the options, where 0 is always "present nothing" — a
     /// first-class choice rather than the absence of one, because a face that
     /// deliberately shows nothing is a common and legitimate arrangement.

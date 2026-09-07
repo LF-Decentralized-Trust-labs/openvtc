@@ -37,8 +37,8 @@ use vta_sdk::client::VtaClient;
 
 use crate::state_handler::actions::PersonaAction;
 use crate::state_handler::main_page::content::{
-    AttributeField, AttributeForm, BindPicker, PersonaConfirm, PersonaMembership, PersonaMode,
-    PersonaTab, ProfileForm, ProfileFormFocus, VALUE_TYPES,
+    AttributeField, AttributeForm, BindPicker, PersonaConfirm, PersonaMode, PersonaTab,
+    ProfileForm, ProfileFormFocus, VALUE_TYPES,
 };
 use crate::state_handler::persona_binding_refresh::{self, BindingTarget};
 use crate::state_handler::state::State;
@@ -240,7 +240,10 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
                 .and_then(|id| p.profiles.iter().position(|x| x.profile_id == id))
                 .map_or(0, |i| i + 1);
             p.mode = PersonaMode::Bind(BindPicker {
-                membership: *index,
+                context_id: membership.sub_context_id.clone(),
+                persona_did: membership.persona_did.clone(),
+                community: membership.community_name.clone(),
+                face_label: membership.face_label.clone(),
                 cursor,
                 working: false,
                 error: None,
@@ -415,14 +418,6 @@ fn form_submit(state: &mut State) -> PersonaEffect {
         .iter()
         .cloned()
         .collect();
-    let memberships: Vec<PersonaMembership> = state
-        .main_page
-        .content_panel
-        .personas
-        .memberships
-        .iter()
-        .cloned()
-        .collect();
     let p = &mut state.main_page.content_panel.personas;
 
     match &mut p.mode {
@@ -472,9 +467,6 @@ fn form_submit(state: &mut State) -> PersonaEffect {
             })
         }
         PersonaMode::Bind(picker) => {
-            let Some(m) = memberships.get(picker.membership) else {
-                return PersonaEffect::None;
-            };
             // Row 0 is "nothing"; the rest index the profile list.
             let profile_id = picker
                 .cursor
@@ -484,10 +476,10 @@ fn form_submit(state: &mut State) -> PersonaEffect {
             picker.error = None;
             picker.working = true;
             PersonaEffect::Job(PersonaJob::Bind {
-                context_id: m.sub_context_id.clone(),
-                persona_did: m.persona_did.clone(),
+                context_id: picker.context_id.clone(),
+                persona_did: picker.persona_did.clone(),
                 profile_id,
-                community: m.community_name.clone(),
+                community: picker.community.clone(),
             })
         }
     }
@@ -871,7 +863,7 @@ impl PersonaOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_handler::main_page::content::PersonasState;
+    use crate::state_handler::main_page::content::{PersonaMembership, PersonasState};
     use openvtc_core::persona::binding::BindingSummary;
     use openvtc_core::persona::pool::ProvenanceKind;
 
@@ -1285,7 +1277,15 @@ mod tests {
 
         match &personas(&state).mode {
             // Row 0 is "nothing", so the second profile is row 2.
-            PersonaMode::Bind(picker) => assert_eq!(picker.cursor, 2),
+            PersonaMode::Bind(picker) => {
+                assert_eq!(picker.cursor, 2);
+                // Named, not indexed: the membership list is rebuilt from
+                // `Config` on every sync, and an inbound message is enough to
+                // reorder it while the picker is open. An index would then send
+                // the holder's identity to a community they were not looking at.
+                assert_eq!(picker.context_id, "ctx");
+                assert_eq!(picker.persona_did, "did:webvh:example.com:alice");
+            }
             _ => panic!("the picker must be open"),
         }
     }
