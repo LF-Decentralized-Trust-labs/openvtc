@@ -46,7 +46,7 @@ pub struct DisclosureRow {
     pub context_id: String,
     /// Who it went to.
     pub verifier_did: String,
-    /// The face it was made as.
+    /// The persona it was made as.
     pub persona_did: String,
     pub claims: Vec<DisclosedClaim>,
     /// What the verifier said it was for, if they said.

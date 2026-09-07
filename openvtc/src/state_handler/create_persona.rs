@@ -10,7 +10,7 @@
 //! minus the community/submit parts: pick a WebVH server, mint the DID via the
 //! VTA, then persist through the shared [`ConfigExtension::mint_persona_into`].
 //! The minted persona is an orphan (no community) until a join reuses it, and
-//! shows in the identity pane's Faces list.
+//! shows in the identity pane's Personas list.
 
 use affinidi_tdk::TDK;
 use anyhow::Result;

@@ -1,5 +1,5 @@
-//! What each of your faces actually says — the profile a persona presents in
-//! one community's context. **Context-scoped**; see the [module header](super)
+//! What each of your personas actually says — the profile one presents in a
+//! given community's context. **Context-scoped**; see the [module header](super)
 //! for the boundary this sits on the low side of.
 //!
 //! A membership already carries both halves of the key: a
@@ -29,7 +29,7 @@
 //!
 //! [`set`] is the exception, and it has to be: it is a decision the holder just
 //! made about what a community sees. A write that quietly failed would leave
-//! them believing a face presents something it does not, so its error is
+//! them believing a persona presents something it does not, so its error is
 //! returned rather than softened.
 
 use serde::{Deserialize, Serialize};
@@ -167,13 +167,13 @@ pub async fn get_or_unknown(
 /// Decide what one persona presents in one context.
 ///
 /// `profile_id: None` clears the binding — a persona that presents nothing is a
-/// legitimate, common state (a throwaway face), not an absence to be inferred,
+/// legitimate, common state (a throwaway persona), not an absence to be inferred,
 /// so clearing is a first-class call rather than a delete.
 ///
 /// This is the push across the boundary. The VTA resolves the profile *above*
 /// the context and writes a materialised projection into it: the context
 /// receives values, never pool identifiers, so nothing inside it can walk back
-/// to the holder's other faces. That is why there is no "read the pool from a
+/// to the holder's other personas. That is why there is no "read the pool from a
 /// context" counterpart to this function anywhere in the module.
 ///
 /// `publicEntries` is deliberately sent empty. It publishes attributes on the

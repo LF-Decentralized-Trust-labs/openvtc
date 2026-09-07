@@ -1,10 +1,10 @@
-//! The holder's own identity — the faces, the facts behind them, and what each
-//! face presents where.
+//! The holder's own identity — the personas, the facts behind them, and what each
+//! persona presents where.
 //!
 //! # Two meanings of "persona", and they compose
 //!
 //! [`config::account::PersonaRecord`](crate::config::account::PersonaRecord) is
-//! a face as an *identity*: a `did:webvh`, its keys, its mediator. That record
+//! a persona as an *identity*: a `did:webvh`, its keys, its mediator. That record
 //! is local, and the TUI has always been able to mint one.
 //!
 //! The agent's `persona/*` Trust Tasks use the same word one layer up: a pool
@@ -13,7 +13,7 @@
 //! ([`binding`]). Those live in the VTA, not in `Config`, and every function
 //! here is a round-trip to it.
 //!
-//! This crate holds the face; the agent holds what the face says. They join on
+//! This crate holds the persona; the agent holds what the persona says. They join on
 //! the `(context_id, persona_did)` pair every community membership already
 //! carries.
 //!

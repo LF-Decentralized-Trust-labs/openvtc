@@ -470,7 +470,7 @@ pub(crate) fn apply_outcome(
             state
                 .main_page
                 .content_panel
-                .personas
+                .identity
                 .bindings
                 .extend(results);
         }

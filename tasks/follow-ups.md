@@ -26,7 +26,7 @@ support for rotating a persona's keys today.
 
 ### [ ] Identity pane — the four `persona/*` verbs it does not offer
 The pane (`ui/pages/main/components/personas_panel.rs` + `state_handler/persona_actions.rs`)
-covers faces, the pool, profiles, bindings and the disclosure history. Four
+covers personas, the pool, profiles, bindings and the disclosure history. Four
 parts of the family are deliberately not on it, each for a reason worth keeping:
 
 - **Authoring a credential-backed or generated attribute.** Both are shown and
