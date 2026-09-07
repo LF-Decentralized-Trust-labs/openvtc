@@ -25,12 +25,23 @@ impl Panel for CommunitiesPanel {
         state: &ContentPanelState,
         _connection: &ConnectionState,
     ) -> Vec<Line<'static>> {
-        render(&state.communities)
+        render(&state.communities, &state.personas.bindings)
     }
 }
 
 /// Render the communities panel content.
-pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
+///
+/// `bindings` is the persona pane's map, read here rather than copied: this
+/// panel and the persona pane render the same fact — what a face presents in a
+/// community — and two copies of it would drift the moment one was refreshed
+/// and the other was not.
+pub fn render(
+    state: &CommunitiesState,
+    bindings: &std::collections::HashMap<
+        (String, String),
+        openvtc_core::persona::binding::BindingSummary,
+    >,
+) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
     if let Some(msg) = &state.status_message {
@@ -125,8 +136,7 @@ pub fn render(state: &CommunitiesState) -> Vec<Line<'static>> {
         }
         if !c.sub_context_id.is_empty() && !c.persona_did.is_empty() {
             let key = (c.sub_context_id.clone(), c.persona_did.clone());
-            let summary = state
-                .bindings
+            let summary = bindings
                 .get(&key)
                 .cloned()
                 .unwrap_or_else(openvtc_core::persona::binding::BindingSummary::unknown);
@@ -516,6 +526,13 @@ mod key_hint_tests {
         }
     }
 
+    /// Render with no binding answers in hand — every row reads
+    /// "presents: unknown", which is the honest state before the agent has been
+    /// asked and the one these tests are not about.
+    fn render_for_test(state: &CommunitiesState) -> Vec<Line<'static>> {
+        render(state, &std::collections::HashMap::new())
+    }
+
     fn state_with(
         community: Option<CommunitySummary>,
         c: Option<PersonhoodChallengeView>,
@@ -568,7 +585,7 @@ mod key_hint_tests {
     /// — and on its own line rather than buried in a sentence.
     #[test]
     fn a_live_challenge_shows_its_match_code() {
-        let rendered: Vec<String> = render(&state_with(
+        let rendered: Vec<String> = render_for_test(&state_with(
             Some(row(true, false, false)),
             Some(challenge(5)),
         ))
@@ -587,7 +604,7 @@ mod key_hint_tests {
     /// cannot tell "it lapsed" from "it never arrived".
     #[test]
     fn an_expired_challenge_says_so_rather_than_vanishing() {
-        let rendered: Vec<String> = render(&state_with(
+        let rendered: Vec<String> = render_for_test(&state_with(
             Some(row(true, false, false)),
             Some(challenge(-1)),
         ))

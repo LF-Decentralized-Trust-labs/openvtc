@@ -47,6 +47,14 @@ pub struct ProfileSummary {
     pub name: String,
     /// How many entries it carries, all forms counted.
     pub entry_count: usize,
+    /// The pool attributes this profile draws on, in any entry form.
+    ///
+    /// Carried on the summary because the listing already contains it and one
+    /// question depends on it: deleting an attribute a profile references is
+    /// refused unless the caller cascades, and a caller that has to *discover*
+    /// that from a rejection asks the holder the wrong question first. With
+    /// this, the one question put is the right one.
+    pub referenced: Vec<String>,
     /// Credentials listed as this profile's inventory — what the face can
     /// prove, as distinct from the evidence behind a credential-backed value.
     pub credential_ref_count: usize,
@@ -63,6 +71,17 @@ impl ProfileSummary {
                 .get("entries")
                 .and_then(Value::as_array)
                 .map_or(0, Vec::len),
+            referenced: value
+                .get("entries")
+                .and_then(Value::as_array)
+                .map(|entries| {
+                    entries
+                        .iter()
+                        .filter_map(|e| e.get("ref").and_then(Value::as_str))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default(),
             credential_ref_count: value
                 .get("credentialRefs")
                 .and_then(Value::as_array)
@@ -412,8 +431,8 @@ mod tests {
     /// profile resolves in the order the holder saw in the picker.
     #[test]
     fn a_saved_profile_puts_the_ticked_entries_first() {
-        let refs = vec!["01A".to_string(), "01B".to_string()];
-        let other = vec![ProfileEntry::Inline {
+        let refs = ["01A".to_string(), "01B".to_string()];
+        let other = [ProfileEntry::Inline {
             inline: serde_json::from_value(serde_json::json!({
                 "type": "nickname",
                 "valueType": "string",
@@ -425,8 +444,8 @@ mod tests {
         let entries: Vec<ProfileEntry> = refs
             .iter()
             .map(|id| ProfileEntry::Ref {
-            attribute_id: id.clone(),
-        })
+                attribute_id: id.clone(),
+            })
             .chain(other.iter().cloned())
             .collect();
         assert_eq!(entries.len(), 3);

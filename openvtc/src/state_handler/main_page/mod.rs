@@ -496,11 +496,16 @@ impl MainPageState {
         }
         self.content_panel.vta.active_dids = active_dids.into();
 
-        // Context identities: every persona in the account, with how many
-        // communities present it. A persona bound to zero communities is an
-        // orphan (e.g. left by a failed join before the rollback fix) —
-        // surfaced so the operator can spot and manage it.
-        let mut context_dids: Vec<content::ManagedDid> = config
+        // Faces: every persona in the account, with how many communities
+        // present it. A persona bound to zero communities is an orphan (e.g.
+        // left by a failed join before the rollback fix) — surfaced so the
+        // operator can spot and manage it.
+        //
+        // These live on the persona pane rather than the VTA panel: a persona
+        // DID is the holder's identity, not a property of the agent that
+        // happens to host its keys, and the pane that manages it is the pane
+        // that should list it.
+        let mut faces: Vec<content::ManagedDid> = config
             .account
             .personas
             .values()
@@ -518,19 +523,17 @@ impl MainPageState {
                 is_active: p.did.as_str() == persona_did,
             })
             .collect();
-        context_dids.sort_by(|a, b| a.did.cmp(&b.did));
+        faces.sort_by(|a, b| a.did.cmp(&b.did));
         // Clamp the selection to the rebuilt list. Nothing else does: the list is
         // rebuilt wholesale on every sync, so deleting a persona (or loading a
         // profile with fewer than the last one had) could leave the index past
         // the end — where the panel draws no cursor and every list-scoped key
-        // (`d`, and until it moved, `g`) silently does nothing, since each is
-        // guarded on `did_selected < did_count`. Restarting "fixed" it only
-        // because the index starts at 0.
-        let vta = &mut self.content_panel.vta;
-        vta.did_selected_index = vta
-            .did_selected_index
-            .min(context_dids.len().saturating_sub(1));
-        vta.context_dids = context_dids.into();
+        // (`d`, `g`) silently does nothing, since each is guarded on
+        // `face_selected < face count`. Restarting "fixed" it only because the
+        // index starts at 0.
+        let personas = &mut self.content_panel.personas;
+        personas.face_selected = personas.face_selected.min(faces.len().saturating_sub(1));
+        personas.faces = faces.into();
 
         // The VIC list is not derived from `Config` (it comes from the VTA
         // credential vault), so it is annotated rather than rebuilt here.
@@ -621,6 +624,66 @@ impl MainPageState {
         if self.content_panel.communities.selected_index >= community_count {
             self.content_panel.communities.selected_index = community_count.saturating_sub(1);
         }
+
+        // The persona pane's Communities tab: one row per membership, not per
+        // community. A community the holder joined twice under two faces is two
+        // rows here, because the question this tab answers — which face does
+        // this relationship use, and what does it say — has two different
+        // answers in that case.
+        //
+        // Archived memberships are included, unlike the communities panel's
+        // own list. An archived membership still has a live binding in the
+        // agent, so hiding it would hide identity the holder is still
+        // disclosing.
+        let mut memberships = Vec::new();
+        for c in config.account.memberships() {
+            let persona = config.account.personas.get(&c.persona_ref);
+            // How many *other* memberships show this same face. Computed per
+            // row rather than per persona because it is read that way: the
+            // holder is looking at one community and asking "who else sees
+            // this me".
+            let shared_with = config
+                .account
+                .memberships()
+                .filter(|other| other.persona_ref == c.persona_ref)
+                .count()
+                .saturating_sub(1);
+            memberships.push(content::PersonaMembership {
+                community_name: c
+                    .display_name
+                    .clone()
+                    .or_else(|| config.agent_name_for(&c.vtc_did).map(str::to_owned))
+                    .unwrap_or_else(|| shorten_did(&c.vtc_did, 40)),
+                sub_context_id: c.sub_context_id.clone(),
+                persona_did: persona.map(|p| p.did.clone()).unwrap_or_default(),
+                // Same precedence as everywhere else a DID is named: the
+                // holder's own label, then a *verified* agent name, then the
+                // DID itself. An unverified `alsoKnownAs` claim never reaches
+                // the cache this reads.
+                face_label: persona
+                    .and_then(|p| p.label.clone())
+                    .or_else(|| {
+                        persona.and_then(|p| config.agent_name_for(&p.did).map(str::to_owned))
+                    })
+                    .or_else(|| persona.map(|p| shorten_did(&p.did, 24)))
+                    .unwrap_or_default(),
+                status_label: community_status_label(&c.status),
+                shared_with,
+            });
+        }
+        // Stable order the holder can predict, and one that puts the rows they
+        // are most likely to be reconsidering — the faces shown to several
+        // communities — next to each other.
+        memberships.sort_by(|a, b| {
+            a.face_label
+                .cmp(&b.face_label)
+                .then_with(|| a.community_name.cmp(&b.community_name))
+        });
+        let personas = &mut self.content_panel.personas;
+        personas.membership_selected = personas
+            .membership_selected
+            .min(memberships.len().saturating_sub(1));
+        personas.memberships = memberships.into();
     }
 
     /// Stitch the verified agent name for each held VIC's issuer onto the VIC
@@ -1737,11 +1800,11 @@ mod tests {
         assert_eq!(task.remote_did, shorten_did(BOB_DID, 60));
     }
 
-    /// The VTA panel's Context Identities list carries the persona's verified
-    /// name beside its DID; the persona's own label is a separate line and is
-    /// left untouched.
+    /// The identity pane's Faces list carries the persona's verified name
+    /// beside its DID; the persona's own label is a separate line and is left
+    /// untouched.
     #[test]
-    fn context_did_row_carries_verified_agent_name() {
+    fn face_row_carries_verified_agent_name() {
         let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
         let mut config = config_with_membership(ALICE_DID, Some("Work me"), vtc_did, None);
         config.set_cached_agent_name(
@@ -1752,7 +1815,7 @@ mod tests {
 
         let mut page = MainPageState::default();
         page.sync_from_config(&config);
-        let row = &page.content_panel.vta.context_dids[0];
+        let row = &page.content_panel.personas.faces[0];
 
         assert_eq!(row.agent_name.as_deref(), Some("example.com/@alice"));
         assert_eq!(row.did, ALICE_DID);
@@ -1764,7 +1827,7 @@ mod tests {
     ///
     /// Nothing else did this: the list is rebuilt wholesale on every sync, and a
     /// stale index disables every list-scoped key (each is guarded on
-    /// `did_selected < did_count`) while drawing no cursor to show why — a
+    /// `face_selected < face count`) while drawing no cursor to show why — a
     /// keyboard that looks broken until the next restart resets the index to 0.
     #[test]
     fn syncing_clamps_a_stale_persona_selection() {
@@ -1773,12 +1836,12 @@ mod tests {
 
         let mut page = MainPageState::default();
         // What a deletion (or a smaller profile) leaves behind.
-        page.content_panel.vta.did_selected_index = 4;
+        page.content_panel.personas.face_selected = 4;
         page.sync_from_config(&config);
 
-        assert_eq!(page.content_panel.vta.context_dids.len(), 1);
+        assert_eq!(page.content_panel.personas.faces.len(), 1);
         assert_eq!(
-            page.content_panel.vta.did_selected_index, 0,
+            page.content_panel.personas.face_selected, 0,
             "the selection must land on a row that exists"
         );
     }
@@ -2063,9 +2126,9 @@ mod tests {
         assert!(page.content_panel.vta.vics[0].issuer_agent_name.is_none());
     }
 
-    /// A cached negative lookup leaves the Context Identities row on the DID.
+    /// A cached negative lookup leaves the face row on the DID.
     #[test]
-    fn context_did_row_ignores_a_cached_negative_lookup() {
+    fn face_row_ignores_a_cached_negative_lookup() {
         let vtc_did = "did:webvh:QmScidCommunityBBBBBBBBBBBBBBBBBB:example.com:community";
         let mut config = config_with_membership(ALICE_DID, None, vtc_did, None);
         config.set_cached_agent_name(ALICE_DID, None, chrono::Utc::now());
@@ -2073,7 +2136,7 @@ mod tests {
         let mut page = MainPageState::default();
         page.sync_from_config(&config);
 
-        assert!(page.content_panel.vta.context_dids[0].agent_name.is_none());
+        assert!(page.content_panel.personas.faces[0].agent_name.is_none());
     }
 
     // --- persona_in_scope (community-scoping filter, D10/R-C-6) ---

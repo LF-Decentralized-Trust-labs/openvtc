@@ -77,6 +77,7 @@ the real work is decomposed into focused modules (declared at `mod.rs:50`):
 | `save_coalesce.rs` | Coalesced, off-runtime `Config` persistence (see §4). |
 | `agent_name_refresh.rs` | Off-loop batch resolution of agent names (DID→name), applied via background-dispatch (see §4). |
 | `inbox_actions.rs`, `relationship_actions.rs`, `credential_actions.rs`, `settings_actions.rs` | Per-panel business logic — each exposes a `dispatch(...)` entry point the matching `Action` arm calls. |
+| `persona_actions.rs` | The identity pane. `apply(&mut State, &PersonaAction)` is pure and returns a `PersonaEffect` naming any network work; the loop spawns it and folds the result back through `PersonaOutcome::apply`. Reads and writes share one `DispatchDomain`. |
 | `didcomm.rs` | `DIDCommService` integration: service start, listener config/ids, the `DIDCommEvent` enum, lifecycle logging. |
 | `main_page/` | Maps `Config` → display state (`sync_from_config`), menu/content models. |
 | `setup_wizard.rs`, `setup_sequence/`, `setup_*_actions.rs`, `join.rs`, `join_flow.rs` | The setup and join sub-flows (each runs its own scoped `select!` loop, then returns control to `main_loop`). |

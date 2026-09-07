@@ -131,10 +131,7 @@ impl PoolAttribute {
             value_type: str_field("valueType"),
             value: value.get("value").cloned(),
             provenance: ProvenanceKind::parse_wire(value.get("provenance")),
-            stale: value
-                .get("stale")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
+            stale: value.get("stale").and_then(Value::as_bool).unwrap_or(false),
             version: value.get("version").and_then(Value::as_u64).unwrap_or(0),
             updated_at: str_field("updatedAt"),
         }
@@ -267,10 +264,7 @@ pub async fn list(
 /// Create or update a self-asserted attribute.
 ///
 /// A create is a `put` with no `attributeId`; the VTA mints one and returns it.
-pub async fn put(
-    client: &VtaClient,
-    draft: AttributeDraft,
-) -> Result<AttributeEdit, OpenVTCError> {
+pub async fn put(client: &VtaClient, draft: AttributeDraft) -> Result<AttributeEdit, OpenVTCError> {
     let response = client
         .persona_attribute_put(
             &draft.claim_type,
@@ -349,8 +343,9 @@ pub fn parse_typed_value(text: &str, value_type: ValueType) -> Result<Value, Str
             "false" | "no" | "n" | "0" => Ok(Value::Bool(false)),
             _ => Err(format!("`{trimmed}` is not true or false")),
         },
-        ValueType::Object => serde_json::from_str(trimmed)
-            .map_err(|e| format!("not valid JSON: {e}")),
+        ValueType::Object => {
+            serde_json::from_str(trimmed).map_err(|e| format!("not valid JSON: {e}"))
+        }
     }
 }
 
@@ -451,7 +446,11 @@ mod tests {
         let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
         assert_eq!(attr.display_name(), "email.work");
         attr.label = Some("  ".into());
-        assert_eq!(attr.display_name(), "email.work", "a blank label is no label");
+        assert_eq!(
+            attr.display_name(),
+            "email.work",
+            "a blank label is no label"
+        );
         attr.label = Some("Work email".into());
         assert_eq!(attr.display_name(), "Work email");
     }

@@ -29,11 +29,17 @@ pub enum MainMenu {
     Inbox,
     Relationships,
     Credentials,
+    /// The holder's own identity — faces, the attribute pool behind them, the
+    /// profiles over that pool, and what each face presents in each community.
+    ///
+    /// Sits beside the other "my …" panels rather than under the VTA service,
+    /// which is where its parts used to live: minting a persona DID was a menu
+    /// action, the list of them was a section of the VTA panel, and everything
+    /// above them was reachable only from `pnm`. Identity is not a property of
+    /// the agent that hosts its keys.
+    Personas,
     Settings,
     Vta,
-    /// Action item (not a panel): opens the create-persona overlay on Enter,
-    /// mirroring how `Quit` triggers an action rather than switching panels.
-    CreatePersona,
     Logs,
     Help,
     Quit,
@@ -46,9 +52,9 @@ impl Display for MainMenu {
             MainMenu::Inbox => write!(f, "Inbox"),
             MainMenu::Relationships => write!(f, "My Relationships"),
             MainMenu::Credentials => write!(f, "My Credentials"),
+            MainMenu::Personas => write!(f, "My Identity"),
             MainMenu::Settings => write!(f, "Settings"),
             MainMenu::Vta => write!(f, "VTA Service"),
-            MainMenu::CreatePersona => write!(f, "Create Persona DID"),
             MainMenu::Logs => write!(f, "Logs"),
             MainMenu::Help => write!(f, "Help / Status"),
             MainMenu::Quit => write!(f, "Quit"),
@@ -64,10 +70,10 @@ impl MainMenu {
             MainMenu::Inbox => MainMenu::Communities,
             MainMenu::Relationships => MainMenu::Inbox,
             MainMenu::Credentials => MainMenu::Relationships,
-            MainMenu::Settings => MainMenu::Credentials,
+            MainMenu::Personas => MainMenu::Credentials,
+            MainMenu::Settings => MainMenu::Personas,
             MainMenu::Vta => MainMenu::Settings,
-            MainMenu::CreatePersona => MainMenu::Vta,
-            MainMenu::Logs => MainMenu::CreatePersona,
+            MainMenu::Logs => MainMenu::Vta,
             MainMenu::Help => MainMenu::Logs,
             MainMenu::Quit => MainMenu::Help,
         }
@@ -79,10 +85,10 @@ impl MainMenu {
             MainMenu::Communities => MainMenu::Inbox,
             MainMenu::Inbox => MainMenu::Relationships,
             MainMenu::Relationships => MainMenu::Credentials,
-            MainMenu::Credentials => MainMenu::Settings,
+            MainMenu::Credentials => MainMenu::Personas,
+            MainMenu::Personas => MainMenu::Settings,
             MainMenu::Settings => MainMenu::Vta,
-            MainMenu::Vta => MainMenu::CreatePersona,
-            MainMenu::CreatePersona => MainMenu::Logs,
+            MainMenu::Vta => MainMenu::Logs,
             MainMenu::Logs => MainMenu::Help,
             MainMenu::Help => MainMenu::Quit,
             MainMenu::Quit => MainMenu::Communities,

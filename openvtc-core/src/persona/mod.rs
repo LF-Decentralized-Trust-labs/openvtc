@@ -19,9 +19,9 @@
 //!
 //! # The boundary this module sits astride
 //!
-//! [`pool`] and [`profile`] are **holder-scoped**: they read across every trust
-//! context and the VTA gates them on *unrestricted* authority. [`binding`] is
-//! **context-scoped**. That asymmetry is the design, not an accident of the
+//! [`pool`], [`profile`] and [`disclosure`] are **holder-scoped**: they read
+//! across every trust context and the VTA gates them on *unrestricted*
+//! authority. [`binding`] is **context-scoped**. That asymmetry is the design, not an accident of the
 //! API — the holder pushes a materialised projection down into a context, and a
 //! context never pulls from the pool. Everything in [`binding`] therefore names
 //! a context; nothing in [`pool`] or [`profile`] can.
@@ -40,5 +40,6 @@
 //! identity, so it returns its error and the panel says so.
 
 pub mod binding;
+pub mod disclosure;
 pub mod pool;
 pub mod profile;

@@ -825,6 +825,18 @@ pub(crate) async fn handle_action(ctx: &mut ActionCtx<'_>, action: Action) -> Ha
                 );
             }
         }
+        Action::Persona(persona_action) => {
+            // The pane's own reducer decides what changed and what it still
+            // owes the agent; the loop only spawns what it names.
+            let effect = persona_actions::apply(ctx.state, &persona_action);
+            spawn_persona_effect(
+                ctx.dispatch_tx,
+                ctx.in_flight,
+                ctx.state,
+                ctx.admin_vta,
+                effect,
+            );
+        }
         Action::VicRefresh => {
             // Off the loop: this is Tab into the VIC list, and the
             // focus change queued behind it must not wait on a vault
@@ -1124,7 +1136,6 @@ pub(crate) async fn handle_action(ctx: &mut ActionCtx<'_>, action: Action) -> Ha
         | Action::AgentNameManagerCancelRemove
         | Action::AgentNameManagerClose
         | Action::VicSelect(..)
-        | Action::VicFocusToggle
         | Action::VicConfirmDelete(..)
         | Action::VicCancelDelete
         | Action::VicConfirmPurge(..)
@@ -1246,7 +1257,7 @@ mod tests {
         }
 
         fn with_persona(&mut self) {
-            self.state.main_page.content_panel.vta.context_dids = vec![ManagedDid {
+            self.state.main_page.content_panel.personas.faces = vec![ManagedDid {
                 did: "did:webvh:QmScidPersona:example.com:alice".into(),
                 agent_name: None,
                 label: "Alice".into(),

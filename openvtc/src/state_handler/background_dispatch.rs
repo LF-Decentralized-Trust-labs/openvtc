@@ -99,6 +99,10 @@ pub(crate) enum DispatchDomain {
     Capabilities,
     /// What each persona presents, for the communities panel.
     PersonaBinding,
+    /// The identity pane's own reads and writes — the attribute pool, the
+    /// profiles over it, and the bindings it sets. One domain for both
+    /// directions, so a listing cannot overtake the write that invalidated it.
+    PersonaManage,
     /// Invitation-credential (VIC) list refresh: one credential-vault query
     /// against the always-on admin VTA session (30 s timeout in the SDK).
     /// Read-only. Backgrounded because it is bound to *navigation* — Tab into
@@ -123,6 +127,7 @@ impl DispatchDomain {
             DispatchDomain::Community => "Community request",
             DispatchDomain::Capabilities => "Capability request",
             DispatchDomain::PersonaBinding => "Persona binding refresh",
+            DispatchDomain::PersonaManage => "Identity request",
             DispatchDomain::Vic => "Invitation credential refresh",
         }
     }
@@ -231,6 +236,8 @@ pub(crate) enum DispatchOutcome {
     /// delete / purge). Shares the `Vic` domain with the listing, so the
     /// re-read it asks for cannot start until this outcome frees it.
     VicMutation(crate::state_handler::vic::VicMutationOutcome),
+    /// An identity-pane read or write finished.
+    PersonaManage(crate::state_handler::persona_actions::PersonaOutcome),
     /// A VIC list refresh finished. [`VicRefreshOutcome::apply`](crate::state_handler::vic::VicRefreshOutcome::apply)
     /// swaps in the
     /// listing (or logs why it could not be read); display-only, so it touches
@@ -263,6 +270,7 @@ impl DispatchOutcome {
             DispatchOutcome::Community(_) => DispatchDomain::Community,
             DispatchOutcome::Capabilities(_) => DispatchDomain::Capabilities,
             DispatchOutcome::PersonaBinding(_) => DispatchDomain::PersonaBinding,
+            DispatchOutcome::PersonaManage(_) => DispatchDomain::PersonaManage,
             DispatchOutcome::Vic(_) => DispatchDomain::Vic,
             DispatchOutcome::VicMutation(_) => DispatchDomain::Vic,
             DispatchOutcome::Panicked(domain) => *domain,
@@ -462,10 +470,11 @@ pub(crate) fn apply_outcome(
             state
                 .main_page
                 .content_panel
-                .communities
+                .personas
                 .bindings
                 .extend(results);
         }
+        DispatchOutcome::PersonaManage(outcome) => outcome.apply(state),
         DispatchOutcome::Vic(outcome) => outcome.apply(state, config),
         DispatchOutcome::VicMutation(outcome) => outcome.apply(state),
         // Handled above, before the domain is finished. Listed because the

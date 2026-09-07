@@ -69,6 +69,9 @@ pub struct ContentPanelState {
     pub communities: CommunitiesState,
     /// Per-community capabilities view (opened from Communities with `c`).
     pub capabilities: CapabilitiesState,
+    /// The holder's own identity: faces, pool, profiles, and what each face
+    /// presents where.
+    pub personas: PersonasState,
 }
 
 // ****************************************************************************
@@ -147,24 +150,6 @@ pub struct CapabilitiesState {
 /// memberships, in display order (favourites first).
 #[derive(Clone, Debug, Default)]
 pub struct CommunitiesState {
-    /// What each persona presents in each community's context, keyed by
-    /// `(sub_context_id, persona_did)` — the pair `persona/binding/get` is
-    /// addressed by, and the pair every membership row already carries.
-    ///
-    /// **Session state, deliberately not persisted.** The agent-name cache next
-    /// door IS persisted, and the difference is the point: a verified name is a
-    /// property of a DID document that rarely changes and costs a network
-    /// round-trip to establish, so showing it instantly at launch is worth
-    /// keeping on disk. A binding is the holder's own current decision, cheap
-    /// to fetch, and editable from `pnm` at any moment — a persisted copy would
-    /// show what they used to present, on the one panel whose job is to tell
-    /// them what they present now. `prune_agent_name_negatives` already draws
-    /// this line for negatives; this is the same argument applied to the whole
-    /// record.
-    ///
-    /// An absent entry is not "presents nothing" — see
-    /// [`BindingSummary::unknown`](openvtc_core::persona::binding::BindingSummary::unknown).
-    pub bindings: HashMap<(String, String), openvtc_core::persona::binding::BindingSummary>,
     /// Display summaries of the (non-archived) communities, in display order.
     /// `Arc<[…]>` so cloning the panel state (per frame / per event) is a
     /// pointer bump rather than a deep copy; rebuilt wholesale in
@@ -413,6 +398,374 @@ pub struct CommunitySummary {
 }
 
 // ****************************************************************************
+// Personas State — the holder's own identity
+// ****************************************************************************
+
+/// Which part of the identity story the pane is showing.
+///
+/// The order is the story: who I am, what I know about myself, what I choose to
+/// show, and who sees which of it. Every tab after the first depends on the one
+/// before it, so a holder who reads them in order never meets a term that has
+/// not been introduced.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PersonaTab {
+    /// The persona DIDs themselves — a face as an *identity*.
+    #[default]
+    Faces,
+    /// The attribute pool: the facts, held once.
+    Attributes,
+    /// Named projections over the pool.
+    Profiles,
+    /// Which face each community sees, and what it presents there.
+    Communities,
+    /// What has actually left, and to whom.
+    Disclosures,
+}
+
+impl PersonaTab {
+    /// Every tab, in display order.
+    #[must_use]
+    pub fn all() -> [PersonaTab; 5] {
+        [
+            PersonaTab::Faces,
+            PersonaTab::Attributes,
+            PersonaTab::Profiles,
+            PersonaTab::Communities,
+            PersonaTab::Disclosures,
+        ]
+    }
+
+    /// The tab's name in the header strip.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            PersonaTab::Faces => "Faces",
+            PersonaTab::Attributes => "Attributes",
+            PersonaTab::Profiles => "Profiles",
+            PersonaTab::Communities => "Communities",
+            PersonaTab::Disclosures => "Disclosures",
+        }
+    }
+
+    /// Whether this tab's contents come from the agent rather than `Config`.
+    ///
+    /// Drives which tabs a refresh has anything to do, and which can draw
+    /// before the agent has ever answered. Faces are local: an account with no
+    /// VTA session still has personas, and a pane that showed nothing until the
+    /// network answered would be lying about the ones on disk.
+    #[must_use]
+    pub fn needs_agent(self) -> bool {
+        matches!(
+            self,
+            PersonaTab::Attributes
+                | PersonaTab::Profiles
+                | PersonaTab::Communities
+                | PersonaTab::Disclosures
+        )
+    }
+
+    #[must_use]
+    pub fn next(self) -> PersonaTab {
+        match self {
+            PersonaTab::Faces => PersonaTab::Attributes,
+            PersonaTab::Attributes => PersonaTab::Profiles,
+            PersonaTab::Profiles => PersonaTab::Communities,
+            PersonaTab::Communities => PersonaTab::Disclosures,
+            PersonaTab::Disclosures => PersonaTab::Faces,
+        }
+    }
+
+    #[must_use]
+    pub fn prev(self) -> PersonaTab {
+        match self {
+            PersonaTab::Faces => PersonaTab::Disclosures,
+            PersonaTab::Attributes => PersonaTab::Faces,
+            PersonaTab::Profiles => PersonaTab::Attributes,
+            PersonaTab::Communities => PersonaTab::Profiles,
+            PersonaTab::Disclosures => PersonaTab::Communities,
+        }
+    }
+}
+
+/// One community membership, as the Communities tab needs it: which face this
+/// community sees, and enough to look up what that face presents.
+#[derive(Clone, Debug, Default)]
+pub struct PersonaMembership {
+    /// Display name of the community.
+    pub community_name: String,
+    /// The VTA context the binding lives in.
+    pub sub_context_id: String,
+    /// The persona DID this community sees.
+    pub persona_did: String,
+    /// The holder's label for that face (or its agent name / DID).
+    pub face_label: String,
+    /// Membership lifecycle, already worded for display.
+    pub status_label: String,
+    /// How many *other* communities are shown this same face.
+    ///
+    /// The linkage number. Two communities shown one face can compare notes and
+    /// discover they are talking to the same person, which is the single most
+    /// consequential fact about a persona arrangement and the one a holder
+    /// cannot recompute by looking at one row.
+    pub shared_with: usize,
+}
+
+/// A confirmation the pane is waiting on. One at a time, because the panel has
+/// one prompt line and a holder answering `y` must never be able to wonder
+/// which question they answered.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PersonaConfirm {
+    #[default]
+    None,
+    /// Remove an orphan persona DID (index into `faces`).
+    DeleteFace(usize),
+    /// Delete a pool attribute (index into `attributes`).
+    ///
+    /// `cascade` is the *escalated* ask, offered only after the VTA has refused
+    /// the plain one because profiles still reference the attribute. It is
+    /// never the first question: cascading edits every profile that used the
+    /// value, and that is not a consequence to infer from a `d` keypress.
+    DeleteAttribute { index: usize, cascade: bool },
+    /// Delete a profile (index into `profiles`).
+    ///
+    /// `unbind` is the same escalation one layer up — offered after a refusal,
+    /// because it makes every persona presenting under the profile present
+    /// nothing.
+    DeleteProfile { index: usize, unbind: bool },
+    /// Clear what one membership's face presents (index into `memberships`).
+    Unbind(usize),
+}
+
+/// Which field of the attribute editor has the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AttributeField {
+    /// The vocabulary token (`email.work`).
+    #[default]
+    ClaimType,
+    /// The holder's own label.
+    Label,
+    /// String / number / boolean / date / object.
+    ValueType,
+    /// The value itself.
+    Value,
+}
+
+impl AttributeField {
+    #[must_use]
+    pub fn next(self) -> AttributeField {
+        match self {
+            AttributeField::ClaimType => AttributeField::Label,
+            AttributeField::Label => AttributeField::ValueType,
+            AttributeField::ValueType => AttributeField::Value,
+            AttributeField::Value => AttributeField::ClaimType,
+        }
+    }
+
+    #[must_use]
+    pub fn prev(self) -> AttributeField {
+        match self {
+            AttributeField::ClaimType => AttributeField::Value,
+            AttributeField::Label => AttributeField::ClaimType,
+            AttributeField::ValueType => AttributeField::Label,
+            AttributeField::Value => AttributeField::ValueType,
+        }
+    }
+}
+
+/// The attribute editor — create when `attribute_id` is `None`, else edit.
+#[derive(Clone, Debug, Default)]
+pub struct AttributeForm {
+    /// The attribute being edited; `None` creates a new one.
+    pub attribute_id: Option<String>,
+    /// The version the form was opened against, sent back as the write's
+    /// precondition so an edit made elsewhere in the meantime is refused rather
+    /// than silently overwritten.
+    pub expected_version: Option<u64>,
+    pub claim_type: tui_input::Input,
+    pub label: tui_input::Input,
+    /// Index into [`VALUE_TYPES`].
+    pub value_type: usize,
+    pub value: tui_input::Input,
+    pub field: AttributeField,
+    /// Why the last submit did not go through — a parse failure on the value,
+    /// or the VTA's own refusal. Shown against the form, not the list, so the
+    /// holder keeps what they typed.
+    pub error: Option<String>,
+    /// A write is in flight; the form is read-only until it lands.
+    pub working: bool,
+}
+
+/// The value types the editor offers, in the order it cycles them. Mirrors the
+/// SDK's `ValueType`; kept as strings because the form is a UI object and the
+/// conversion belongs at the write, in `persona::pool::value_type_from_str`.
+pub const VALUE_TYPES: [&str; 5] = ["string", "number", "boolean", "date", "object"];
+
+/// Which half of the profile editor has the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProfileFormFocus {
+    #[default]
+    Name,
+    Entries,
+}
+
+/// The profile editor: a name, and a tick-list over the pool.
+#[derive(Clone, Debug, Default)]
+pub struct ProfileForm {
+    /// The profile being edited; `None` creates a new one.
+    pub profile_id: Option<String>,
+    pub expected_version: Option<u64>,
+    pub name: tui_input::Input,
+    /// Attribute ids the holder has ticked, in the order they were ticked —
+    /// which is the order the profile will present them in.
+    pub ticked: Vec<String>,
+    /// Cursor into the pool list.
+    pub cursor: usize,
+    pub focus: ProfileFormFocus,
+    /// Pinned / overridden / inline entries read from the profile, carried here
+    /// so the save writes them back untouched.
+    ///
+    /// This build's editor owns live references and nothing else. Rebuilding
+    /// the profile from only the ticked boxes would delete the other forms the
+    /// first time a holder renamed it, and the deletion would be invisible —
+    /// the profile would still resolve, just to less than it did.
+    pub preserved: Vec<vta_sdk::protocols::persona::ProfileEntry>,
+    pub error: Option<String>,
+    pub working: bool,
+}
+
+/// The profile picker for one membership: what should this face present here?
+#[derive(Clone, Debug, Default)]
+pub struct BindPicker {
+    /// Index into `memberships`.
+    pub membership: usize,
+    /// Cursor over the options, where 0 is always "present nothing" — a
+    /// first-class choice rather than the absence of one, because a face that
+    /// deliberately shows nothing is a common and legitimate arrangement.
+    pub cursor: usize,
+    pub working: bool,
+    pub error: Option<String>,
+}
+
+/// What owns the keyboard inside the pane.
+#[derive(Clone, Debug, Default)]
+pub enum PersonaMode {
+    #[default]
+    View,
+    Attribute(AttributeForm),
+    Profile(ProfileForm),
+    Bind(BindPicker),
+}
+
+/// The persona pane: every surface for the holder's own identity, in one place.
+///
+/// Three of the four tabs are served by the agent and one by `Config`, and the
+/// difference is load-bearing rather than incidental. Faces are on disk, so
+/// they draw at launch with no session; the pool, the profiles and the bindings
+/// are the agent's, so each of them has to be able to say "I could not ask"
+/// distinctly from "you hold nothing" — see [`load_error`](Self::load_error).
+#[derive(Clone, Debug, Default)]
+pub struct PersonasState {
+    pub tab: PersonaTab,
+
+    // ── Faces (from `Config`) ────────────────────────────────────────────
+    /// Every persona DID in the account, with how many communities present it.
+    pub faces: Arc<[ManagedDid]>,
+    pub face_selected: usize,
+
+    // ── Communities (from `Config`, annotated from the agent) ────────────
+    pub memberships: Arc<[PersonaMembership]>,
+    pub membership_selected: usize,
+    /// What each persona presents in each community's context, keyed by
+    /// `(sub_context_id, persona_did)` — the pair `persona/binding/get` is
+    /// addressed by, and the pair every membership row already carries.
+    ///
+    /// **Session state, deliberately not persisted.** The agent-name cache is
+    /// persisted, and the difference is the point: a verified name is a
+    /// property of a DID document that rarely changes and costs a network
+    /// round-trip to establish, so showing it instantly at launch is worth
+    /// keeping on disk. A binding is the holder's own current decision, cheap
+    /// to fetch, and editable from `pnm` at any moment — a persisted copy would
+    /// show what they used to present, on the one surface whose job is to tell
+    /// them what they present now. `prune_agent_name_negatives` already draws
+    /// this line for negatives; this is the same argument applied to the whole
+    /// record.
+    ///
+    /// An absent entry is not "presents nothing" — see
+    /// [`BindingSummary::unknown`](openvtc_core::persona::binding::BindingSummary::unknown).
+    /// Read by the communities panel too, which renders the same fact on its
+    /// own rows; it lives here because this is the pane that changes it.
+    pub bindings: HashMap<(String, String), openvtc_core::persona::binding::BindingSummary>,
+
+    // ── The pool (from the agent) ────────────────────────────────────────
+    pub attributes: Arc<[openvtc_core::persona::pool::PoolAttribute]>,
+    pub attribute_selected: usize,
+    /// Whether the listing asked for values.
+    ///
+    /// Off by default, and it re-reads rather than filtering what it already
+    /// holds: a list fetched without values does not *have* them, which is the
+    /// difference between an opt-in and a blindfold. Toggling it is the
+    /// holder asking to see their own identity, so it is a keypress they make
+    /// on purpose and a network round-trip, not a display flag.
+    pub show_values: bool,
+
+    // ── Profiles (from the agent) ────────────────────────────────────────
+    pub profiles: Arc<[openvtc_core::persona::profile::ProfileSummary]>,
+    pub profile_selected: usize,
+    /// The profile opened with Enter, resolved to what it would present.
+    pub open_profile: Option<openvtc_core::persona::profile::ProfileDetail>,
+
+    // ── Disclosures (from the agent) ─────────────────────────────────────
+    /// What has actually left, newest first, across every context.
+    ///
+    /// Read-only, and capped: the record is append-only and unbounded, so the
+    /// pane asks for a page of it rather than all of it. See
+    /// [`crate::state_handler::persona_actions::DISCLOSURE_PAGE`].
+    pub disclosures: Arc<[openvtc_core::persona::disclosure::DisclosureRow]>,
+    pub disclosure_selected: usize,
+
+    // ── Shared ───────────────────────────────────────────────────────────
+    /// A read is in flight.
+    pub loading: bool,
+    /// Why the last read failed, kept until one succeeds.
+    ///
+    /// An empty pool and an unreachable agent look identical on screen unless
+    /// something says otherwise, and of the two, "you have no attributes" is
+    /// the confident wrong answer about the holder's own data (VTI R6.4).
+    pub load_error: Option<String>,
+    /// Whether the agent-served tabs have ever been read in this session.
+    pub loaded: bool,
+    /// A refresh was asked for while one was in flight. Re-issued when the
+    /// domain frees, rather than dropped: the request that prompted it (a write
+    /// that just landed) is exactly when a stale list misleads most.
+    pub refresh_queued: bool,
+    pub confirm: PersonaConfirm,
+    pub mode: PersonaMode,
+    /// Transient status line.
+    pub status_message: Option<String>,
+}
+
+impl PersonasState {
+    /// What one membership's face presents, as far as we know.
+    ///
+    /// Falls back to `unknown` rather than a default summary: the two render
+    /// differently on purpose, and a caller reaching for `unwrap_or_default()`
+    /// would turn "we have not asked" into "you are sharing nothing".
+    #[must_use]
+    pub fn binding_for(
+        &self,
+        membership: &PersonaMembership,
+    ) -> openvtc_core::persona::binding::BindingSummary {
+        self.bindings
+            .get(&(
+                membership.sub_context_id.clone(),
+                membership.persona_did.clone(),
+            ))
+            .cloned()
+            .unwrap_or_else(openvtc_core::persona::binding::BindingSummary::unknown)
+    }
+}
+
+// ****************************************************************************
 // VTA State
 // ****************************************************************************
 
@@ -453,16 +806,6 @@ pub struct VtaState {
     /// DIDs in use (persona + relationship R-DIDs). `Arc<[…]>` for cheap
     /// per-frame clones; rebuilt wholesale in `sync_from_config`.
     pub active_dids: Arc<[ActiveDid]>,
-    /// Every persona DID minted in this context, with how many communities
-    /// present it — the manageable set for the DID manager. A persona bound to
-    /// zero communities is an orphan (e.g. left by a failed join).
-    /// `Arc<[…]>` for cheap per-frame clones; rebuilt in `sync_from_config`.
-    pub context_dids: Arc<[ManagedDid]>,
-    /// Selected index into [`Self::context_dids`] (DID manager navigation).
-    pub did_selected_index: usize,
-    /// When `Some(index)`, a deletion of that context DID is awaiting `y`/`n`
-    /// confirmation.
-    pub confirm_delete_did: Option<usize>,
 
     /// Invitation credentials (VICs) the holder holds in the VTA credential
     /// vault, for the VIC manager. Populated by an async query (not derived from
@@ -490,9 +833,6 @@ pub struct VtaState {
     /// request instead would leave an archived VIC rendered as active until the
     /// next manual refresh.
     pub vic_refresh_queued: bool,
-    /// Which of the two manageable lists (Context Identities vs Invitation
-    /// Credentials) has keyboard focus, so `↑/↓` and the verbs apply to it.
-    pub focus: VtaFocus,
 }
 
 /// How this process reaches the VTA, and what the VTA says it offers.
@@ -567,16 +907,6 @@ pub struct AdvertisedTransports {
     /// absent. Rendered as an explicit "could not check" so an unreachable
     /// publication endpoint never reads as "the VTA offers nothing".
     pub error: Option<String>,
-}
-
-/// Which manageable list in the VTA panel has keyboard focus (toggled by `Tab`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum VtaFocus {
-    /// The Context Identities (persona DID) list.
-    #[default]
-    Dids,
-    /// The Invitation Credentials (VIC) list.
-    Vics,
 }
 
 /// Display summary of one held VIC, mapped from the VTA credential-vault

@@ -188,6 +188,66 @@ pub enum SettingsAction {
     ClipboardCopied(String),
 }
 
+/// Identity-pane actions — the holder's own faces, pool, profiles and bindings.
+///
+/// One sub-enum for a pane with four tabs, rather than four: every one of them
+/// shares the pane's selection, its confirmation slot and its single load
+/// domain, and splitting them would put that shared state behind four names.
+pub enum PersonaAction {
+    /// Move to the next / previous tab.
+    TabNext,
+    TabPrev,
+    /// Move the selection within the active tab.
+    Select(usize),
+    /// Re-read the agent-served tabs.
+    Refresh,
+    /// Ask for the pool *with* values, or stop asking. A re-read either way —
+    /// a listing fetched without values does not hold them, which is what makes
+    /// this an opt-in rather than a blindfold.
+    ToggleValues,
+
+    // ── Attributes ───────────────────────────────────────────────────────
+    /// Open the editor on a new attribute.
+    AttributeNew,
+    /// Open the editor on an existing one.
+    AttributeEdit(usize),
+    /// Arm its deletion.
+    AttributeDeleteArm(usize),
+
+    // ── Profiles ─────────────────────────────────────────────────────────
+    /// Read one profile and show what it would present.
+    ProfileOpen(usize),
+    /// Close that view.
+    ProfileClose,
+    ProfileNew,
+    ProfileEdit(usize),
+    ProfileDeleteArm(usize),
+
+    // ── Communities ──────────────────────────────────────────────────────
+    /// Open the picker: what should this face present here?
+    BindOpen(usize),
+    /// Arm "present nothing here".
+    UnbindArm(usize),
+
+    // ── The shared confirmation slot ─────────────────────────────────────
+    ConfirmYes,
+    ConfirmNo,
+
+    // ── Whichever form or picker is open ─────────────────────────────────
+    /// A key for the open form's focused field. Carried whole, like
+    /// [`Action::CreatePersonaInput`], so text editing stays in `tui_input`
+    /// rather than being re-implemented one `KeyCode` at a time.
+    FormKey(crossterm::event::KeyEvent),
+    /// Move between fields (`true` = forwards).
+    FormField(bool),
+    /// Cycle the value type, or move the entry cursor (`true` = forwards).
+    FormCycle(bool),
+    /// Tick or untick the entry under the cursor.
+    FormToggleEntry,
+    FormSubmit,
+    FormCancel,
+}
+
 // ============================================================================
 // Top-level Action enum
 // ============================================================================
@@ -216,6 +276,8 @@ pub enum Action {
     Relationship(RelationshipAction),
     Credential(CredentialAction),
     Settings(SettingsAction),
+    /// Identity pane (faces / pool / profiles / bindings).
+    Persona(PersonaAction),
 
     /// Dismiss the startup loading screen (Enter, once loading has completed) and
     /// reveal the main page. Phase-2 connections are already running in the
@@ -451,8 +513,6 @@ pub enum Action {
     VicRefresh,
     /// Move the VIC-list selection to this index.
     VicSelect(usize),
-    /// Toggle keyboard focus between the Context Identities and VIC lists (Tab).
-    VicFocusToggle,
     /// Toggle whether archived + soft-deleted VICs are listed (`i`); triggers a
     /// re-query.
     VicToggleInactive,

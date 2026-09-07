@@ -176,9 +176,6 @@ impl Component for MainPage {
             KeyCode::Enter => {
                 if self.props.main_page.menu_panel.selected_menu == MainMenu::Quit {
                     let _ = self.action_tx.send(Action::Exit);
-                } else if self.props.main_page.menu_panel.selected_menu == MainMenu::CreatePersona {
-                    // Action item, not a panel: open the overlay (like Quit→Exit).
-                    let _ = self.action_tx.send(Action::StartCreatePersona);
                 } else if self.props.main_page.menu_panel.selected {
                     let _ = self
                         .action_tx
@@ -355,21 +352,23 @@ impl MainPage {
             MainMenu::Logs => self.handle_logs_key(key),
             MainMenu::Help => self.handle_help_key(key),
             MainMenu::Communities => self.handle_communities_key(key),
+            MainMenu::Personas => self.handle_personas_key(key),
             MainMenu::Vta => self.handle_vta_key(key),
             _ => false,
         }
     }
 
-    /// VTA Service / DID-manager keys: ↑/↓ move the Context-Identities
-    /// selection, `d`/Del removes the selected **orphan** (unbound) DID after a
-    /// y/n confirmation. Returns true if consumed.
+    /// VTA Service keys. The panel's one manageable list is the invitation
+    /// credentials: ↑/↓ move the selection, `a` imports, `i` flips the archived
+    /// filter, `r`/`u`/`d`/`p` drive the lifecycle. Returns true if consumed.
+    ///
+    /// The persona DID list that used to share this panel — and the `n`, `g`
+    /// and `d` verbs that acted on it — moved to the identity pane, which is
+    /// where the rest of a persona's management already lives.
     fn handle_vta_key(&mut self, key: KeyEvent) -> bool {
-        use crate::state_handler::main_page::content::{VicLifecycle, VtaFocus};
+        use crate::state_handler::main_page::content::VicLifecycle;
 
         let vta = &self.props.main_page.content_panel.vta;
-        let did_count = vta.context_dids.len();
-        let did_selected = vta.did_selected_index;
-        let focus = vta.focus;
         let vic_count = vta.vics.len();
         let vic_selected = vta.vic_selected_index;
         let vic_lifecycle = vta.vics.get(vic_selected).map(|v| v.lifecycle);
@@ -391,142 +390,291 @@ impl MainPage {
             let _ = self.action_tx.send(act);
             return true;
         }
-        // DID deletion confirmation: only y/Enter confirms; anything else cancels.
-        if let Some(idx) = vta.confirm_delete_did {
-            match key.code {
-                KeyCode::Char('y') | KeyCode::Enter => {
-                    let _ = self.action_tx.send(Action::DeleteDid(idx));
-                }
-                _ => {
-                    let _ = self.action_tx.send(Action::DidCancelDelete);
-                }
-            }
-            return true;
-        }
 
-        // Keys that apply regardless of which list has focus.
         match key.code {
+            // The list is read on demand rather than polled, and this is the
+            // key that asks. It was Tab because Tab moved focus onto the list
+            // and the load rode along; with one list left, the load is the
+            // whole of what the key does.
             KeyCode::Tab => {
-                // Focus moves first, then the VIC list is loaded on demand (no
-                // polling). Order matters: the handler services actions in
-                // sequence, so sending the load first put a vault round-trip in
-                // front of a pure in-memory focus change. The load is off the
-                // loop now, but the focus change still goes first — it is what
-                // the operator pressed the key for.
-                let _ = self.action_tx.send(Action::VicFocusToggle);
-                if focus == VtaFocus::Dids {
-                    let _ = self.action_tx.send(Action::VicRefresh);
-                }
-                return true;
-            }
-            KeyCode::Char('n') => {
-                // Mint a new standalone persona DID (also on the top-level menu).
-                let _ = self.action_tx.send(Action::StartCreatePersona);
-                return true;
+                let _ = self.action_tx.send(Action::VicRefresh);
+                true
             }
             KeyCode::Char('a') => {
                 let _ = self.action_tx.send(Action::StartAddVic);
-                return true;
+                true
             }
             KeyCode::Char('i') => {
                 let _ = self.action_tx.send(Action::VicToggleInactive);
-                return true;
-            }
-            // Manage the selected persona's agent names (claim / park / remove).
-            // Deliberately focus-independent, alongside `n` and `a`: while this
-            // sat in the DID-list arm, pressing it with the VIC list focused was
-            // swallowed with no message and no state change — indistinguishable
-            // from a dead keyboard, and the reported symptom that sent someone
-            // restarting the app. The selection it acts on is the DID list's,
-            // which Tab does not move.
-            KeyCode::Char('g') => {
-                let _ = self
-                    .action_tx
-                    .send(Action::StartAgentNameManager(did_selected));
-                return true;
+                true
             }
             KeyCode::Esc => {
                 let _ = self
                     .action_tx
                     .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                true
+            }
+            KeyCode::Up if vic_count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::VicSelect(vic_selected.saturating_sub(1)));
+                true
+            }
+            KeyCode::Down if vic_count > 0 => {
+                let _ = self
+                    .action_tx
+                    .send(Action::VicSelect((vic_selected + 1).min(vic_count - 1)));
+                true
+            }
+            // r: archive an active VIC (reversible, so no confirm).
+            KeyCode::Char('r') if vic_lifecycle == Some(VicLifecycle::Active) => {
+                let _ = self.action_tx.send(Action::VicArchive(vic_selected));
+                true
+            }
+            // u: unarchive an archived VIC, or restore a soft-deleted one.
+            KeyCode::Char('u') => {
+                match vic_lifecycle {
+                    Some(VicLifecycle::Archived) => {
+                        let _ = self.action_tx.send(Action::VicUnarchive(vic_selected));
+                    }
+                    Some(VicLifecycle::Deleted) => {
+                        let _ = self.action_tx.send(Action::VicRestore(vic_selected));
+                    }
+                    _ => {}
+                }
+                true
+            }
+            // d: soft-delete (not already deleted).
+            KeyCode::Char('d') | KeyCode::Delete
+                if vic_selected < vic_count && vic_lifecycle != Some(VicLifecycle::Deleted) =>
+            {
+                let _ = self.action_tx.send(Action::VicConfirmDelete(vic_selected));
+                true
+            }
+            // p: irreversible purge.
+            KeyCode::Char('p') if vic_selected < vic_count => {
+                let _ = self.action_tx.send(Action::VicConfirmPurge(vic_selected));
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Identity-pane keys.
+    ///
+    /// Three layers, in this order, and the order is what keeps them legible:
+    /// an open form or picker owns every key; then an armed confirmation owns
+    /// `y`/`n`; then the active tab's own verbs apply. Anything reaching layer
+    /// three has already been shown to be unambiguous.
+    fn handle_personas_key(&mut self, key: KeyEvent) -> bool {
+        use crate::state_handler::actions::PersonaAction as PA;
+        use crate::state_handler::main_page::content::{
+            PersonaConfirm, PersonaMode, PersonaTab, ProfileFormFocus,
+        };
+
+        let personas = &self.props.main_page.content_panel.personas;
+        let send = |action: PA| {
+            let _ = self.action_tx.send(Action::Persona(action));
+            true
+        };
+
+        // ── An open form or picker owns the keyboard ──────────────────────
+        match &personas.mode {
+            PersonaMode::Attribute(form) => {
+                // A write is in flight: swallow input rather than editing a
+                // form whose result is already on the wire.
+                if form.working {
+                    return true;
+                }
+                return match key.code {
+                    KeyCode::Esc => send(PA::FormCancel),
+                    KeyCode::Enter => send(PA::FormSubmit),
+                    KeyCode::Tab | KeyCode::Down => send(PA::FormField(true)),
+                    KeyCode::BackTab | KeyCode::Up => send(PA::FormField(false)),
+                    KeyCode::Right => send(PA::FormCycle(true)),
+                    KeyCode::Left => send(PA::FormCycle(false)),
+                    _ => send(PA::FormKey(key)),
+                };
+            }
+            PersonaMode::Profile(form) => {
+                if form.working {
+                    return true;
+                }
+                let on_entries = form.focus == ProfileFormFocus::Entries;
+                return match key.code {
+                    KeyCode::Esc => send(PA::FormCancel),
+                    KeyCode::Enter => send(PA::FormSubmit),
+                    KeyCode::Tab => send(PA::FormField(true)),
+                    KeyCode::BackTab => send(PA::FormField(false)),
+                    KeyCode::Down if on_entries => send(PA::FormCycle(true)),
+                    KeyCode::Up if on_entries => send(PA::FormCycle(false)),
+                    // Only a keystroke *on the list* ticks an entry. On the
+                    // name field a space is a space — a form that swallowed it
+                    // would refuse to let a profile be called "Work laptop".
+                    KeyCode::Char(' ') if on_entries => send(PA::FormToggleEntry),
+                    _ => send(PA::FormKey(key)),
+                };
+            }
+            PersonaMode::Bind(picker) => {
+                if picker.working {
+                    return true;
+                }
+                return match key.code {
+                    KeyCode::Esc => send(PA::FormCancel),
+                    KeyCode::Enter => send(PA::FormSubmit),
+                    KeyCode::Down => send(PA::FormCycle(true)),
+                    KeyCode::Up => send(PA::FormCycle(false)),
+                    _ => true,
+                };
+            }
+            PersonaMode::View => {}
+        }
+
+        // ── An armed confirmation owns y/n ────────────────────────────────
+        //
+        // Removing a face goes through the existing identity-deletion path
+        // (`DeleteDid`), which does the VTA delete, the listener teardown and
+        // the local cleanup. The pane owns the *question*; it does not own a
+        // second implementation of the answer.
+        match personas.confirm {
+            PersonaConfirm::None => {}
+            PersonaConfirm::DeleteFace(i) => {
+                let act = match key.code {
+                    KeyCode::Char('y') | KeyCode::Enter => Action::DeleteDid(i),
+                    _ => Action::DidCancelDelete,
+                };
+                let _ = self.action_tx.send(act);
                 return true;
             }
+            _ => {
+                return match key.code {
+                    KeyCode::Char('y') | KeyCode::Enter => send(PA::ConfirmYes),
+                    _ => send(PA::ConfirmNo),
+                };
+            }
+        }
+
+        // ── Tab navigation and the pane-wide verbs ────────────────────────
+        match key.code {
+            KeyCode::Tab | KeyCode::Right => return send(PA::TabNext),
+            KeyCode::BackTab | KeyCode::Left => return send(PA::TabPrev),
+            KeyCode::Esc => {
+                // Esc backs out of the opened profile first, so it is not also
+                // the key that leaves the panel while a detail view is up.
+                if personas.open_profile.is_some() {
+                    return send(PA::ProfileClose);
+                }
+                let _ = self
+                    .action_tx
+                    .send(Action::MainPanelSwitch(MainPanel::MainMenu));
+                return true;
+            }
+            KeyCode::Char('r') if personas.tab.needs_agent() => return send(PA::Refresh),
             _ => {}
         }
 
-        // List-scoped keys act on whichever list has focus.
-        match focus {
-            VtaFocus::Dids => match key.code {
-                KeyCode::Up if did_count > 0 => {
-                    let _ = self
-                        .action_tx
-                        .send(Action::DidSelect(did_selected.saturating_sub(1)));
-                    true
-                }
-                KeyCode::Down if did_count > 0 => {
-                    let _ = self
-                        .action_tx
-                        .send(Action::DidSelect((did_selected + 1).min(did_count - 1)));
-                    true
-                }
-                KeyCode::Char('d') | KeyCode::Delete if did_selected < did_count => {
-                    // Only orphan (unbound) personas are removable.
-                    if vta
-                        .context_dids
-                        .get(did_selected)
-                        .is_some_and(|d| d.bound_communities == 0)
-                    {
-                        let _ = self.action_tx.send(Action::DidConfirmDelete(did_selected));
+        match personas.tab {
+            PersonaTab::Faces => {
+                let count = personas.faces.len();
+                let selected = personas.face_selected;
+                match key.code {
+                    KeyCode::Up if count > 0 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::DidSelect(selected.saturating_sub(1)));
+                        true
                     }
-                    true
-                }
-                _ => false,
-            },
-            VtaFocus::Vics => match key.code {
-                KeyCode::Up if vic_count > 0 => {
-                    let _ = self
-                        .action_tx
-                        .send(Action::VicSelect(vic_selected.saturating_sub(1)));
-                    true
-                }
-                KeyCode::Down if vic_count > 0 => {
-                    let _ = self
-                        .action_tx
-                        .send(Action::VicSelect((vic_selected + 1).min(vic_count - 1)));
-                    true
-                }
-                // r: archive an active VIC (reversible, so no confirm).
-                KeyCode::Char('r') if vic_lifecycle == Some(VicLifecycle::Active) => {
-                    let _ = self.action_tx.send(Action::VicArchive(vic_selected));
-                    true
-                }
-                // u: unarchive an archived VIC, or restore a soft-deleted one.
-                KeyCode::Char('u') => {
-                    match vic_lifecycle {
-                        Some(VicLifecycle::Archived) => {
-                            let _ = self.action_tx.send(Action::VicUnarchive(vic_selected));
-                        }
-                        Some(VicLifecycle::Deleted) => {
-                            let _ = self.action_tx.send(Action::VicRestore(vic_selected));
-                        }
-                        _ => {}
+                    KeyCode::Down if count > 0 => {
+                        let _ = self
+                            .action_tx
+                            .send(Action::DidSelect((selected + 1).min(count - 1)));
+                        true
                     }
-                    true
+                    KeyCode::Char('n') => {
+                        let _ = self.action_tx.send(Action::StartCreatePersona);
+                        true
+                    }
+                    KeyCode::Char('g') => {
+                        let _ = self.action_tx.send(Action::StartAgentNameManager(selected));
+                        true
+                    }
+                    // Only an orphan is removable: a face a community still
+                    // presents cannot be deleted without leaving that community
+                    // first, and the deletion path refuses it anyway. Refusing
+                    // to *arm* it keeps the prompt from appearing over a
+                    // question that has already been answered no.
+                    KeyCode::Char('d') | KeyCode::Delete if selected < count => {
+                        if personas
+                            .faces
+                            .get(selected)
+                            .is_some_and(|f| f.bound_communities == 0)
+                        {
+                            let _ = self.action_tx.send(Action::DidConfirmDelete(selected));
+                        }
+                        true
+                    }
+                    _ => false,
                 }
-                // d: soft-delete (not already deleted).
-                KeyCode::Char('d') | KeyCode::Delete
-                    if vic_selected < vic_count && vic_lifecycle != Some(VicLifecycle::Deleted) =>
-                {
-                    let _ = self.action_tx.send(Action::VicConfirmDelete(vic_selected));
-                    true
+            }
+            PersonaTab::Attributes => {
+                let count = personas.attributes.len();
+                let selected = personas.attribute_selected;
+                match key.code {
+                    KeyCode::Up if count > 0 => send(PA::Select(selected.saturating_sub(1))),
+                    KeyCode::Down if count > 0 => send(PA::Select((selected + 1).min(count - 1))),
+                    KeyCode::Char('v') => send(PA::ToggleValues),
+                    KeyCode::Char('n') => send(PA::AttributeNew),
+                    KeyCode::Char('e') if selected < count => send(PA::AttributeEdit(selected)),
+                    KeyCode::Char('d') | KeyCode::Delete if selected < count => {
+                        send(PA::AttributeDeleteArm(selected))
+                    }
+                    _ => false,
                 }
-                // p: irreversible purge.
-                KeyCode::Char('p') if vic_selected < vic_count => {
-                    let _ = self.action_tx.send(Action::VicConfirmPurge(vic_selected));
-                    true
+            }
+            PersonaTab::Profiles => {
+                let count = personas.profiles.len();
+                let selected = personas.profile_selected;
+                // The opened detail view is a mode of this tab, not of the
+                // pane, so its keys live here.
+                if personas.open_profile.is_some() {
+                    return match key.code {
+                        KeyCode::Enter => send(PA::ProfileClose),
+                        KeyCode::Char('e') => send(PA::ProfileEdit(selected)),
+                        _ => false,
+                    };
                 }
-                _ => false,
-            },
+                match key.code {
+                    KeyCode::Up if count > 0 => send(PA::Select(selected.saturating_sub(1))),
+                    KeyCode::Down if count > 0 => send(PA::Select((selected + 1).min(count - 1))),
+                    KeyCode::Enter if selected < count => send(PA::ProfileOpen(selected)),
+                    KeyCode::Char('n') => send(PA::ProfileNew),
+                    KeyCode::Char('e') if selected < count => send(PA::ProfileEdit(selected)),
+                    KeyCode::Char('d') | KeyCode::Delete if selected < count => {
+                        send(PA::ProfileDeleteArm(selected))
+                    }
+                    _ => false,
+                }
+            }
+            PersonaTab::Disclosures => {
+                let count = personas.disclosures.len();
+                let selected = personas.disclosure_selected;
+                match key.code {
+                    KeyCode::Up if count > 0 => send(PA::Select(selected.saturating_sub(1))),
+                    KeyCode::Down if count > 0 => send(PA::Select((selected + 1).min(count - 1))),
+                    _ => false,
+                }
+            }
+            PersonaTab::Communities => {
+                let count = personas.memberships.len();
+                let selected = personas.membership_selected;
+                match key.code {
+                    KeyCode::Up if count > 0 => send(PA::Select(selected.saturating_sub(1))),
+                    KeyCode::Down if count > 0 => send(PA::Select((selected + 1).min(count - 1))),
+                    KeyCode::Char('b') if selected < count => send(PA::BindOpen(selected)),
+                    KeyCode::Char('u') if selected < count => send(PA::UnbindArm(selected)),
+                    _ => false,
+                }
+            }
         }
     }
 
@@ -2853,10 +3001,11 @@ mod key_handler_tests {
     //! `Action` and its sub-enums derive neither `PartialEq` nor `Debug`, so
     //! assertions pattern-match the expected variant rather than `assert_eq!`.
     use super::*;
+    use crate::state_handler::actions::PersonaAction;
     use crate::state_handler::main_page::content::{
         CommunitySummary, CommunitySwitcherState, CredentialTab, CredentialsMode, InboxConfirm,
-        RawCredential, RelationshipSummary, RelationshipsMode, SwitcherItem, TaskKind, TaskSummary,
-        VrcSummary,
+        ManagedDid, PersonaConfirm, PersonaMode, PersonaTab, RawCredential, RelationshipSummary,
+        RelationshipsMode, SwitcherItem, TaskKind, TaskSummary, VrcSummary,
     };
     use crossterm::event::KeyModifiers;
     use std::sync::Arc;
@@ -3240,12 +3389,38 @@ mod key_handler_tests {
         }
     }
 
-    // ----- VTA / DID manager -------------------------------------------------
+    // ----- Identity pane: faces ---------------------------------------------
 
+    fn face(did: &str, label: &str, bound: usize) -> ManagedDid {
+        ManagedDid {
+            did: did.to_string(),
+            agent_name: None,
+            label: label.to_string(),
+            bound_communities: bound,
+            is_active: false,
+        }
+    }
+
+    /// Two faces, the second one an orphan and selected.
+    fn faces_with_orphan_selected() -> impl Fn(&mut State) {
+        move |s: &mut State| {
+            let p = &mut s.main_page.content_panel.personas;
+            p.faces = vec![
+                face("did:webvh:example.com:alice", "Alice", 1),
+                face("did:webvh:example.com:bob", "Bob", 0),
+            ]
+            .into();
+            p.face_selected = 1;
+        }
+    }
+
+    /// Removing a face is armed here and answered by the existing
+    /// identity-deletion path — the pane owns the question, not a second
+    /// implementation of the answer.
     #[test]
-    fn vta_confirm_commits_and_cancels() {
-        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
-            s.main_page.content_panel.vta.confirm_delete_did = Some(1);
+    fn personas_face_confirm_commits_and_cancels() {
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
+            s.main_page.content_panel.personas.confirm = PersonaConfirm::DeleteFace(1);
         });
         page.handle_key_event(press(KeyCode::Enter));
         match rx.try_recv() {
@@ -3253,8 +3428,8 @@ mod key_handler_tests {
             _ => panic!("expected DeleteDid(1)"),
         }
 
-        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
-            s.main_page.content_panel.vta.confirm_delete_did = Some(0);
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
+            s.main_page.content_panel.personas.confirm = PersonaConfirm::DeleteFace(0);
         });
         page.handle_key_event(press(KeyCode::Esc));
         match rx.try_recv() {
@@ -3263,11 +3438,33 @@ mod key_handler_tests {
         }
     }
 
-    // ----- Create persona ----------------------------------------------------
+    /// Only an orphan arms: a face a community still presents cannot be
+    /// deleted without leaving that community, and the deletion path refuses
+    /// it. Arming anyway would put a question that has already been answered.
+    #[test]
+    fn personas_d_arms_only_on_an_orphan_face() {
+        let (mut page, mut rx) = page_for(MainMenu::Personas, faces_with_orphan_selected());
+        page.handle_key_event(press(KeyCode::Char('d')));
+        match rx.try_recv() {
+            Ok(Action::DidConfirmDelete(1)) => {}
+            _ => panic!("expected DidConfirmDelete(1)"),
+        }
+
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
+            let p = &mut s.main_page.content_panel.personas;
+            p.faces = vec![face("did:webvh:example.com:alice", "Alice", 1)].into();
+            p.face_selected = 0;
+        });
+        page.handle_key_event(press(KeyCode::Char('d')));
+        assert!(
+            rx.try_recv().is_err(),
+            "a face a community presents must not arm a deletion"
+        );
+    }
 
     #[test]
-    fn vta_n_opens_create_persona() {
-        let (mut page, mut rx) = page_for(MainMenu::Vta, |_| {});
+    fn personas_n_opens_create_persona() {
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |_| {});
         page.handle_key_event(press(KeyCode::Char('n')));
         match rx.try_recv() {
             Ok(Action::StartCreatePersona) => {}
@@ -3276,28 +3473,8 @@ mod key_handler_tests {
     }
 
     #[test]
-    fn vta_g_opens_agent_name_manager_for_selected_persona() {
-        use crate::state_handler::main_page::content::ManagedDid;
-        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
-            s.main_page.content_panel.vta.context_dids = vec![
-                ManagedDid {
-                    did: "did:webvh:example.com:alice".into(),
-                    agent_name: None,
-                    label: "Alice".into(),
-                    bound_communities: 1,
-                    is_active: true,
-                },
-                ManagedDid {
-                    did: "did:webvh:example.com:bob".into(),
-                    agent_name: None,
-                    label: "Bob".into(),
-                    bound_communities: 0,
-                    is_active: false,
-                },
-            ]
-            .into();
-            s.main_page.content_panel.vta.did_selected_index = 1;
-        });
+    fn personas_g_opens_agent_name_manager_for_the_selected_face() {
+        let (mut page, mut rx) = page_for(MainMenu::Personas, faces_with_orphan_selected());
         page.handle_key_event(press(KeyCode::Char('g')));
         match rx.try_recv() {
             Ok(Action::StartAgentNameManager(1)) => {}
@@ -3305,29 +3482,142 @@ mod key_handler_tests {
         }
     }
 
-    /// `g` works with either list focused. It used to live in the DID-list arm,
-    /// so pressing it after a Tab was swallowed silently — no action, no state
-    /// change, no message. The selection it acts on is the DID list's, which Tab
-    /// does not move, so the target is unambiguous either way.
+    // ----- Identity pane: tabs and their verbs -------------------------------
+
+    /// Tab moves between the pane's four tabs; the verbs that follow belong to
+    /// whichever one is showing.
     #[test]
-    fn vta_g_opens_agent_name_manager_from_the_vic_list_too() {
-        use crate::state_handler::main_page::content::{ManagedDid, VtaFocus};
-        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
-            s.main_page.content_panel.vta.context_dids = vec![ManagedDid {
-                did: "did:webvh:example.com:alice".into(),
-                agent_name: None,
-                label: "Alice".into(),
-                bound_communities: 1,
-                is_active: true,
-            }]
-            .into();
-            s.main_page.content_panel.vta.focus = VtaFocus::Vics;
-        });
-        page.handle_key_event(press(KeyCode::Char('g')));
-        match rx.try_recv() {
-            Ok(Action::StartAgentNameManager(0)) => {}
-            _ => panic!("expected StartAgentNameManager(0)"),
+    fn personas_tab_moves_between_tabs() {
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |_| {});
+        page.handle_key_event(press(KeyCode::Tab));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Persona(PersonaAction::TabNext))
+        ));
+
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |_| {});
+        page.handle_key_event(press(KeyCode::BackTab));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Persona(PersonaAction::TabPrev))
+        ));
+    }
+
+    /// The attribute verbs only fire on the Attributes tab, and only with a row
+    /// under the cursor.
+    #[test]
+    fn personas_attribute_keys_map_to_actions() {
+        use openvtc_core::persona::pool::PoolAttribute;
+        let open = || {
+            page_for(MainMenu::Personas, |s| {
+                let p = &mut s.main_page.content_panel.personas;
+                p.tab = PersonaTab::Attributes;
+                p.attributes = vec![PoolAttribute {
+                    attribute_id: "01A".into(),
+                    ..PoolAttribute::default()
+                }]
+                .into();
+            })
+        };
+
+        for (key, want) in [
+            (KeyCode::Char('n'), PersonaAction::AttributeNew),
+            (KeyCode::Char('e'), PersonaAction::AttributeEdit(0)),
+            (KeyCode::Char('d'), PersonaAction::AttributeDeleteArm(0)),
+            (KeyCode::Char('v'), PersonaAction::ToggleValues),
+            (KeyCode::Char('r'), PersonaAction::Refresh),
+        ] {
+            let (mut page, mut rx) = open();
+            page.handle_key_event(press(key));
+            match rx.try_recv() {
+                Ok(Action::Persona(got)) => assert_eq!(
+                    std::mem::discriminant(&got),
+                    std::mem::discriminant(&want),
+                    "{key:?}"
+                ),
+                _ => panic!("expected a persona action for {key:?}"),
+            }
         }
+    }
+
+    /// An armed confirmation owns `y`/`n` — every other pane verb is suppressed
+    /// while a destructive question is on screen.
+    #[test]
+    fn personas_confirmation_owns_the_keyboard() {
+        let armed = || {
+            page_for(MainMenu::Personas, |s| {
+                let p = &mut s.main_page.content_panel.personas;
+                p.tab = PersonaTab::Attributes;
+                p.confirm = PersonaConfirm::DeleteAttribute {
+                    index: 0,
+                    cascade: false,
+                };
+            })
+        };
+
+        let (mut page, mut rx) = armed();
+        page.handle_key_event(press(KeyCode::Char('y')));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Persona(PersonaAction::ConfirmYes))
+        ));
+
+        // `n` would open the attribute editor if it reached the tab. It does
+        // not: while a question is armed it is the answer "no".
+        let (mut page, mut rx) = armed();
+        page.handle_key_event(press(KeyCode::Char('n')));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Persona(PersonaAction::ConfirmNo))
+        ));
+    }
+
+    /// A space is a space on the name field, and a tick on the entry list. A
+    /// form that swallowed it everywhere could not name a profile "Work
+    /// laptop".
+    #[test]
+    fn personas_space_ticks_only_on_the_entry_list() {
+        use crate::state_handler::main_page::content::{ProfileForm, ProfileFormFocus};
+        let with_focus = |focus: ProfileFormFocus| {
+            page_for(MainMenu::Personas, move |s| {
+                s.main_page.content_panel.personas.mode = PersonaMode::Profile(ProfileForm {
+                    focus,
+                    ..ProfileForm::default()
+                });
+            })
+        };
+
+        let (mut page, mut rx) = with_focus(ProfileFormFocus::Entries);
+        page.handle_key_event(press(KeyCode::Char(' ')));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Persona(PersonaAction::FormToggleEntry))
+        ));
+
+        let (mut page, mut rx) = with_focus(ProfileFormFocus::Name);
+        page.handle_key_event(press(KeyCode::Char(' ')));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Action::Persona(PersonaAction::FormKey(_)))
+        ));
+    }
+
+    /// A form with a write in flight swallows input rather than editing a
+    /// request that is already on the wire.
+    #[test]
+    fn personas_a_working_form_swallows_input() {
+        use crate::state_handler::main_page::content::AttributeForm;
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
+            s.main_page.content_panel.personas.mode = PersonaMode::Attribute(AttributeForm {
+                working: true,
+                ..AttributeForm::default()
+            });
+        });
+        page.handle_key_event(press(KeyCode::Char('x')));
+        assert!(
+            rx.try_recv().is_err(),
+            "no action while a save is in flight"
+        );
     }
 
     #[test]
@@ -3441,17 +3731,21 @@ mod key_handler_tests {
         );
     }
 
+    /// The menu's identity entry opens a panel like every other one.
+    ///
+    /// It used to be "Create Persona DID" — a menu item that fired an action
+    /// instead of switching panels, because minting was the only persona verb
+    /// the TUI had. Everything it stood for is now a key inside the pane.
     #[test]
-    fn menu_enter_on_create_persona_opens_overlay() {
-        // The top-level "Create Persona DID" item is an action, not a panel.
-        let (mut page, mut rx) = page_for(MainMenu::CreatePersona, |s| {
+    fn menu_enter_on_identity_switches_to_the_panel() {
+        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
             s.main_page.menu_panel.selected = true;
             s.main_page.content_panel.selected = false;
         });
         page.handle_key_event(press(KeyCode::Enter));
         match rx.try_recv() {
-            Ok(Action::StartCreatePersona) => {}
-            _ => panic!("expected StartCreatePersona"),
+            Ok(Action::MainPanelSwitch(MainPanel::ContentPanel)) => {}
+            _ => panic!("expected a switch to the content panel"),
         }
     }
 
@@ -3460,7 +3754,7 @@ mod key_handler_tests {
         use crate::state_handler::main_page::content::CreatePersonaState;
         // The open overlay owns all input regardless of the focused panel.
         let open = || {
-            page_for(MainMenu::Vta, |s| {
+            page_for(MainMenu::Personas, |s| {
                 s.main_page.create_persona = Some(CreatePersonaState::default());
             })
         };
@@ -3491,7 +3785,7 @@ mod key_handler_tests {
     fn create_persona_done_phase_keys() {
         use crate::state_handler::main_page::content::{CreatePersonaPhase, CreatePersonaState};
         let done = || {
-            page_for(MainMenu::Vta, |s| {
+            page_for(MainMenu::Personas, |s| {
                 s.main_page.create_persona = Some(CreatePersonaState {
                     phase: CreatePersonaPhase::Done,
                     did: Some("did:webvh:example:alice".to_string()),
@@ -3520,7 +3814,7 @@ mod key_handler_tests {
     // ----- VIC manager -------------------------------------------------------
 
     use crate::state_handler::main_page::content::{
-        AddVicPhase, AddVicState, VicLifecycle, VicSummary, VtaFocus,
+        AddVicPhase, AddVicState, VicLifecycle, VicSummary,
     };
 
     fn vic(id: &str, lifecycle: VicLifecycle) -> VicSummary {
@@ -3534,11 +3828,10 @@ mod key_handler_tests {
         }
     }
 
-    /// Focus the VIC list with the given rows selected at index 0.
+    /// The VIC list with the given rows, selected at index 0.
     fn vta_vics(rows: Vec<VicSummary>) -> impl Fn(&mut State) {
         move |s: &mut State| {
             let vta = &mut s.main_page.content_panel.vta;
-            vta.focus = VtaFocus::Vics;
             vta.vics = rows.clone().into();
             vta.vic_selected_index = 0;
         }
@@ -3554,35 +3847,20 @@ mod key_handler_tests {
         }
     }
 
+    /// Tab asks for the invitation-credential listing.
+    ///
+    /// It used to *also* move focus, because the panel held two lists and the
+    /// load rode along with the focus change. With the persona list moved to
+    /// the identity pane there is one list left, and asking for it is the whole
+    /// of what the key does.
     #[test]
-    fn vta_tab_toggles_focus_before_refreshing() {
-        // From the default (Dids) focus, Tab switches lists *first*, then asks
-        // for the VIC listing. The reverse order (what this asserted before) put
-        // a credential-vault round-trip in front of the focus change in the
-        // handler's serial queue, so Tab visibly lagged by the length of a
-        // network call.
+    fn vta_tab_asks_for_the_vic_listing() {
         let (mut page, mut rx) = page_for(MainMenu::Vta, |_| {});
         page.handle_key_event(press(KeyCode::Tab));
         match rx.try_recv() {
-            Ok(Action::VicFocusToggle) => {}
-            _ => panic!("focus must move first, before any VIC listing"),
-        }
-        match rx.try_recv() {
             Ok(Action::VicRefresh) => {}
-            _ => panic!("expected VicRefresh second"),
+            _ => panic!("expected VicRefresh"),
         }
-    }
-
-    /// Tab back off the VIC list does not re-list: the listing is loaded on
-    /// demand when the list is entered, not on every focus change.
-    #[test]
-    fn vta_tab_off_the_vic_list_does_not_refresh() {
-        use crate::state_handler::main_page::content::VtaFocus;
-        let (mut page, mut rx) = page_for(MainMenu::Vta, |s| {
-            s.main_page.content_panel.vta.focus = VtaFocus::Vics;
-        });
-        page.handle_key_event(press(KeyCode::Tab));
-        assert!(matches!(rx.try_recv(), Ok(Action::VicFocusToggle)));
         assert!(rx.try_recv().is_err(), "no second action expected");
     }
 
