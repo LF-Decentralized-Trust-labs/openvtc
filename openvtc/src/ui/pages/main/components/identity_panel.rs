@@ -674,17 +674,23 @@ fn push_agent_state(state: &IdentityState, lines: &mut Vec<Line<'static>>, noun:
                 .fg(COLOR_WARNING_ACCESSIBLE_RED),
         );
         lines.push(Line::from(""));
-        super::status::push_status(lines, error, " ");
-        lines.push(Line::from(""));
-        // The one failure with a specific answer, so it gets one. Everything
-        // above this line is the agent's own words; this is what to do about
-        // them.
+        // The one failure we recognise is said in our own words, and they are
+        // the agreed ones. The agent's sentence is accurate and abstract —
+        // "the holder's attribute pool, which sits above every trust context" —
+        // and echoing it would put three words on screen that the vocabulary
+        // keeps off it, in the place a person is least able to absorb them.
+        //
+        // Every other failure is echoed verbatim. That text is *data*: it may
+        // name a host, a port, a contract mismatch, and translating what we do
+        // not recognise would be inventing a cause (VTI R6.4).
         if needs_holder_grant(error) {
             for line in HOLDER_GRANT_HINT {
                 lines.push(Line::from(*line).fg(COLOR_ORANGE));
             }
-            lines.push(Line::from(""));
+        } else {
+            super::status::push_status(lines, error, " ");
         }
+        lines.push(Line::from(""));
         lines.push(Line::from(" r: try again").fg(COLOR_DARK_GRAY));
         return true;
     }
@@ -709,8 +715,8 @@ fn push_agent_state(state: &IdentityState, lines: &mut Vec<Line<'static>>, noun:
 /// Kept as lines rather than a paragraph because the middle one is a command an
 /// operator has to read character by character.
 const HOLDER_GRANT_HINT: &[&str] = &[
-    " Your agent credential administers this context. The pool and the profiles",
-    " over it sit above every context, so reaching them is a separate grant:",
+    " Your agent credential administers this context. Your facts, and the faces",
+    " over them, sit above every context — reaching them is a separate grant:",
     "",
     "   pnm acl update --did <this install's DID> --capabilities persona-holder",
     "",
@@ -1056,8 +1062,14 @@ mod tests {
             "holder",
         ];
 
-        // Every tab, in both its empty and its populated state, plus the three
-        // things that own the screen when they are open.
+        // Every tab, in each of its three states — empty, populated, and having
+        // failed to load — plus the three things that own the screen when they
+        // are open.
+        //
+        // The failure state earns its place: the words there are the ones
+        // written under pressure, they include a hint carrying a `pnm` command,
+        // and nothing else on screen exercises them. This test did miss a
+        // "pool" and a "profiles" that lived only in that hint.
         let mut screens: Vec<String> = Vec::new();
         for tab in PersonaTab::all() {
             let mut empty = IdentityState {
@@ -1070,6 +1082,18 @@ mod tests {
             let mut full = populated(tab);
             loaded(&mut full);
             screens.push(text(&render(&full)));
+
+            // The refusal we recognise, which this pane answers in its own
+            // words. An *unrecognised* failure is echoed verbatim and is the
+            // agent's text rather than ours, so it is not this test's to police.
+            let mut refused = populated(tab);
+            loaded(&mut refused);
+            refused.load_error = Some(
+                "this task reads or writes the holder's attribute pool, which sits above \
+                 every trust context. It requires an unscoped holder credential"
+                    .to_string(),
+            );
+            screens.push(text(&render(&refused)));
         }
         for mode in [
             PersonaMode::Attribute(AttributeForm::default()),
@@ -1083,7 +1107,15 @@ mod tests {
         }
 
         for screen in &screens {
-            let lower = screen.to_ascii_lowercase();
+            // `persona-holder` is a capability name an operator types verbatim,
+            // like a task URI would be — wire vocabulary inside a command, not
+            // prose. Removing it before the scan keeps "holder" banned as a
+            // word while letting the one command that needs it stay correct;
+            // exempting it any more loosely would let a sentence hide behind a
+            // hyphen.
+            let lower = screen
+                .to_ascii_lowercase()
+                .replace("persona-holder", "‹capability›");
             for word in BANNED {
                 assert!(
                     !lower.contains(word),
@@ -1193,19 +1225,20 @@ mod tests {
 
     /// The refusal a context-scoped credential earns says what to do about it.
     ///
-    /// This is the failure every install hits before the grant exists, so the
-    /// agent's own words — accurate but abstract — are not enough on their own:
-    /// the operator needs the command.
+    /// This is the failure every install hits before the grant exists, and the
+    /// agent's own words — accurate, abstract, and in the spec's vocabulary —
+    /// are not what a person needs at that moment. The pane answers it in its
+    /// own words and gives them the command.
     #[test]
     fn the_holder_refusal_carries_the_grant_command() {
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             load_error: Some(
                 "this task reads or writes the holder's attribute pool … it requires an unscoped \
                  holder credential"
                     .to_string(),
             ),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1218,10 +1251,10 @@ mod tests {
     /// their agent is simply unreachable sends them to fix the wrong thing.
     #[test]
     fn an_unrelated_failure_carries_no_grant_command() {
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             load_error: Some("connection refused".to_string()),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
