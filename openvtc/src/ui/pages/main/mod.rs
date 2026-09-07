@@ -623,6 +623,11 @@ impl MainPage {
                     KeyCode::Up if count > 0 => send(PA::Select(selected.saturating_sub(1))),
                     KeyCode::Down if count > 0 => send(PA::Select((selected + 1).min(count - 1))),
                     KeyCode::Char('v') => send(PA::ToggleValues),
+                    // `s` shows one value; `v` asks the agent for all of them.
+                    // Two different questions, and the narrower one is not a
+                    // shortcut to the wider: `s` on a listing fetched without
+                    // values has nothing to unmask.
+                    KeyCode::Char('s') if selected < count => send(PA::RevealValue(selected)),
                     KeyCode::Char('n') => send(PA::AttributeNew),
                     KeyCode::Char('e') if selected < count => send(PA::AttributeEdit(selected)),
                     KeyCode::Char('d') | KeyCode::Delete if selected < count => {
@@ -3525,6 +3530,7 @@ mod key_handler_tests {
             (KeyCode::Char('e'), PersonaAction::AttributeEdit(0)),
             (KeyCode::Char('d'), PersonaAction::AttributeDeleteArm(0)),
             (KeyCode::Char('v'), PersonaAction::ToggleValues),
+            (KeyCode::Char('s'), PersonaAction::RevealValue(0)),
             (KeyCode::Char('r'), PersonaAction::Refresh),
         ] {
             let (mut page, mut rx) = open();
@@ -3538,6 +3544,17 @@ mod key_handler_tests {
                 _ => panic!("expected a persona action for {key:?}"),
             }
         }
+    }
+
+    /// `s` needs a row under the cursor. On an empty list it is not a verb, and
+    /// a pane that consumed it would swallow a key that meant nothing here.
+    #[test]
+    fn personas_reveal_needs_a_row() {
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |s| {
+            s.main_page.content_panel.identity.tab = PersonaTab::Attributes;
+        });
+        page.handle_key_event(press(KeyCode::Char('s')));
+        assert!(rx.try_recv().is_err(), "no fact, no reveal");
     }
 
     /// An armed confirmation owns `y`/`n` — every other pane verb is suppressed

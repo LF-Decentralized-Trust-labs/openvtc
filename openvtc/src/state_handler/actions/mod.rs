@@ -205,6 +205,12 @@ pub enum PersonaAction {
     /// a listing fetched without values does not hold them, which is what makes
     /// this an opt-in rather than a blindfold.
     ToggleValues,
+    /// Show the selected fact's value unmasked, or stop showing it.
+    ///
+    /// One fact, not a mode: a claim type carrying a mask style is shown
+    /// reduced even in a listing that asked for values, and this lifts that for
+    /// the row under the cursor only. Moving the selection puts it back.
+    RevealValue(usize),
 
     // ── Attributes ───────────────────────────────────────────────────────
     /// Open the editor on a new attribute.
