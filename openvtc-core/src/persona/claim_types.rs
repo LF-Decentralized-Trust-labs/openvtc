@@ -13,7 +13,7 @@
 //! `persona/claim-types/list` task — the registry's own §6 lists adding one as
 //! an open question — so a client that wants a default has to ship it. Re-sync
 //! by hand against the file named above when the registry moves; the whole of
-//! the copy is [`TABLE`] plus [`UNREGISTERED`].
+//! the copy is the private `TABLE` in this file plus [`UNREGISTERED`].
 //!
 //! # This is not a security control, and it must not be described as one
 //!
