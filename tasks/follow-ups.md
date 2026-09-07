@@ -24,6 +24,31 @@ single call site). Closes the last deferred item from the multi-community spec
 Deferred from the multi-community plan; never scoped. No config-model or UI
 support for rotating a persona's keys today.
 
+### [ ] Identity pane — the four `persona/*` verbs it does not offer
+The pane (`ui/pages/main/components/personas_panel.rs` + `state_handler/persona_actions.rs`)
+covers faces, the pool, profiles, bindings and the disclosure history. Four
+parts of the family are deliberately not on it, each for a reason worth keeping:
+
+- **Authoring a credential-backed or generated attribute.** Both are shown and
+  neither is editable. A credential-backed one names a `credentialId` and a
+  `claimPath`, so authoring one means a credential picker *and* a JSON-Pointer
+  picker into its subject; a generated one has no single value to edit. Until
+  those pickers exist, `pool::put` writes self-asserted attributes only and
+  `AttributeDraft` has no provenance field to pass anything else through.
+- **Pinned / override / inline profile entries.** Read, carried through a save
+  untouched, and left to `pnm persona profile`. Each is a divergence between
+  what a profile shows and what the pool holds, which is a decision worth naming
+  out loud rather than producing as a side effect of a checkbox.
+- **`disclosure/preview` + `present`.** Driven by a verifier's request, and
+  OpenVTC has nothing asking. A "disclose something now" button would be a
+  request with no requester — the shape the two-call gate exists to prevent.
+  The wallet (`vta-browser-plugin`) is where that belongs.
+- **`contact/*` and `correlation/analyze`.** Contacts are what *peers* disclosed
+  to the holder, which is a relationships question rather than an identity one.
+  Correlation analysis is the natural next thing to hang off an attribute row
+  (`persona_correlation_analyze` takes an `attributeId`) and is the cheapest of
+  the four to add: one call, one detail line, no new flow.
+
 ---
 
 ## Small / unscheduled

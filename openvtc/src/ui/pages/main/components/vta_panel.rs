@@ -4,7 +4,7 @@ use crate::colors::{
     COLOR_DARK_GRAY, COLOR_ORANGE, COLOR_SOFT_PURPLE, COLOR_SUCCESS, COLOR_TEXT_DEFAULT,
 };
 use crate::state_handler::{
-    main_page::content::{ContentPanelState, VicLifecycle, VtaFocus, VtaState, VtaTransport},
+    main_page::content::{ContentPanelState, VicLifecycle, VtaState, VtaTransport},
     state::ConnectionState,
 };
 use openvtc_core::display::{display_identifier, truncate_did_centered};
@@ -162,8 +162,8 @@ pub fn render(state: &VtaState, panel_focused: bool) -> Vec<Line<'static>> {
 
     // Active DIDs — the persona plus one relationship pseudonym (R-DID) per
     // relationship. Suppressed when it holds nothing but the persona: that row
-    // duplicates the one already marked `active` in Context Identities below,
-    // and a section that restates the row under it is noise, not structure.
+    // duplicates the "Persona:" row above it, and a section that restates the
+    // row above it is noise, not structure.
     let active_dids_worth_showing = state
         .active_dids
         .iter()
@@ -196,144 +196,20 @@ pub fn render(state: &VtaState, panel_focused: bool) -> Vec<Line<'static>> {
         }
     }
 
-    // Context identities — every persona DID in this context, with its binding.
-    // Orphans (no community) are flagged so they can be spotted and removed.
-    if !state.context_dids.is_empty() {
-        // Same focus affordance the VIC section carries. Without it this list
-        // showed a `▸` selection cursor and a key-hint row with no indication
-        // that it was the focused list — the two lists looked equally live.
-        let focused = panel_focused && state.focus == VtaFocus::Dids;
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!(" Context Identities ({})", state.context_dids.len()),
-                if focused {
-                    Style::new().fg(COLOR_SUCCESS).bold()
-                } else {
-                    Style::new().fg(COLOR_DARK_GRAY).bold()
-                },
-            ),
-            Span::styled(
-                focus_hint(focused, panel_focused),
-                Style::new().fg(COLOR_DARK_GRAY),
-            ),
-        ]));
-        lines.push(Line::from(""));
-
-        for (i, d) in state.context_dids.iter().enumerate() {
-            // Only the focused list shows a selection cursor, so `↑/↓` never
-            // appears to be driving two lists at once (matches the VIC rows).
-            let is_selected = focused && i == state.did_selected_index;
-            let orphan = d.bound_communities == 0;
-            let prefix = if is_selected { "▸ " } else { "  " };
-            let marker = if orphan { "○ " } else { "● " };
-            let marker_style = if orphan {
-                Style::new().fg(COLOR_ORANGE)
-            } else {
-                Style::new().fg(COLOR_SUCCESS)
-            };
-            let did_style = if is_selected {
-                Style::new().fg(COLOR_SUCCESS).bold()
-            } else {
-                Style::new().fg(COLOR_TEXT_DEFAULT)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, marker_style),
-                Span::styled(marker, marker_style),
-                Span::styled(
-                    display_identifier(d.agent_name.as_deref(), &d.did, ID_WIDTH).into_owned(),
-                    did_style,
-                ),
-            ]));
-
-            let name = if d.label.is_empty() {
-                "persona".to_string()
-            } else {
-                d.label.clone()
-            };
-            let active = if d.is_active { "  ·  active" } else { "" };
-            let binding = if orphan {
-                "orphan — no community".to_string()
-            } else {
-                format!(
-                    "{} communit{}",
-                    d.bound_communities,
-                    if d.bound_communities == 1 { "y" } else { "ies" }
-                )
-            };
-            let binding_style = if orphan {
-                Style::new().fg(COLOR_ORANGE)
-            } else {
-                Style::new().fg(COLOR_DARK_GRAY)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("      {name}{active}  ·  "),
-                    Style::new().fg(COLOR_DARK_GRAY),
-                ),
-                Span::styled(binding, binding_style),
-            ]));
-        }
-
-        // Confirmation prompt (a delete is armed) or, when focused, the
-        // navigation/remove hint. The spacer goes with them — an unfocused list
-        // ends at its last row rather than trailing a blank.
-        if state.confirm_delete_did.is_some() || focused {
-            lines.push(Line::from(""));
-        }
-        if let Some(idx) = state.confirm_delete_did {
-            // Keep *both* the name and the DID. The row the operator selected
-            // shows the name, so a DID-only prompt names something they never
-            // saw; but a destructive confirm must stay unambiguous, so the DID
-            // is not dropped either — it is centre-truncated to keep the line
-            // readable while both ends stay checkable.
-            let target = match state.context_dids.get(idx) {
-                Some(d) => {
-                    let did = truncate_did_centered(&d.did, CONFIRM_DID_WIDTH);
-                    match d.agent_name.as_deref() {
-                        Some(name) => format!("{name} ({did})"),
-                        None => did.into_owned(),
-                    }
-                }
-                None => "this identity".to_string(),
-            };
-            lines.push(
-                Line::from(format!("Remove {target}?   y: confirm    n: cancel"))
-                    .fg(COLOR_ORANGE)
-                    .bold(),
-            );
-        } else if focused {
-            // Same verb order as the VIC hints: navigation, then create, then
-            // the rest, each `key: verb` with the same separator.
-            lines.push(
-                Line::from("↑/↓ select   n: new persona   g: agent names   d: remove orphan")
-                    .fg(COLOR_DARK_GRAY),
-            );
-        }
-    } else {
-        // No personas yet: still surface how to mint one.
-        lines.push(Line::from(""));
-        lines.push(
-            Line::from("No persona DIDs yet.   n: create a new persona DID").fg(COLOR_DARK_GRAY),
-        );
-    }
-
     render_vics(state, panel_focused, &mut lines);
 
     lines
 }
 
-/// The focus affordance for one of the two manageable lists.
+/// The focus affordance for the invitation-credential list.
 ///
-/// Three states, not two: the list has the keyboard, the *other* list has it
-/// (Tab switches between them), or the content panel is not focused at all — in
-/// which case Tab does not reach these lists and the operator needs the panel
-/// first. Collapsing the last two into "\[Tab\] focus" pointed at the wrong key.
-fn focus_hint(focused: bool, panel_focused: bool) -> &'static str {
-    match (focused, panel_focused) {
-        (true, _) => "   ◀ focus",
-        (false, true) => "   [Tab] focus",
-        (false, false) => "   [→] focus the panel",
+/// Two states now that it is the panel's only list: it has the keyboard, or the
+/// content panel does not and the operator needs the panel first. The third
+/// state — "the *other* list has it" — went with the persona list.
+fn focus_hint(focused: bool) -> &'static str {
+    match focused {
+        true => "   ◀ focus",
+        false => "   [→] focus the panel",
     }
 }
 
@@ -475,7 +351,9 @@ fn render_transports(state: &VtaState, lines: &mut Vec<Line<'static>>) {
 /// Render the "Invitation Credentials" (VIC) manager section: the held VICs with
 /// their lifecycle state, the confirm gates, and the focus-aware key hints.
 fn render_vics(state: &VtaState, panel_focused: bool, lines: &mut Vec<Line<'static>>) {
-    let focused = panel_focused && state.focus == VtaFocus::Vics;
+    // The only list on this panel, so it has the keyboard whenever the panel
+    // does — there is no longer a second list to Tab between.
+    let focused = panel_focused;
     let header_style = if focused {
         Style::new().fg(COLOR_SUCCESS).bold()
     } else {
@@ -488,10 +366,7 @@ fn render_vics(state: &VtaState, panel_focused: bool, lines: &mut Vec<Line<'stat
             format!(" Invitation Credentials ({})", state.vics.len()),
             header_style,
         ),
-        Span::styled(
-            focus_hint(focused, panel_focused),
-            Style::new().fg(COLOR_DARK_GRAY),
-        ),
+        Span::styled(focus_hint(focused), Style::new().fg(COLOR_DARK_GRAY)),
         // The vault query runs off the loop now, so the list can be visibly
         // mid-load. Saying so is the difference between "you hold no VICs" and
         // "we haven't heard back yet" — the panel used to render both as the
@@ -606,7 +481,7 @@ fn render_vics(state: &VtaState, panel_focused: bool, lines: &mut Vec<Line<'stat
 mod tests {
     use super::*;
     use crate::state_handler::main_page::content::{
-        ActiveDid, AdvertisedTransports, ManagedDid, VicSummary, VtaTransports,
+        ActiveDid, AdvertisedTransports, VicSummary, VtaTransports,
     };
 
     const PERSONA_DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAA:example.com:alice";
@@ -625,16 +500,6 @@ mod tests {
             .collect()
     }
 
-    fn managed_did(agent_name: Option<&str>) -> ManagedDid {
-        ManagedDid {
-            did: PERSONA_DID.to_string(),
-            agent_name: agent_name.map(str::to_owned),
-            label: "Work me".to_string(),
-            bound_communities: 0,
-            is_active: false,
-        }
-    }
-
     fn vic(issuer_agent_name: Option<&str>) -> VicSummary {
         VicSummary {
             id: "urn:vic:1".to_string(),
@@ -646,9 +511,8 @@ mod tests {
         }
     }
 
-    fn state_with(dids: Vec<ManagedDid>, vics: Vec<VicSummary>) -> VtaState {
+    fn state_with(vics: Vec<VicSummary>) -> VtaState {
         VtaState {
-            context_dids: dids.into(),
             vics: vics.into(),
             ..VtaState::default()
         }
@@ -919,7 +783,7 @@ mod tests {
     // --- section suppression ------------------------------------------------
 
     /// "Active DIDs" holding nothing but the persona restates the row already
-    /// marked `active` in Context Identities, so it is suppressed.
+    /// already named on the "Persona:" row above, so it is suppressed.
     #[test]
     fn active_dids_is_hidden_when_it_only_restates_the_persona() {
         let mut state = vta_managed(None);
@@ -957,60 +821,39 @@ mod tests {
 
     // --- focus cues ---------------------------------------------------------
 
-    /// Both manageable lists carry the same focus affordance, and only the
-    /// focused one shows a selection cursor and its key hints.
+    /// The invitation-credential list carries the panel's focus affordance and
+    /// shows its cursor and hints only when the content panel has the keyboard.
+    ///
+    /// It used to have to say which of *two* lists was focused; the persona
+    /// list has moved to the identity pane, so the remaining question is just
+    /// whether this panel is the focused one.
     #[test]
-    fn only_the_focused_identity_list_shows_a_cursor_and_hints() {
-        let mut state = state_with(vec![managed_did(None)], vec![vic(None)]);
+    fn the_vic_list_shows_a_cursor_and_hints_only_when_the_panel_is_focused() {
+        let state = state_with(vec![vic(None)]);
 
-        state.focus = VtaFocus::Dids;
         let focused = joined(&render(&state, true));
-        assert!(
-            focused.contains("Context Identities (1)   ◀ focus"),
-            "{focused}"
-        );
+        assert!(focused.contains("◀ focus"), "{focused}");
         assert!(
             focused.contains("▸ "),
             "cursor shown when focused: {focused}"
         );
-        assert!(focused.contains("n: new persona"), "{focused}");
 
-        state.focus = VtaFocus::Vics;
-        let unfocused = joined(&render(&state, true));
+        let unfocused = joined(&render(&state, false));
         assert!(
-            unfocused.contains("Context Identities (1)   [Tab] focus"),
-            "{unfocused}"
+            !unfocused.contains("◀ focus"),
+            "the list does not have the keyboard when the panel does not: {unfocused}"
         );
-        assert!(
-            !unfocused.contains("n: new persona"),
-            "hints belong to the focused list: {unfocused}"
-        );
+        assert!(unfocused.contains("[→] focus the panel"), "{unfocused}");
     }
 
-    /// With the content panel itself unfocused, neither list may claim the
-    /// keyboard. Both lists used to draw their affordance from `state.focus`
-    /// alone, so a panel whose keys are all discarded still announced "◀ focus"
-    /// and advertised `g` / `n` / `d` — the shortest path to "I pressed the key
-    /// and nothing happened".
+    /// The persona list, and the `n` / `g` / `d` verbs that acted on it, are
+    /// gone from this panel — they live on the identity pane, and a panel that
+    /// still advertised them would be advertising keys it no longer handles.
     #[test]
-    fn an_unfocused_panel_points_at_the_panel_not_the_lists() {
-        let mut state = state_with(vec![managed_did(None)], vec![vic(None)]);
-        state.focus = VtaFocus::Dids;
-
-        let out = joined(&render(&state, false));
-        assert!(
-            !out.contains("◀ focus"),
-            "no list has the keyboard when the panel does not: {out}"
-        );
-        assert!(
-            !out.contains("[Tab] focus"),
-            "Tab is not the key that helps here: {out}"
-        );
-        assert!(out.contains("[→] focus the panel"), "{out}");
-        assert!(
-            !out.contains("n: new persona"),
-            "hints belong to a list the keyboard can reach: {out}"
-        );
+    fn the_persona_list_is_no_longer_on_this_panel() {
+        let out = joined(&render(&state_with(vec![vic(None)]), true));
+        assert!(!out.contains("Context Identities"), "{out}");
+        assert!(!out.contains("n: new persona"), "{out}");
     }
 
     /// An in-flight vault query is visible. "No invitation credentials" is a
@@ -1018,7 +861,7 @@ mod tests {
     /// before this the load was inline, so the panel simply froze instead.
     #[test]
     fn a_loading_vic_list_says_so_instead_of_claiming_none() {
-        let mut state = state_with(vec![managed_did(None)], vec![]);
+        let mut state = state_with(vec![]);
         state.vic_loading = true;
 
         let out = joined(&render(&state, true));
@@ -1038,7 +881,7 @@ mod tests {
     #[test]
     fn vic_row_shows_the_issuers_verified_agent_name() {
         let out = text(&render(
-            &state_with(vec![], vec![vic(Some("example.com/@acme"))]),
+            &state_with(vec![vic(Some("example.com/@acme"))]),
             true,
         ));
         assert!(
@@ -1054,51 +897,10 @@ mod tests {
     /// A cached negative lookup arrives as `None`, so the row keeps the DID.
     #[test]
     fn vic_row_without_a_name_keeps_the_issuer_did() {
-        let out = text(&render(&state_with(vec![], vec![vic(None)]), true));
+        let out = text(&render(&state_with(vec![vic(None)]), true));
         assert!(
             out.iter().any(|l| l.contains(VTC_DID)),
             "issuer DID is shown: {out:?}"
-        );
-    }
-
-    // --- delete-confirm prompt (KEEP-BOTH) ----------------------------------
-
-    /// The destructive confirm names what the operator selected *and* keeps the
-    /// DID, so it is both recognisable and unambiguous.
-    #[test]
-    fn delete_confirm_keeps_both_the_name_and_the_did() {
-        let mut state = state_with(vec![managed_did(Some("example.com/@alice"))], vec![]);
-        state.confirm_delete_did = Some(0);
-        let out = text(&render(&state, true));
-
-        let prompt = out
-            .iter()
-            .find(|l| l.starts_with("Remove "))
-            .expect("confirm prompt rendered");
-        assert!(prompt.contains("example.com/@alice"), "{prompt}");
-        // The DID is centre-truncated, so both ends must still be checkable.
-        assert!(prompt.contains("did:webvh:QmScidAlice"), "{prompt}");
-        assert!(prompt.contains("example.com:alice"), "{prompt}");
-        assert!(prompt.contains("y: confirm"), "{prompt}");
-    }
-
-    /// With no verified name (uncached or a cached negative) the prompt falls
-    /// back to the DID alone — never to an empty or name-less "this identity".
-    #[test]
-    fn delete_confirm_without_a_name_shows_the_did() {
-        let mut state = state_with(vec![managed_did(None)], vec![]);
-        state.confirm_delete_did = Some(0);
-        let out = text(&render(&state, true));
-
-        let prompt = out
-            .iter()
-            .find(|l| l.starts_with("Remove "))
-            .expect("confirm prompt rendered");
-        assert!(prompt.contains("did:webvh:QmScidAlice"), "{prompt}");
-        assert!(prompt.contains("example.com:alice"), "{prompt}");
-        assert!(
-            !prompt.contains('('),
-            "no empty name parenthetical: {prompt}"
         );
     }
 }

@@ -232,6 +232,7 @@ mod capability_actions;
 mod community_actions;
 mod create_persona;
 mod credential_actions;
+mod persona_actions;
 mod persona_binding_refresh;
 /// The DIDComm transport module, which now lives in `openvtc-core`.
 ///
@@ -1438,6 +1439,19 @@ impl StateHandler {
                         state.main_page.content_panel.vta.vic_refresh_queued = false;
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, &mut state, admin_vta.as_ref());
                     }
+                    // Same rule for the identity pane: a write that just landed
+                    // asked for the listing it invalidated, and could not start
+                    // it while its own outcome held the domain.
+                    if state.main_page.content_panel.personas.refresh_queued {
+                        state.main_page.content_panel.personas.refresh_queued = false;
+                        spawn_persona_effect(
+                            &dispatch_tx,
+                            &mut in_flight,
+                            &mut state,
+                            admin_vta.as_ref(),
+                            persona_actions::PersonaEffect::Read,
+                        );
+                    }
                 },
                 // D13 presence: another install using this account, or a
                 // report that we could not tell. The task never touches
@@ -2141,12 +2155,23 @@ impl StateHandler {
                             // No session or no messaging runtime: say so and
                             // disarm, rather than leaving the prompt hanging.
                             _ => {
-                                state.main_page.content_panel.vta.confirm_delete_did = None;
+                                state.main_page.content_panel.personas.confirm =
+                                    main_page::content::PersonaConfirm::None;
                                 state
                                     .main_page
                                     .log("Cannot remove an identity right now — no VTA session.");
                             }
                         }
+                    }
+                    Action::Persona(persona_action) => {
+                        // Serviced in State A as well: the attribute pool is
+                        // holder-scoped and the admin session that reads it
+                        // exists before any community does. The pane has no
+                        // faces or memberships to show yet, which is a true
+                        // answer rather than a missing one.
+                        let effect = persona_actions::apply(state, &persona_action);
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        spawn_persona_effect(&dispatch_tx, &mut in_flight, state, av, effect);
                     }
                     Action::VicRefresh => {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
@@ -2238,7 +2263,7 @@ impl StateHandler {
                     Action::CreatePersonaClose | Action::AgentNameManagerInput(..) |
                     Action::AgentNameManagerSelect(..) | Action::AgentNameManagerConfirmRemove |
                     Action::AgentNameManagerCancelRemove | Action::AgentNameManagerClose |
-                    Action::VicSelect(..) | Action::VicFocusToggle | Action::VicConfirmDelete(..) |
+                    Action::VicSelect(..) | Action::VicConfirmDelete(..) |
                     Action::VicCancelDelete | Action::VicConfirmPurge(..) | Action::VicCancelPurge |
                     Action::StartAddVic | Action::AddVicInput(..) | Action::AddVicPaste(..) |
                     Action::AddVicClose => {}
@@ -2313,6 +2338,17 @@ impl StateHandler {
                         state.main_page.content_panel.vta.vic_refresh_queued = false;
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
+                    }
+                    if state.main_page.content_panel.personas.refresh_queued {
+                        state.main_page.content_panel.personas.refresh_queued = false;
+                        let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
+                        spawn_persona_effect(
+                            &dispatch_tx,
+                            &mut in_flight,
+                            state,
+                            av,
+                            persona_actions::PersonaEffect::Read,
+                        );
                     }
                 }
                 Ok(interrupted) = interrupt_rx.recv() => {
@@ -2820,12 +2856,11 @@ fn begin_vic_refresh(
 /// Start a background VIC-list refresh, shared by both loops.
 ///
 /// The vault query is a trust task with a 30 s SDK timeout. It used to run
-/// inline in the action arm, which meant the `VicFocusToggle` queued behind it
-/// — a two-line in-memory change — could not be applied until the network
-/// answered: Tab into the Invitation Credentials list took as long as the round
-/// trip, with nothing on screen to say why. Here the loop only *starts* the
-/// query, so the focus change lands on the next frame and the list fills in
-/// when it arrives.
+/// inline in the action arm, which meant a key pressed behind it — a two-line
+/// in-memory change — could not be applied until the network answered: asking
+/// for the Invitation Credentials list took as long as the round trip, with
+/// nothing on screen to say why. Here the loop only *starts* the query, so the
+/// keypress lands on the next frame and the list fills in when it arrives.
 ///
 /// Guarding rules, in the order they apply:
 ///
@@ -2862,6 +2897,89 @@ fn spawn_vic_refresh(
     );
 }
 
+/// Start the identity pane's network work off the loop, shared by both loops.
+///
+/// Reads and writes share one domain, so the two cannot interleave and leave a
+/// listing that reflects neither.
+///
+/// A **read** rejected by the busy-guard is *deferred* rather than dropped: the
+/// in-flight call was issued before whatever prompted this one, so its answer is
+/// already stale, and silently discarding the new request would leave a
+/// just-saved attribute missing from the list until the operator refreshed by
+/// hand.
+///
+/// A **write** is not deferrable. Its arguments were resolved against the state
+/// as it was, so replaying it later could apply an edit to a row the operator
+/// has since moved off. It is refused instead — and the form it came from is
+/// handed back, because a submitted form is locked until an answer arrives and
+/// a request that never left has no answer coming.
+///
+/// Without an admin session there is nothing to ask: the pane says so rather
+/// than leaving a spinner running against a session that does not exist.
+fn spawn_persona_effect(
+    dispatch_tx: &tokio::sync::mpsc::UnboundedSender<background_dispatch::DispatchOutcome>,
+    in_flight: &mut background_dispatch::InFlight,
+    state: &mut State,
+    admin_vta: Option<&vta_sdk::client::VtaClient>,
+    effect: persona_actions::PersonaEffect,
+) {
+    use persona_actions::PersonaEffect;
+
+    let domain = background_dispatch::DispatchDomain::PersonaManage;
+    if matches!(effect, PersonaEffect::None) {
+        return;
+    }
+    let Some(admin_vta) = admin_vta else {
+        let reason =
+            "No VTA session — your identity is held by the agent, which cannot be reached \
+             right now."
+                .to_string();
+        let p = &mut state.main_page.content_panel.personas;
+        p.loading = false;
+        p.load_error = Some(reason.clone());
+        if matches!(effect, PersonaEffect::Job(_)) {
+            persona_actions::release_form(state, reason);
+        }
+        return;
+    };
+    if !in_flight.try_begin(domain) {
+        match effect {
+            PersonaEffect::Read => {
+                state.main_page.content_panel.personas.refresh_queued = true;
+            }
+            _ => persona_actions::release_form(
+                state,
+                background_dispatch::InFlight::busy_message(domain),
+            ),
+        }
+        return;
+    }
+
+    match effect {
+        PersonaEffect::None => unreachable!("returned above"),
+        PersonaEffect::Read => {
+            let job = persona_actions::PersonaReadJob {
+                admin_vta: admin_vta.clone(),
+                include_values: state.main_page.content_panel.personas.show_values,
+                targets: persona_actions::PersonaReadJob::targets(state),
+            };
+            state.main_page.content_panel.personas.loading = true;
+            background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
+                background_dispatch::DispatchOutcome::PersonaManage(job.run().await)
+            });
+        }
+        PersonaEffect::Job(job) => {
+            let job = persona_actions::PersonaJobRun {
+                admin_vta: admin_vta.clone(),
+                job,
+            };
+            background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
+                background_dispatch::DispatchOutcome::PersonaManage(job.run().await)
+            });
+        }
+    }
+}
+
 /// The typed name to claim, once it is non-empty and the overlay is idle.
 fn agent_name_to_claim(state: &mut State) -> Option<(String, String)> {
     use main_page::content::AgentNameManagerPhase;
@@ -2887,8 +3005,8 @@ fn open_agent_name_overlay(state: &mut State, index: usize) -> Option<String> {
     let Some(persona) = state
         .main_page
         .content_panel
-        .vta
-        .context_dids
+        .personas
+        .faces
         .get(index)
         .cloned()
     else {
@@ -2936,12 +3054,12 @@ fn prepare_delete_context_did(
     didcomm_service: &openvtc_core::didcomm::Messaging,
     index: usize,
 ) -> Option<relationship_actions::DidDeleteJob> {
-    state.main_page.content_panel.vta.confirm_delete_did = None;
+    state.main_page.content_panel.personas.confirm = main_page::content::PersonaConfirm::None;
     let did = state
         .main_page
         .content_panel
-        .vta
-        .context_dids
+        .personas
+        .faces
         .get(index)
         .map(|d| d.did.clone())?;
 
@@ -3131,24 +3249,18 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
             state.main_page.switcher = None;
         }
         Action::DidSelect(i) => {
-            state.main_page.content_panel.vta.did_selected_index = *i;
+            state.main_page.content_panel.personas.face_selected = *i;
         }
         Action::DidConfirmDelete(i) => {
-            state.main_page.content_panel.vta.confirm_delete_did = Some(*i);
+            state.main_page.content_panel.personas.confirm =
+                main_page::content::PersonaConfirm::DeleteFace(*i);
         }
         Action::DidCancelDelete => {
-            state.main_page.content_panel.vta.confirm_delete_did = None;
+            state.main_page.content_panel.personas.confirm =
+                main_page::content::PersonaConfirm::None;
         }
         Action::VicSelect(i) => {
             state.main_page.content_panel.vta.vic_selected_index = *i;
-        }
-        Action::VicFocusToggle => {
-            use main_page::content::VtaFocus;
-            let vta = &mut state.main_page.content_panel.vta;
-            vta.focus = match vta.focus {
-                VtaFocus::Dids => VtaFocus::Vics,
-                VtaFocus::Vics => VtaFocus::Dids,
-            };
         }
         Action::VicConfirmDelete(i) => {
             state.main_page.content_panel.vta.confirm_delete_vic = Some(*i);
@@ -3873,10 +3985,13 @@ mod tests {
                 },
             },
             Case {
-                name: "DidConfirmDelete arms the VTA DID confirmation (degraded mode used to drop this)",
+                name: "DidConfirmDelete arms the face confirmation (degraded mode used to drop this)",
                 action: Action::DidConfirmDelete(1),
                 assert_fn: |s| {
-                    assert_eq!(s.main_page.content_panel.vta.confirm_delete_did, Some(1))
+                    assert_eq!(
+                        s.main_page.content_panel.personas.confirm,
+                        main_page::content::PersonaConfirm::DeleteFace(1)
+                    )
                 },
             },
         ];

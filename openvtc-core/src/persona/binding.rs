@@ -1,24 +1,12 @@
 //! What each of your faces actually says — the profile a persona presents in
-//! one community's context.
+//! one community's context. **Context-scoped**; see the [module header](super)
+//! for the boundary this sits on the low side of.
 //!
-//! # Two meanings of "persona", and they compose
-//!
-//! This crate already has a [`PersonaRecord`](crate::config::account::PersonaRecord):
-//! a `did:webvh`, its key references, its mediator. That is a face as an
-//! *identity* — the DID a community sees and the connection material behind
-//! it.
-//!
-//! The agent's `persona/*` Trust Tasks use the same word for the same thing one
-//! layer up: a persona DID that a **profile** of identity attributes is bound
-//! to, within a trust context. The two are not competing definitions. This
-//! crate holds the face; the agent holds what the face says.
-//!
-//! They join on the pair this module takes. A community membership already
-//! carries both halves — `CommunityRecord::sub_context_id` is the VTA context,
-//! and the persona it presents has the DID — which is exactly the key
-//! `persona/binding/get` is addressed by. Every membership row in the
-//! communities panel is already a `(context, persona)` pair; this is what that
-//! pair looks up.
+//! A membership already carries both halves of the key: a
+//! `CommunityRecord::sub_context_id` is the VTA context, and the persona it
+//! presents has the DID. Every row in the communities panel is a
+//! `(context, persona)` pair, and that pair is exactly what
+//! `persona/binding/get` is addressed by.
 //!
 //! # Thin on purpose
 //!
@@ -28,15 +16,21 @@
 //! shown — a binding read that returned values would make that gate
 //! decorative. So there is nothing here that renders an attribute, and adding
 //! one would be reaching around the disclosure path rather than extending this
-//! module.
+//! module. [`crate::persona::profile::get`] is where a holder looks at their
+//! own values, above the boundary and before anything is pushed across it.
 //!
-//! # Everything here is best-effort
+//! # Reads are best-effort; [`set`] is not
 //!
 //! Same rule as [`crate::devices`]: a VTA that does not serve the persona slice,
 //! or a call that times out, must never stop OpenVTC starting or a panel
 //! drawing. A membership works whether or not we can say what it presents, and
 //! [`BindingSummary::unknown`] is the honest thing to draw while we cannot —
 //! distinct from "bound to nothing", which is an answer.
+//!
+//! [`set`] is the exception, and it has to be: it is a decision the holder just
+//! made about what a community sees. A write that quietly failed would leave
+//! them believing a face presents something it does not, so its error is
+//! returned rather than softened.
 
 use serde::{Deserialize, Serialize};
 use vta_sdk::client::VtaClient;
@@ -168,6 +162,36 @@ pub async fn get_or_unknown(
             BindingSummary::unknown()
         }
     }
+}
+
+/// Decide what one persona presents in one context.
+///
+/// `profile_id: None` clears the binding — a persona that presents nothing is a
+/// legitimate, common state (a throwaway face), not an absence to be inferred,
+/// so clearing is a first-class call rather than a delete.
+///
+/// This is the push across the boundary. The VTA resolves the profile *above*
+/// the context and writes a materialised projection into it: the context
+/// receives values, never pool identifiers, so nothing inside it can walk back
+/// to the holder's other faces. That is why there is no "read the pool from a
+/// context" counterpart to this function anywhere in the module.
+///
+/// `publicEntries` is deliberately sent empty. It publishes attributes on the
+/// persona's own public surface, where every relying party sees one identical
+/// value — a permanent correlation point, and the exact thing per-verifier
+/// projection exists to avoid. Offering it behind a keystroke would make it the
+/// accidental default; a holder who wants it can say so through `pnm`.
+pub async fn set(
+    client: &VtaClient,
+    context_id: &str,
+    persona_did: &str,
+    profile_id: Option<&str>,
+) -> Result<(), OpenVTCError> {
+    client
+        .persona_binding_set(context_id, persona_did, profile_id, Vec::new(), None)
+        .await
+        .map_err(|e| OpenVTCError::Vta(format!("persona binding write failed: {e}")))?;
+    Ok(())
 }
 
 #[cfg(test)]

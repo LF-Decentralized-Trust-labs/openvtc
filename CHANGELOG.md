@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **One pane for your own identity — "My Identity" on the main menu.** Everything
+  a holder can do with their persona now lives in one place, with five tabs in
+  the order the concepts build on each other: **Faces** (the persona DIDs),
+  **Attributes** (the pool of facts behind them), **Profiles** (named subsets of
+  that pool), **Communities** (which face each community sees and what it
+  presents there) and **Disclosures** (the read-only record of what has actually
+  left).
+
+  Before this, minting a persona DID was a menu item that fired an action, the
+  list of personas was a section of the VTA Service panel, and the three layers
+  above them — the attribute pool, the profiles over it, and the bindings that
+  decide what a community is shown — were reachable only from `pnm persona`.
+
+  Four decisions worth knowing:
+
+  - **Values are opt-in and cost a round-trip.** The attribute list is read
+    without values; `v` re-reads *with* them. It is not a display flag over data
+    already in memory, because a listing that holds values has read the holder's
+    identity whether or not the panel painted it.
+  - **"We could not ask" is never drawn as "you hold nothing."** Every
+    agent-served tab renders the failure and its reason instead of an empty
+    list. An unreachable agent and an empty pool are one pixel apart, and only
+    one of them is a confident wrong answer about the holder's own data.
+  - **Destructive questions are asked once, correctly.** Deleting an attribute a
+    profile uses, or a profile a face presents, needs a cascade or an unbind —
+    and the pane knows which from data it already holds, so the first prompt
+    names the real consequence rather than being refused and re-asked.
+  - **The editor authors what it can honestly author.** Self-asserted attributes
+    and live profile references. A credential-backed attribute is shown but not
+    editable (retyping its value would turn an attested claim into a typed one),
+    and a profile's pinned, overridden and inline entries are read, carried
+    through a save untouched, and left to `pnm` to change.
+
+- **A face's linkage is on screen.** A membership row says when the same face is
+  shown to other communities — the fact that lets two of them compare notes and
+  find one person behind both, and the one thing a holder cannot work out by
+  looking at a single row.
+
+### Changed
+
+- **The VTA Service panel is about the agent again.** Its Context Identities
+  list, and the `n` / `g` / `d` verbs that acted on it, moved to the identity
+  pane; a persona DID is the holder's identity, not a property of the agent that
+  hosts its keys. With one list left on the panel, `Tab` no longer switches
+  focus — it asks for the invitation-credential listing, which is all it ever
+  did besides move the cursor.
+
 ### Fixed
 
 - **Saving a profile on Linux corrupted the whole login keyring.** Not just the

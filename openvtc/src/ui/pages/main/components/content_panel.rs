@@ -82,6 +82,7 @@ impl ContentPanelState {
             MainMenu::Credentials => Some(Box::new(CredentialsPanel)),
             MainMenu::Settings => Some(Box::new(SettingsPanel)),
             MainMenu::Vta => Some(Box::new(VtaPanel)),
+            MainMenu::Personas => Some(Box::new(super::personas_panel::PersonasPanel)),
             _ => None,
         };
 
@@ -108,23 +109,6 @@ impl ContentPanelState {
                         Line::from(""),
                         Line::from("Press <Enter> to quit the application")
                             .fg(COLOR_WARNING_ACCESSIBLE_RED),
-                    ]
-                }
-                MainMenu::CreatePersona => {
-                    vec![
-                        Line::from(""),
-                        Line::from("Create a new persona DID").bold(),
-                        Line::from(""),
-                        Line::from(
-                            "Mint a fresh did:webvh identity you can present when joining a \
-                             community.",
-                        ),
-                        Line::from(
-                            "Hand its DID to a community to receive an invitation (VIC) bound \
-                             to it.",
-                        ),
-                        Line::from(""),
-                        Line::from("Press <Enter> to create a persona DID").fg(COLOR_SOFT_PURPLE),
                     ]
                 }
                 // Covered by the Panel trait above; included for exhaustiveness.
