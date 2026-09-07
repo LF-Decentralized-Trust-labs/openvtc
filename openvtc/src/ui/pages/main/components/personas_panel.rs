@@ -142,45 +142,35 @@ fn confirm_prompt(state: &PersonasState) -> Option<String> {
             };
             Some(format!("Remove {name}?   y: confirm    n: cancel"))
         }
-        PersonaConfirm::DeleteAttribute { index, cascade } => {
-            let attr = state.attributes.get(*index)?;
+        PersonaConfirm::DeleteAttribute { name, cascade, .. } => {
             if *cascade {
-                // The escalated ask, and it names the consequence the first one
-                // did not have: profiles that show this value stop showing it.
+                // The cascading question names the consequence the plain one
+                // does not have: profiles that show this value stop showing it.
                 Some(format!(
-                    "\"{}\" is used by one or more profiles. Delete it AND remove it from them?   \
-                     y: confirm    n: cancel",
-                    attr.display_name()
+                    "\"{name}\" is used by one or more profiles. Delete it AND remove it from \
+                     them?   y: confirm    n: cancel"
                 ))
             } else {
                 Some(format!(
-                    "Delete \"{}\" from your pool?   y: confirm    n: cancel",
-                    attr.display_name()
+                    "Delete \"{name}\" from your pool?   y: confirm    n: cancel"
                 ))
             }
         }
-        PersonaConfirm::DeleteProfile { index, unbind } => {
-            let profile = state.profiles.get(*index)?;
+        PersonaConfirm::DeleteProfile { name, unbind, .. } => {
             if *unbind {
                 Some(format!(
-                    "A face still presents \"{}\". Delete it and leave that face presenting \
-                     nothing?   y: confirm    n: cancel",
-                    profile.display_name()
+                    "A face still presents \"{name}\". Delete it and leave that face presenting \
+                     nothing?   y: confirm    n: cancel"
                 ))
             } else {
                 Some(format!(
-                    "Delete the profile \"{}\"?   y: confirm    n: cancel",
-                    profile.display_name()
+                    "Delete the profile \"{name}\"?   y: confirm    n: cancel"
                 ))
             }
         }
-        PersonaConfirm::Unbind(index) => {
-            let m = state.memberships.get(*index)?;
-            Some(format!(
-                "Stop presenting anything to {}?   y: confirm    n: cancel",
-                m.community_name
-            ))
-        }
+        PersonaConfirm::Unbind { community, .. } => Some(format!(
+            "Stop presenting anything to {community}?   y: confirm    n: cancel"
+        )),
     }
 }
 
@@ -1117,7 +1107,8 @@ mod tests {
         loaded(&mut state);
 
         state.confirm = PersonaConfirm::DeleteAttribute {
-            index: 0,
+            attribute_id: "01A".into(),
+            name: "Work email".into(),
             cascade: false,
         };
         let plain = text(&render(&state));
@@ -1128,7 +1119,8 @@ mod tests {
         assert!(!plain.contains("profiles"), "{plain}");
 
         state.confirm = PersonaConfirm::DeleteAttribute {
-            index: 0,
+            attribute_id: "01A".into(),
+            name: "Work email".into(),
             cascade: true,
         };
         let escalated = text(&render(&state));

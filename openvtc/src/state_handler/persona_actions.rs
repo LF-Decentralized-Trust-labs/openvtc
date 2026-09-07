@@ -180,7 +180,8 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
                 .iter()
                 .any(|profile| profile.referenced.contains(&attr.attribute_id));
             p.confirm = PersonaConfirm::DeleteAttribute {
-                index: *index,
+                attribute_id: attr.attribute_id.clone(),
+                name: attr.display_name().to_string(),
                 cascade,
             };
             PersonaEffect::None
@@ -219,7 +220,8 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
                 .values()
                 .any(|b| b.profile_id.as_deref() == Some(profile.profile_id.as_str()));
             p.confirm = PersonaConfirm::DeleteProfile {
-                index: *index,
+                profile_id: profile.profile_id.clone(),
+                name: profile.display_name().to_string(),
                 unbind,
             };
             PersonaEffect::None
@@ -246,7 +248,15 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::UnbindArm(index) => {
-            state.main_page.content_panel.personas.confirm = PersonaConfirm::Unbind(*index);
+            let p = &mut state.main_page.content_panel.personas;
+            let Some(m) = p.memberships.get(*index) else {
+                return PersonaEffect::None;
+            };
+            p.confirm = PersonaConfirm::Unbind {
+                context_id: m.sub_context_id.clone(),
+                persona_did: m.persona_did.clone(),
+                community: m.community_name.clone(),
+            };
             PersonaEffect::None
         }
 
@@ -360,6 +370,10 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
 }
 
 /// Answer the armed question.
+///
+/// Every arm acts on what the question named, not on where it sat: a listing
+/// that arrived while the prompt was on screen cannot redirect the answer onto
+/// a row the operator never selected.
 fn confirm_yes(state: &mut State) -> PersonaEffect {
     let p = &mut state.main_page.content_panel.personas;
     let confirm = std::mem::replace(&mut p.confirm, PersonaConfirm::None);
@@ -367,35 +381,27 @@ fn confirm_yes(state: &mut State) -> PersonaEffect {
         // A face deletion is not answered here — the pane arms the question and
         // the existing identity-deletion path answers it. See the key handler.
         PersonaConfirm::None | PersonaConfirm::DeleteFace(_) => PersonaEffect::None,
-        PersonaConfirm::DeleteAttribute { index, cascade } => {
-            let Some(attr) = p.attributes.get(index) else {
-                return PersonaEffect::None;
-            };
-            PersonaEffect::Job(PersonaJob::AttributeDelete {
-                attribute_id: attr.attribute_id.clone(),
-                cascade,
-            })
-        }
-        PersonaConfirm::DeleteProfile { index, unbind } => {
-            let Some(profile) = p.profiles.get(index) else {
-                return PersonaEffect::None;
-            };
-            PersonaEffect::Job(PersonaJob::ProfileDelete {
-                profile_id: profile.profile_id.clone(),
-                unbind,
-            })
-        }
-        PersonaConfirm::Unbind(index) => {
-            let Some(m) = p.memberships.get(index) else {
-                return PersonaEffect::None;
-            };
-            PersonaEffect::Job(PersonaJob::Bind {
-                context_id: m.sub_context_id.clone(),
-                persona_did: m.persona_did.clone(),
-                profile_id: None,
-                community: m.community_name.clone(),
-            })
-        }
+        PersonaConfirm::DeleteAttribute {
+            attribute_id,
+            cascade,
+            ..
+        } => PersonaEffect::Job(PersonaJob::AttributeDelete {
+            attribute_id,
+            cascade,
+        }),
+        PersonaConfirm::DeleteProfile {
+            profile_id, unbind, ..
+        } => PersonaEffect::Job(PersonaJob::ProfileDelete { profile_id, unbind }),
+        PersonaConfirm::Unbind {
+            context_id,
+            persona_did,
+            community,
+        } => PersonaEffect::Job(PersonaJob::Bind {
+            context_id,
+            persona_did,
+            profile_id: None,
+            community,
+        }),
     }
 }
 
@@ -913,7 +919,8 @@ mod tests {
         assert_eq!(
             personas(&state).confirm,
             PersonaConfirm::DeleteAttribute {
-                index: 0,
+                attribute_id: "01A".into(),
+                name: "email.work".into(),
                 cascade: true
             }
         );
@@ -922,7 +929,8 @@ mod tests {
         assert_eq!(
             personas(&state).confirm,
             PersonaConfirm::DeleteAttribute {
-                index: 1,
+                attribute_id: "01B".into(),
+                name: "email.work".into(),
                 cascade: false
             },
             "an unreferenced attribute needs no cascade"
@@ -962,7 +970,8 @@ mod tests {
         assert_eq!(
             personas(&state).confirm,
             PersonaConfirm::DeleteProfile {
-                index: 0,
+                profile_id: "01P".into(),
+                name: "(unnamed profile)".into(),
                 unbind: true
             }
         );
@@ -970,10 +979,49 @@ mod tests {
         assert_eq!(
             personas(&state).confirm,
             PersonaConfirm::DeleteProfile {
-                index: 1,
+                profile_id: "01Q".into(),
+                name: "(unnamed profile)".into(),
                 unbind: false
             }
         );
+    }
+
+    /// A listing that lands while a question is on screen cannot redirect the
+    /// answer.
+    ///
+    /// The prompt is armed against the attribute the operator selected, and a
+    /// refresh (or another surface's write) can reorder the pool underneath it
+    /// before they press `y`. An index into the old listing would then name a
+    /// different attribute in the new one — deleting something they never
+    /// selected while showing them the name of something else.
+    #[test]
+    fn an_armed_delete_survives_the_list_moving_underneath_it() {
+        let mut state = state_with(PersonasState {
+            attributes: vec![attribute("01A"), attribute("01B")].into(),
+            ..PersonasState::default()
+        });
+
+        apply(&mut state, &PersonaAction::AttributeDeleteArm(0));
+
+        // A read lands, and the pool comes back in a different order.
+        PersonaOutcome::Read {
+            attributes: Ok(vec![attribute("01B"), attribute("01A")]),
+            profiles: Ok(Vec::new()),
+            disclosures: Ok(Vec::new()),
+            bindings: HashMap::new(),
+            include_values: false,
+        }
+        .apply(&mut state);
+
+        match apply(&mut state, &PersonaAction::ConfirmYes) {
+            PersonaEffect::Job(PersonaJob::AttributeDelete { attribute_id, .. }) => {
+                assert_eq!(
+                    attribute_id, "01A",
+                    "the armed attribute is the one deleted"
+                )
+            }
+            _ => panic!("expected a delete"),
+        }
     }
 
     /// A credential-backed attribute does not open an editor. The refusal is
@@ -1321,7 +1369,8 @@ mod tests {
         let mut state = state_with(PersonasState {
             tab: PersonaTab::Attributes,
             confirm: PersonaConfirm::DeleteAttribute {
-                index: 0,
+                attribute_id: "01A".into(),
+                name: "email.work".into(),
                 cascade: false,
             },
             ..PersonasState::default()

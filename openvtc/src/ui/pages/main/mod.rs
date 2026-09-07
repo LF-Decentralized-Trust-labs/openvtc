@@ -3549,7 +3549,8 @@ mod key_handler_tests {
                 let p = &mut s.main_page.content_panel.personas;
                 p.tab = PersonaTab::Attributes;
                 p.confirm = PersonaConfirm::DeleteAttribute {
-                    index: 0,
+                    attribute_id: "01A".into(),
+                    name: "Work email".into(),
                     cascade: false,
                 };
             })

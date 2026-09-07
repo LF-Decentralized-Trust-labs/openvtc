@@ -518,22 +518,46 @@ pub enum PersonaConfirm {
     #[default]
     None,
     /// Remove an orphan persona DID (index into `faces`).
+    ///
+    /// The one variant still addressed by index, because it hands off to the
+    /// existing identity-deletion path, which takes one and re-resolves the DID
+    /// under its own guards before anything is removed.
     DeleteFace(usize),
-    /// Delete a pool attribute (index into `attributes`).
+    /// Delete a pool attribute, named by what it is rather than by where it sat.
     ///
-    /// `cascade` is the *escalated* ask, offered only after the VTA has refused
-    /// the plain one because profiles still reference the attribute. It is
-    /// never the first question: cascading edits every profile that used the
-    /// value, and that is not a consequence to infer from a `d` keypress.
-    DeleteAttribute { index: usize, cascade: bool },
-    /// Delete a profile (index into `profiles`).
+    /// **Not an index.** An armed question survives across a listing that
+    /// arrives while it is on screen, and an index into the old listing points
+    /// at a different attribute in the new one — which would delete something
+    /// the operator never selected while showing them the name of something
+    /// else. The name is carried for the same reason: the prompt has to name
+    /// what was armed, not whatever now occupies that row.
     ///
-    /// `unbind` is the same escalation one layer up — offered after a refusal,
-    /// because it makes every persona presenting under the profile present
-    /// nothing.
-    DeleteProfile { index: usize, unbind: bool },
-    /// Clear what one membership's face presents (index into `memberships`).
-    Unbind(usize),
+    /// `cascade` is decided when the question is put, from the profile listing
+    /// the pane already holds: the VTA refuses a plain delete while a profile
+    /// references the attribute, so cascading is what will actually happen and
+    /// the prompt says so the first time.
+    DeleteAttribute {
+        attribute_id: String,
+        name: String,
+        cascade: bool,
+    },
+    /// Delete a profile. Named, not indexed, for the reason above.
+    ///
+    /// `unbind` is the same decision one layer up: it makes every face
+    /// presenting under this profile present nothing, and it is decided from
+    /// the binding map rather than discovered from a refusal.
+    DeleteProfile {
+        profile_id: String,
+        name: String,
+        unbind: bool,
+    },
+    /// Clear what one face presents in one context — the pair the binding is
+    /// addressed by, carried whole for the same reason as above.
+    Unbind {
+        context_id: String,
+        persona_did: String,
+        community: String,
+    },
 }
 
 /// Which field of the attribute editor has the keyboard.
