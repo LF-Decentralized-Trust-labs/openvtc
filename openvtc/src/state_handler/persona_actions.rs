@@ -16,10 +16,18 @@
 //! setting `refresh_queued` rather than starting one, because its own outcome
 //! is still holding the domain — the same shape the VIC manager uses.
 //!
+//! # The words, and where they change
+//!
+//! This module is engineering-side: it keeps the spec's nouns
+//! (`attribute`, `profile`, `binding`), because those are what it addresses on
+//! the wire. The strings it *hands to the panel* — status lines, refusals — use
+//! the vocabulary a person reads (`design-docs/persona-vocabulary.md`): a fact,
+//! a face, wearing one.
+//!
 //! # Questions are asked once, and correctly
 //!
 //! Deleting an attribute a profile references is refused by the VTA unless the
-//! caller cascades; deleting a profile a face presents is refused unless the
+//! caller cascades; deleting a profile a persona presents is refused unless the
 //! caller unbinds. Neither refusal is *discovered* here. The profile listing
 //! already says which attributes are referenced and the binding map already
 //! says which profiles are presented, so the prompt names the real consequence
@@ -81,7 +89,7 @@ pub(crate) enum PersonaJob {
         /// to happen.
         edit: bool,
     },
-    /// Decide what one face presents in one context.
+    /// Decide what one persona presents in one context.
     Bind {
         context_id: String,
         persona_did: String,
@@ -99,7 +107,7 @@ pub(crate) enum PersonaJob {
 pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect {
     match action {
         PersonaAction::TabNext | PersonaAction::TabPrev => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             p.tab = match action {
                 PersonaAction::TabNext => p.tab.next(),
                 _ => p.tab.prev(),
@@ -118,9 +126,9 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::Select(index) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             match p.tab {
-                PersonaTab::Faces => p.face_selected = *index,
+                PersonaTab::Personas => p.persona_selected = *index,
                 PersonaTab::Attributes => p.attribute_selected = *index,
                 PersonaTab::Profiles => p.profile_selected = *index,
                 PersonaTab::Communities => p.membership_selected = *index,
@@ -130,7 +138,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
         }
         PersonaAction::Refresh => PersonaEffect::Read,
         PersonaAction::ToggleValues => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             p.show_values = !p.show_values;
             // A re-read, not a redraw: a listing fetched without values does
             // not hold them. Flipping a display flag over data already in
@@ -140,12 +148,12 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
 
         // ── Attributes ───────────────────────────────────────────────────
         PersonaAction::AttributeNew => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             p.mode = PersonaMode::Attribute(AttributeForm::default());
             PersonaEffect::None
         }
         PersonaAction::AttributeEdit(index) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let Some(attr) = p.attributes.get(*index).cloned() else {
                 return PersonaEffect::None;
             };
@@ -170,7 +178,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::AttributeDeleteArm(index) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let Some(attr) = p.attributes.get(*index) else {
                 return PersonaEffect::None;
             };
@@ -191,7 +199,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
         // ── Profiles ─────────────────────────────────────────────────────
         PersonaAction::ProfileOpen(index) | PersonaAction::ProfileEdit(index) => {
             let edit = matches!(action, PersonaAction::ProfileEdit(_));
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let Some(profile) = p.profiles.get(*index) else {
                 return PersonaEffect::None;
             };
@@ -201,20 +209,20 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             })
         }
         PersonaAction::ProfileClose => {
-            state.main_page.content_panel.personas.open_profile = None;
+            state.main_page.content_panel.identity.open_profile = None;
             PersonaEffect::None
         }
         PersonaAction::ProfileNew => {
-            state.main_page.content_panel.personas.mode =
+            state.main_page.content_panel.identity.mode =
                 PersonaMode::Profile(ProfileForm::default());
             PersonaEffect::None
         }
         PersonaAction::ProfileDeleteArm(index) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let Some(profile) = p.profiles.get(*index) else {
                 return PersonaEffect::None;
             };
-            // Presented by a face somewhere? Deleting then leaves that face
+            // Presented by a persona somewhere? Deleting then leaves that persona
             // presenting nothing, which the prompt has to say.
             let unbind = p
                 .bindings
@@ -230,7 +238,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
 
         // ── Communities ──────────────────────────────────────────────────
         PersonaAction::BindOpen(index) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let Some(membership) = p.memberships.get(*index).cloned() else {
                 return PersonaEffect::None;
             };
@@ -244,7 +252,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
                 context_id: membership.sub_context_id.clone(),
                 persona_did: membership.persona_did.clone(),
                 community: membership.community_name.clone(),
-                face_label: membership.face_label.clone(),
+                persona_label: membership.persona_label.clone(),
                 cursor,
                 working: false,
                 error: None,
@@ -252,7 +260,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::UnbindArm(index) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let Some(m) = p.memberships.get(*index) else {
                 return PersonaEffect::None;
             };
@@ -266,7 +274,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
 
         // ── The confirmation slot ────────────────────────────────────────
         PersonaAction::ConfirmNo => {
-            state.main_page.content_panel.personas.confirm = PersonaConfirm::None;
+            state.main_page.content_panel.identity.confirm = PersonaConfirm::None;
             PersonaEffect::None
         }
         PersonaAction::ConfirmYes => confirm_yes(state),
@@ -274,7 +282,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
         // ── Forms ────────────────────────────────────────────────────────
         PersonaAction::FormKey(key) => {
             use tui_input::backend::crossterm::EventHandler;
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             let event = crossterm::event::Event::Key(*key);
             match &mut p.mode {
                 PersonaMode::Attribute(form) => {
@@ -297,7 +305,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::FormField(forwards) => {
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             match &mut p.mode {
                 PersonaMode::Attribute(form) => {
                     form.field = if *forwards {
@@ -317,9 +325,9 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::FormCycle(forwards) => {
-            let attribute_count = state.main_page.content_panel.personas.attributes.len();
-            let option_count = state.main_page.content_panel.personas.profiles.len() + 1;
-            let p = &mut state.main_page.content_panel.personas;
+            let attribute_count = state.main_page.content_panel.identity.attributes.len();
+            let option_count = state.main_page.content_panel.identity.profiles.len() + 1;
+            let p = &mut state.main_page.content_panel.identity;
             match &mut p.mode {
                 PersonaMode::Attribute(form) => {
                     if form.field == AttributeField::ValueType {
@@ -343,7 +351,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
         }
         PersonaAction::FormToggleEntry => {
             let attribute_id = {
-                let p = &state.main_page.content_panel.personas;
+                let p = &state.main_page.content_panel.identity;
                 match &p.mode {
                     PersonaMode::Profile(form) => p
                         .attributes
@@ -352,7 +360,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
                     _ => None,
                 }
             };
-            let p = &mut state.main_page.content_panel.personas;
+            let p = &mut state.main_page.content_panel.identity;
             if let (PersonaMode::Profile(form), Some(id)) = (&mut p.mode, attribute_id) {
                 match form.ticked.iter().position(|x| *x == id) {
                     Some(i) => {
@@ -366,7 +374,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             PersonaEffect::None
         }
         PersonaAction::FormCancel => {
-            state.main_page.content_panel.personas.mode = PersonaMode::View;
+            state.main_page.content_panel.identity.mode = PersonaMode::View;
             PersonaEffect::None
         }
         PersonaAction::FormSubmit => form_submit(state),
@@ -379,12 +387,12 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
 /// that arrived while the prompt was on screen cannot redirect the answer onto
 /// a row the operator never selected.
 fn confirm_yes(state: &mut State) -> PersonaEffect {
-    let p = &mut state.main_page.content_panel.personas;
+    let p = &mut state.main_page.content_panel.identity;
     let confirm = std::mem::replace(&mut p.confirm, PersonaConfirm::None);
     match confirm {
-        // A face deletion is not answered here — the pane arms the question and
+        // A persona deletion is not answered here — the pane arms the question and
         // the existing identity-deletion path answers it. See the key handler.
-        PersonaConfirm::None | PersonaConfirm::DeleteFace(_) => PersonaEffect::None,
+        PersonaConfirm::None | PersonaConfirm::DeletePersona(_) => PersonaEffect::None,
         PersonaConfirm::DeleteAttribute {
             attribute_id,
             cascade,
@@ -414,12 +422,12 @@ fn form_submit(state: &mut State) -> PersonaEffect {
     let profiles: Vec<ProfileSummary> = state
         .main_page
         .content_panel
-        .personas
+        .identity
         .profiles
         .iter()
         .cloned()
         .collect();
-    let p = &mut state.main_page.content_panel.personas;
+    let p = &mut state.main_page.content_panel.identity;
 
     match &mut p.mode {
         PersonaMode::View => PersonaEffect::None,
@@ -454,7 +462,7 @@ fn form_submit(state: &mut State) -> PersonaEffect {
         PersonaMode::Profile(form) => {
             let name = form.name.value().trim().to_string();
             if name.is_empty() {
-                form.error = Some("A name is required — \"Work\", \"Gaming\".".to_string());
+                form.error = Some("A face needs a name — \"Work\", \"Gaming\".".to_string());
                 return PersonaEffect::None;
             }
             form.error = None;
@@ -494,7 +502,7 @@ fn form_submit(state: &mut State) -> PersonaEffect {
 /// callers are the paths where the loop declines to spawn — no admin session,
 /// and the domain already busy.
 pub(crate) fn release_form(state: &mut State, reason: String) {
-    let p = &mut state.main_page.content_panel.personas;
+    let p = &mut state.main_page.content_panel.identity;
     match &mut p.mode {
         PersonaMode::Attribute(form) => {
             form.working = false;
@@ -573,7 +581,7 @@ impl PersonaReadJob {
         state
             .main_page
             .content_panel
-            .personas
+            .identity
             .memberships
             .iter()
             .filter(|m| !m.sub_context_id.is_empty() && !m.persona_did.is_empty())
@@ -618,7 +626,7 @@ impl PersonaJobRun {
         let client = self.admin_vta;
         match self.job {
             PersonaJob::AttributePut(draft) => PersonaOutcome::Written {
-                verb: "Saved attribute",
+                verb: "Saved the fact",
                 error: pool::put(&client, draft)
                     .await
                     .err()
@@ -628,7 +636,7 @@ impl PersonaJobRun {
                 attribute_id,
                 cascade,
             } => PersonaOutcome::Written {
-                verb: "Deleted attribute",
+                verb: "Forgot the fact",
                 error: pool::delete(&client, &attribute_id, cascade)
                     .await
                     .err()
@@ -641,7 +649,7 @@ impl PersonaJobRun {
                 other_entries,
                 expected_version,
             } => PersonaOutcome::Written {
-                verb: "Saved profile",
+                verb: "Saved the face",
                 error: profile::put(
                     &client,
                     profile_id.as_deref(),
@@ -655,7 +663,7 @@ impl PersonaJobRun {
                 .map(|e| format!("{e}")),
             },
             PersonaJob::ProfileDelete { profile_id, unbind } => PersonaOutcome::Written {
-                verb: "Deleted profile",
+                verb: "Deleted the face",
                 error: profile::delete(&client, &profile_id, unbind)
                     .await
                     .err()
@@ -715,7 +723,7 @@ pub(crate) enum PersonaOutcome {
 impl PersonaOutcome {
     /// Fold the result into the pane, on the loop thread.
     pub(crate) fn apply(self, state: &mut State) {
-        let p = &mut state.main_page.content_panel.personas;
+        let p = &mut state.main_page.content_panel.identity;
         p.loading = false;
 
         match self {
@@ -754,7 +762,7 @@ impl PersonaOutcome {
                 }
                 // Merged, not replaced: a read only carries the targets it was
                 // given, and replacing would blank every row it did not cover —
-                // which reads on screen as those faces having stopped
+                // which reads on screen as those personas having stopped
                 // presenting anything.
                 p.bindings.extend(bindings);
                 if p.load_error.is_none() {
@@ -837,9 +845,9 @@ impl PersonaOutcome {
                     None => {
                         p.mode = PersonaMode::View;
                         let msg = if cleared {
-                            format!("{community} is now shown nothing.")
+                            format!("Taken off. {community} is now shown nothing.")
                         } else {
-                            format!("Updated what {community} is shown.")
+                            format!("Changed the face {community} sees.")
                         };
                         p.status_message = Some(msg.clone());
                         state.main_page.log(msg);
@@ -853,7 +861,7 @@ impl PersonaOutcome {
                         }
                         state
                             .main_page
-                            .log_error("Changing what a face presents failed", e.as_str());
+                            .log_error("Changing the face failed", e.as_str());
                     }
                 }
             }
@@ -864,7 +872,7 @@ impl PersonaOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_handler::main_page::content::{PersonaMembership, PersonasState};
+    use crate::state_handler::main_page::content::{IdentityState, PersonaMembership};
     use openvtc_core::persona::binding::BindingSummary;
     use openvtc_core::persona::pool::ProvenanceKind;
 
@@ -878,14 +886,14 @@ mod tests {
         }
     }
 
-    fn state_with(personas: PersonasState) -> State {
+    fn state_with(personas: IdentityState) -> State {
         let mut state = State::default();
-        state.main_page.content_panel.personas = personas;
+        state.main_page.content_panel.identity = personas;
         state
     }
 
-    fn personas(state: &State) -> &PersonasState {
-        &state.main_page.content_panel.personas
+    fn personas(state: &State) -> &IdentityState {
+        &state.main_page.content_panel.identity
     }
 
     /// Deleting an attribute a profile uses asks the cascading question *first*.
@@ -896,7 +904,7 @@ mod tests {
     /// answers the follow-up with the first question's reasoning.
     #[test]
     fn a_referenced_attribute_arms_the_cascading_question_directly() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attribute("01A"), attribute("01B")].into(),
             profiles: vec![ProfileSummary {
                 profile_id: "01P".into(),
@@ -905,7 +913,7 @@ mod tests {
                 ..ProfileSummary::default()
             }]
             .into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::AttributeDeleteArm(0));
@@ -930,7 +938,7 @@ mod tests {
         );
     }
 
-    /// Same rule one layer up: deleting a profile a face presents asks the
+    /// Same rule one layer up: deleting a profile a persona presents asks the
     /// unbinding question, because that is what will actually happen.
     #[test]
     fn a_presented_profile_arms_the_unbinding_question() {
@@ -943,7 +951,7 @@ mod tests {
                 ..BindingSummary::default()
             },
         );
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             profiles: vec![
                 ProfileSummary {
                     profile_id: "01P".into(),
@@ -956,7 +964,7 @@ mod tests {
             ]
             .into(),
             bindings,
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::ProfileDeleteArm(0));
@@ -964,7 +972,7 @@ mod tests {
             personas(&state).confirm,
             PersonaConfirm::DeleteProfile {
                 profile_id: "01P".into(),
-                name: "(unnamed profile)".into(),
+                name: "unnamed face".into(),
                 unbind: true
             }
         );
@@ -973,7 +981,7 @@ mod tests {
             personas(&state).confirm,
             PersonaConfirm::DeleteProfile {
                 profile_id: "01Q".into(),
-                name: "(unnamed profile)".into(),
+                name: "unnamed face".into(),
                 unbind: false
             }
         );
@@ -989,9 +997,9 @@ mod tests {
     /// selected while showing them the name of something else.
     #[test]
     fn an_armed_delete_survives_the_list_moving_underneath_it() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attribute("01A"), attribute("01B")].into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::AttributeDeleteArm(0));
@@ -1024,10 +1032,10 @@ mod tests {
     fn a_credential_backed_attribute_refuses_the_editor() {
         let mut attr = attribute("01A");
         attr.provenance = ProvenanceKind::CredentialBacked;
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attr].into(),
             show_values: true,
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::AttributeEdit(0));
@@ -1047,10 +1055,10 @@ mod tests {
     /// a value the holder never saw.
     #[test]
     fn editing_without_values_in_hand_asks_for_them() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attribute("01A")].into(),
             show_values: false,
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         let effect = apply(&mut state, &PersonaAction::AttributeEdit(0));
@@ -1074,10 +1082,10 @@ mod tests {
     /// dropped rather than flashed — the same rule the VIC listing follows.
     #[test]
     fn a_superseded_read_is_discarded() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attribute("01A")].into(),
             show_values: true,
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         PersonaOutcome::Read {
@@ -1100,10 +1108,10 @@ mod tests {
     /// leave the pane claiming the holder has no attributes.
     #[test]
     fn a_failed_read_keeps_the_list_and_says_why() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attribute("01A")].into(),
             loaded: true,
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         PersonaOutcome::Read {
@@ -1130,7 +1138,7 @@ mod tests {
         for error in [None, Some("refused".to_string())] {
             let mut state = State::default();
             PersonaOutcome::Written {
-                verb: "Saved attribute",
+                verb: "Saved the fact",
                 error,
             }
             .apply(&mut state);
@@ -1146,12 +1154,12 @@ mod tests {
     /// clear it, and the form sits on "Saving…" over an edit nobody is saving.
     #[test]
     fn a_request_that_never_left_unlocks_the_form() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             mode: PersonaMode::Attribute(AttributeForm {
                 working: true,
                 ..AttributeForm::default()
             }),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         release_form(&mut state, "no session".to_string());
@@ -1169,12 +1177,12 @@ mod tests {
     /// back if the write never went.
     #[test]
     fn a_request_that_never_left_unlocks_the_picker() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             mode: PersonaMode::Bind(BindPicker {
                 working: true,
                 ..BindPicker::default()
             }),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         release_form(&mut state, "busy".to_string());
@@ -1192,17 +1200,17 @@ mod tests {
     /// does not lose what they typed.
     #[test]
     fn a_failed_save_keeps_the_form_and_its_contents() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             mode: PersonaMode::Attribute(AttributeForm {
                 claim_type: tui_input::Input::new("email.work".into()),
                 working: true,
                 ..AttributeForm::default()
             }),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         PersonaOutcome::Written {
-            verb: "Saved attribute",
+            verb: "Saved the fact",
             error: Some("version conflict".to_string()),
         }
         .apply(&mut state);
@@ -1221,9 +1229,9 @@ mod tests {
     /// field with no sensible default: it is what a verifier matches on.
     #[test]
     fn a_typeless_attribute_is_refused_locally() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             mode: PersonaMode::Attribute(AttributeForm::default()),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         let effect = apply(&mut state, &PersonaAction::FormSubmit);
@@ -1257,7 +1265,7 @@ mod tests {
                 ..BindingSummary::default()
             },
         );
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             memberships: vec![membership].into(),
             profiles: vec![
                 ProfileSummary {
@@ -1271,7 +1279,7 @@ mod tests {
             ]
             .into(),
             bindings,
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::BindOpen(0));
@@ -1291,13 +1299,13 @@ mod tests {
         }
     }
 
-    /// An unbound face opens the picker on "nothing", which is where it
+    /// An unbound persona opens the picker on "nothing", which is where it
     /// already is.
     #[test]
-    fn an_unbound_face_opens_the_picker_on_nothing() {
-        let mut state = state_with(PersonasState {
+    fn an_unbound_persona_opens_the_picker_on_nothing() {
+        let mut state = state_with(IdentityState {
             memberships: vec![PersonaMembership::default()].into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
         apply(&mut state, &PersonaAction::BindOpen(0));
         match &personas(&state).mode {
@@ -1310,13 +1318,13 @@ mod tests {
     /// presents.
     #[test]
     fn ticking_preserves_the_order_entries_were_chosen_in() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             attributes: vec![attribute("01A"), attribute("01B"), attribute("01C")].into(),
             mode: PersonaMode::Profile(ProfileForm {
                 focus: ProfileFormFocus::Entries,
                 ..ProfileForm::default()
             }),
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::FormCycle(true)); // → 01B
@@ -1367,14 +1375,14 @@ mod tests {
     /// belongs to the screen that asked the question.
     #[test]
     fn changing_tab_disarms_the_confirmation() {
-        let mut state = state_with(PersonasState {
+        let mut state = state_with(IdentityState {
             tab: PersonaTab::Attributes,
             confirm: PersonaConfirm::DeleteAttribute {
                 attribute_id: "01A".into(),
                 name: "email.work".into(),
                 cascade: false,
             },
-            ..PersonasState::default()
+            ..IdentityState::default()
         });
 
         apply(&mut state, &PersonaAction::TabNext);
@@ -1388,13 +1396,13 @@ mod tests {
     #[test]
     fn an_agent_tab_reads_once_on_arrival() {
         let mut state = State::default();
-        // Faces → Attributes: needs the agent, nothing loaded yet.
+        // Personas → Attributes: needs the agent, nothing loaded yet.
         assert!(matches!(
             apply(&mut state, &PersonaAction::TabNext),
             PersonaEffect::Read
         ));
 
-        state.main_page.content_panel.personas.loaded = true;
+        state.main_page.content_panel.identity.loaded = true;
         assert!(matches!(
             apply(&mut state, &PersonaAction::TabNext),
             PersonaEffect::None

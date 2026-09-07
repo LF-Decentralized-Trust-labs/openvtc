@@ -46,7 +46,7 @@ pub struct DisclosureRow {
     pub context_id: String,
     /// Who it went to.
     pub verifier_did: String,
-    /// The face it was made as.
+    /// The persona it was made as.
     pub persona_did: String,
     pub claims: Vec<DisclosedClaim>,
     /// What the verifier said it was for, if they said.
@@ -111,21 +111,38 @@ impl DisclosureRow {
         }
     }
 
-    /// The claims as one line: `email.work (whole), age.over18 (predicate)`.
+    /// The facts as one line: `email.work (whole), age.over18 (yes/no only)`.
     ///
-    /// The rung travels with every type rather than being summarised, because
+    /// The rung travels with every fact rather than being summarised, because
     /// there is no summary of a mixed release that is not misleading in one
-    /// direction or the other.
+    /// direction or the other — and because severity inverts intuition: a
+    /// credential shown *whole* links the holder more than a fact they simply
+    /// asserted.
     #[must_use]
     pub fn describe_claims(&self) -> String {
         if self.claims.is_empty() {
-            return "no claims recorded".to_string();
+            return "no facts recorded".to_string();
         }
         self.claims
             .iter()
-            .map(|c| format!("{} ({})", c.claim_type, c.rung))
+            .map(|c| format!("{} ({})", c.claim_type, rung_label(&c.rung)))
             .collect::<Vec<_>>()
             .join(", ")
+    }
+}
+
+/// What a person reads for a proof rung
+/// (`design-docs/persona-vocabulary.md`). An unrecognised rung is shown
+/// verbatim rather than mapped to a friendlier neighbour: the words carry a
+/// privacy ordering, and guessing one would misstate how much left.
+#[must_use]
+fn rung_label(rung: &str) -> &str {
+    match rung {
+        "whole" => "whole",
+        "selectiveDisclosure" => "partly",
+        "derived" => "derived",
+        "predicate" => "yes/no only",
+        other => other,
     }
 }
 
@@ -158,8 +175,12 @@ pub async fn history(
 mod tests {
     use super::*;
 
+    /// Rungs are shown in the words the vocabulary fixes, and an unrecognised
+    /// one is passed through rather than mapped to a friendlier neighbour — the
+    /// four words carry a privacy ordering, so guessing would misstate how much
+    /// of the fact left.
     #[test]
-    fn a_claim_carries_its_rung_into_the_row() {
+    fn a_fact_carries_its_rung_into_the_row() {
         let row = DisclosureRow::from_wire(&serde_json::json!({
             "disclosureId": "01D",
             "contextId": "ctx",
@@ -172,8 +193,16 @@ mod tests {
         }));
         assert_eq!(
             row.describe_claims(),
-            "email.work (whole), age.over18 (predicate)"
+            "email.work (whole), age.over18 (yes/no only)"
         );
+    }
+
+    #[test]
+    fn an_unknown_rung_is_shown_verbatim() {
+        let row = DisclosureRow::from_wire(&serde_json::json!({
+            "claims": [{ "type": "email.work", "rung": "someFutureRung" }],
+        }));
+        assert_eq!(row.describe_claims(), "email.work (someFutureRung)");
     }
 
     /// An unrecorded rung reads as `whole`.
@@ -193,8 +222,8 @@ mod tests {
     /// A release with nothing recorded says so, rather than rendering as a
     /// blank line that reads like a release of nothing.
     #[test]
-    fn a_claimless_record_says_so() {
+    fn a_factless_record_says_so() {
         let row = DisclosureRow::default();
-        assert_eq!(row.describe_claims(), "no claims recorded");
+        assert_eq!(row.describe_claims(), "no facts recorded");
     }
 }

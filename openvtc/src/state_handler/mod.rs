@@ -1442,8 +1442,8 @@ impl StateHandler {
                     // Same rule for the identity pane: a write that just landed
                     // asked for the listing it invalidated, and could not start
                     // it while its own outcome held the domain.
-                    if state.main_page.content_panel.personas.refresh_queued {
-                        state.main_page.content_panel.personas.refresh_queued = false;
+                    if state.main_page.content_panel.identity.refresh_queued {
+                        state.main_page.content_panel.identity.refresh_queued = false;
                         spawn_persona_effect(
                             &dispatch_tx,
                             &mut in_flight,
@@ -2155,7 +2155,7 @@ impl StateHandler {
                             // No session or no messaging runtime: say so and
                             // disarm, rather than leaving the prompt hanging.
                             _ => {
-                                state.main_page.content_panel.personas.confirm =
+                                state.main_page.content_panel.identity.confirm =
                                     main_page::content::PersonaConfirm::None;
                                 state
                                     .main_page
@@ -2167,7 +2167,7 @@ impl StateHandler {
                         // Serviced in State A as well: the attribute pool is
                         // holder-scoped and the admin session that reads it
                         // exists before any community does. The pane has no
-                        // faces or memberships to show yet, which is a true
+                        // personas or memberships to show yet, which is a true
                         // answer rather than a missing one.
                         let effect = persona_actions::apply(state, &persona_action);
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
@@ -2339,8 +2339,8 @@ impl StateHandler {
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
                         spawn_vic_refresh(&dispatch_tx, &mut in_flight, state, av);
                     }
-                    if state.main_page.content_panel.personas.refresh_queued {
-                        state.main_page.content_panel.personas.refresh_queued = false;
+                    if state.main_page.content_panel.identity.refresh_queued {
+                        state.main_page.content_panel.identity.refresh_queued = false;
                         let av = join_ctx.as_ref().and_then(|c| c.admin_vta.as_ref());
                         spawn_persona_effect(
                             &dispatch_tx,
@@ -2934,7 +2934,7 @@ fn spawn_persona_effect(
             "No VTA session — your identity is held by the agent, which cannot be reached \
              right now."
                 .to_string();
-        let p = &mut state.main_page.content_panel.personas;
+        let p = &mut state.main_page.content_panel.identity;
         p.loading = false;
         p.load_error = Some(reason.clone());
         if matches!(effect, PersonaEffect::Job(_)) {
@@ -2945,7 +2945,7 @@ fn spawn_persona_effect(
     if !in_flight.try_begin(domain) {
         match effect {
             PersonaEffect::Read => {
-                state.main_page.content_panel.personas.refresh_queued = true;
+                state.main_page.content_panel.identity.refresh_queued = true;
             }
             _ => persona_actions::release_form(
                 state,
@@ -2960,10 +2960,10 @@ fn spawn_persona_effect(
         PersonaEffect::Read => {
             let job = persona_actions::PersonaReadJob {
                 admin_vta: admin_vta.clone(),
-                include_values: state.main_page.content_panel.personas.show_values,
+                include_values: state.main_page.content_panel.identity.show_values,
                 targets: persona_actions::PersonaReadJob::targets(state),
             };
-            state.main_page.content_panel.personas.loading = true;
+            state.main_page.content_panel.identity.loading = true;
             background_dispatch::spawn_dispatch(dispatch_tx.clone(), domain, async move {
                 background_dispatch::DispatchOutcome::PersonaManage(job.run().await)
             });
@@ -3005,8 +3005,8 @@ fn open_agent_name_overlay(state: &mut State, index: usize) -> Option<String> {
     let Some(persona) = state
         .main_page
         .content_panel
+        .identity
         .personas
-        .faces
         .get(index)
         .cloned()
     else {
@@ -3054,12 +3054,12 @@ fn prepare_delete_context_did(
     didcomm_service: &openvtc_core::didcomm::Messaging,
     index: usize,
 ) -> Option<relationship_actions::DidDeleteJob> {
-    state.main_page.content_panel.personas.confirm = main_page::content::PersonaConfirm::None;
+    state.main_page.content_panel.identity.confirm = main_page::content::PersonaConfirm::None;
     let did = state
         .main_page
         .content_panel
+        .identity
         .personas
-        .faces
         .get(index)
         .map(|d| d.did.clone())?;
 
@@ -3249,14 +3249,14 @@ fn handle_nav_action(state: &mut State, action: &Action) -> bool {
             state.main_page.switcher = None;
         }
         Action::DidSelect(i) => {
-            state.main_page.content_panel.personas.face_selected = *i;
+            state.main_page.content_panel.identity.persona_selected = *i;
         }
         Action::DidConfirmDelete(i) => {
-            state.main_page.content_panel.personas.confirm =
-                main_page::content::PersonaConfirm::DeleteFace(*i);
+            state.main_page.content_panel.identity.confirm =
+                main_page::content::PersonaConfirm::DeletePersona(*i);
         }
         Action::DidCancelDelete => {
-            state.main_page.content_panel.personas.confirm =
+            state.main_page.content_panel.identity.confirm =
                 main_page::content::PersonaConfirm::None;
         }
         Action::VicSelect(i) => {
@@ -3985,12 +3985,12 @@ mod tests {
                 },
             },
             Case {
-                name: "DidConfirmDelete arms the face confirmation (degraded mode used to drop this)",
+                name: "DidConfirmDelete arms the persona confirmation (degraded mode used to drop this)",
                 action: Action::DidConfirmDelete(1),
                 assert_fn: |s| {
                     assert_eq!(
-                        s.main_page.content_panel.personas.confirm,
-                        main_page::content::PersonaConfirm::DeleteFace(1)
+                        s.main_page.content_panel.identity.confirm,
+                        main_page::content::PersonaConfirm::DeletePersona(1)
                     )
                 },
             },

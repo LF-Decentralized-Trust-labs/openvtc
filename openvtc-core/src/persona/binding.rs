@@ -1,5 +1,5 @@
-//! What each of your faces actually says — the profile a persona presents in
-//! one community's context. **Context-scoped**; see the [module header](super)
+//! What each of your personas actually says — the face one wears in a given
+//! community's context. **Context-scoped**; see the [module header](super)
 //! for the boundary this sits on the low side of.
 //!
 //! A membership already carries both halves of the key: a
@@ -29,7 +29,7 @@
 //!
 //! [`set`] is the exception, and it has to be: it is a decision the holder just
 //! made about what a community sees. A write that quietly failed would leave
-//! them believing a face presents something it does not, so its error is
+//! them believing a persona presents something it does not, so its error is
 //! returned rather than softened.
 
 use serde::{Deserialize, Serialize};
@@ -77,29 +77,33 @@ impl BindingSummary {
         }
     }
 
-    /// A one-line description for a panel row.
+    /// A one-line description for a panel row, in the words a person reads.
+    ///
+    /// A persona *wears* a face in a context — the on-screen vocabulary for what
+    /// the wire calls binding a profile (`design-docs/persona-vocabulary.md`).
+    /// The spec's words stay in the types; they are kept off the screen.
     ///
     /// Three distinct readings, deliberately worded so they cannot be confused:
-    /// we do not know; we know nothing is bound; we know what is bound.
+    /// we do not know; we know nothing is worn; we know what is worn.
     #[must_use]
     pub fn describe(&self) -> String {
         if self.unknown {
-            return "presents: unknown".to_string();
+            return "wears: unknown".to_string();
         }
         if !self.bound {
-            return "presents: nothing".to_string();
+            return "wears: nothing".to_string();
         }
         let label = self
             .profile_name
             .clone()
             .or_else(|| self.profile_id.clone())
-            .unwrap_or_else(|| "an unlabelled profile".to_string());
-        let claims = if self.claim_count == 1 {
-            "1 claim".to_string()
+            .unwrap_or_else(|| "an unnamed face".to_string());
+        let facts = if self.claim_count == 1 {
+            "1 fact".to_string()
         } else {
-            format!("{} claims", self.claim_count)
+            format!("{} facts", self.claim_count)
         };
-        format!("presents: {label} ({claims})")
+        format!("wears: {label} ({facts})")
     }
 }
 
@@ -167,13 +171,13 @@ pub async fn get_or_unknown(
 /// Decide what one persona presents in one context.
 ///
 /// `profile_id: None` clears the binding — a persona that presents nothing is a
-/// legitimate, common state (a throwaway face), not an absence to be inferred,
+/// legitimate, common state (a throwaway persona), not an absence to be inferred,
 /// so clearing is a first-class call rather than a delete.
 ///
 /// This is the push across the boundary. The VTA resolves the profile *above*
 /// the context and writes a materialised projection into it: the context
 /// receives values, never pool identifiers, so nothing inside it can walk back
-/// to the holder's other faces. That is why there is no "read the pool from a
+/// to the holder's other personas. That is why there is no "read the pool from a
 /// context" counterpart to this function anywhere in the module.
 ///
 /// `publicEntries` is deliberately sent empty. It publishes attributes on the
@@ -200,8 +204,8 @@ mod tests {
 
     #[test]
     fn unknown_is_not_the_same_as_unbound() {
-        assert_eq!(BindingSummary::unknown().describe(), "presents: unknown");
-        assert_eq!(BindingSummary::default().describe(), "presents: nothing");
+        assert_eq!(BindingSummary::unknown().describe(), "wears: unknown");
+        assert_eq!(BindingSummary::default().describe(), "wears: nothing");
     }
 
     /// The distinction the `unknown` flag exists to preserve.
@@ -224,20 +228,20 @@ mod tests {
             claim_count: 3,
             ..Default::default()
         };
-        assert_eq!(s.describe(), "presents: work (3 claims)");
+        assert_eq!(s.describe(), "wears: work (3 facts)");
     }
 
     /// One claim is not "1 claims". Small, and the kind of thing that makes a
     /// panel look unfinished.
     #[test]
-    fn a_single_claim_is_singular() {
+    fn a_single_fact_is_singular() {
         let s = BindingSummary {
             bound: true,
             profile_name: Some("gaming".into()),
             claim_count: 1,
             ..Default::default()
         };
-        assert_eq!(s.describe(), "presents: gaming (1 claim)");
+        assert_eq!(s.describe(), "wears: gaming (1 fact)");
     }
 
     /// A profile with no label falls back to its id, and then to a phrase —
@@ -251,16 +255,13 @@ mod tests {
             claim_count: 2,
             ..Default::default()
         };
-        assert_eq!(by_id.describe(), "presents: 01J8 (2 claims)");
+        assert_eq!(by_id.describe(), "wears: 01J8 (2 facts)");
 
         let bare = BindingSummary {
             bound: true,
             claim_count: 2,
             ..Default::default()
         };
-        assert_eq!(
-            bare.describe(),
-            "presents: an unlabelled profile (2 claims)"
-        );
+        assert_eq!(bare.describe(), "wears: an unnamed face (2 facts)");
     }
 }

@@ -69,9 +69,9 @@ pub struct ContentPanelState {
     pub communities: CommunitiesState,
     /// Per-community capabilities view (opened from Communities with `c`).
     pub capabilities: CapabilitiesState,
-    /// The holder's own identity: faces, pool, profiles, and what each face
+    /// The holder's own identity: personas, pool, profiles, and what each persona
     /// presents where.
-    pub personas: PersonasState,
+    pub identity: IdentityState,
 }
 
 // ****************************************************************************
@@ -409,14 +409,14 @@ pub struct CommunitySummary {
 /// not been introduced.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PersonaTab {
-    /// The persona DIDs themselves — a face as an *identity*.
+    /// The persona DIDs themselves — a persona as an *identity*.
     #[default]
-    Faces,
+    Personas,
     /// The attribute pool: the facts, held once.
     Attributes,
     /// Named projections over the pool.
     Profiles,
-    /// Which face each community sees, and what it presents there.
+    /// Which persona each community sees, and what it presents there.
     Communities,
     /// What has actually left, and to whom.
     Disclosures,
@@ -427,7 +427,7 @@ impl PersonaTab {
     #[must_use]
     pub fn all() -> [PersonaTab; 5] {
         [
-            PersonaTab::Faces,
+            PersonaTab::Personas,
             PersonaTab::Attributes,
             PersonaTab::Profiles,
             PersonaTab::Communities,
@@ -435,22 +435,29 @@ impl PersonaTab {
         ]
     }
 
-    /// The tab's name in the header strip.
+    /// The tab's name in the header strip — the words a person reads, which are
+    /// not the words the code and the wire use
+    /// (`design-docs/persona-vocabulary.md`).
+    ///
+    /// The variants keep the spec's nouns because that is what they address:
+    /// `Profiles` is `persona/profile/*`. The screen says *Faces*, because
+    /// "profile" already means three things in this product and "my LinkedIn
+    /// page" to everyone else.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            PersonaTab::Faces => "Faces",
-            PersonaTab::Attributes => "Attributes",
-            PersonaTab::Profiles => "Profiles",
+            PersonaTab::Personas => "Personas",
+            PersonaTab::Attributes => "Your facts",
+            PersonaTab::Profiles => "Faces",
             PersonaTab::Communities => "Communities",
-            PersonaTab::Disclosures => "Disclosures",
+            PersonaTab::Disclosures => "What has left",
         }
     }
 
     /// Whether this tab's contents come from the agent rather than `Config`.
     ///
     /// Drives which tabs a refresh has anything to do, and which can draw
-    /// before the agent has ever answered. Faces are local: an account with no
+    /// before the agent has ever answered. Personas are local: an account with no
     /// VTA session still has personas, and a pane that showed nothing until the
     /// network answered would be lying about the ones on disk.
     #[must_use]
@@ -467,19 +474,19 @@ impl PersonaTab {
     #[must_use]
     pub fn next(self) -> PersonaTab {
         match self {
-            PersonaTab::Faces => PersonaTab::Attributes,
+            PersonaTab::Personas => PersonaTab::Attributes,
             PersonaTab::Attributes => PersonaTab::Profiles,
             PersonaTab::Profiles => PersonaTab::Communities,
             PersonaTab::Communities => PersonaTab::Disclosures,
-            PersonaTab::Disclosures => PersonaTab::Faces,
+            PersonaTab::Disclosures => PersonaTab::Personas,
         }
     }
 
     #[must_use]
     pub fn prev(self) -> PersonaTab {
         match self {
-            PersonaTab::Faces => PersonaTab::Disclosures,
-            PersonaTab::Attributes => PersonaTab::Faces,
+            PersonaTab::Personas => PersonaTab::Disclosures,
+            PersonaTab::Attributes => PersonaTab::Personas,
             PersonaTab::Profiles => PersonaTab::Attributes,
             PersonaTab::Communities => PersonaTab::Profiles,
             PersonaTab::Disclosures => PersonaTab::Communities,
@@ -487,8 +494,8 @@ impl PersonaTab {
     }
 }
 
-/// One community membership, as the Communities tab needs it: which face this
-/// community sees, and enough to look up what that face presents.
+/// One community membership, as the Communities tab needs it: which persona this
+/// community sees, and enough to look up what that persona presents.
 #[derive(Clone, Debug, Default)]
 pub struct PersonaMembership {
     /// Display name of the community.
@@ -497,13 +504,13 @@ pub struct PersonaMembership {
     pub sub_context_id: String,
     /// The persona DID this community sees.
     pub persona_did: String,
-    /// The holder's label for that face (or its agent name / DID).
-    pub face_label: String,
+    /// The holder's label for that persona (or its agent name / DID).
+    pub persona_label: String,
     /// Membership lifecycle, already worded for display.
     pub status_label: String,
-    /// How many *other* communities are shown this same face.
+    /// How many *other* communities are shown this same persona.
     ///
-    /// The linkage number. Two communities shown one face can compare notes and
+    /// The linkage number. Two communities shown one persona can compare notes and
     /// discover they are talking to the same person, which is the single most
     /// consequential fact about a persona arrangement and the one a holder
     /// cannot recompute by looking at one row.
@@ -517,12 +524,12 @@ pub struct PersonaMembership {
 pub enum PersonaConfirm {
     #[default]
     None,
-    /// Remove an orphan persona DID (index into `faces`).
+    /// Remove an orphan persona DID (index into `personas`).
     ///
     /// The one variant still addressed by index, because it hands off to the
     /// existing identity-deletion path, which takes one and re-resolves the DID
     /// under its own guards before anything is removed.
-    DeleteFace(usize),
+    DeletePersona(usize),
     /// Delete a pool attribute, named by what it is rather than by where it sat.
     ///
     /// **Not an index.** An armed question survives across a listing that
@@ -543,7 +550,7 @@ pub enum PersonaConfirm {
     },
     /// Delete a profile. Named, not indexed, for the reason above.
     ///
-    /// `unbind` is the same decision one layer up: it makes every face
+    /// `unbind` is the same decision one layer up: it makes every persona
     /// presenting under this profile present nothing, and it is decided from
     /// the binding map rather than discovered from a refusal.
     DeleteProfile {
@@ -551,7 +558,7 @@ pub enum PersonaConfirm {
         name: String,
         unbind: bool,
     },
-    /// Clear what one face presents in one context — the pair the binding is
+    /// Clear what one persona presents in one context — the pair the binding is
     /// addressed by, carried whole for the same reason as above.
     Unbind {
         context_id: String,
@@ -657,7 +664,7 @@ pub struct ProfileForm {
     pub working: bool,
 }
 
-/// The profile picker for one membership: what should this face present here?
+/// The profile picker for one membership: what should this persona present here?
 #[derive(Clone, Debug, Default)]
 pub struct BindPicker {
     /// The binding this picker will write, named rather than indexed. The
@@ -669,9 +676,9 @@ pub struct BindPicker {
     pub persona_did: String,
     /// Display only: who is being shown something, and as whom.
     pub community: String,
-    pub face_label: String,
+    pub persona_label: String,
     /// Cursor over the options, where 0 is always "present nothing" — a
-    /// first-class choice rather than the absence of one, because a face that
+    /// first-class choice rather than the absence of one, because a persona that
     /// deliberately shows nothing is a common and legitimate arrangement.
     pub cursor: usize,
     pub working: bool,
@@ -690,19 +697,19 @@ pub enum PersonaMode {
 
 /// The persona pane: every surface for the holder's own identity, in one place.
 ///
-/// Three of the four tabs are served by the agent and one by `Config`, and the
-/// difference is load-bearing rather than incidental. Faces are on disk, so
+/// Four of the five tabs are served by the agent and one by `Config`, and the
+/// difference is load-bearing rather than incidental. Personas are on disk, so
 /// they draw at launch with no session; the pool, the profiles and the bindings
 /// are the agent's, so each of them has to be able to say "I could not ask"
 /// distinctly from "you hold nothing" — see [`load_error`](Self::load_error).
 #[derive(Clone, Debug, Default)]
-pub struct PersonasState {
+pub struct IdentityState {
     pub tab: PersonaTab,
 
-    // ── Faces (from `Config`) ────────────────────────────────────────────
+    // ── Personas (from `Config`) ────────────────────────────────────────────
     /// Every persona DID in the account, with how many communities present it.
-    pub faces: Arc<[ManagedDid]>,
-    pub face_selected: usize,
+    pub personas: Arc<[ManagedDid]>,
+    pub persona_selected: usize,
 
     // ── Communities (from `Config`, annotated from the agent) ────────────
     pub memberships: Arc<[PersonaMembership]>,
@@ -776,8 +783,8 @@ pub struct PersonasState {
     pub status_message: Option<String>,
 }
 
-impl PersonasState {
-    /// What one membership's face presents, as far as we know.
+impl IdentityState {
+    /// What one membership's persona presents, as far as we know.
     ///
     /// Falls back to `unknown` rather than a default summary: the two render
     /// differently on purpose, and a caller reaching for `unwrap_or_default()`

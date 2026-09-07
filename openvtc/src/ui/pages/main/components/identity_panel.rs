@@ -1,23 +1,42 @@
-//! The identity pane — every surface for the holder's own identity, in one
-//! place.
+//! The identity pane — every surface for a person's own identity, in one place.
 //!
-//! Four tabs, in the order the concepts build on each other: the **faces** a
-//! holder presents (persona DIDs), the **attributes** they hold about
-//! themselves, the **profiles** that project a subset of those attributes, and
-//! the **communities** each face is shown to. Tab one comes from `Config`; the
-//! other three come from the agent.
+//! Five tabs, in the order the concepts build on each other. On screen they are
+//! **Personas**, **Your facts**, **Faces**, **Communities** and **What has
+//! left**; in the code and on the wire they are personas, attributes, profiles,
+//! contexts and disclosures. The first comes from `Config`; the rest come from
+//! the agent.
+//!
+//! # The screen speaks a different language, on purpose
+//!
+//! `design-docs/persona-vocabulary.md` fixes the words a person reads, so the
+//! console, `pnm`, the mobile agent and this pane say the same thing. The
+//! spec's words are exact and stay in the types, on the wire and in the audit
+//! log; they are kept off the screen. `persona/attribute/put` stays
+//! `persona/attribute/put` — the form says *Add a fact*.
+//!
+//! The three that matter most here:
+//!
+//! - an **attribute** is a **fact** — *a fact about you, held once*;
+//! - a **profile** is a **face** — *the set of facts you show together*. Not
+//!   "profile", which already means three things in this product and "my
+//!   LinkedIn page" to everyone else;
+//! - a **binding** is **wearing**: a persona *wears* a face in a community.
+//!   `Be known here as…`, `Change face`, `Take it off`.
+//!
+//! A **persona** keeps its own name in both languages. It is already a human
+//! word, and it is what a community knows you as.
 //!
 //! # What this pane will not draw
 //!
-//! A value the holder never asked to see. The attribute list is fetched without
+//! A value the holder never asked to see. The list of facts is fetched without
 //! values by default and `v` re-reads *with* them — an opt-in that costs a
 //! round-trip rather than a display flag over data already in memory, because a
-//! listing that holds values has already read the holder's identity whether or
-//! not the panel chose to paint it.
+//! listing that holds values has already read someone's identity whether or not
+//! the panel chose to paint it.
 //!
 //! A number it does not have. "We could not ask the agent" and "you hold
 //! nothing" are one pixel apart and one of them is a confident wrong answer
-//! about the holder's own data, so every agent-served tab draws the failure
+//! about a person's own data, so every agent-served tab draws the failure
 //! rather than an empty list.
 
 use super::panel::Panel;
@@ -27,8 +46,8 @@ use crate::colors::{
 };
 use crate::state_handler::{
     main_page::content::{
-        AttributeField, AttributeForm, BindPicker, PersonaConfirm, PersonaMode, PersonaTab,
-        PersonasState, ProfileForm, ProfileFormFocus, VALUE_TYPES,
+        AttributeField, AttributeForm, BindPicker, IdentityState, PersonaConfirm, PersonaMode,
+        PersonaTab, ProfileForm, ProfileFormFocus, VALUE_TYPES,
     },
     state::ConnectionState,
 };
@@ -47,22 +66,22 @@ const ID_WIDTH: usize = 46;
 const CONFIRM_DID_WIDTH: usize = 48;
 
 /// The identity pane.
-pub struct PersonasPanel;
+pub struct IdentityPanel;
 
-impl Panel for PersonasPanel {
+impl Panel for IdentityPanel {
     fn render(
         &self,
         state: &crate::state_handler::main_page::content::ContentPanelState,
         _connection: &ConnectionState,
     ) -> Vec<Line<'static>> {
-        render(&state.personas)
+        render(&state.identity)
     }
 }
 
 /// Render the pane. A form or picker owns the whole panel while it is open —
 /// the lists behind it are not interactive then, and drawing them would invite
 /// keys that go nowhere.
-pub fn render(state: &PersonasState) -> Vec<Line<'static>> {
+pub fn render(state: &IdentityState) -> Vec<Line<'static>> {
     match &state.mode {
         PersonaMode::Attribute(form) => render_attribute_form(form),
         PersonaMode::Profile(form) => render_profile_form(state, form),
@@ -75,7 +94,7 @@ pub fn render(state: &PersonasState) -> Vec<Line<'static>> {
 // The tabbed view
 // ---------------------------------------------------------------------------
 
-fn render_tabs(state: &PersonasState) -> Vec<Line<'static>> {
+fn render_tabs(state: &IdentityState) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
 
     if let Some(msg) = &state.status_message {
@@ -100,7 +119,7 @@ fn render_tabs(state: &PersonasState) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
 
     match state.tab {
-        PersonaTab::Faces => render_faces(state, &mut lines),
+        PersonaTab::Personas => render_personas(state, &mut lines),
         PersonaTab::Attributes => render_attributes(state, &mut lines),
         PersonaTab::Profiles => render_profiles(state, &mut lines),
         PersonaTab::Communities => render_communities(state, &mut lines),
@@ -119,23 +138,23 @@ fn render_tabs(state: &PersonasState) -> Vec<Line<'static>> {
 }
 
 /// The question to put, worded so a `y` cannot be given to the wrong one.
-fn confirm_prompt(state: &PersonasState) -> Option<String> {
+fn confirm_prompt(state: &IdentityState) -> Option<String> {
     match &state.confirm {
         PersonaConfirm::None => None,
-        PersonaConfirm::DeleteFace(i) => {
-            let face = state.faces.get(*i)?;
+        PersonaConfirm::DeletePersona(i) => {
+            let persona = state.personas.get(*i)?;
             // Keep *both* the name and the DID. The row the operator selected
             // shows the name, so a DID-only prompt names something they never
             // saw; but a destructive confirm must stay unambiguous, so the DID
             // is not dropped either — it is centre-truncated to keep the line
             // readable while both ends stay checkable.
-            let did = openvtc_core::display::truncate_did_centered(&face.did, CONFIRM_DID_WIDTH);
-            let name = match face
+            let did = openvtc_core::display::truncate_did_centered(&persona.did, CONFIRM_DID_WIDTH);
+            let name = match persona
                 .label
                 .is_empty()
-                .then_some(face.agent_name.as_deref())
+                .then_some(persona.agent_name.as_deref())
                 .flatten()
-                .or_else(|| (!face.label.is_empty()).then_some(face.label.as_str()))
+                .or_else(|| (!persona.label.is_empty()).then_some(persona.label.as_str()))
             {
                 Some(name) => format!("{name} ({did})"),
                 None => did.into_owned(),
@@ -147,63 +166,64 @@ fn confirm_prompt(state: &PersonasState) -> Option<String> {
                 // The cascading question names the consequence the plain one
                 // does not have: profiles that show this value stop showing it.
                 Some(format!(
-                    "\"{name}\" is used by one or more profiles. Delete it AND remove it from \
-                     them?   y: confirm    n: cancel"
+                    "\"{name}\" is on one or more faces. Forget it AND remove it from those \
+                     faces too?   Nothing already shared is affected — that has left.   \
+                     y: confirm    n: cancel"
                 ))
             } else {
-                Some(format!(
-                    "Delete \"{name}\" from your pool?   y: confirm    n: cancel"
-                ))
+                Some(format!("Forget \"{name}\"?   y: confirm    n: cancel"))
             }
         }
         PersonaConfirm::DeleteProfile { name, unbind, .. } => {
             if *unbind {
                 Some(format!(
-                    "A face still presents \"{name}\". Delete it and leave that face presenting \
-                     nothing?   y: confirm    n: cancel"
+                    "A persona wears \"{name}\". Delete it and leave that persona showing \
+                     nothing?   Nothing already shared is affected — that has left.   \
+                     y: confirm    n: cancel"
                 ))
             } else {
                 Some(format!(
-                    "Delete the profile \"{name}\"?   y: confirm    n: cancel"
+                    "Delete the face \"{name}\"?   y: confirm    n: cancel"
                 ))
             }
         }
         PersonaConfirm::Unbind { community, .. } => Some(format!(
-            "Stop presenting anything to {community}?   y: confirm    n: cancel"
+            "Take it off — show {community} nothing?   Nothing already shared is affected \
+             — that has left.   y: confirm    n: cancel"
         )),
     }
 }
 
-fn hints(state: &PersonasState) -> &'static str {
+fn hints(state: &IdentityState) -> &'static str {
     match state.tab {
-        PersonaTab::Faces => {
-            "↑/↓ select   n: new face   g: agent names   d: remove orphan   ⇥/⇧⇥: tab"
+        PersonaTab::Personas => {
+            "↑/↓ select   n: new persona   g: agent names   d: remove unused   ⇥/⇧⇥: tab"
         }
         PersonaTab::Attributes => {
-            "↑/↓ select   n: new   e: edit   d: delete   v: values   r: refresh   ⇥/⇧⇥: tab"
+            "↑/↓ select   n: add a fact   e: edit   d: delete   v: values   r: refresh   ⇥/⇧⇥: tab"
         }
         PersonaTab::Profiles => {
-            "↑/↓ select   ⏎: what it shows   n: new   e: edit   d: delete   r: refresh   ⇥/⇧⇥: tab"
+            "↑/↓ select   ⏎: what it shows   n: make a face   e: edit   d: delete   r: refresh   ⇥/⇧⇥: tab"
         }
         PersonaTab::Communities => {
-            "↑/↓ select   b: choose what this face shows   u: show nothing   r: refresh   ⇥/⇧⇥: tab"
+            "↑/↓ select   b: change face   u: take it off   r: refresh   ⇥/⇧⇥: tab"
         }
         PersonaTab::Disclosures => "↑/↓ select   r: refresh   ⇥/⇧⇥: tab",
     }
 }
 
 // ---------------------------------------------------------------------------
-// Faces
+// Personas
 // ---------------------------------------------------------------------------
 
-fn render_faces(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
-    if state.faces.is_empty() {
-        lines.push(Line::from(" You have no persona DIDs yet.").fg(COLOR_DARK_GRAY));
+fn render_personas(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
+    if state.personas.is_empty() {
+        lines.push(Line::from(" You have no personas yet.").fg(COLOR_DARK_GRAY));
         lines.push(Line::from(""));
         lines.push(
             Line::from(
-                " A face is a did:webvh you present to a community. Mint one with `n`, hand its \
-                 DID to a community, and they can issue an invitation bound to it.",
+                " A persona is who a community knows you as. Make one with `n`, hand its DID \
+                 to a community, and they can issue you an invitation bound to it.",
             )
             .fg(COLOR_DARK_GRAY),
         );
@@ -212,20 +232,20 @@ fn render_faces(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 
     lines.push(
         Line::from(format!(
-            " {} face{}",
-            state.faces.len(),
-            if state.faces.len() == 1 { "" } else { "s" }
+            " {} persona{}",
+            state.personas.len(),
+            if state.personas.len() == 1 { "" } else { "s" }
         ))
         .fg(COLOR_TEXT_DEFAULT),
     );
     lines.push(Line::from(""));
 
-    for (i, face) in state.faces.iter().enumerate() {
-        let is_selected = i == state.face_selected;
-        // An orphan is a face no community sees. Usually the residue of a join
+    for (i, persona) in state.personas.iter().enumerate() {
+        let is_selected = i == state.persona_selected;
+        // An orphan is a persona no community sees. Usually the residue of a join
         // that failed, and worth spotting: it costs keys and a mediator
         // registration while presenting nothing to anybody.
-        let orphan = face.bound_communities == 0;
+        let orphan = persona.bound_communities == 0;
         let prefix = if is_selected { "▸ " } else { "  " };
         let marker_style = if orphan {
             Style::new().fg(COLOR_ORANGE)
@@ -242,30 +262,35 @@ fn render_faces(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
             Span::styled(prefix, marker_style),
             Span::styled(if orphan { "○ " } else { "● " }, marker_style),
             Span::styled(
-                display_identifier(face.agent_name.as_deref(), &face.did, ID_WIDTH).into_owned(),
+                display_identifier(persona.agent_name.as_deref(), &persona.did, ID_WIDTH)
+                    .into_owned(),
                 row_style,
             ),
         ]));
 
-        let name = if face.label.is_empty() {
-            "unnamed face".to_string()
+        let name = if persona.label.is_empty() {
+            "unnamed persona".to_string()
         } else {
-            face.label.clone()
+            persona.label.clone()
         };
         let seen_by = if orphan {
-            "orphan — no community".to_string()
+            "not known anywhere yet".to_string()
         } else {
             format!(
-                "seen by {} communit{}",
-                face.bound_communities,
-                if face.bound_communities == 1 {
+                "known to {} communit{}",
+                persona.bound_communities,
+                if persona.bound_communities == 1 {
                     "y"
                 } else {
                     "ies"
                 }
             )
         };
-        let active = if face.is_active { "  ·  active" } else { "" };
+        let active = if persona.is_active {
+            "  ·  active"
+        } else {
+            ""
+        };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("      {name}{active}  ·  "),
@@ -287,15 +312,15 @@ fn render_faces(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 // Attributes
 // ---------------------------------------------------------------------------
 
-fn render_attributes(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
-    if push_agent_state(state, lines, "attributes") {
+fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
+    if push_agent_state(state, lines, "facts") {
         return;
     }
 
     lines.push(Line::from(vec![
         Span::styled(
             format!(
-                " {} attribute{} in your pool",
+                " {} fact{} about you",
                 state.attributes.len(),
                 if state.attributes.len() == 1 { "" } else { "s" }
             ),
@@ -319,8 +344,8 @@ fn render_attributes(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
     if state.attributes.is_empty() {
         lines.push(
             Line::from(
-                " Nothing in the pool yet. `n` adds a fact about yourself — a name, an email, a \
-                 date of birth — that profiles can then draw on.",
+                " No facts yet. `n` adds one — a name, an email, a date of birth. A fact \
+                 about you, held once; faces select from these.",
             )
             .fg(COLOR_DARK_GRAY),
         );
@@ -374,7 +399,7 @@ fn render_attributes(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 // Profiles
 // ---------------------------------------------------------------------------
 
-fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
+fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
     if let Some(detail) = &state.open_profile {
         lines.push(
             Line::from(format!(" {}", detail.summary.display_name()))
@@ -388,13 +413,12 @@ fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
         }
         if detail.resolved.is_empty() {
             lines.push(
-                Line::from(" This profile presents nothing — it has no entries.")
-                    .fg(COLOR_DARK_GRAY),
+                Line::from(" This face shows nothing — no facts are on it.").fg(COLOR_DARK_GRAY),
             );
         } else {
             lines.push(
                 Line::from(format!(
-                    " Presents {} claim{}:",
+                    " Shows {} fact{}:",
                     detail.resolved.len(),
                     if detail.resolved.len() == 1 { "" } else { "s" }
                 ))
@@ -412,12 +436,12 @@ fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
                         Style::new().fg(COLOR_TEXT_DEFAULT),
                     ),
                 ]));
-                // An inline value lives only in this profile: it is not in the
-                // pool, so correcting it in the pool will not correct it here.
-                // Saying so on the row is the only place a holder finds out.
+                // A value that lives only in this face is not among the
+                // holder's facts, so correcting it there will not correct it
+                // here. Saying so on the row is the only place they find out.
                 let origin = match claim.attribute_id {
                     Some(_) => claim.provenance.label().to_string(),
-                    None => format!("{} · only in this profile", claim.provenance.label()),
+                    None => format!("{} · only in this face", claim.provenance.label()),
                 };
                 lines.push(Line::from(Span::styled(
                     format!("   {origin}"),
@@ -430,13 +454,13 @@ fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
         return;
     }
 
-    if push_agent_state(state, lines, "profiles") {
+    if push_agent_state(state, lines, "faces") {
         return;
     }
 
     lines.push(
         Line::from(format!(
-            " {} profile{}",
+            " {} face{}",
             state.profiles.len(),
             if state.profiles.len() == 1 { "" } else { "s" }
         ))
@@ -447,8 +471,9 @@ fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
     if state.profiles.is_empty() {
         lines.push(
             Line::from(
-                " No profiles yet. A profile is a named subset of your pool — \"Work\", \
-                 \"Gaming\" — and it is what a face presents to a community.",
+                " No faces yet. A face is the set of facts you show together — \"Work\", \
+                 \"Gaming\" — and it is what a persona wears in a community. What you leave \
+                 unticked stays out, including facts you add later.",
             )
             .fg(COLOR_DARK_GRAY),
         );
@@ -470,9 +495,9 @@ fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
             ),
             Span::styled(
                 format!(
-                    "{} entr{}",
+                    "{} fact{}",
                     profile.entry_count,
-                    if profile.entry_count == 1 { "y" } else { "ies" }
+                    if profile.entry_count == 1 { "" } else { "s" }
                 ),
                 Style::new().fg(COLOR_DARK_GRAY),
             ),
@@ -484,7 +509,7 @@ fn render_profiles(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 // Communities
 // ---------------------------------------------------------------------------
 
-fn render_communities(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
+fn render_communities(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
     if state.memberships.is_empty() {
         lines.push(Line::from(" You are not a member of any community yet.").fg(COLOR_DARK_GRAY));
         return;
@@ -515,13 +540,13 @@ fn render_communities(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
             Span::styled(if is_selected { "▸ " } else { "  " }, row_style),
             Span::styled(truncate(&m.community_name, 30), row_style),
             Span::styled(
-                format!("  as {}", truncate(&m.face_label, 24)),
+                format!("  as {}", truncate(&m.persona_label, 24)),
                 Style::new().fg(COLOR_SOFT_PURPLE),
             ),
         ]));
 
-        // What that face tells them. `unknown` is drawn, never omitted: an
-        // omitted row is indistinguishable from a face bound to nothing, and
+        // What that persona tells them. `unknown` is drawn, never omitted: an
+        // omitted row is indistinguishable from a persona bound to nothing, and
         // "we have not asked" is not "you are sharing nothing".
         let detail = format!(
             "      {}  ·  {}",
@@ -537,13 +562,13 @@ fn render_communities(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
             },
         )));
 
-        // The linkage line. Two communities shown one face can compare notes
+        // The linkage line. Two communities shown one persona can compare notes
         // and find the same person behind both, and that is the consequence a
         // holder cannot see by looking at either row on its own.
         if m.shared_with > 0 {
             lines.push(
                 Line::from(format!(
-                    "      ⚠ this face is also shown to {} other communit{}",
+                    "      ⚠ linked: the same persona is known to {} other communit{}",
                     m.shared_with,
                     if m.shared_with == 1 { "y" } else { "ies" }
                 ))
@@ -554,13 +579,13 @@ fn render_communities(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 
     lines.push(Line::from(""));
     // The honest limit of this tab. A membership is held by a credential issued
-    // to one persona DID, so which face a community sees is fixed at the join —
-    // `b` changes what that face says, never who it is.
+    // to one persona DID, so which persona a community sees is fixed at the join —
+    // `b` changes what that persona says, never who it is.
     lines.push(
         Line::from(
-            " `b` changes what a face presents here. To show a community a *different* face, join \
-             it again with that face — the membership credential is bound to the persona that \
-             joined.",
+            " `b` changes the face this persona wears here. To be known to a community as a \
+             *different* persona, join it again with that one — the membership credential names \
+             the persona that joined.",
         )
         .fg(COLOR_DARK_GRAY),
     );
@@ -570,14 +595,14 @@ fn render_communities(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 // Disclosures
 // ---------------------------------------------------------------------------
 
-fn render_disclosures(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
-    if push_agent_state(state, lines, "disclosures") {
+fn render_disclosures(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
+    if push_agent_state(state, lines, "history") {
         return;
     }
 
     lines.push(
         Line::from(format!(
-            " {} disclosure{}, newest first",
+            " {} release{}, newest first — what has left, and to whom",
             state.disclosures.len(),
             if state.disclosures.len() == 1 {
                 ""
@@ -592,9 +617,8 @@ fn render_disclosures(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
     if state.disclosures.is_empty() {
         lines.push(
             Line::from(
-                " Nothing has been disclosed from this agent yet. A release happens when a \
-                 verifier asks and you approve it — this is the record of those, and it is \
-                 read-only.",
+                " Nothing has left yet. Something leaves when a site asks and you approve \
+                 it — this is the record of those, and it is read-only.",
             )
             .fg(COLOR_DARK_GRAY),
         );
@@ -628,7 +652,7 @@ fn render_disclosures(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
         if let Some(id) = &row.durable_credential_id {
             lines.push(
                 Line::from(format!(
-                    "      ● still live as a credential ({})",
+                    "      ● still live as a credential ({}) — can be revoked",
                     truncate(id, 40)
                 ))
                 .fg(COLOR_ORANGE),
@@ -643,24 +667,30 @@ fn render_disclosures(state: &PersonasState, lines: &mut Vec<Line<'static>>) {
 /// The failure case is why this exists: an empty list and an unreachable agent
 /// render identically unless something says otherwise, and of the two, "you
 /// hold no attributes" is the confident wrong answer (VTI R6.4).
-fn push_agent_state(state: &PersonasState, lines: &mut Vec<Line<'static>>, noun: &str) -> bool {
+fn push_agent_state(state: &IdentityState, lines: &mut Vec<Line<'static>>, noun: &str) -> bool {
     if let Some(error) = &state.load_error {
         lines.push(
             Line::from(format!(" Could not read your {noun} from the agent."))
                 .fg(COLOR_WARNING_ACCESSIBLE_RED),
         );
         lines.push(Line::from(""));
-        super::status::push_status(lines, error, " ");
-        lines.push(Line::from(""));
-        // The one failure with a specific answer, so it gets one. Everything
-        // above this line is the agent's own words; this is what to do about
-        // them.
+        // The one failure we recognise is said in our own words, and they are
+        // the agreed ones. The agent's sentence is accurate and abstract —
+        // "the holder's attribute pool, which sits above every trust context" —
+        // and echoing it would put three words on screen that the vocabulary
+        // keeps off it, in the place a person is least able to absorb them.
+        //
+        // Every other failure is echoed verbatim. That text is *data*: it may
+        // name a host, a port, a contract mismatch, and translating what we do
+        // not recognise would be inventing a cause (VTI R6.4).
         if needs_holder_grant(error) {
             for line in HOLDER_GRANT_HINT {
                 lines.push(Line::from(*line).fg(COLOR_ORANGE));
             }
-            lines.push(Line::from(""));
+        } else {
+            super::status::push_status(lines, error, " ");
         }
+        lines.push(Line::from(""));
         lines.push(Line::from(" r: try again").fg(COLOR_DARK_GRAY));
         return true;
     }
@@ -685,8 +715,8 @@ fn push_agent_state(state: &PersonasState, lines: &mut Vec<Line<'static>>, noun:
 /// Kept as lines rather than a paragraph because the middle one is a command an
 /// operator has to read character by character.
 const HOLDER_GRANT_HINT: &[&str] = &[
-    " Your agent credential administers this context. The pool and the profiles",
-    " over it sit above every context, so reaching them is a separate grant:",
+    " Your agent credential administers this context. Your facts, and the faces",
+    " over them, sit above every context — reaching them is a separate grant:",
     "",
     "   pnm acl update --did <this install's DID> --capabilities persona-holder",
     "",
@@ -716,9 +746,9 @@ fn render_attribute_form(form: &AttributeForm) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
     lines.push(
         Line::from(if form.attribute_id.is_some() {
-            " Edit attribute"
+            " Edit a fact"
         } else {
-            " New attribute"
+            " Add a fact"
         })
         .fg(COLOR_SUCCESS)
         .bold(),
@@ -726,8 +756,8 @@ fn render_attribute_form(form: &AttributeForm) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(
         Line::from(
-            " A fact about you, held once. Profiles reference it, so correcting it here corrects \
-             it everywhere it is presented.",
+            " A fact about you, held once. Faces select it, so correcting it here corrects \
+             it everywhere it is worn.",
         )
         .fg(COLOR_DARK_GRAY),
     );
@@ -782,13 +812,13 @@ fn render_attribute_form(form: &AttributeForm) -> Vec<Line<'static>> {
 // The profile editor
 // ---------------------------------------------------------------------------
 
-fn render_profile_form(state: &PersonasState, form: &ProfileForm) -> Vec<Line<'static>> {
+fn render_profile_form(state: &IdentityState, form: &ProfileForm) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
     lines.push(
         Line::from(if form.profile_id.is_some() {
-            " Edit profile"
+            " Edit face"
         } else {
-            " New profile"
+            " Make a face"
         })
         .fg(COLOR_SUCCESS)
         .bold(),
@@ -816,7 +846,8 @@ fn render_profile_form(state: &PersonasState, form: &ProfileForm) -> Vec<Line<'s
 
     if state.attributes.is_empty() {
         lines.push(
-            Line::from("   Your pool is empty — add an attribute first.").fg(COLOR_DARK_GRAY),
+            Line::from("   No facts yet — add one first; a face selects over them.")
+                .fg(COLOR_DARK_GRAY),
         );
     } else {
         for (i, attr) in state.attributes.iter().enumerate() {
@@ -882,12 +913,12 @@ fn render_profile_form(state: &PersonasState, form: &ProfileForm) -> Vec<Line<'s
 // The bind picker
 // ---------------------------------------------------------------------------
 
-fn render_bind_picker(state: &PersonasState, picker: &BindPicker) -> Vec<Line<'static>> {
+fn render_bind_picker(state: &IdentityState, picker: &BindPicker) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
     lines.push(
         Line::from(format!(
-            " What should {} present to {}?",
-            picker.face_label, picker.community
+            " Be known to {} — which face should {} wear here?",
+            picker.community, picker.persona_label
         ))
         .fg(COLOR_SUCCESS)
         .bold(),
@@ -895,15 +926,15 @@ fn render_bind_picker(state: &PersonasState, picker: &BindPicker) -> Vec<Line<'s
     lines.push(Line::from(""));
     lines.push(
         Line::from(
-            " The values are copied into the community's context when you choose. It receives \
-             what the profile resolves to — never a reference back to your pool, and nothing \
-             about your other faces.",
+            " A context only ever gets a copy. It receives the values this face resolves \
+             to — never a way back to your other facts, and nothing about your other \
+             personas. Copies go down; nothing reads up.",
         )
         .fg(COLOR_DARK_GRAY),
     );
     lines.push(Line::from(""));
 
-    // Row 0 is always "nothing", because a face that deliberately presents
+    // Row 0 is always "take it off", because a persona that deliberately shows
     // nothing is a real choice and not the absence of one.
     for (i, label) in bind_options(state).into_iter().enumerate() {
         let is_cursor = i == picker.cursor;
@@ -934,11 +965,11 @@ fn render_bind_picker(state: &PersonasState, picker: &BindPicker) -> Vec<Line<'s
     lines
 }
 
-/// The picker's rows: "nothing", then every profile. Derived rather than stored
+/// The picker's rows: "take it off", then every face. Derived rather than stored
 /// so a profile added or renamed between opening the picker and reading it
 /// cannot show a stale name.
-pub fn bind_options(state: &PersonasState) -> Vec<String> {
-    let mut options = vec!["Nothing — present no identity here".to_string()];
+pub fn bind_options(state: &IdentityState) -> Vec<String> {
+    let mut options = vec!["Take it off — show nothing here".to_string()];
     options.extend(state.profiles.iter().map(|p| {
         format!(
             "{}  ({} entr{})",
@@ -994,55 +1025,220 @@ mod tests {
             .join("\n")
     }
 
-    fn loaded(state: &mut PersonasState) {
+    fn loaded(state: &mut IdentityState) {
         state.loaded = true;
         state.loading = false;
     }
 
+    /// The words `design-docs/persona-vocabulary.md` keeps off the screen, held
+    /// off it.
+    ///
+    /// Every one of them is a word this pane's own code and wire format use, so
+    /// they are one careless `format!` away at all times — and the drift is
+    /// invisible in review, because each looks correct to the person who wrote
+    /// the line. The table's whole point is that a person meets the same
+    /// sentence in the console, in `pnm` and here; a test is the only thing that
+    /// notices when one surface wanders off.
+    ///
+    /// Two are absent from the list on purpose. **"credential"** is on-screen
+    /// vocabulary (`credential · ‹issuer›`), and **"per verifier"** is the
+    /// agreed phrase for a generated value — the table bans *"verifier" in
+    /// prose*, not that phrase.
+    #[test]
+    fn the_pane_speaks_the_agreed_vocabulary() {
+        const BANNED: &[&str] = &[
+            "attribute",
+            "pool",
+            "profile",
+            "binding",
+            "unbind",
+            "materialise",
+            "projection",
+            "disclosure",
+            "correlation",
+            "self-asserted",
+            "credential-backed",
+            "provenance",
+            "holder",
+        ];
+
+        // Every tab, in each of its three states — empty, populated, and having
+        // failed to load — plus the three things that own the screen when they
+        // are open.
+        //
+        // The failure state earns its place: the words there are the ones
+        // written under pressure, they include a hint carrying a `pnm` command,
+        // and nothing else on screen exercises them. This test did miss a
+        // "pool" and a "profiles" that lived only in that hint.
+        let mut screens: Vec<String> = Vec::new();
+        for tab in PersonaTab::all() {
+            let mut empty = IdentityState {
+                tab,
+                ..IdentityState::default()
+            };
+            loaded(&mut empty);
+            screens.push(text(&render(&empty)));
+
+            let mut full = populated(tab);
+            loaded(&mut full);
+            screens.push(text(&render(&full)));
+
+            // The refusal we recognise, which this pane answers in its own
+            // words. An *unrecognised* failure is echoed verbatim and is the
+            // agent's text rather than ours, so it is not this test's to police.
+            let mut refused = populated(tab);
+            loaded(&mut refused);
+            refused.load_error = Some(
+                "this task reads or writes the holder's attribute pool, which sits above \
+                 every trust context. It requires an unscoped holder credential"
+                    .to_string(),
+            );
+            screens.push(text(&render(&refused)));
+        }
+        for mode in [
+            PersonaMode::Attribute(AttributeForm::default()),
+            PersonaMode::Profile(ProfileForm::default()),
+            PersonaMode::Bind(BindPicker::default()),
+        ] {
+            let mut state = populated(PersonaTab::Personas);
+            state.mode = mode;
+            loaded(&mut state);
+            screens.push(text(&render(&state)));
+        }
+
+        for screen in &screens {
+            // `persona-holder` is a capability name an operator types verbatim,
+            // like a task URI would be — wire vocabulary inside a command, not
+            // prose. Removing it before the scan keeps "holder" banned as a
+            // word while letting the one command that needs it stay correct;
+            // exempting it any more loosely would let a sentence hide behind a
+            // hyphen.
+            let lower = screen
+                .to_ascii_lowercase()
+                .replace("persona-holder", "‹capability›");
+            for word in BANNED {
+                assert!(
+                    !lower.contains(word),
+                    "\"{word}\" is a word the vocabulary keeps off the screen \
+                     (design-docs/persona-vocabulary.md):\n{screen}"
+                );
+            }
+        }
+    }
+
+    /// One populated screen per tab, so the guard above reads real rows rather
+    /// than five empty states.
+    fn populated(tab: PersonaTab) -> IdentityState {
+        use openvtc_core::persona::disclosure::{DisclosedClaim, DisclosureRow};
+        use openvtc_core::persona::pool::ProvenanceKind;
+        use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
+
+        let mut attr = PoolAttribute {
+            attribute_id: "01A".into(),
+            claim_type: "email.work".into(),
+            label: Some("Work email".into()),
+            ..PoolAttribute::default()
+        };
+        attr.provenance = ProvenanceKind::CredentialBacked;
+        attr.stale = true;
+        attr.stale_reason = Some("revoked".into());
+
+        IdentityState {
+            tab,
+            show_values: true,
+            personas: vec![ManagedDid {
+                did: "did:webvh:example.com:alice".into(),
+                label: "Work me".into(),
+                ..ManagedDid::default()
+            }]
+            .into(),
+            attributes: vec![attr].into(),
+            profiles: vec![ProfileSummary {
+                profile_id: "01P".into(),
+                name: "Work".into(),
+                entry_count: 3,
+                ..ProfileSummary::default()
+            }]
+            .into(),
+            memberships: vec![PersonaMembership {
+                community_name: "Acme".into(),
+                persona_label: "Work me".into(),
+                status_label: "Member".into(),
+                shared_with: 1,
+                ..PersonaMembership::default()
+            }]
+            .into(),
+            disclosures: vec![DisclosureRow {
+                verifier_did: "did:webvh:example.com:acme".into(),
+                disclosed_at: "2026-09-07T10:00:00Z".into(),
+                claims: vec![DisclosedClaim {
+                    claim_type: "email.work".into(),
+                    rung: "selectiveDisclosure".into(),
+                }],
+                durable_credential_id: Some("urn:cred:1".into()),
+                ..DisclosureRow::default()
+            }]
+            .into(),
+            open_profile: (tab == PersonaTab::Profiles).then(|| ProfileDetail {
+                summary: ProfileSummary {
+                    profile_id: "01P".into(),
+                    name: "Work".into(),
+                    ..ProfileSummary::default()
+                },
+                resolved: vec![ResolvedClaim {
+                    claim_type: "nickname".into(),
+                    value: Some(serde_json::json!("Ace")),
+                    attribute_id: None,
+                    ..ResolvedClaim::default()
+                }],
+                ..ProfileDetail::default()
+            }),
+            ..IdentityState::default()
+        }
+    }
+
     /// The distinction the whole pane is built around: an agent that could not
-    /// be asked must never render as an empty pool. One of those sentences is a
+    /// be asked must never render as "you have no facts". One of those is a
     /// confident claim about the holder's own data, and it would be wrong.
     #[test]
-    fn an_unreachable_agent_never_reads_as_an_empty_pool() {
-        let mut state = PersonasState {
+    fn an_unreachable_agent_never_reads_as_having_no_facts() {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
         let empty = text(&render(&state));
-        assert!(empty.contains("Nothing in the pool yet"), "{empty}");
+        assert!(empty.contains("No facts yet"), "{empty}");
 
         state.load_error = Some("connection refused".to_string());
         let failed = text(&render(&state));
-        assert!(
-            failed.contains("Could not read your attributes"),
-            "{failed}"
-        );
+        assert!(failed.contains("Could not read your facts"), "{failed}");
         assert!(
             failed.contains("connection refused"),
             "the reason has to reach the operator: {failed}"
         );
         assert!(
-            !failed.contains("Nothing in the pool yet"),
-            "a failed read must not claim the pool is empty: {failed}"
+            !failed.contains("No facts yet"),
+            "a failed read must not claim there are no facts: {failed}"
         );
     }
 
     /// The refusal a context-scoped credential earns says what to do about it.
     ///
-    /// This is the failure every install hits before the grant exists, so the
-    /// agent's own words — accurate but abstract — are not enough on their own:
-    /// the operator needs the command.
+    /// This is the failure every install hits before the grant exists, and the
+    /// agent's own words — accurate, abstract, and in the spec's vocabulary —
+    /// are not what a person needs at that moment. The pane answers it in its
+    /// own words and gives them the command.
     #[test]
     fn the_holder_refusal_carries_the_grant_command() {
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             load_error: Some(
                 "this task reads or writes the holder's attribute pool … it requires an unscoped \
                  holder credential"
                     .to_string(),
             ),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1055,10 +1251,10 @@ mod tests {
     /// their agent is simply unreachable sends them to fix the wrong thing.
     #[test]
     fn an_unrelated_failure_carries_no_grant_command() {
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             load_error: Some("connection refused".to_string()),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1077,10 +1273,10 @@ mod tests {
             label: Some("Work email".into()),
             ..PoolAttribute::default()
         };
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             attributes: vec![attr].into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1097,43 +1293,43 @@ mod tests {
         );
     }
 
-    /// A face shown to more than one community carries the linkage warning.
+    /// A persona shown to more than one community carries the linkage warning.
     /// Nothing else on screen lets a holder work that out from a single row.
     #[test]
-    fn a_reused_face_is_flagged_as_linkable() {
-        let mut state = PersonasState {
+    fn a_reused_persona_is_flagged_as_linkable() {
+        let mut state = IdentityState {
             tab: PersonaTab::Communities,
             memberships: vec![
                 PersonaMembership {
                     community_name: "Acme".into(),
-                    face_label: "Work me".into(),
+                    persona_label: "Work me".into(),
                     status_label: "Member".into(),
                     shared_with: 1,
                     ..PersonaMembership::default()
                 },
                 PersonaMembership {
                     community_name: "Chess Club".into(),
-                    face_label: "Gaming me".into(),
+                    persona_label: "Gaming me".into(),
                     status_label: "Member".into(),
                     shared_with: 0,
                     ..PersonaMembership::default()
                 },
             ]
             .into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
         let out = text(&render(&state));
-        assert!(out.contains("also shown to 1 other community"), "{out}");
+        assert!(out.contains("known to 1 other community"), "{out}");
         assert_eq!(
-            out.matches("also shown to").count(),
+            out.matches("⚠ linked").count(),
             1,
-            "the face used once must not be flagged: {out}"
+            "the persona used once must not be flagged: {out}"
         );
     }
 
-    /// "We have not asked" and "presents nothing" are different sentences on a
+    /// "We have not asked" and "wears nothing" are different sentences on a
     /// membership row, for the same reason they are different in
     /// `BindingSummary`.
     #[test]
@@ -1142,23 +1338,23 @@ mod tests {
             community_name: "Acme".into(),
             sub_context_id: "ctx".into(),
             persona_did: "did:webvh:example.com:alice".into(),
-            face_label: "Work me".into(),
+            persona_label: "Work me".into(),
             status_label: "Member".into(),
             shared_with: 0,
         };
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Communities,
             memberships: vec![membership.clone()].into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
-        assert!(text(&render(&state)).contains("presents: unknown"));
+        assert!(text(&render(&state)).contains("wears: unknown"));
 
         state.bindings.insert(
             ("ctx".to_string(), membership.persona_did.clone()),
             BindingSummary::default(),
         );
-        assert!(text(&render(&state)).contains("presents: nothing"));
+        assert!(text(&render(&state)).contains("wears: nothing"));
     }
 
     /// The two delete questions are worded differently, and the cascading one
@@ -1171,10 +1367,10 @@ mod tests {
             label: Some("Work email".into()),
             ..PoolAttribute::default()
         };
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Attributes,
             attributes: vec![attr].into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1184,11 +1380,11 @@ mod tests {
             cascade: false,
         };
         let plain = text(&render(&state));
+        assert!(plain.contains("Forget \"Work email\"?"), "{plain}");
         assert!(
-            plain.contains("Delete \"Work email\" from your pool?"),
-            "{plain}"
+            !plain.contains("faces"),
+            "the plain question must not mention what it does not do: {plain}"
         );
-        assert!(!plain.contains("profiles"), "{plain}");
 
         state.confirm = PersonaConfirm::DeleteAttribute {
             attribute_id: "01A".into(),
@@ -1196,44 +1392,41 @@ mod tests {
             cascade: true,
         };
         let escalated = text(&render(&state));
-        assert!(
-            escalated.contains("used by one or more profiles"),
-            "{escalated}"
-        );
+        assert!(escalated.contains("is on one or more faces"), "{escalated}");
     }
 
     /// An armed confirmation replaces the key hints: a destructive question and
     /// a menu of other keys do not belong on screen together.
     #[test]
     fn a_confirmation_replaces_the_key_hints() {
-        let mut state = PersonasState {
-            tab: PersonaTab::Faces,
-            faces: vec![ManagedDid {
+        let mut state = IdentityState {
+            tab: PersonaTab::Personas,
+            personas: vec![ManagedDid {
                 did: "did:webvh:example.com:alice".into(),
                 label: "Work me".into(),
                 ..ManagedDid::default()
             }]
             .into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
-        assert!(text(&render(&state)).contains("n: new face"));
+        assert!(text(&render(&state)).contains("n: new persona"));
 
-        state.confirm = PersonaConfirm::DeleteFace(0);
+        state.confirm = PersonaConfirm::DeletePersona(0);
         let armed = text(&render(&state));
         assert!(armed.contains("Remove Work me"), "{armed}");
-        assert!(!armed.contains("n: new face"), "{armed}");
+        assert!(!armed.contains("n: new persona"), "{armed}");
     }
 
     /// The destructive confirm names what the operator selected *and* keeps the
     /// DID, so it is both recognisable and unambiguous. Moved here with the
     /// list it prompts over.
     #[test]
-    fn the_face_prompt_keeps_both_the_name_and_the_did() {
+    fn the_persona_prompt_keeps_both_the_name_and_the_did() {
         const DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAAAA:example.com:alice";
-        let mut state = PersonasState {
-            tab: PersonaTab::Faces,
-            faces: vec![ManagedDid {
+        let mut state = IdentityState {
+            tab: PersonaTab::Personas,
+            personas: vec![ManagedDid {
                 did: DID.into(),
                 agent_name: Some("example.com/@alice".into()),
                 label: String::new(),
@@ -1241,8 +1434,8 @@ mod tests {
                 is_active: false,
             }]
             .into(),
-            confirm: PersonaConfirm::DeleteFace(0),
-            ..PersonasState::default()
+            confirm: PersonaConfirm::DeletePersona(0),
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1261,17 +1454,17 @@ mod tests {
     /// With no name at all the prompt falls back to the DID alone — never to an
     /// empty parenthetical or a nameless "this identity".
     #[test]
-    fn the_face_prompt_without_a_name_shows_the_did() {
+    fn the_persona_prompt_without_a_name_shows_the_did() {
         const DID: &str = "did:webvh:QmScidAliceAAAAAAAAAAAAAAAAAAAAAA:example.com:alice";
-        let mut state = PersonasState {
-            tab: PersonaTab::Faces,
-            faces: vec![ManagedDid {
+        let mut state = IdentityState {
+            tab: PersonaTab::Personas,
+            personas: vec![ManagedDid {
                 did: DID.into(),
                 ..ManagedDid::default()
             }]
             .into(),
-            confirm: PersonaConfirm::DeleteFace(0),
-            ..PersonasState::default()
+            confirm: PersonaConfirm::DeletePersona(0),
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
@@ -1292,10 +1485,10 @@ mod tests {
     /// rather than as an empty row.
     #[test]
     fn the_bind_picker_offers_nothing_as_a_first_class_choice() {
-        let state = PersonasState::default();
+        let state = IdentityState::default();
         let options = bind_options(&state);
         assert_eq!(options.len(), 1);
-        assert!(options[0].starts_with("Nothing"));
+        assert!(options[0].starts_with("Take it off"));
     }
 
     /// The disclosure history is read-only and says so, and an empty one says
@@ -1303,26 +1496,26 @@ mod tests {
     /// does anyone already know", and an unexplained blank answers nothing.
     #[test]
     fn an_empty_history_explains_itself_rather_than_going_blank() {
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Disclosures,
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
         let out = text(&render(&state));
-        assert!(out.contains("Nothing has been disclosed"), "{out}");
+        assert!(out.contains("Nothing has left yet"), "{out}");
         assert!(out.contains("read-only"), "{out}");
         // No verbs beyond navigation and refresh: this pane cannot disclose.
         assert!(!out.contains("n: new"), "{out}");
     }
 
-    /// Every claim carries the rung it went out at, and a release that is still
+    /// Every fact carries the rung it left at, and a release that is still
     /// live as a credential is marked as such — it is the one kind that can
     /// still be revoked rather than only regretted.
     #[test]
     fn a_disclosure_row_shows_its_rungs_and_flags_a_live_credential() {
         use openvtc_core::persona::disclosure::{DisclosedClaim, DisclosureRow};
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Disclosures,
             disclosures: vec![
                 DisclosureRow {
@@ -1348,13 +1541,13 @@ mod tests {
                 },
             ]
             .into(),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
         let out = text(&render(&state));
         assert!(out.contains("email.work (whole)"), "{out}");
-        assert!(out.contains("age.over18 (predicate)"), "{out}");
+        assert!(out.contains("age.over18 (yes/no only)"), "{out}");
         assert_eq!(
             out.matches("still live as a credential").count(),
             1,
@@ -1362,12 +1555,12 @@ mod tests {
         );
     }
 
-    /// A resolved claim with no pool attribute behind it is marked, because
-    /// correcting the pool will not correct it.
+    /// A value that lives only in a face is marked as such, because correcting
+    /// the holder's facts will not correct it.
     #[test]
     fn an_inline_claim_says_it_lives_only_in_the_profile() {
         use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
-        let mut state = PersonasState {
+        let mut state = IdentityState {
             tab: PersonaTab::Profiles,
             open_profile: Some(ProfileDetail {
                 summary: ProfileSummary {
@@ -1391,13 +1584,13 @@ mod tests {
                 ],
                 ..ProfileDetail::default()
             }),
-            ..PersonasState::default()
+            ..IdentityState::default()
         };
         loaded(&mut state);
 
         let out = text(&render(&state));
         assert_eq!(
-            out.matches("only in this profile").count(),
+            out.matches("only in this face").count(),
             1,
             "exactly the inline claim is marked: {out}"
         );

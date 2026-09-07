@@ -352,7 +352,7 @@ impl MainPage {
             MainMenu::Logs => self.handle_logs_key(key),
             MainMenu::Help => self.handle_help_key(key),
             MainMenu::Communities => self.handle_communities_key(key),
-            MainMenu::Personas => self.handle_personas_key(key),
+            MainMenu::Identity => self.handle_personas_key(key),
             MainMenu::Vta => self.handle_vta_key(key),
             _ => false,
         }
@@ -472,7 +472,7 @@ impl MainPage {
             PersonaConfirm, PersonaMode, PersonaTab, ProfileFormFocus,
         };
 
-        let personas = &self.props.main_page.content_panel.personas;
+        let personas = &self.props.main_page.content_panel.identity;
         let send = |action: PA| {
             let _ = self.action_tx.send(Action::Persona(action));
             true
@@ -532,13 +532,13 @@ impl MainPage {
 
         // ── An armed confirmation owns y/n ────────────────────────────────
         //
-        // Removing a face goes through the existing identity-deletion path
+        // Removing a persona goes through the existing identity-deletion path
         // (`DeleteDid`), which does the VTA delete, the listener teardown and
         // the local cleanup. The pane owns the *question*; it does not own a
         // second implementation of the answer.
         match personas.confirm {
             PersonaConfirm::None => {}
-            PersonaConfirm::DeleteFace(i) => {
+            PersonaConfirm::DeletePersona(i) => {
                 let act = match key.code {
                     KeyCode::Char('y') | KeyCode::Enter => Action::DeleteDid(i),
                     _ => Action::DidCancelDelete,
@@ -574,9 +574,9 @@ impl MainPage {
         }
 
         match personas.tab {
-            PersonaTab::Faces => {
-                let count = personas.faces.len();
-                let selected = personas.face_selected;
+            PersonaTab::Personas => {
+                let count = personas.personas.len();
+                let selected = personas.persona_selected;
                 match key.code {
                     KeyCode::Up if count > 0 => {
                         let _ = self
@@ -598,14 +598,14 @@ impl MainPage {
                         let _ = self.action_tx.send(Action::StartAgentNameManager(selected));
                         true
                     }
-                    // Only an orphan is removable: a face a community still
+                    // Only an orphan is removable: a persona a community still
                     // presents cannot be deleted without leaving that community
                     // first, and the deletion path refuses it anyway. Refusing
                     // to *arm* it keeps the prompt from appearing over a
                     // question that has already been answered no.
                     KeyCode::Char('d') | KeyCode::Delete if selected < count => {
                         if personas
-                            .faces
+                            .personas
                             .get(selected)
                             .is_some_and(|f| f.bound_communities == 0)
                         {
@@ -3389,9 +3389,9 @@ mod key_handler_tests {
         }
     }
 
-    // ----- Identity pane: faces ---------------------------------------------
+    // ----- Identity pane: personas ---------------------------------------------
 
-    fn face(did: &str, label: &str, bound: usize) -> ManagedDid {
+    fn persona(did: &str, label: &str, bound: usize) -> ManagedDid {
         ManagedDid {
             did: did.to_string(),
             agent_name: None,
@@ -3401,26 +3401,26 @@ mod key_handler_tests {
         }
     }
 
-    /// Two faces, the second one an orphan and selected.
-    fn faces_with_orphan_selected() -> impl Fn(&mut State) {
+    /// Two personas, the second one an orphan and selected.
+    fn personas_with_orphan_selected() -> impl Fn(&mut State) {
         move |s: &mut State| {
-            let p = &mut s.main_page.content_panel.personas;
-            p.faces = vec![
-                face("did:webvh:example.com:alice", "Alice", 1),
-                face("did:webvh:example.com:bob", "Bob", 0),
+            let p = &mut s.main_page.content_panel.identity;
+            p.personas = vec![
+                persona("did:webvh:example.com:alice", "Alice", 1),
+                persona("did:webvh:example.com:bob", "Bob", 0),
             ]
             .into();
-            p.face_selected = 1;
+            p.persona_selected = 1;
         }
     }
 
-    /// Removing a face is armed here and answered by the existing
+    /// Removing a persona is armed here and answered by the existing
     /// identity-deletion path — the pane owns the question, not a second
     /// implementation of the answer.
     #[test]
-    fn personas_face_confirm_commits_and_cancels() {
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
-            s.main_page.content_panel.personas.confirm = PersonaConfirm::DeleteFace(1);
+    fn personas_confirm_commits_and_cancels() {
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |s| {
+            s.main_page.content_panel.identity.confirm = PersonaConfirm::DeletePersona(1);
         });
         page.handle_key_event(press(KeyCode::Enter));
         match rx.try_recv() {
@@ -3428,8 +3428,8 @@ mod key_handler_tests {
             _ => panic!("expected DeleteDid(1)"),
         }
 
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
-            s.main_page.content_panel.personas.confirm = PersonaConfirm::DeleteFace(0);
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |s| {
+            s.main_page.content_panel.identity.confirm = PersonaConfirm::DeletePersona(0);
         });
         page.handle_key_event(press(KeyCode::Esc));
         match rx.try_recv() {
@@ -3438,33 +3438,33 @@ mod key_handler_tests {
         }
     }
 
-    /// Only an orphan arms: a face a community still presents cannot be
+    /// Only an orphan arms: a persona a community still presents cannot be
     /// deleted without leaving that community, and the deletion path refuses
     /// it. Arming anyway would put a question that has already been answered.
     #[test]
-    fn personas_d_arms_only_on_an_orphan_face() {
-        let (mut page, mut rx) = page_for(MainMenu::Personas, faces_with_orphan_selected());
+    fn personas_d_arms_only_on_an_orphan_persona() {
+        let (mut page, mut rx) = page_for(MainMenu::Identity, personas_with_orphan_selected());
         page.handle_key_event(press(KeyCode::Char('d')));
         match rx.try_recv() {
             Ok(Action::DidConfirmDelete(1)) => {}
             _ => panic!("expected DidConfirmDelete(1)"),
         }
 
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
-            let p = &mut s.main_page.content_panel.personas;
-            p.faces = vec![face("did:webvh:example.com:alice", "Alice", 1)].into();
-            p.face_selected = 0;
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |s| {
+            let p = &mut s.main_page.content_panel.identity;
+            p.personas = vec![persona("did:webvh:example.com:alice", "Alice", 1)].into();
+            p.persona_selected = 0;
         });
         page.handle_key_event(press(KeyCode::Char('d')));
         assert!(
             rx.try_recv().is_err(),
-            "a face a community presents must not arm a deletion"
+            "a persona a community presents must not arm a deletion"
         );
     }
 
     #[test]
     fn personas_n_opens_create_persona() {
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |_| {});
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |_| {});
         page.handle_key_event(press(KeyCode::Char('n')));
         match rx.try_recv() {
             Ok(Action::StartCreatePersona) => {}
@@ -3473,8 +3473,8 @@ mod key_handler_tests {
     }
 
     #[test]
-    fn personas_g_opens_agent_name_manager_for_the_selected_face() {
-        let (mut page, mut rx) = page_for(MainMenu::Personas, faces_with_orphan_selected());
+    fn personas_g_opens_agent_name_manager_for_the_selected_persona() {
+        let (mut page, mut rx) = page_for(MainMenu::Identity, personas_with_orphan_selected());
         page.handle_key_event(press(KeyCode::Char('g')));
         match rx.try_recv() {
             Ok(Action::StartAgentNameManager(1)) => {}
@@ -3484,18 +3484,18 @@ mod key_handler_tests {
 
     // ----- Identity pane: tabs and their verbs -------------------------------
 
-    /// Tab moves between the pane's four tabs; the verbs that follow belong to
+    /// Tab moves between the pane's five tabs; the verbs that follow belong to
     /// whichever one is showing.
     #[test]
     fn personas_tab_moves_between_tabs() {
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |_| {});
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |_| {});
         page.handle_key_event(press(KeyCode::Tab));
         assert!(matches!(
             rx.try_recv(),
             Ok(Action::Persona(PersonaAction::TabNext))
         ));
 
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |_| {});
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |_| {});
         page.handle_key_event(press(KeyCode::BackTab));
         assert!(matches!(
             rx.try_recv(),
@@ -3509,8 +3509,8 @@ mod key_handler_tests {
     fn personas_attribute_keys_map_to_actions() {
         use openvtc_core::persona::pool::PoolAttribute;
         let open = || {
-            page_for(MainMenu::Personas, |s| {
-                let p = &mut s.main_page.content_panel.personas;
+            page_for(MainMenu::Identity, |s| {
+                let p = &mut s.main_page.content_panel.identity;
                 p.tab = PersonaTab::Attributes;
                 p.attributes = vec![PoolAttribute {
                     attribute_id: "01A".into(),
@@ -3545,8 +3545,8 @@ mod key_handler_tests {
     #[test]
     fn personas_confirmation_owns_the_keyboard() {
         let armed = || {
-            page_for(MainMenu::Personas, |s| {
-                let p = &mut s.main_page.content_panel.personas;
+            page_for(MainMenu::Identity, |s| {
+                let p = &mut s.main_page.content_panel.identity;
                 p.tab = PersonaTab::Attributes;
                 p.confirm = PersonaConfirm::DeleteAttribute {
                     attribute_id: "01A".into(),
@@ -3580,8 +3580,8 @@ mod key_handler_tests {
     fn personas_space_ticks_only_on_the_entry_list() {
         use crate::state_handler::main_page::content::{ProfileForm, ProfileFormFocus};
         let with_focus = |focus: ProfileFormFocus| {
-            page_for(MainMenu::Personas, move |s| {
-                s.main_page.content_panel.personas.mode = PersonaMode::Profile(ProfileForm {
+            page_for(MainMenu::Identity, move |s| {
+                s.main_page.content_panel.identity.mode = PersonaMode::Profile(ProfileForm {
                     focus,
                     ..ProfileForm::default()
                 });
@@ -3608,8 +3608,8 @@ mod key_handler_tests {
     #[test]
     fn personas_a_working_form_swallows_input() {
         use crate::state_handler::main_page::content::AttributeForm;
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
-            s.main_page.content_panel.personas.mode = PersonaMode::Attribute(AttributeForm {
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |s| {
+            s.main_page.content_panel.identity.mode = PersonaMode::Attribute(AttributeForm {
                 working: true,
                 ..AttributeForm::default()
             });
@@ -3739,7 +3739,7 @@ mod key_handler_tests {
     /// the TUI had. Everything it stood for is now a key inside the pane.
     #[test]
     fn menu_enter_on_identity_switches_to_the_panel() {
-        let (mut page, mut rx) = page_for(MainMenu::Personas, |s| {
+        let (mut page, mut rx) = page_for(MainMenu::Identity, |s| {
             s.main_page.menu_panel.selected = true;
             s.main_page.content_panel.selected = false;
         });
@@ -3755,7 +3755,7 @@ mod key_handler_tests {
         use crate::state_handler::main_page::content::CreatePersonaState;
         // The open overlay owns all input regardless of the focused panel.
         let open = || {
-            page_for(MainMenu::Personas, |s| {
+            page_for(MainMenu::Identity, |s| {
                 s.main_page.create_persona = Some(CreatePersonaState::default());
             })
         };
@@ -3786,7 +3786,7 @@ mod key_handler_tests {
     fn create_persona_done_phase_keys() {
         use crate::state_handler::main_page::content::{CreatePersonaPhase, CreatePersonaState};
         let done = || {
-            page_for(MainMenu::Personas, |s| {
+            page_for(MainMenu::Identity, |s| {
                 s.main_page.create_persona = Some(CreatePersonaState {
                     phase: CreatePersonaPhase::Done,
                     did: Some("did:webvh:example:alice".to_string()),

@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The identity pane speaks the words a person would use.** Following
+  `design-docs/persona-vocabulary.md`, which fixes one vocabulary across the
+  console, `pnm`, the mobile agent and this TUI: an *attribute* is a **fact**,
+  a *profile* is a **face** — the set of facts you show together — and a persona
+  **wears** a face in a community. The tabs read *Personas · Your facts · Faces ·
+  Communities · What has left*.
+
+  The spec's words are exact and are not being replaced in code, on the wire or
+  in the audit log; they are kept off the screen. `persona/attribute/put` stays
+  `persona/attribute/put` — the form says *Add a fact*.
+
+  A test renders every tab, both empty and populated, plus each editor, and
+  fails if any word from the table's avoid-list reaches the screen. Each of them
+  is a word this pane's own code uses, so they are one careless `format!` away
+  at all times, and the drift is invisible in review.
+
+
 ### Added
 
 - **Setup now asks for the grant the identity pane needs.** The `pnm` command on
@@ -25,9 +44,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **One pane for your own identity — "My Identity" on the main menu.** Everything
   a holder can do with their persona now lives in one place, with five tabs in
-  the order the concepts build on each other: **Faces** (the persona DIDs),
+  the order the concepts build on each other: **Personas** (the persona DIDs),
   **Attributes** (the pool of facts behind them), **Profiles** (named subsets of
-  that pool), **Communities** (which face each community sees and what it
+  that pool), **Communities** (which persona each community sees and what it
   presents there) and **Disclosures** (the read-only record of what has actually
   left).
 
@@ -47,7 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     list. An unreachable agent and an empty pool are one pixel apart, and only
     one of them is a confident wrong answer about the holder's own data.
   - **Destructive questions are asked once, correctly.** Deleting an attribute a
-    profile uses, or a profile a face presents, needs a cascade or an unbind —
+    profile uses, or a profile a persona presents, needs a cascade or an unbind —
     and the pane knows which from data it already holds, so the first prompt
     names the real consequence rather than being refused and re-asked.
   - **The editor authors what it can honestly author.** Self-asserted attributes
@@ -56,7 +75,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     and a profile's pinned, overridden and inline entries are read, carried
     through a save untouched, and left to `pnm` to change.
 
-- **A face's linkage is on screen.** A membership row says when the same face is
+- **A persona's linkage is on screen.** A membership row says when the same persona is
   shown to other communities — the fact that lets two of them compare notes and
   find one person behind both, and the one thing a holder cannot work out by
   looking at a single row.

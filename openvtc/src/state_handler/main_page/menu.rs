@@ -29,15 +29,15 @@ pub enum MainMenu {
     Inbox,
     Relationships,
     Credentials,
-    /// The holder's own identity — faces, the attribute pool behind them, the
-    /// profiles over that pool, and what each face presents in each community.
+    /// The holder's own identity — personas, the attribute pool behind them, the
+    /// profiles over that pool, and what each persona presents in each community.
     ///
     /// Sits beside the other "my …" panels rather than under the VTA service,
     /// which is where its parts used to live: minting a persona DID was a menu
     /// action, the list of them was a section of the VTA panel, and everything
     /// above them was reachable only from `pnm`. Identity is not a property of
     /// the agent that hosts its keys.
-    Personas,
+    Identity,
     Settings,
     Vta,
     Logs,
@@ -52,7 +52,7 @@ impl Display for MainMenu {
             MainMenu::Inbox => write!(f, "Inbox"),
             MainMenu::Relationships => write!(f, "My Relationships"),
             MainMenu::Credentials => write!(f, "My Credentials"),
-            MainMenu::Personas => write!(f, "My Identity"),
+            MainMenu::Identity => write!(f, "My Identity"),
             MainMenu::Settings => write!(f, "Settings"),
             MainMenu::Vta => write!(f, "VTA Service"),
             MainMenu::Logs => write!(f, "Logs"),
@@ -70,8 +70,8 @@ impl MainMenu {
             MainMenu::Inbox => MainMenu::Communities,
             MainMenu::Relationships => MainMenu::Inbox,
             MainMenu::Credentials => MainMenu::Relationships,
-            MainMenu::Personas => MainMenu::Credentials,
-            MainMenu::Settings => MainMenu::Personas,
+            MainMenu::Identity => MainMenu::Credentials,
+            MainMenu::Settings => MainMenu::Identity,
             MainMenu::Vta => MainMenu::Settings,
             MainMenu::Logs => MainMenu::Vta,
             MainMenu::Help => MainMenu::Logs,
@@ -85,8 +85,8 @@ impl MainMenu {
             MainMenu::Communities => MainMenu::Inbox,
             MainMenu::Inbox => MainMenu::Relationships,
             MainMenu::Relationships => MainMenu::Credentials,
-            MainMenu::Credentials => MainMenu::Personas,
-            MainMenu::Personas => MainMenu::Settings,
+            MainMenu::Credentials => MainMenu::Identity,
+            MainMenu::Identity => MainMenu::Settings,
             MainMenu::Settings => MainMenu::Vta,
             MainMenu::Vta => MainMenu::Logs,
             MainMenu::Logs => MainMenu::Help,

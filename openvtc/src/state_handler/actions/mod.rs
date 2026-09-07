@@ -188,9 +188,9 @@ pub enum SettingsAction {
     ClipboardCopied(String),
 }
 
-/// Identity-pane actions — the holder's own faces, pool, profiles and bindings.
+/// Identity-pane actions — the holder's own personas, pool, profiles and bindings.
 ///
-/// One sub-enum for a pane with four tabs, rather than four: every one of them
+/// One sub-enum for a pane with five tabs, rather than five: every one of them
 /// shares the pane's selection, its confirmation slot and its single load
 /// domain, and splitting them would put that shared state behind four names.
 pub enum PersonaAction {
@@ -224,7 +224,7 @@ pub enum PersonaAction {
     ProfileDeleteArm(usize),
 
     // ── Communities ──────────────────────────────────────────────────────
-    /// Open the picker: what should this face present here?
+    /// Open the picker: what should this persona present here?
     BindOpen(usize),
     /// Arm "present nothing here".
     UnbindArm(usize),
@@ -276,7 +276,7 @@ pub enum Action {
     Relationship(RelationshipAction),
     Credential(CredentialAction),
     Settings(SettingsAction),
-    /// Identity pane (faces / pool / profiles / bindings).
+    /// Identity pane (personas / pool / profiles / bindings).
     Persona(PersonaAction),
 
     /// Dismiss the startup loading screen (Enter, once loading has completed) and
