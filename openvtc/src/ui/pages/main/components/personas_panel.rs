@@ -652,6 +652,15 @@ fn push_agent_state(state: &PersonasState, lines: &mut Vec<Line<'static>>, noun:
         lines.push(Line::from(""));
         super::status::push_status(lines, error, " ");
         lines.push(Line::from(""));
+        // The one failure with a specific answer, so it gets one. Everything
+        // above this line is the agent's own words; this is what to do about
+        // them.
+        if needs_holder_grant(error) {
+            for line in HOLDER_GRANT_HINT {
+                lines.push(Line::from(*line).fg(COLOR_ORANGE));
+            }
+            lines.push(Line::from(""));
+        }
         lines.push(Line::from(" r: try again").fg(COLOR_DARK_GRAY));
         return true;
     }
@@ -669,6 +678,34 @@ fn push_agent_state(state: &PersonasState, lines: &mut Vec<Line<'static>>, noun:
         return true;
     }
     false
+}
+
+/// What to do about the one refusal that has a specific answer.
+///
+/// Kept as lines rather than a paragraph because the middle one is a command an
+/// operator has to read character by character.
+const HOLDER_GRANT_HINT: &[&str] = &[
+    " Your agent credential administers this context. The pool and the profiles",
+    " over it sit above every context, so reaching them is a separate grant:",
+    "",
+    "   pnm acl update --did <this install's DID> --capabilities persona-holder",
+    "",
+    " It adds authority over your own identity without giving this install any",
+    " authority over other contexts. `openvtc health` prints the DID.",
+];
+
+/// Whether a read failed because the caller lacks holder authority, as opposed
+/// to the agent being unreachable or the request being malformed.
+///
+/// Matched on the phrase both the current and the pre-capability VTA use, since
+/// an operator may be pointing at either: the older one refuses with "unscoped
+/// holder credential" and names no capability, because there was none to name.
+/// A false negative here costs a hint; a false positive would tell someone to
+/// run a grant that is not their problem, so the match is on the specific
+/// phrase rather than on "forbidden".
+fn needs_holder_grant(error: &str) -> bool {
+    let e = error.to_ascii_lowercase();
+    e.contains("holder credential") || e.contains("persona-holder")
 }
 
 // ---------------------------------------------------------------------------
@@ -989,6 +1026,45 @@ mod tests {
             !failed.contains("Nothing in the pool yet"),
             "a failed read must not claim the pool is empty: {failed}"
         );
+    }
+
+    /// The refusal a context-scoped credential earns says what to do about it.
+    ///
+    /// This is the failure every install hits before the grant exists, so the
+    /// agent's own words — accurate but abstract — are not enough on their own:
+    /// the operator needs the command.
+    #[test]
+    fn the_holder_refusal_carries_the_grant_command() {
+        let mut state = PersonasState {
+            tab: PersonaTab::Attributes,
+            load_error: Some(
+                "this task reads or writes the holder's attribute pool … it requires an unscoped \
+                 holder credential"
+                    .to_string(),
+            ),
+            ..PersonasState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(out.contains("persona-holder"), "{out}");
+        assert!(out.contains("pnm acl update"), "{out}");
+    }
+
+    /// And an unrelated failure does not: telling someone to run a grant when
+    /// their agent is simply unreachable sends them to fix the wrong thing.
+    #[test]
+    fn an_unrelated_failure_carries_no_grant_command() {
+        let mut state = PersonasState {
+            tab: PersonaTab::Attributes,
+            load_error: Some("connection refused".to_string()),
+            ..PersonasState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(out.contains("connection refused"));
+        assert!(!out.contains("pnm acl update"), "{out}");
     }
 
     /// Values are hidden until asked for, and the row says which state it is in

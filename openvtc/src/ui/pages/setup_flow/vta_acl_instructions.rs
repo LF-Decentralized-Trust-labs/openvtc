@@ -246,8 +246,20 @@ fn build_pnm_command(state: &SetupState, typed_ctx: &str) -> String {
     } else {
         trimmed
     };
+    // `--admin-holder` grants the `persona-holder` capability alongside the
+    // context-scoped admin entry. Without it OpenVTC can administer its own
+    // context and nothing of the holder's: the attribute pool and the profiles
+    // over it sit *above* every context, so the identity pane's Attributes,
+    // Profiles and Disclosures tabs are refused — correctly — by a gate a
+    // context-scoped credential cannot satisfy.
+    //
+    // It is not a way around that boundary; it is the grant the boundary was
+    // always waiting for. The entry stays scoped to this one context and gains
+    // authority over the holder's own identity, which is exactly what a client
+    // that *is* the holder should have and an integration should not.
     format!(
-        "pnm contexts create --id {display_ctx} --name \"OpenVTC\" \\\n  --admin-did {setup_did} --admin-expires 1h",
+        "pnm contexts create --id {display_ctx} --name \"OpenVTC\" \\\n  \
+         --admin-did {setup_did} --admin-expires 1h --admin-holder",
     )
 }
 
@@ -264,4 +276,71 @@ fn render_input(input: &Input, frame: &mut Frame, area: Rect) {
     );
     let x = input.visual_cursor().max(scroll) - scroll;
     frame.set_cursor_position((area.x + x as u16, area.y))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The command is pasted, character for character, into another terminal.
+    /// It has to be one clean line-continued command — a stray run of spaces
+    /// from a mangled string literal is invisible in review and survives all
+    /// the way to the operator's shell.
+    #[test]
+    fn the_pnm_command_is_clean_and_carries_the_holder_grant() {
+        let state = SetupState::default();
+        let cmd = build_pnm_command(&state, "openvtc");
+
+        assert!(
+            cmd.starts_with("pnm contexts create --id openvtc "),
+            "{cmd}"
+        );
+        assert!(
+            cmd.contains("--admin-holder"),
+            "without it the identity pane is refused the pool: {cmd}"
+        );
+        // The second line is indented by two spaces on purpose; what must not
+        // appear is a run of spaces *within* a line, which is what a collapsed
+        // string-literal continuation leaves behind.
+        for line in cmd.lines() {
+            assert!(
+                !line.trim_start().contains("  "),
+                "a run of spaces inside a line means the continuation collapsed: {cmd:?}"
+            );
+        }
+        assert_eq!(cmd.lines().count(), 2, "one continued command: {cmd:?}");
+    }
+
+    /// The setup DID the operator is authorising is the one in the command.
+    #[test]
+    fn the_setup_did_reaches_the_command() {
+        let mut state = SetupState::default();
+        let key =
+            vta_sdk::provision_client::EphemeralSetupKey::generate().expect("generate a setup key");
+        let did = key.did.clone();
+        state.vta.setup_key = Some(std::sync::Arc::new(key));
+
+        assert!(
+            build_pnm_command(&state, "openvtc").contains(&format!("--admin-did {did}")),
+            "the command must authorise the key this page is showing"
+        );
+    }
+
+    /// The typed context id is what ends up in the command. The page lets the
+    /// operator choose one, and a command that named the default anyway would
+    /// grant admin over a context they are not creating.
+    #[test]
+    fn the_typed_context_id_reaches_the_command() {
+        let cmd = build_pnm_command(&SetupState::default(), "  my-ctx  ");
+        assert!(cmd.contains("--id my-ctx "), "{cmd}");
+        assert!(!cmd.contains("--id openvtc"), "{cmd}");
+    }
+
+    /// An empty input falls back to the default rather than emitting `--id `
+    /// with nothing after it.
+    #[test]
+    fn an_empty_context_id_falls_back_to_the_default() {
+        let cmd = build_pnm_command(&SetupState::default(), "   ");
+        assert!(cmd.contains("--id openvtc "), "{cmd}");
+    }
 }
