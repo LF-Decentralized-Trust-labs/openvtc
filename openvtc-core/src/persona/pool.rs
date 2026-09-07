@@ -32,6 +32,7 @@ use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::persona::{Provenance, ValueType};
 
 use crate::errors::OpenVTCError;
+use crate::persona::claim_types::{self, ClaimTypeDefaults};
 
 /// Where an attribute's value came from, reduced to what a panel can act on.
 ///
@@ -177,22 +178,66 @@ impl PoolAttribute {
         }
     }
 
-    /// The value as one line, or the reason there is none.
+    /// How this attribute's type says its value should be shown.
+    #[must_use]
+    pub fn sensitivity(&self) -> ClaimTypeDefaults {
+        claim_types::resolve(&self.claim_type)
+    }
+
+    /// Whether [`display_value`](Self::display_value) is showing a reduced form
+    /// of a value we are holding.
+    ///
+    /// The caller needs this to say *masked* rather than let the row read as
+    /// empty: `••••••••` and "(no value)" are one glance apart, and one of them
+    /// is a wrong answer about what the holder holds.
+    #[must_use]
+    pub fn is_masked(&self) -> bool {
+        !self.stale && self.value.is_some() && self.sensitivity().masks_by_default()
+    }
+
+    /// The value as one line, or the reason there is none — masked when its
+    /// claim type asks for that.
     ///
     /// Three readings kept apart on purpose, because collapsing any two of them
     /// misinforms the holder about their own data: we did not ask; we asked and
-    /// the source could not answer; here it is.
+    /// the source could not answer; here it is. Masking adds a fourth — *we
+    /// have it and are not painting it* — which is why it is
+    /// [`is_masked`](Self::is_masked) rather than a fourth string here.
     #[must_use]
     pub fn display_value(&self, values_requested: bool) -> String {
+        self.value_line(values_requested, false)
+    }
+
+    /// The same line with the mask lifted, for a holder who asked for this one
+    /// value.
+    ///
+    /// A separate method rather than a `reveal: bool` on
+    /// [`display_value`](Self::display_value), so that reading a sensitive
+    /// value in the clear is something a call site had to *name*. A boolean
+    /// gets passed through, and the caller that ends up passing `true` is
+    /// rarely the one that meant to.
+    #[must_use]
+    pub fn revealed_value(&self, values_requested: bool) -> String {
+        self.value_line(values_requested, true)
+    }
+
+    fn value_line(&self, values_requested: bool, reveal: bool) -> String {
         if self.stale {
             return match &self.stale_reason {
                 Some(reason) => format!("stale · {reason} — can no longer be proven"),
                 None => "stale — can no longer be proven".to_string(),
             };
         }
+        let shown = |text: String| {
+            if reveal {
+                text
+            } else {
+                self.sensitivity().render(&text)
+            }
+        };
         match &self.value {
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
+            Some(Value::String(s)) => shown(s.clone()),
+            Some(other) => shown(other.to_string()),
             None if values_requested => "(no value)".to_string(),
             None => "(hidden)".to_string(),
         }
@@ -476,6 +521,78 @@ mod tests {
         );
         assert!(parse_typed_value("thirty", ValueType::Number).is_err());
         assert!(parse_typed_value("maybe", ValueType::Boolean).is_err());
+    }
+
+    /// A high-sensitivity value is masked by its type, and reads back whole
+    /// only when a caller asks for that one value.
+    ///
+    /// The pairing is the point: the mask has to be liftable, or a holder
+    /// cannot check their own card number; and lifting it has to be a
+    /// different call, or it is not a decision anyone made.
+    #[test]
+    fn a_sensitive_value_is_masked_until_it_is_asked_for() {
+        let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
+        attr.claim_type = "payment.card".into();
+        attr.value = Some(Value::String("4242424242424242".into()));
+
+        assert!(attr.is_masked());
+        assert_eq!(attr.display_value(true), "••••••••••••4242");
+        assert_eq!(attr.revealed_value(true), "4242424242424242");
+    }
+
+    /// A type the registry lists as `normal` is shown as it is held. Masking
+    /// every fact would teach the reveal key as a reflex, and a reveal pressed
+    /// by reflex protects nothing.
+    #[test]
+    fn a_normal_value_is_not_masked() {
+        let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
+        attr.value = Some(Value::String("alice@example.com".into()));
+        assert!(!attr.is_masked());
+        assert_eq!(attr.display_value(true), "alice@example.com");
+    }
+
+    /// A vocabulary this build has never seen is masked, because nothing here
+    /// knows what it holds. Same rule for the open `x:` namespace.
+    #[test]
+    fn an_unregistered_type_is_masked() {
+        let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
+        attr.claim_type = "x:employer.badge".into();
+        attr.value = Some(Value::String("A-1174".into()));
+        assert!(attr.is_masked());
+        assert_eq!(attr.display_value(true), "••••••••");
+    }
+
+    /// Masked and absent are different states, and a caller has to be able to
+    /// tell them apart — `••••••••` and "(no value)" are one glance apart on a
+    /// row, and one of them is a wrong answer about what the holder holds.
+    #[test]
+    fn masked_is_not_the_same_state_as_absent() {
+        let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
+        attr.claim_type = "person.birthDate".into();
+        assert!(!attr.is_masked(), "nothing held is nothing to mask");
+        assert_eq!(attr.display_value(true), "(no value)");
+        assert_eq!(attr.display_value(false), "(hidden)");
+
+        attr.value = Some(Value::String("1990-01-01".into()));
+        assert!(attr.is_masked());
+    }
+
+    /// A stale value keeps saying it is stale. The reason it cannot be shown is
+    /// not that it is sensitive, and a mask over it would hide the one thing
+    /// the holder needs to act on.
+    #[test]
+    fn a_stale_sensitive_value_still_says_it_is_stale() {
+        let mut attr = PoolAttribute::from_wire(&wire("credentialBacked"));
+        attr.claim_type = "gov.id.passport".into();
+        attr.value = Some(Value::String("P1234567".into()));
+        attr.stale = true;
+        attr.stale_reason = Some("revoked".into());
+
+        assert!(!attr.is_masked());
+        assert_eq!(
+            attr.display_value(true),
+            "stale · revoked — can no longer be proven"
+        );
     }
 
     /// A label is what the holder sees; falling back to the vocabulary token

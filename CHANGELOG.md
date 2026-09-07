@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Facts that are sensitive by what they are stay masked, and say so.** The
+  identity pane resolves each fact's claim type against the persona claim-type
+  registry (`specs/persona/_shared/0.1/claim-types.json`) and paints the
+  `high`-sensitivity ones reduced — `••••••••••••4242` for a card, `••••••••••56`
+  for a mobile number, `••••••••` for a date of birth. A type the registry does
+  not list, and anything under `x:`, resolves to the conservative default:
+  masked entirely. `s` shows the selected fact and only that one; moving the
+  selection, changing tab or re-reading puts it back.
+
+  A masked row says *masked — s to show*, because `••••••••` and *(no value)*
+  are the same shape and one of them is a wrong answer about what the holder
+  holds.
+
+  **This is not a security control and the pane does not claim it is.** The
+  value has already been fetched, decrypted by the agent and parked in this
+  process; masking it defends against someone reading the terminal over a
+  shoulder and against a screenshot, and against nothing else. The control that
+  would matter is on the read path — an `includeSensitive` flag on
+  `persona/attribute/list`, so a listing that did not ask is never sent
+  sensitive values — and it does not exist yet.
+
+  The table is a **vendored copy**: the agent serves no claim-type registry, so
+  `openvtc-core/src/persona/claim_types.rs` ships one and names the file to
+  re-sync it against.
+
 ### Changed
 
 - **The join flow and communities panel speak the persona vocabulary too.** The

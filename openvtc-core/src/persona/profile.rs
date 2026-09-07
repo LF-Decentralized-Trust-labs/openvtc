@@ -37,6 +37,7 @@ use vta_sdk::client::VtaClient;
 use vta_sdk::protocols::persona::ProfileEntry;
 
 use crate::errors::OpenVTCError;
+use crate::persona::claim_types;
 use crate::persona::pool::ProvenanceKind;
 
 /// A profile as a list row.
@@ -137,20 +138,36 @@ impl ResolvedClaim {
         }
     }
 
-    /// The value as one line. Mirrors
+    /// The value as one line, masked when its claim type asks for that. Mirrors
     /// [`PoolAttribute::display_value`](crate::persona::pool::PoolAttribute::display_value),
     /// minus the "hidden" case: a resolve was asked for, so an absent value is
     /// an answer rather than a question that was never put.
+    ///
+    /// There is no `revealed_value` counterpart here, and that is a decision
+    /// rather than an omission. A resolved claim has no identity of its own to
+    /// reveal *one* of — a face is read as a whole — so the only reveal this
+    /// type could offer is the blanket one the mask exists to avoid. A holder
+    /// who wants to check a value reads it among their facts, one at a time.
     #[must_use]
     pub fn display_value(&self) -> String {
         if self.stale {
             return "stale — can no longer be proven".to_string();
         }
+        let shown = |text: String| claim_types::resolve(&self.claim_type).render(&text);
         match &self.value {
-            Some(Value::String(s)) => s.clone(),
-            Some(other) => other.to_string(),
+            Some(Value::String(s)) => shown(s.clone()),
+            Some(other) => shown(other.to_string()),
             None => "(no value)".to_string(),
         }
+    }
+
+    /// Whether [`display_value`](Self::display_value) is reducing a value we
+    /// hold, so a face can say *masked* rather than let the row read as empty.
+    #[must_use]
+    pub fn is_masked(&self) -> bool {
+        !self.stale
+            && self.value.is_some()
+            && claim_types::resolve(&self.claim_type).masks_by_default()
     }
 }
 
@@ -402,10 +419,14 @@ mod tests {
 
     /// A resolved claim with no `attributeId` is an inline value, and saying so
     /// is the whole reason it is a distinct type from a pool attribute.
+    ///
+    /// The type is a registered `normal` one so the assertion is about the
+    /// inline value and not about the mask: `nickname` is not in the claim-type
+    /// registry, and an unregistered token resolves to masked.
     #[test]
     fn a_resolved_claim_without_an_attribute_id_is_inline() {
         let claim = ResolvedClaim::from_wire(&serde_json::json!({
-            "type": "nickname",
+            "type": "name.display",
             "value": "Ace",
             "valueType": "string",
             "provenance": { "kind": "selfAsserted" },
@@ -425,6 +446,44 @@ mod tests {
             "stale": true,
         }));
         assert!(claim.display_value().contains("can no longer be proven"));
+    }
+
+    /// A face shows a sensitive value masked too, and says that it did.
+    ///
+    /// The face detail view is a screen a holder opens to check what a
+    /// community sees, which is exactly the screen someone else is most likely
+    /// to be looking at over their shoulder.
+    #[test]
+    fn a_sensitive_claim_is_masked_on_a_face() {
+        let claim = ResolvedClaim::from_wire(&serde_json::json!({
+            "type": "phone.mobile",
+            "value": "+61400123456",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+        }));
+        assert!(claim.is_masked());
+        assert_eq!(claim.display_value(), "••••••••••56");
+
+        let normal = ResolvedClaim::from_wire(&serde_json::json!({
+            "type": "name.given",
+            "value": "Alice",
+            "valueType": "string",
+        }));
+        assert!(!normal.is_masked());
+        assert_eq!(normal.display_value(), "Alice");
+    }
+
+    /// Masked and absent stay distinguishable here too — a face that shows
+    /// nothing and a face whose value is merely not painted are different
+    /// answers to "what does this community see".
+    #[test]
+    fn a_masked_claim_is_not_an_absent_one() {
+        let absent = ResolvedClaim::from_wire(&serde_json::json!({
+            "type": "phone.mobile",
+            "value": Value::Null,
+        }));
+        assert!(!absent.is_masked());
+        assert_eq!(absent.display_value(), "(no value)");
     }
 
     /// The put ordering: ticked entries first, preserved forms after, so the

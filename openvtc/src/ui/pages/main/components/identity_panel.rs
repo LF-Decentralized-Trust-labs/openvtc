@@ -52,6 +52,8 @@ use crate::state_handler::{
     state::ConnectionState,
 };
 use openvtc_core::display::display_identifier;
+use openvtc_core::persona::pool::PoolAttribute;
+use openvtc_core::persona::profile::ResolvedClaim;
 use ratatui::{
     style::{Style, Stylize},
     text::{Line, Span},
@@ -200,7 +202,8 @@ fn hints(state: &IdentityState) -> &'static str {
             "↑/↓ select   n: new persona   g: agent names   d: remove unused   ⇥/⇧⇥: tab"
         }
         PersonaTab::Attributes => {
-            "↑/↓ select   n: add a fact   e: edit   d: delete   v: values   r: refresh   ⇥/⇧⇥: tab"
+            "↑/↓ select   n: add a fact   e: edit   d: delete   v: values   s: show one   \
+             r: refresh   ⇥/⇧⇥: tab"
         }
         PersonaTab::Profiles => {
             "↑/↓ select   ⏎: what it shows   n: make a face   e: edit   d: delete   r: refresh   ⇥/⇧⇥: tab"
@@ -352,6 +355,22 @@ fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
         return;
     }
 
+    // Said once, above the rows, rather than on each of them: it explains the
+    // key, and it says what the mask is worth. Only when something on screen is
+    // actually masked — an explanation of a mechanism the holder is not looking
+    // at is noise.
+    if state.attributes.iter().any(PoolAttribute::is_masked) {
+        lines.push(
+            Line::from(
+                " Some facts are masked by what they are — `s` shows the selected one. The \
+                 mask is against someone reading over your shoulder; your agent has already \
+                 sent the value here.",
+            )
+            .fg(COLOR_DARK_GRAY),
+        );
+        lines.push(Line::from(""));
+    }
+
     for (i, attr) in state.attributes.iter().enumerate() {
         let is_selected = i == state.attribute_selected;
         let row_style = if is_selected {
@@ -381,17 +400,42 @@ fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
                 },
             ),
         ]));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "      {}",
-                truncate(&attr.display_value(state.show_values), 70)
-            ),
+        // A reveal is granted to one fact, and only while it is the selected
+        // one. Checking the selection as well as the identifier means a list
+        // that re-sorted under a stale grant cannot open a row nobody chose.
+        let revealed =
+            is_selected && state.revealed_attribute.as_deref() == Some(attr.attribute_id.as_str());
+        let value = if revealed {
+            attr.revealed_value(state.show_values)
+        } else {
+            attr.display_value(state.show_values)
+        };
+        let mut value_spans = vec![Span::styled(
+            format!("      {}", truncate(&value, 70)),
             if attr.stale {
                 Style::new().fg(COLOR_WARNING_ACCESSIBLE_RED)
             } else {
                 Style::new().fg(COLOR_DARK_GRAY)
             },
-        )));
+        )];
+        // Without this the row is a wrong answer rather than a reduced one:
+        // `••••••••` and "(no value)" are the same shape, and a holder reading
+        // the first as the second believes they hold nothing.
+        if attr.is_masked() {
+            value_spans.push(Span::styled(
+                if revealed {
+                    "   showing — s to mask"
+                } else {
+                    "   masked — s to show"
+                },
+                if revealed {
+                    Style::new().fg(COLOR_ORANGE)
+                } else {
+                    Style::new().fg(COLOR_SOFT_PURPLE)
+                },
+            ));
+        }
+        lines.push(Line::from(value_spans));
     }
 }
 
@@ -450,6 +494,19 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
             }
         }
         lines.push(Line::from(""));
+        // No per-claim reveal here: a face has no cursor over its claims, so
+        // the only reveal this view could offer is the blanket one the mask
+        // exists to avoid. The one-at-a-time reveal lives with the facts.
+        if detail.resolved.iter().any(ResolvedClaim::is_masked) {
+            lines.push(
+                Line::from(
+                    " Some values are masked by what they are. Read one of them among your \
+                     facts, where they open one at a time.",
+                )
+                .fg(COLOR_DARK_GRAY),
+            );
+            lines.push(Line::from(""));
+        }
         lines.push(Line::from(" ⏎/Esc: back   e: edit").fg(COLOR_DARK_GRAY));
         return;
     }
@@ -1143,6 +1200,17 @@ mod tests {
         attr.stale = true;
         attr.stale_reason = Some("revoked".into());
 
+        // A masked row, so the vocabulary guard reads the masking copy too —
+        // the header note, the row marker and the face-detail line only appear
+        // when something on screen is actually masked.
+        let card = PoolAttribute {
+            attribute_id: "01B".into(),
+            claim_type: "payment.card".into(),
+            label: Some("Everyday card".into()),
+            value: Some(serde_json::json!("4242424242424242")),
+            ..PoolAttribute::default()
+        };
+
         IdentityState {
             tab,
             show_values: true,
@@ -1152,7 +1220,7 @@ mod tests {
                 ..ManagedDid::default()
             }]
             .into(),
-            attributes: vec![attr].into(),
+            attributes: vec![attr, card].into(),
             profiles: vec![ProfileSummary {
                 profile_id: "01P".into(),
                 name: "Work".into(),
@@ -1185,12 +1253,20 @@ mod tests {
                     name: "Work".into(),
                     ..ProfileSummary::default()
                 },
-                resolved: vec![ResolvedClaim {
-                    claim_type: "nickname".into(),
-                    value: Some(serde_json::json!("Ace")),
-                    attribute_id: None,
-                    ..ResolvedClaim::default()
-                }],
+                resolved: vec![
+                    ResolvedClaim {
+                        claim_type: "nickname".into(),
+                        value: Some(serde_json::json!("Ace")),
+                        attribute_id: None,
+                        ..ResolvedClaim::default()
+                    },
+                    ResolvedClaim {
+                        claim_type: "phone.mobile".into(),
+                        value: Some(serde_json::json!("+61400123456")),
+                        attribute_id: Some("01C".into()),
+                        ..ResolvedClaim::default()
+                    },
+                ],
                 ..ProfileDetail::default()
             }),
             ..IdentityState::default()
@@ -1594,5 +1670,168 @@ mod tests {
             1,
             "exactly the inline claim is marked: {out}"
         );
+    }
+
+    /// A fact whose claim type is sensitive is masked in the holder's own list,
+    /// and the row says it is masked rather than reading as empty.
+    ///
+    /// The failure this refuses is the quiet one: `••••••••` and "(no value)"
+    /// occupy the same space, and a holder who reads the first as the second
+    /// concludes they never stored the thing they are looking at.
+    #[test]
+    fn a_sensitive_fact_is_masked_and_the_row_says_so() {
+        let mut state = IdentityState {
+            tab: PersonaTab::Attributes,
+            show_values: true,
+            attributes: vec![
+                card(),
+                PoolAttribute {
+                    attribute_id: "01N".into(),
+                    claim_type: "name.given".into(),
+                    label: Some("First name".into()),
+                    value: Some(serde_json::json!("Alice")),
+                    ..PoolAttribute::default()
+                },
+            ]
+            .into(),
+            ..IdentityState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(out.contains("••••••••••••4242"), "{out}");
+        assert!(!out.contains("4242424242424242"), "{out}");
+        assert_eq!(
+            out.matches("masked — s to show").count(),
+            1,
+            "exactly the sensitive fact is marked: {out}"
+        );
+        assert!(
+            !out.contains("(no value)"),
+            "a masked value is held, not absent: {out}"
+        );
+        // The name is shown as it is held: masking everything would make the
+        // reveal a reflex.
+        assert!(out.contains("Alice"), "{out}");
+    }
+
+    /// The reveal is granted to one fact — the selected one — and nothing else
+    /// on screen opens with it.
+    #[test]
+    fn a_reveal_opens_only_the_selected_fact() {
+        let second = PoolAttribute {
+            attribute_id: "01P".into(),
+            claim_type: "phone.mobile".into(),
+            label: Some("Mobile".into()),
+            value: Some(serde_json::json!("+61400123456")),
+            ..PoolAttribute::default()
+        };
+        let mut state = IdentityState {
+            tab: PersonaTab::Attributes,
+            show_values: true,
+            attributes: vec![card(), second].into(),
+            attribute_selected: 0,
+            revealed_attribute: Some("01B".into()),
+            ..IdentityState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(out.contains("4242424242424242"), "{out}");
+        assert!(out.contains("showing — s to mask"), "{out}");
+        assert!(
+            !out.contains("+61400123456"),
+            "the other sensitive fact stays masked: {out}"
+        );
+
+        // A grant that no longer names the selected row opens nothing: a list
+        // that re-sorted under it must not reveal a row nobody chose.
+        state.attribute_selected = 1;
+        let moved = text(&render(&state));
+        assert!(!moved.contains("4242424242424242"), "{moved}");
+        assert!(!moved.contains("+61400123456"), "{moved}");
+    }
+
+    /// The pane says what the mask is worth, where a holder is deciding whether
+    /// to trust it. It is protection from an onlooker, not from anything that
+    /// has already been given the value.
+    #[test]
+    fn the_pane_does_not_overclaim_what_masking_buys() {
+        let mut state = IdentityState {
+            tab: PersonaTab::Attributes,
+            show_values: true,
+            attributes: vec![card()].into(),
+            ..IdentityState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(out.contains("reading over your shoulder"), "{out}");
+        assert!(out.contains("already sent the value here"), "{out}");
+    }
+
+    /// The note appears only when something on screen is masked — an
+    /// explanation of a mechanism the holder is not looking at is noise.
+    #[test]
+    fn the_masking_note_stays_off_a_screen_with_nothing_masked() {
+        let mut state = IdentityState {
+            tab: PersonaTab::Attributes,
+            show_values: true,
+            attributes: vec![PoolAttribute {
+                attribute_id: "01N".into(),
+                claim_type: "name.given".into(),
+                value: Some(serde_json::json!("Alice")),
+                ..PoolAttribute::default()
+            }]
+            .into(),
+            ..IdentityState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(!out.contains("reading over your shoulder"), "{out}");
+        assert!(!out.contains("masked"), "{out}");
+    }
+
+    /// A face masks what it shows too, and points at where a value can be read
+    /// one at a time — the detail view has no cursor of its own to reveal from.
+    #[test]
+    fn a_face_masks_its_values_and_says_where_to_read_one() {
+        use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
+        let mut state = IdentityState {
+            tab: PersonaTab::Profiles,
+            open_profile: Some(ProfileDetail {
+                summary: ProfileSummary {
+                    profile_id: "01P".into(),
+                    name: "Work".into(),
+                    ..ProfileSummary::default()
+                },
+                resolved: vec![ResolvedClaim {
+                    claim_type: "payment.card".into(),
+                    value: Some(serde_json::json!("4242424242424242")),
+                    attribute_id: Some("01B".into()),
+                    ..ResolvedClaim::default()
+                }],
+                ..ProfileDetail::default()
+            }),
+            ..IdentityState::default()
+        };
+        loaded(&mut state);
+
+        let out = text(&render(&state));
+        assert!(out.contains("••••••••••••4242"), "{out}");
+        assert!(!out.contains("4242424242424242"), "{out}");
+        assert!(out.contains("among your"), "{out}");
+    }
+
+    /// The one masked fact the tests above share.
+    fn card() -> PoolAttribute {
+        PoolAttribute {
+            attribute_id: "01B".into(),
+            claim_type: "payment.card".into(),
+            label: Some("Everyday card".into()),
+            value: Some(serde_json::json!("4242424242424242")),
+            ..PoolAttribute::default()
+        }
     }
 }

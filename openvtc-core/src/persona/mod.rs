@@ -13,6 +13,11 @@
 //! ([`binding`]). Those live in the VTA, not in `Config`, and every function
 //! here is a round-trip to it.
 //!
+//! [`claim_types`] is the one exception and makes no round-trip at all: it is a
+//! vendored copy of the claim-type registry's masking table, carried here
+//! because the agent does not serve that table. Its header says what that is
+//! worth and what it is not.
+//!
 //! This crate holds the persona; the agent holds what the persona says. They join on
 //! the `(context_id, persona_did)` pair every community membership already
 //! carries.
@@ -40,6 +45,7 @@
 //! identity, so it returns its error and the panel says so.
 
 pub mod binding;
+pub mod claim_types;
 pub mod disclosure;
 pub mod pool;
 pub mod profile;

@@ -746,6 +746,18 @@ pub struct IdentityState {
     /// holder asking to see their own identity, so it is a keypress they make
     /// on purpose and a network round-trip, not a display flag.
     pub show_values: bool,
+    /// The one fact whose value is being shown unmasked, by `attribute_id`.
+    ///
+    /// One, and only while it is also the selected row — the render checks
+    /// both. Sensitivity is a property of the claim type, so a card number and
+    /// a date of birth are masked even in a listing the holder asked to see
+    /// (`openvtc_core::persona::claim_types`), and lifting that is a per-fact
+    /// act rather than a mode the pane can be left in.
+    ///
+    /// Cleared by moving the selection, changing tab, or a re-read. A reveal
+    /// that outlived the row it was granted for would be a global unmask
+    /// arrived at one keypress at a time.
+    pub revealed_attribute: Option<String>,
 
     // ── Profiles (from the agent) ────────────────────────────────────────
     pub profiles: Arc<[openvtc_core::persona::profile::ProfileSummary]>,

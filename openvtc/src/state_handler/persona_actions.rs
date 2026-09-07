@@ -117,6 +117,9 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             p.confirm = PersonaConfirm::None;
             p.open_profile = None;
             p.status_message = None;
+            // A reveal is granted to one row on one tab. Coming back to the
+            // facts should find them masked again, not still open.
+            p.revealed_attribute = None;
             // Read on arrival, once. The agent-served tabs are not polled: a
             // pane nobody has opened should not be asking the agent about the
             // holder's identity every few seconds.
@@ -127,6 +130,10 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
         }
         PersonaAction::Select(index) => {
             let p = &mut state.main_page.content_panel.identity;
+            // The selection moved, so the reveal it was granted for is over.
+            // Carrying it to the next row is how "one value" becomes "all of
+            // them", one press of ↓ at a time.
+            p.revealed_attribute = None;
             match p.tab {
                 PersonaTab::Personas => p.persona_selected = *index,
                 PersonaTab::Attributes => p.attribute_selected = *index,
@@ -140,10 +147,29 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
         PersonaAction::ToggleValues => {
             let p = &mut state.main_page.content_panel.identity;
             p.show_values = !p.show_values;
+            p.revealed_attribute = None;
             // A re-read, not a redraw: a listing fetched without values does
             // not hold them. Flipping a display flag over data already in
             // memory would mean the values had been read all along.
             PersonaEffect::Read
+        }
+        PersonaAction::RevealValue(index) => {
+            let p = &mut state.main_page.content_panel.identity;
+            let Some(attr) = p.attributes.get(*index) else {
+                return PersonaEffect::None;
+            };
+            // A second press puts it back, so the key the holder used to show
+            // the value is also the one that hides it again.
+            p.revealed_attribute = match &p.revealed_attribute {
+                Some(id) if id == &attr.attribute_id => None,
+                _ => Some(attr.attribute_id.clone()),
+            };
+            // No read: this lifts a mask over a value already in memory, which
+            // is exactly why the mask is not a security control. The read-path
+            // control — a listing that is never *sent* sensitive values —
+            // would belong here and does not exist; see
+            // `openvtc_core::persona::claim_types`.
+            PersonaEffect::None
         }
 
         // ── Attributes ───────────────────────────────────────────────────
@@ -751,6 +777,10 @@ impl PersonaOutcome {
                 if let Ok(list) = attributes {
                     p.attribute_selected = p.attribute_selected.min(list.len().saturating_sub(1));
                     p.attributes = list.into();
+                    // The list under the reveal has been rebuilt and may be
+                    // ordered differently, so the grant no longer names a row
+                    // the holder chose.
+                    p.revealed_attribute = None;
                 }
                 if let Ok(list) = profiles {
                     p.profile_selected = p.profile_selected.min(list.len().saturating_sub(1));
@@ -1066,6 +1096,85 @@ mod tests {
         assert!(matches!(effect, PersonaEffect::Read));
         assert!(personas(&state).show_values);
         assert!(matches!(personas(&state).mode, PersonaMode::Attribute(_)));
+    }
+
+    /// A reveal names one fact, is put back by the same key, and never becomes
+    /// a read.
+    ///
+    /// Lifting the mask touches nothing but this pane: the value is already in
+    /// memory, which is the whole of why the mask is not a control. The control
+    /// that would be one is a listing that is never sent sensitive values, and
+    /// it does not exist yet.
+    #[test]
+    fn a_reveal_names_one_fact_and_toggles_off() {
+        let mut state = state_with(IdentityState {
+            attributes: vec![attribute("01A"), attribute("01B")].into(),
+            show_values: true,
+            ..IdentityState::default()
+        });
+
+        let effect = apply(&mut state, &PersonaAction::RevealValue(1));
+        assert!(matches!(effect, PersonaEffect::None), "no round-trip");
+        assert_eq!(personas(&state).revealed_attribute.as_deref(), Some("01B"));
+
+        apply(&mut state, &PersonaAction::RevealValue(1));
+        assert!(personas(&state).revealed_attribute.is_none());
+    }
+
+    /// A reveal on a row that is not there changes nothing — an index into a
+    /// list that has since shrunk must not open whatever now sits at it.
+    #[test]
+    fn a_reveal_of_a_missing_row_reveals_nothing() {
+        let mut state = state_with(IdentityState {
+            attributes: vec![attribute("01A")].into(),
+            show_values: true,
+            ..IdentityState::default()
+        });
+
+        apply(&mut state, &PersonaAction::RevealValue(7));
+        assert!(personas(&state).revealed_attribute.is_none());
+    }
+
+    /// Everything that changes what is on screen puts the mask back.
+    ///
+    /// This is what keeps the reveal from becoming a global unmask reached one
+    /// keypress at a time: it is granted to a row on a tab in a listing, and
+    /// each of those three moving ends it.
+    #[test]
+    fn moving_anywhere_puts_the_mask_back() {
+        let revealed = || {
+            state_with(IdentityState {
+                tab: PersonaTab::Attributes,
+                attributes: vec![attribute("01A"), attribute("01B")].into(),
+                show_values: true,
+                loaded: true,
+                revealed_attribute: Some("01A".to_string()),
+                ..IdentityState::default()
+            })
+        };
+
+        let mut moved = revealed();
+        apply(&mut moved, &PersonaAction::Select(1));
+        assert!(personas(&moved).revealed_attribute.is_none(), "selection");
+
+        let mut tabbed = revealed();
+        apply(&mut tabbed, &PersonaAction::TabNext);
+        assert!(personas(&tabbed).revealed_attribute.is_none(), "tab");
+
+        let mut toggled = revealed();
+        apply(&mut toggled, &PersonaAction::ToggleValues);
+        assert!(personas(&toggled).revealed_attribute.is_none(), "values");
+
+        let mut re_read = revealed();
+        PersonaOutcome::Read {
+            attributes: Ok(vec![attribute("01B"), attribute("01A")]),
+            profiles: Ok(Vec::new()),
+            disclosures: Ok(Vec::new()),
+            bindings: HashMap::new(),
+            include_values: true,
+        }
+        .apply(&mut re_read);
+        assert!(personas(&re_read).revealed_attribute.is_none(), "re-read");
     }
 
     /// Toggling values is a re-read, not a redraw — a listing fetched without
