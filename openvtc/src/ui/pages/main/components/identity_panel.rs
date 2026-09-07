@@ -1476,13 +1476,12 @@ mod tests {
         assert!(!out.contains("n: new"), "{out}");
     }
 
-    /// Every claim carries the rung it went out at, and a release that is still
+    /// Every fact carries the rung it left at, and a release that is still
     /// live as a credential is marked as such — it is the one kind that can
     /// still be revoked rather than only regretted.
     #[test]
     fn a_disclosure_row_shows_its_rungs_and_flags_a_live_credential() {
         use openvtc_core::persona::disclosure::{DisclosedClaim, DisclosureRow};
-        use openvtc_core::persona::pool::ProvenanceKind;
         let mut state = IdentityState {
             tab: PersonaTab::Disclosures,
             disclosures: vec![
