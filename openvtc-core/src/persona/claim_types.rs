@@ -23,22 +23,26 @@
 //! reading the terminal over a shoulder, and a screenshot or a screen share
 //! carrying a card number to an audience that was never asked.
 //!
-//! The control that would actually matter is on the read path — an
-//! `includeSensitive` flag on `persona/attribute/list`, so a listing that did
-//! not ask for sensitive values is never *sent* them. It does not exist:
-//! `persona_attribute_list` takes `include_values` and nothing finer. The
-//! registry says the same thing in §3.1 — "masking a value already fetched is
-//! theatre; the control that matters is on the read path" — and the mask is
-//! what makes that missing control visible rather than a substitute for it.
+//! # Masking is the half of the registry this client can honour
 //!
-//! # Only `sensitivity` decides whether to mask
+//! The registry's §3.3 makes `mask` and `sensitivity` two decisions, not one,
+//! and they land in two different places:
 //!
-//! `mask` says *how* a value is reduced, not *whether* it is. A `normal` type
-//! carrying a style (`email.work` is `normal` + `emailLocal`) is shown in full
-//! to its own holder; the style is there for the surfaces that reduce a value
-//! for someone else. Reading the style as the trigger would mask a work email
-//! address in a holder's own list, which teaches the reveal key as a reflex —
-//! and a reveal pressed by reflex protects nothing.
+//! - **`mask`** is a rendering. Any type whose style is not `none` is shown
+//!   reduced, whatever its sensitivity — which is why `email.work` is masked
+//!   here despite being `normal`. An address is worth hiding from the person
+//!   behind you without being worth withholding from every listing.
+//! - **`sensitivity: high`** means the value is *withheld from a listing that
+//!   did not explicitly ask for sensitive values*. That is the half that is not
+//!   cosmetic, it is a read-path control, and **it does not exist**:
+//!   `persona_attribute_list` takes `include_values` and nothing finer, so a
+//!   listing this pane asks for values in is sent every card number the holder
+//!   holds. [`Sensitivity`] is carried here so a caller can read it, and
+//!   nothing in this crate can act on it.
+//!
+//! So the mask is what makes a missing control visible, not a substitute for
+//! it. A `high` type is masked *because its style says so*, not because
+//! anything here withheld it.
 
 /// How carefully a value is shown **to its own holder**.
 ///
@@ -48,10 +52,12 @@
 /// card is highly sensitive and barely linkable; a nickname can be the reverse.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Sensitivity {
-    /// Shown as it is held.
+    /// Nothing beyond whatever [`MaskStyle`] the type carries.
     #[default]
     Normal,
-    /// Masked until the holder asks for this one value.
+    /// Additionally withheld from a listing that did not ask for sensitive
+    /// values — a read-path control this client cannot exercise. See the module
+    /// header.
     High,
 }
 
@@ -138,9 +144,15 @@ pub struct ClaimTypeDefaults {
 
 impl ClaimTypeDefaults {
     /// Whether a value of this type is shown masked by default.
+    ///
+    /// The style alone decides, per §3.3 — a `high` type reaches this through
+    /// its style like any other. Reading `sensitivity` as the trigger is the
+    /// tangle the registry's first draft had and its second draft names: it
+    /// left `email.*` carrying an `emailLocal` style that no rule could ever
+    /// apply, while §1 used `a•••@example.com` to motivate the registry.
     #[must_use]
     pub fn masks_by_default(self) -> bool {
-        self.sensitivity == Sensitivity::High && self.mask.hides_anything()
+        self.mask.hides_anything()
     }
 
     /// The value as this type shows it — masked when the type asks for it.
@@ -154,13 +166,13 @@ impl ClaimTypeDefaults {
     }
 }
 
-/// What a type this registry has never seen resolves to.
+/// The floor: what a token resolves to when nothing more specific supplies an
+/// axis.
 ///
-/// The conservative answer, and the registry's §4 rule 3: a vocabulary nobody
+/// The conservative answer, and the registry's §4 rule 4: a vocabulary nobody
 /// has reasoned about is exactly the one nothing is known about, and an unknown
-/// value rendered in the clear is a decision nobody made. It applies to
-/// unregistered tokens and to the open `x:` namespace alike — the registry
-/// gives both the same defaults.
+/// value rendered in the clear is a decision nobody made. `x:` tokens are
+/// unregistered by construction and land here too.
 pub const UNREGISTERED: ClaimTypeDefaults = ClaimTypeDefaults {
     sensitivity: Sensitivity::High,
     mask: MaskStyle::Full,
@@ -169,6 +181,13 @@ pub const UNREGISTERED: ClaimTypeDefaults = ClaimTypeDefaults {
 /// The vendored table, in `claim-types.json`'s order so the two diff against
 /// each other by eye.
 const TABLE: &[(&str, Sensitivity, MaskStyle)] = &[
+    // Family entries, matched as prefixes. Without them `payment.somethingNew`
+    // resolves to the floor, and a gated family becomes leavable by inventing a
+    // token. `name` is also an exact token: a pool that keeps one
+    // undifferentiated name is using it.
+    ("payment", Sensitivity::High, MaskStyle::Full),
+    ("gov", Sensitivity::High, MaskStyle::Full),
+    ("name", Sensitivity::Normal, MaskStyle::None),
     ("name.legal", Sensitivity::Normal, MaskStyle::None),
     ("name.given", Sensitivity::Normal, MaskStyle::None),
     ("name.family", Sensitivity::Normal, MaskStyle::None),
@@ -201,23 +220,114 @@ const TABLE: &[(&str, Sensitivity, MaskStyle)] = &[
     ("org.role", Sensitivity::Normal, MaskStyle::None),
 ];
 
-/// Resolve a claim type to how its value is shown.
+/// The namespace the registry leaves open, and never resolves through a family.
+const EXTENSION_PREFIX: &str = "x:";
+
+impl Sensitivity {
+    /// Position in `claim-types.json`'s `strictness` ordering, most protective
+    /// first.
+    fn strictness(self) -> u8 {
+        match self {
+            Self::High => 0,
+            Self::Normal => 1,
+        }
+    }
+}
+
+impl MaskStyle {
+    /// Position in `claim-types.json`'s `strictness` ordering, most protective
+    /// first. `last2` outranks `last4` because it shows fewer characters.
+    fn strictness(self) -> u8 {
+        match self {
+            Self::Full => 0,
+            Self::Last2 => 1,
+            Self::Last4 => 2,
+            Self::EmailLocal => 3,
+            Self::None => 4,
+        }
+    }
+}
+
+impl ClaimTypeDefaults {
+    /// The more protective of two answers, taken per axis.
+    ///
+    /// Per axis rather than whole-record, because the axes are independent
+    /// (§3) and a record chosen as a unit would carry one axis's answer on the
+    /// strength of another's.
+    fn tightest(self, other: Self) -> Self {
+        Self {
+            sensitivity: if self.sensitivity.strictness() <= other.sensitivity.strictness() {
+                self.sensitivity
+            } else {
+                other.sensitivity
+            },
+            mask: if self.mask.strictness() <= other.mask.strictness() {
+                self.mask
+            } else {
+                other.mask
+            },
+        }
+    }
+}
+
+/// Resolve a claim type to how its value is shown — the registry's §4, minus
+/// the rule this client cannot reach.
 ///
-/// The match is exact. A token is not resolved by walking up its family —
-/// `payment.giftCard` is unregistered, not "a `payment.*`" — because the
-/// families are a naming convention rather than a scope, and inheriting from a
-/// prefix would let a *new* `x:payment.…` inherit a registered family's
-/// answer. Unregistered is already the conservative one; there is nothing a
-/// prefix walk could add but a way to be wrong.
+/// 1. Rule 1 — a holder's explicit override — is **not implemented, because
+///    there is nowhere to store one.** `persona/attribute/put` has no
+///    `sensitivity` or `mask` member and the SDK's attribute carries neither,
+///    so the choice the rule resolves first cannot currently be made. When it
+///    can, it belongs above everything here.
+/// 2. An exact entry is used **as written**, and is not compared against
+///    anything: it is a decision someone made about that token.
+/// 3. Otherwise the longest registered *prefix* is taken together with
+///    [`UNREGISTERED`], and the more protective of the two wins on each axis.
+///    A family entry can therefore only ever tighten — `name` as a prefix does
+///    not make an unregistered `name.somethingNew` visible.
+/// 4. Otherwise the floor.
+///
+/// Rule 3 is what stops a gated family being left by inventing a token:
+/// without it `payment.giftCard` would resolve to the floor, whose `release`
+/// is `consent` — weaker than every registered member of the family it plainly
+/// belongs to.
 #[must_use]
 pub fn resolve(claim_type: &str) -> ClaimTypeDefaults {
+    if let Some(exact) = entry(claim_type) {
+        return exact;
+    }
+    // The open namespace is unregistered by construction, so it never inherits
+    // a family's answer: `x:payment.card` is a token this registry has never
+    // seen that happens to read like one it has.
+    if claim_type.starts_with(EXTENSION_PREFIX) {
+        return UNREGISTERED;
+    }
+    longest_registered_prefix(claim_type)
+        .map_or(UNREGISTERED, |family| family.tightest(UNREGISTERED))
+}
+
+fn entry(claim_type: &str) -> Option<ClaimTypeDefaults> {
     TABLE
         .iter()
         .find(|(token, _, _)| *token == claim_type)
-        .map_or(UNREGISTERED, |(_, sensitivity, mask)| ClaimTypeDefaults {
+        .map(|(_, sensitivity, mask)| ClaimTypeDefaults {
             sensitivity: *sensitivity,
             mask: *mask,
         })
+}
+
+/// The longest registered ancestor of a token, on `.` boundaries.
+///
+/// Boundaries matter: `paymentx.foo` is not in the `payment` family, and a
+/// plain `starts_with` would put it there.
+fn longest_registered_prefix(claim_type: &str) -> Option<ClaimTypeDefaults> {
+    let mut cut = claim_type.len();
+    while let Some(dot) = claim_type[..cut].rfind('.') {
+        if let Some(found) = entry(&claim_type[..dot]) {
+            return Some(found);
+        }
+        cut = dot;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -230,43 +340,89 @@ mod tests {
     #[test]
     fn registered_types_resolve_to_their_entry() {
         assert_eq!(resolve("name.legal").sensitivity, Sensitivity::Normal);
-        assert_eq!(resolve("payment.card").mask, MaskStyle::Last4);
         assert_eq!(resolve("phone.mobile").mask, MaskStyle::Last2);
         assert!(resolve("gov.id.passport").masks_by_default());
         assert!(!resolve("org.role").masks_by_default());
+        // An exact entry is used as written and is not compared against its
+        // family: `payment.card` shows its last four even though the `payment`
+        // family entry is `full`. Someone decided that about that token.
+        assert_eq!(resolve("payment.card").mask, MaskStyle::Last4);
     }
 
-    /// An unregistered token and an `x:` extension get the conservative answer.
+    /// An unregistered token with no registered family gets the conservative
+    /// answer.
     ///
-    /// This is the case the whole default exists for: a build that has never
-    /// heard of a vocabulary knows nothing about what it holds, and showing it
-    /// in the clear would be a decision nobody made.
+    /// This is the case the floor exists for: a build that has never heard of a
+    /// vocabulary knows nothing about what it holds, and showing it in the
+    /// clear would be a decision nobody made.
     #[test]
     fn an_unknown_type_masks_fully() {
-        for token in ["x:employer.badge", "medical.condition", "", "payment"] {
+        for token in ["medical.condition", "", "somethingElse"] {
             let resolved = resolve(token);
             assert_eq!(resolved.sensitivity, Sensitivity::High, "{token}");
             assert_eq!(resolved.mask, MaskStyle::Full, "{token}");
         }
     }
 
-    /// A family prefix is not a scope. `payment.giftCard` is a token this build
-    /// has never seen, and inheriting `payment.card`'s entry would be a guess
-    /// dressed as a lookup.
+    /// A new token in a gated family inherits the family, not the floor.
+    ///
+    /// Without this a gated family is leavable by inventing a token:
+    /// `payment.giftCard` would resolve to the unregistered default, whose
+    /// `release` is weaker than every registered member of the family it
+    /// plainly belongs to.
     #[test]
-    fn a_family_prefix_does_not_inherit() {
-        assert_eq!(resolve("payment.giftCard"), UNREGISTERED);
-        assert_eq!(resolve("x:payment.card"), UNREGISTERED);
+    fn a_new_token_inherits_its_registered_family() {
+        assert_eq!(resolve("payment.giftCard"), resolve("payment"));
+        assert_eq!(resolve("gov.id.somethingNew").mask, MaskStyle::Full);
     }
 
-    /// `normal` sensitivity is shown whole even when the type names a style —
-    /// see the module header. `email.work` is the case in the registry today.
+    /// A family can only tighten. `name` is `normal`/`none`, and an unknown
+    /// `name.*` still lands on the floor rather than being shown in the clear
+    /// on the strength of its prefix.
     #[test]
-    fn a_normal_type_is_not_masked_by_its_style() {
+    fn a_family_never_loosens_the_floor() {
+        assert_eq!(resolve("name.somethingNew"), UNREGISTERED);
+        // …while the family token itself, being an exact entry, is used as
+        // written.
+        assert_eq!(resolve("name").mask, MaskStyle::None);
+    }
+
+    /// A prefix is a prefix on `.` boundaries. `paymentx` is not in the
+    /// `payment` family, and a plain `starts_with` would put it there.
+    #[test]
+    fn a_family_matches_on_segment_boundaries() {
+        assert_eq!(resolve("paymentx.token"), UNREGISTERED);
+        assert_eq!(resolve("governance.role"), UNREGISTERED);
+    }
+
+    /// The open namespace never inherits a family: `x:payment.card` is a token
+    /// this registry has never seen that happens to read like one it has.
+    #[test]
+    fn an_extension_token_never_inherits() {
+        assert_eq!(resolve("x:employer.badge"), UNREGISTERED);
+        assert_eq!(resolve("x:payment.card"), UNREGISTERED);
+        assert_eq!(resolve("x:name.given"), UNREGISTERED);
+    }
+
+    /// The style masks whatever the sensitivity says. `email.work` is `normal`
+    /// and masked, which is §3.3's whole point: an address is worth hiding from
+    /// the person behind you without being worth withholding from a listing.
+    #[test]
+    fn a_normal_type_is_masked_by_its_style() {
         let email = resolve("email.work");
-        assert_eq!(email.mask, MaskStyle::EmailLocal);
-        assert!(!email.masks_by_default());
-        assert_eq!(email.render("alice@example.com"), "alice@example.com");
+        assert_eq!(email.sensitivity, Sensitivity::Normal);
+        assert!(email.masks_by_default());
+        assert_eq!(email.render("alice@example.com"), "a•••@example.com");
+    }
+
+    /// …and a `normal` type with no style is shown as it is held. Masking
+    /// everything would teach the reveal as a reflex, and a reveal pressed by
+    /// reflex protects nothing.
+    #[test]
+    fn a_type_with_no_style_is_shown_whole() {
+        let name = resolve("name.given");
+        assert!(!name.masks_by_default());
+        assert_eq!(name.render("Alice"), "Alice");
     }
 
     /// Each style keeps exactly the characters it says it keeps.

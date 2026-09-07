@@ -178,9 +178,9 @@ impl PoolAttribute {
         }
     }
 
-    /// How this attribute's type says its value should be shown.
+    /// What this attribute's claim type says about showing its value.
     #[must_use]
-    pub fn sensitivity(&self) -> ClaimTypeDefaults {
+    pub fn claim_defaults(&self) -> ClaimTypeDefaults {
         claim_types::resolve(&self.claim_type)
     }
 
@@ -192,7 +192,7 @@ impl PoolAttribute {
     /// is a wrong answer about what the holder holds.
     #[must_use]
     pub fn is_masked(&self) -> bool {
-        !self.stale && self.value.is_some() && self.sensitivity().masks_by_default()
+        !self.stale && self.value.is_some() && self.claim_defaults().masks_by_default()
     }
 
     /// The value as one line, or the reason there is none — masked when its
@@ -232,7 +232,7 @@ impl PoolAttribute {
             if reveal {
                 text
             } else {
-                self.sensitivity().render(&text)
+                self.claim_defaults().render(&text)
             }
         };
         match &self.value {
@@ -494,12 +494,14 @@ mod tests {
     }
 
     /// A string value renders as itself, not as a quoted JSON string — the
-    /// panel shows `alice@example.com`, never `"alice@example.com"`.
+    /// panel shows `Alice`, never `"Alice"`. An unmasked type, so the
+    /// assertion is about the quoting and not about the mask.
     #[test]
     fn a_string_value_renders_unquoted() {
         let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
-        attr.value = Some(Value::String("alice@example.com".into()));
-        assert_eq!(attr.display_value(true), "alice@example.com");
+        attr.claim_type = "name.given".into();
+        attr.value = Some(Value::String("Alice".into()));
+        assert_eq!(attr.display_value(true), "Alice");
     }
 
     /// A typed field stores the type it declares. The number case is the one
@@ -540,15 +542,28 @@ mod tests {
         assert_eq!(attr.revealed_value(true), "4242424242424242");
     }
 
-    /// A type the registry lists as `normal` is shown as it is held. Masking
-    /// every fact would teach the reveal key as a reflex, and a reveal pressed
-    /// by reflex protects nothing.
+    /// A type whose style is `none` is shown as it is held. Masking every fact
+    /// would teach the reveal key as a reflex, and a reveal pressed by reflex
+    /// protects nothing.
     #[test]
-    fn a_normal_value_is_not_masked() {
+    fn a_value_with_no_mask_style_is_shown_whole() {
+        let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
+        attr.claim_type = "name.given".into();
+        attr.value = Some(Value::String("Alice".into()));
+        assert!(!attr.is_masked());
+        assert_eq!(attr.display_value(true), "Alice");
+    }
+
+    /// Sensitivity is not what triggers the mask — the style is. An email
+    /// address is `normal` and still masked: worth hiding from the person
+    /// behind you without being worth withholding from a listing.
+    #[test]
+    fn a_normal_type_with_a_style_is_still_masked() {
         let mut attr = PoolAttribute::from_wire(&wire("selfAsserted"));
         attr.value = Some(Value::String("alice@example.com".into()));
-        assert!(!attr.is_masked());
-        assert_eq!(attr.display_value(true), "alice@example.com");
+        assert!(attr.is_masked());
+        assert_eq!(attr.display_value(true), "a•••@example.com");
+        assert_eq!(attr.revealed_value(true), "alice@example.com");
     }
 
     /// A vocabulary this build has never seen is masked, because nothing here
