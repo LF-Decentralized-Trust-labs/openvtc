@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **The identity pane speaks the words a person would use.** Following
+  `design-docs/persona-vocabulary.md`, which fixes one vocabulary across the
+  console, `pnm`, the mobile agent and this TUI: an *attribute* is a **fact**,
+  a *profile* is a **face** — the set of facts you show together — and a persona
+  **wears** a face in a community. The tabs read *Personas · Your facts · Faces ·
+  Communities · What has left*.
+
+  The spec's words are exact and are not being replaced in code, on the wire or
+  in the audit log; they are kept off the screen. `persona/attribute/put` stays
+  `persona/attribute/put` — the form says *Add a fact*.
+
+  A test renders every tab, both empty and populated, plus each editor, and
+  fails if any word from the table's avoid-list reaches the screen. Each of them
+  is a word this pane's own code uses, so they are one careless `format!` away
+  at all times, and the drift is invisible in review.
+
+
 ### Added
 
 - **Setup now asks for the grant the identity pane needs.** The `pnm` command on

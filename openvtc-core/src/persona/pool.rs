@@ -76,13 +76,34 @@ impl ProvenanceKind {
         matches!(self, Self::SelfAsserted)
     }
 
-    /// One word for a panel row.
+    /// What a person reads for this provenance
+    /// (`design-docs/persona-vocabulary.md`). The spec's words stay in the
+    /// type; they are kept off the screen.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::SelfAsserted => "self-asserted",
-            Self::CredentialBacked => "credential-backed",
-            Self::Generated => "generated",
+            Self::SelfAsserted => "you said so",
+            Self::CredentialBacked => "credential",
+            Self::Generated => "made per verifier",
+        }
+    }
+
+    /// Whether this value links the holder across everyone who sees it, said in
+    /// the words the table uses.
+    ///
+    /// Always shown beside the label, because it is the half people miss: a
+    /// credential is *provable* and carries the same issuer signature to every
+    /// verifier, which is the more consequential of the two facts and the less
+    /// obvious one. Severity inverts intuition here — a credential shown whole
+    /// links more than a value the holder simply asserted — so the words must
+    /// not hide it.
+    #[must_use]
+    pub fn linkage(self) -> Option<&'static str> {
+        match self {
+            // Passed on, never proven, and no signature to join on.
+            Self::SelfAsserted => None,
+            Self::CredentialBacked => Some("same signature everywhere — links you"),
+            Self::Generated => Some("different for everyone — cannot link you"),
         }
     }
 }
@@ -106,6 +127,10 @@ pub struct PoolAttribute {
     /// absent [`value`](Self::value), which usually just means the read did not
     /// ask for one.
     pub stale: bool,
+    /// Why it went stale — `expired`, `revoked`, and so on, as the agent says
+    /// it. Shown beside the word, never instead of it: "stale" alone tells a
+    /// holder something is wrong without telling them what.
+    pub stale_reason: Option<String>,
     /// Optimistic-concurrency token, passed back on edit so two editors cannot
     /// silently overwrite each other.
     pub version: u64,
@@ -132,6 +157,10 @@ impl PoolAttribute {
             value: value.get("value").cloned(),
             provenance: ProvenanceKind::parse_wire(value.get("provenance")),
             stale: value.get("stale").and_then(Value::as_bool).unwrap_or(false),
+            stale_reason: value
+                .get("staleReason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             version: value.get("version").and_then(Value::as_u64).unwrap_or(0),
             updated_at: str_field("updatedAt"),
         }
@@ -144,7 +173,7 @@ impl PoolAttribute {
         match self.label.as_deref() {
             Some(label) if !label.trim().is_empty() => label,
             _ if !self.claim_type.is_empty() => &self.claim_type,
-            _ => "(unnamed attribute)",
+            _ => "(unnamed fact)",
         }
     }
 
@@ -156,7 +185,10 @@ impl PoolAttribute {
     #[must_use]
     pub fn display_value(&self, values_requested: bool) -> String {
         if self.stale {
-            return "(unavailable — its credential could not be read)".to_string();
+            return match &self.stale_reason {
+                Some(reason) => format!("stale · {reason} — can no longer be proven"),
+                None => "stale — can no longer be proven".to_string(),
+            };
         }
         match &self.value {
             Some(Value::String(s)) => s.clone(),
@@ -215,18 +247,18 @@ impl AttributeEdit {
     pub fn refusal(kind: ProvenanceKind) -> Self {
         Self::Refused(match kind {
             ProvenanceKind::CredentialBacked => {
-                "This attribute's value comes from a credential — editing it here would turn an \
-                 attested claim into a typed one. Change it at its source, or replace the \
+                "This fact comes from a credential — typing over it would turn something \
+                 provable into something you said. Change it at its source, or replace the \
                  credential."
                     .to_string()
             }
             ProvenanceKind::Generated => {
-                "This attribute is minted by the agent, usually a fresh value per verifier. There \
-                 is no single value to edit."
+                "Your agent makes this one per verifier — a different value for everyone, so \
+                 there is no single value to edit."
                     .to_string()
             }
             ProvenanceKind::SelfAsserted => {
-                "This attribute is editable; nothing should have refused it.".to_string()
+                "You said this one, so it is editable; nothing should have refused it.".to_string()
             }
         })
     }
@@ -406,7 +438,14 @@ mod tests {
         assert_eq!(attr.display_value(false), "(hidden)");
         assert_eq!(attr.display_value(true), "(no value)");
         attr.stale = true;
-        assert!(attr.display_value(true).contains("could not be read"));
+        assert!(attr.display_value(true).contains("can no longer be proven"));
+        // The reason is shown beside the word, never instead of it: "stale"
+        // alone says something is wrong without saying what.
+        attr.stale_reason = Some("revoked".into());
+        assert_eq!(
+            attr.display_value(true),
+            "stale · revoked — can no longer be proven"
+        );
     }
 
     /// A string value renders as itself, not as a quoted JSON string — the

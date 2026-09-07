@@ -91,12 +91,12 @@ impl ProfileSummary {
         }
     }
 
-    /// The name to show. Never empty: an unnamed profile still has to be
+    /// The name to show. Never empty: an unnamed face still has to be
     /// selectable in a list.
     #[must_use]
     pub fn display_name(&self) -> &str {
         if self.name.trim().is_empty() {
-            "(unnamed profile)"
+            "unnamed face"
         } else {
             &self.name
         }
@@ -144,7 +144,7 @@ impl ResolvedClaim {
     #[must_use]
     pub fn display_value(&self) -> String {
         if self.stale {
-            return "(unavailable — its credential could not be read)".to_string();
+            return "stale — can no longer be proven".to_string();
         }
         match &self.value {
             Some(Value::String(s)) => s.clone(),
@@ -185,7 +185,7 @@ impl ProfileDetail {
     #[must_use]
     pub fn refusal(&self) -> String {
         format!(
-            "This profile has {} entr{} this version of OpenVTC cannot read, so saving would drop \
+            "This face has {} entr{} this version of OpenVTC cannot read, so saving would drop \
              {}. Edit it with `pnm persona profile`, or upgrade.",
             self.unreadable_entries,
             if self.unreadable_entries == 1 {
@@ -424,7 +424,7 @@ mod tests {
             "value": Value::Null,
             "stale": true,
         }));
-        assert!(claim.display_value().contains("could not be read"));
+        assert!(claim.display_value().contains("can no longer be proven"));
     }
 
     /// The put ordering: ticked entries first, preserved forms after, so the

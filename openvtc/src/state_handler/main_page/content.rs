@@ -435,15 +435,22 @@ impl PersonaTab {
         ]
     }
 
-    /// The tab's name in the header strip.
+    /// The tab's name in the header strip — the words a person reads, which are
+    /// not the words the code and the wire use
+    /// (`design-docs/persona-vocabulary.md`).
+    ///
+    /// The variants keep the spec's nouns because that is what they address:
+    /// `Profiles` is `persona/profile/*`. The screen says *Faces*, because
+    /// "profile" already means three things in this product and "my LinkedIn
+    /// page" to everyone else.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             PersonaTab::Personas => "Personas",
-            PersonaTab::Attributes => "Attributes",
-            PersonaTab::Profiles => "Profiles",
+            PersonaTab::Attributes => "Your facts",
+            PersonaTab::Profiles => "Faces",
             PersonaTab::Communities => "Communities",
-            PersonaTab::Disclosures => "Disclosures",
+            PersonaTab::Disclosures => "What has left",
         }
     }
 

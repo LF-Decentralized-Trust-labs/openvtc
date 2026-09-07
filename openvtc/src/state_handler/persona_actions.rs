@@ -16,6 +16,14 @@
 //! setting `refresh_queued` rather than starting one, because its own outcome
 //! is still holding the domain — the same shape the VIC manager uses.
 //!
+//! # The words, and where they change
+//!
+//! This module is engineering-side: it keeps the spec's nouns
+//! (`attribute`, `profile`, `binding`), because those are what it addresses on
+//! the wire. The strings it *hands to the panel* — status lines, refusals — use
+//! the vocabulary a person reads (`design-docs/persona-vocabulary.md`): a fact,
+//! a face, wearing one.
+//!
 //! # Questions are asked once, and correctly
 //!
 //! Deleting an attribute a profile references is refused by the VTA unless the
@@ -454,7 +462,7 @@ fn form_submit(state: &mut State) -> PersonaEffect {
         PersonaMode::Profile(form) => {
             let name = form.name.value().trim().to_string();
             if name.is_empty() {
-                form.error = Some("A name is required — \"Work\", \"Gaming\".".to_string());
+                form.error = Some("A face needs a name — \"Work\", \"Gaming\".".to_string());
                 return PersonaEffect::None;
             }
             form.error = None;
@@ -618,7 +626,7 @@ impl PersonaJobRun {
         let client = self.admin_vta;
         match self.job {
             PersonaJob::AttributePut(draft) => PersonaOutcome::Written {
-                verb: "Saved attribute",
+                verb: "Saved the fact",
                 error: pool::put(&client, draft)
                     .await
                     .err()
@@ -628,7 +636,7 @@ impl PersonaJobRun {
                 attribute_id,
                 cascade,
             } => PersonaOutcome::Written {
-                verb: "Deleted attribute",
+                verb: "Forgot the fact",
                 error: pool::delete(&client, &attribute_id, cascade)
                     .await
                     .err()
@@ -641,7 +649,7 @@ impl PersonaJobRun {
                 other_entries,
                 expected_version,
             } => PersonaOutcome::Written {
-                verb: "Saved profile",
+                verb: "Saved the face",
                 error: profile::put(
                     &client,
                     profile_id.as_deref(),
@@ -655,7 +663,7 @@ impl PersonaJobRun {
                 .map(|e| format!("{e}")),
             },
             PersonaJob::ProfileDelete { profile_id, unbind } => PersonaOutcome::Written {
-                verb: "Deleted profile",
+                verb: "Deleted the face",
                 error: profile::delete(&client, &profile_id, unbind)
                     .await
                     .err()
@@ -837,9 +845,9 @@ impl PersonaOutcome {
                     None => {
                         p.mode = PersonaMode::View;
                         let msg = if cleared {
-                            format!("{community} is now shown nothing.")
+                            format!("Taken off. {community} is now shown nothing.")
                         } else {
-                            format!("Updated what {community} is shown.")
+                            format!("Changed the face {community} sees.")
                         };
                         p.status_message = Some(msg.clone());
                         state.main_page.log(msg);
@@ -853,7 +861,7 @@ impl PersonaOutcome {
                         }
                         state
                             .main_page
-                            .log_error("Changing what a persona presents failed", e.as_str());
+                            .log_error("Changing the face failed", e.as_str());
                     }
                 }
             }
@@ -964,7 +972,7 @@ mod tests {
             personas(&state).confirm,
             PersonaConfirm::DeleteProfile {
                 profile_id: "01P".into(),
-                name: "(unnamed profile)".into(),
+                name: "unnamed face".into(),
                 unbind: true
             }
         );
@@ -973,7 +981,7 @@ mod tests {
             personas(&state).confirm,
             PersonaConfirm::DeleteProfile {
                 profile_id: "01Q".into(),
-                name: "(unnamed profile)".into(),
+                name: "unnamed face".into(),
                 unbind: false
             }
         );
@@ -1130,7 +1138,7 @@ mod tests {
         for error in [None, Some("refused".to_string())] {
             let mut state = State::default();
             PersonaOutcome::Written {
-                verb: "Saved attribute",
+                verb: "Saved the fact",
                 error,
             }
             .apply(&mut state);
@@ -1202,7 +1210,7 @@ mod tests {
         });
 
         PersonaOutcome::Written {
-            verb: "Saved attribute",
+            verb: "Saved the fact",
             error: Some("version conflict".to_string()),
         }
         .apply(&mut state);
