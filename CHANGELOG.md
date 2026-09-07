@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **Setup now asks for the grant the identity pane needs.** The `pnm` command on
+  the setup screen ends `--admin-holder`, which grants the `persona-holder`
+  capability alongside OpenVTC's context-scoped admin entry.
+
+  Without it the pane's Attributes, Profiles and Disclosures tabs are refused on
+  every install — correctly. Those sit above every trust context, and OpenVTC's
+  credential is scoped to one, so reaching them used to require making OpenVTC
+  an administrator of *every* context on the agent. The capability grants
+  authority over your own identity without granting that
+  (verifiable-trust-infrastructure#1286).
+
+  On an install that already exists, the pane's refusal now carries the command
+  to fix it rather than only the agent's explanation of why it said no.
+
+
 - **One pane for your own identity — "My Identity" on the main menu.** Everything
   a holder can do with their persona now lives in one place, with five tabs in
   the order the concepts build on each other: **Faces** (the persona DIDs),
