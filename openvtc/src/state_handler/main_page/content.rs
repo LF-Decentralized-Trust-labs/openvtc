@@ -764,6 +764,22 @@ pub struct IdentityState {
     pub profile_selected: usize,
     /// The profile opened with Enter, resolved to what it would present.
     pub open_profile: Option<openvtc_core::persona::profile::ProfileDetail>,
+    /// The claim under the cursor inside that opened face.
+    ///
+    /// Separate from [`profile_selected`](Self::profile_selected), which keeps
+    /// pointing at the face in the list behind the detail — closing the detail
+    /// has to land back on the face that was opened, so the two cursors cannot
+    /// share a field.
+    pub face_claim_selected: usize,
+    /// The one claim of the opened face being shown unmasked, by index.
+    ///
+    /// The same grant the attributes tab makes, on the same terms: one claim,
+    /// and only while it is also the selected one — the render checks both.
+    /// Indices rather than identifiers because a resolved claim has no id of
+    /// its own to key on (an inline value has no pool attribute behind it), and
+    /// the order is fixed for as long as a detail is open: every path that
+    /// replaces `open_profile` clears this too.
+    pub revealed_face_claim: Option<usize>,
 
     // ── Disclosures (from the agent) ─────────────────────────────────────
     /// What has actually left, newest first, across every context.

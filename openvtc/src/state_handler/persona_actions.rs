@@ -118,8 +118,10 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             p.open_profile = None;
             p.status_message = None;
             // A reveal is granted to one row on one tab. Coming back to the
-            // attributes should find them masked again, not still open.
+            // attributes — or to a face — should find them masked again, not
+            // still open.
             p.revealed_attribute = None;
+            p.revealed_face_claim = None;
             // Read on arrival, once. The agent-served tabs are not polled: a
             // pane nobody has opened should not be asking the agent about the
             // holder's identity every few seconds.
@@ -235,7 +237,38 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             })
         }
         PersonaAction::ProfileClose => {
-            state.main_page.content_panel.identity.open_profile = None;
+            let p = &mut state.main_page.content_panel.identity;
+            p.open_profile = None;
+            p.revealed_face_claim = None;
+            PersonaEffect::None
+        }
+        PersonaAction::FaceClaimSelect(index) => {
+            let p = &mut state.main_page.content_panel.identity;
+            // Same rule as the attributes tab: the selection moved, so the
+            // reveal it was granted for is over. Carrying it down the list is
+            // how "one value" becomes "all of them", one press of ↓ at a time.
+            p.revealed_face_claim = None;
+            p.face_claim_selected = *index;
+            PersonaEffect::None
+        }
+        PersonaAction::RevealFaceClaim(index) => {
+            let p = &mut state.main_page.content_panel.identity;
+            // Bounds-checked against the open face rather than assumed: the
+            // detail can be replaced by a re-read between the keypress and here.
+            let claims = p.open_profile.as_ref().map_or(0, |d| d.resolved.len());
+            if *index >= claims {
+                return PersonaEffect::None;
+            }
+            // A second press puts it back, so the key that showed the value is
+            // also the one that hides it again.
+            p.revealed_face_claim = match p.revealed_face_claim {
+                Some(i) if i == *index => None,
+                _ => Some(*index),
+            };
+            // No read: a face detail is resolved in full when it is opened, so
+            // this lifts a mask over a value already in memory. Which is
+            // exactly why the mask is not a security control — see
+            // `openvtc_core::persona::claim_types`.
             PersonaEffect::None
         }
         PersonaAction::ProfileNew => {
@@ -855,6 +888,12 @@ impl PersonaOutcome {
                         }
                     } else {
                         p.open_profile = Some(detail);
+                        // A fresh detail is a fresh set of rows: the cursor
+                        // starts at the top and nothing is revealed. Carrying
+                        // an index over would grant a reveal on whatever
+                        // happens to sit at that position now.
+                        p.face_claim_selected = 0;
+                        p.revealed_face_claim = None;
                     }
                 }
                 Err(e) => {
@@ -1162,6 +1201,136 @@ mod tests {
 
         apply(&mut state, &PersonaAction::RevealValue(7));
         assert!(personas(&state).revealed_attribute.is_none());
+    }
+
+    /// A face detail with three claims, two of which carry a mask style.
+    fn open_face() -> openvtc_core::persona::profile::ProfileDetail {
+        use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
+        ProfileDetail {
+            summary: ProfileSummary {
+                profile_id: "01P".into(),
+                name: "OSS Developer".into(),
+                ..ProfileSummary::default()
+            },
+            resolved: vec![
+                ResolvedClaim {
+                    claim_type: "name.legal".into(),
+                    value: Some(serde_json::json!("Glenn Gore")),
+                    ..ResolvedClaim::default()
+                },
+                ResolvedClaim {
+                    claim_type: "email.work".into(),
+                    value: Some(serde_json::json!("glenn@example.com")),
+                    ..ResolvedClaim::default()
+                },
+            ],
+            ..ProfileDetail::default()
+        }
+    }
+
+    /// `s` on a face opens one claim, and pressing it again closes it — the key
+    /// that showed the value is the one that hides it.
+    #[test]
+    fn a_face_reveal_toggles_on_the_same_key() {
+        let mut state = state_with(IdentityState {
+            tab: PersonaTab::Profiles,
+            open_profile: Some(open_face()),
+            face_claim_selected: 1,
+            ..IdentityState::default()
+        });
+
+        apply(&mut state, &PersonaAction::RevealFaceClaim(1));
+        assert_eq!(personas(&state).revealed_face_claim, Some(1));
+
+        apply(&mut state, &PersonaAction::RevealFaceClaim(1));
+        assert!(
+            personas(&state).revealed_face_claim.is_none(),
+            "toggled off"
+        );
+    }
+
+    /// A reveal aimed past the end of the face opens nothing.
+    ///
+    /// The index comes from a keypress against what was on screen, and the
+    /// detail can be replaced between the two — so it is checked against the
+    /// open face rather than trusted.
+    #[test]
+    fn a_face_reveal_past_the_end_reveals_nothing() {
+        let mut state = state_with(IdentityState {
+            tab: PersonaTab::Profiles,
+            open_profile: Some(open_face()),
+            ..IdentityState::default()
+        });
+
+        apply(&mut state, &PersonaAction::RevealFaceClaim(7));
+        assert!(personas(&state).revealed_face_claim.is_none());
+    }
+
+    /// A reveal with no face open at all opens nothing, rather than arming a
+    /// grant that the next face to be opened would inherit.
+    #[test]
+    fn a_face_reveal_with_nothing_open_reveals_nothing() {
+        let mut state = state_with(IdentityState {
+            tab: PersonaTab::Profiles,
+            ..IdentityState::default()
+        });
+
+        apply(&mut state, &PersonaAction::RevealFaceClaim(0));
+        assert!(personas(&state).revealed_face_claim.is_none());
+    }
+
+    /// Everything that changes what is on screen puts a face's mask back too.
+    ///
+    /// Same rule as the attributes tab, and the same reason: a reveal is
+    /// granted to one claim on one open face, and moving the cursor, closing
+    /// the face or leaving the tab each ends it.
+    #[test]
+    fn moving_anywhere_puts_a_face_mask_back() {
+        let revealed = || {
+            state_with(IdentityState {
+                tab: PersonaTab::Profiles,
+                open_profile: Some(open_face()),
+                face_claim_selected: 1,
+                revealed_face_claim: Some(1),
+                loaded: true,
+                ..IdentityState::default()
+            })
+        };
+
+        let mut moved = revealed();
+        apply(&mut moved, &PersonaAction::FaceClaimSelect(0));
+        assert!(personas(&moved).revealed_face_claim.is_none(), "cursor");
+        assert_eq!(personas(&moved).face_claim_selected, 0);
+
+        let mut closed = revealed();
+        apply(&mut closed, &PersonaAction::ProfileClose);
+        assert!(personas(&closed).revealed_face_claim.is_none(), "closed");
+
+        let mut tabbed = revealed();
+        apply(&mut tabbed, &PersonaAction::TabNext);
+        assert!(personas(&tabbed).revealed_face_claim.is_none(), "tab");
+    }
+
+    /// Opening a face starts at the top with nothing revealed.
+    ///
+    /// A carried-over index would grant a reveal on whatever now sits at that
+    /// position, which is a different claim in a different face.
+    #[test]
+    fn opening_a_face_starts_closed_and_at_the_top() {
+        let mut state = state_with(IdentityState {
+            tab: PersonaTab::Profiles,
+            face_claim_selected: 1,
+            revealed_face_claim: Some(1),
+            ..IdentityState::default()
+        });
+
+        PersonaOutcome::ProfileRead {
+            edit: false,
+            result: Ok(open_face()),
+        }
+        .apply(&mut state);
+        assert_eq!(personas(&state).face_claim_selected, 0);
+        assert!(personas(&state).revealed_face_claim.is_none());
     }
 
     /// Everything that changes what is on screen puts the mask back.

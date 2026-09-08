@@ -143,17 +143,47 @@ impl ResolvedClaim {
     /// minus the "hidden" case: a resolve was asked for, so an absent value is
     /// an answer rather than a question that was never put.
     ///
-    /// There is no `revealed_value` counterpart here, and that is a decision
-    /// rather than an omission. A resolved claim has no identity of its own to
-    /// reveal *one* of — a face is read as a whole — so the only reveal this
-    /// type could offer is the blanket one the mask exists to avoid. A holder
-    /// who wants to check a value reads it among their attributes, one at a time.
+    /// See [`revealed_value`](Self::revealed_value) for lifting the mask on one
+    /// claim.
     #[must_use]
     pub fn display_value(&self) -> String {
+        self.value_line(false)
+    }
+
+    /// The same line with the mask lifted, for a holder who asked for this one
+    /// claim.
+    ///
+    /// This used to be deliberately absent, on the argument that a resolved
+    /// claim has no identity of its own to reveal *one* of — a face was read as
+    /// a whole, so the only reveal the type could offer was the blanket one the
+    /// mask exists to avoid. That argument was about the **pane**, not the
+    /// type: it held only for as long as the face view had no cursor over its
+    /// claims. It has one now, so "the selected claim" is a thing a holder can
+    /// name, and the one-at-a-time reveal that the attributes tab has always
+    /// offered works here on the same terms.
+    ///
+    /// Still a separate method rather than a `reveal: bool` on
+    /// [`display_value`](Self::display_value), for the reason
+    /// [`PoolAttribute::revealed_value`](crate::persona::pool::PoolAttribute::revealed_value)
+    /// gives: reading a masked value in the clear should be something a call
+    /// site had to *name*. A boolean gets passed through, and the caller that
+    /// ends up passing `true` is rarely the one that meant to.
+    #[must_use]
+    pub fn revealed_value(&self) -> String {
+        self.value_line(true)
+    }
+
+    fn value_line(&self, reveal: bool) -> String {
         if self.stale {
             return "stale — can no longer be proven".to_string();
         }
-        let shown = |text: String| claim_types::resolve(&self.claim_type).render(&text);
+        let shown = |text: String| {
+            if reveal {
+                text
+            } else {
+                claim_types::resolve(&self.claim_type).render(&text)
+            }
+        };
         match &self.value {
             Some(Value::String(s)) => shown(s.clone()),
             Some(other) => shown(other.to_string()),
@@ -446,6 +476,39 @@ mod tests {
             "stale": true,
         }));
         assert!(claim.display_value().contains("can no longer be proven"));
+    }
+
+    /// A masked claim reads back whole when a caller asks for that one claim.
+    ///
+    /// The pairing is the point, and it is the same one the pool makes: the
+    /// mask has to be liftable, or a holder cannot check what a community
+    /// actually sees; and lifting it has to be a different call, or it is not a
+    /// decision anyone made.
+    #[test]
+    fn a_masked_claim_is_only_whole_when_it_is_asked_for() {
+        let claim = ResolvedClaim::from_wire(&serde_json::json!({
+            "type": "phone.mobile",
+            "value": "+61400123456",
+            "valueType": "string",
+            "provenance": { "kind": "selfAsserted" },
+        }));
+        assert_eq!(claim.display_value(), "••••••••••56");
+        assert_eq!(claim.revealed_value(), "+61400123456");
+    }
+
+    /// A stale claim says it is stale under a reveal too.
+    ///
+    /// The reason it cannot be shown is not that it is masked, and a reveal
+    /// that turned the explanation into a blank would hide the one thing the
+    /// holder needs to act on.
+    #[test]
+    fn a_stale_claim_still_says_it_is_stale_when_revealed() {
+        let claim = ResolvedClaim::from_wire(&serde_json::json!({
+            "type": "phone.mobile",
+            "value": "+61400123456",
+            "stale": true,
+        }));
+        assert!(claim.revealed_value().contains("can no longer be proven"));
     }
 
     /// A face masks what its type says to mask, and says that it did.
