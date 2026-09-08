@@ -32,7 +32,7 @@ impl Panel for CommunitiesPanel {
 /// Render the communities panel content.
 ///
 /// `bindings` is the persona pane's map, read here rather than copied: this
-/// panel and the persona pane render the same fact — what a persona presents in a
+/// panel and the persona pane render the same thing — what a persona presents in a
 /// community — and two copies of it would drift the moment one was refreshed
 /// and the other was not.
 pub fn render(

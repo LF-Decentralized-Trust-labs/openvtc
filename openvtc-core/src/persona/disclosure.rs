@@ -11,7 +11,7 @@
 //! "disclose something now" button here would be a request with no requester —
 //! the one shape the two-call gate exists to prevent.
 //!
-//! What the TUI can usefully answer is the question after the fact: what does
+//! What the TUI can usefully answer is the question asked after the fact: what does
 //! anyone already know, and how did they come to know it. That is this module.
 //!
 //! # A rung is not a detail
@@ -111,17 +111,17 @@ impl DisclosureRow {
         }
     }
 
-    /// The facts as one line: `email.work (whole), age.over18 (yes/no only)`.
+    /// The attributes as one line: `email.work (whole), age.over18 (yes/no only)`.
     ///
-    /// The rung travels with every fact rather than being summarised, because
+    /// The rung travels with every attribute rather than being summarised, because
     /// there is no summary of a mixed release that is not misleading in one
     /// direction or the other — and because severity inverts intuition: a
-    /// credential shown *whole* links the holder more than a fact they simply
+    /// credential shown *whole* links the holder more than an attribute they simply
     /// asserted.
     #[must_use]
     pub fn describe_claims(&self) -> String {
         if self.claims.is_empty() {
-            return "no facts recorded".to_string();
+            return "no attributes recorded".to_string();
         }
         self.claims
             .iter()
@@ -178,7 +178,7 @@ mod tests {
     /// Rungs are shown in the words the vocabulary fixes, and an unrecognised
     /// one is passed through rather than mapped to a friendlier neighbour — the
     /// four words carry a privacy ordering, so guessing would misstate how much
-    /// of the fact left.
+    /// of the attribute left.
     #[test]
     fn a_fact_carries_its_rung_into_the_row() {
         let row = DisclosureRow::from_wire(&serde_json::json!({
@@ -224,6 +224,6 @@ mod tests {
     #[test]
     fn a_factless_record_says_so() {
         let row = DisclosureRow::default();
-        assert_eq!(row.describe_claims(), "no facts recorded");
+        assert_eq!(row.describe_claims(), "no attributes recorded");
     }
 }

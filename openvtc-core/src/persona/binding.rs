@@ -98,12 +98,12 @@ impl BindingSummary {
             .clone()
             .or_else(|| self.profile_id.clone())
             .unwrap_or_else(|| "an unnamed face".to_string());
-        let facts = if self.claim_count == 1 {
-            "1 fact".to_string()
+        let attributes = if self.claim_count == 1 {
+            "1 attribute".to_string()
         } else {
-            format!("{} facts", self.claim_count)
+            format!("{} attributes", self.claim_count)
         };
-        format!("wears: {label} ({facts})")
+        format!("wears: {label} ({attributes})")
     }
 }
 
@@ -228,7 +228,7 @@ mod tests {
             claim_count: 3,
             ..Default::default()
         };
-        assert_eq!(s.describe(), "wears: work (3 facts)");
+        assert_eq!(s.describe(), "wears: work (3 attributes)");
     }
 
     /// One claim is not "1 claims". Small, and the kind of thing that makes a
@@ -241,7 +241,7 @@ mod tests {
             claim_count: 1,
             ..Default::default()
         };
-        assert_eq!(s.describe(), "wears: gaming (1 fact)");
+        assert_eq!(s.describe(), "wears: gaming (1 attribute)");
     }
 
     /// A profile with no label falls back to its id, and then to a phrase —
@@ -255,13 +255,13 @@ mod tests {
             claim_count: 2,
             ..Default::default()
         };
-        assert_eq!(by_id.describe(), "wears: 01J8 (2 facts)");
+        assert_eq!(by_id.describe(), "wears: 01J8 (2 attributes)");
 
         let bare = BindingSummary {
             bound: true,
             claim_count: 2,
             ..Default::default()
         };
-        assert_eq!(bare.describe(), "wears: an unnamed face (2 facts)");
+        assert_eq!(bare.describe(), "wears: an unnamed face (2 attributes)");
     }
 }

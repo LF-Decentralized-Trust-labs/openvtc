@@ -405,7 +405,9 @@ impl VtaAccess {
         // `--capabilities` narrows everywhere else it appears, and someone
         // pasting that second line deserves to know why this one does not.
         println!("  `persona-holder` is the exception that grants rather than narrows: it adds");
-        println!("  authority over your own identity — the facts and faces that sit above every");
+        println!(
+            "  authority over your own identity — the attributes and faces that sit above every"
+        );
         println!("  context — without widening this install's reach into any other context.");
         println!();
     }

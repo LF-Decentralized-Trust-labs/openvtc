@@ -1,4 +1,4 @@
-//! The attribute pool — the facts themselves, held once and projected many
+//! The attribute pool — the attributes themselves, held once and projected many
 //! times. **Holder-scoped**: above every trust context, and never readable
 //! from inside one.
 //!
@@ -94,7 +94,7 @@ impl ProvenanceKind {
     ///
     /// Always shown beside the label, because it is the half people miss: a
     /// credential is *provable* and carries the same issuer signature to every
-    /// verifier, which is the more consequential of the two facts and the less
+    /// verifier, which is the more consequential of the two attributes and the less
     /// obvious one. Severity inverts intuition here — a credential shown whole
     /// links more than a value the holder simply asserted — so the words must
     /// not hide it.
@@ -174,7 +174,7 @@ impl PoolAttribute {
         match self.label.as_deref() {
             Some(label) if !label.trim().is_empty() => label,
             _ if !self.claim_type.is_empty() => &self.claim_type,
-            _ => "(unnamed fact)",
+            _ => "(unnamed attribute)",
         }
     }
 
@@ -292,7 +292,7 @@ impl AttributeEdit {
     pub fn refusal(kind: ProvenanceKind) -> Self {
         Self::Refused(match kind {
             ProvenanceKind::CredentialBacked => {
-                "This fact comes from a credential — typing over it would turn something \
+                "This attribute comes from a credential — typing over it would turn something \
                  provable into something you said. Change it at its source, or replace the \
                  credential."
                     .to_string()
@@ -542,7 +542,7 @@ mod tests {
         assert_eq!(attr.revealed_value(true), "4242424242424242");
     }
 
-    /// A type whose style is `none` is shown as it is held. Masking every fact
+    /// A type whose style is `none` is shown as it is held. Masking every attribute
     /// would teach the reveal key as a reflex, and a reveal pressed by reflex
     /// protects nothing.
     #[test]

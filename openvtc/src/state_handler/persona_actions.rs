@@ -21,7 +21,7 @@
 //! This module is engineering-side: it keeps the spec's nouns
 //! (`attribute`, `profile`, `binding`), because those are what it addresses on
 //! the wire. The strings it *hands to the panel* — status lines, refusals — use
-//! the vocabulary a person reads (`design-docs/persona-vocabulary.md`): a fact,
+//! the vocabulary a person reads (`design-docs/persona-vocabulary.md`): an attribute,
 //! a face, wearing one.
 //!
 //! # Questions are asked once, and correctly
@@ -118,7 +118,7 @@ pub(crate) fn apply(state: &mut State, action: &PersonaAction) -> PersonaEffect 
             p.open_profile = None;
             p.status_message = None;
             // A reveal is granted to one row on one tab. Coming back to the
-            // facts should find them masked again, not still open.
+            // attributes should find them masked again, not still open.
             p.revealed_attribute = None;
             // Read on arrival, once. The agent-served tabs are not polled: a
             // pane nobody has opened should not be asking the agent about the
@@ -652,7 +652,7 @@ impl PersonaJobRun {
         let client = self.admin_vta;
         match self.job {
             PersonaJob::AttributePut(draft) => PersonaOutcome::Written {
-                verb: "Saved the fact",
+                verb: "Saved the attribute",
                 error: pool::put(&client, draft)
                     .await
                     .err()
@@ -662,7 +662,7 @@ impl PersonaJobRun {
                 attribute_id,
                 cascade,
             } => PersonaOutcome::Written {
-                verb: "Forgot the fact",
+                verb: "Forgot the attribute",
                 error: pool::delete(&client, &attribute_id, cascade)
                     .await
                     .err()
@@ -1098,7 +1098,7 @@ mod tests {
         assert!(matches!(personas(&state).mode, PersonaMode::Attribute(_)));
     }
 
-    /// A reveal names one fact, is put back by the same key, and never becomes
+    /// A reveal names one attribute, is put back by the same key, and never becomes
     /// a read.
     ///
     /// Lifting the mask touches nothing but this pane: the value is already in
@@ -1276,7 +1276,7 @@ mod tests {
         for error in [None, Some("refused".to_string())] {
             let mut state = State::default();
             PersonaOutcome::Written {
-                verb: "Saved the fact",
+                verb: "Saved the attribute",
                 error,
             }
             .apply(&mut state);
@@ -1348,7 +1348,7 @@ mod tests {
         });
 
         PersonaOutcome::Written {
-            verb: "Saved the fact",
+            verb: "Saved the attribute",
             error: Some("version conflict".to_string()),
         }
         .apply(&mut state);

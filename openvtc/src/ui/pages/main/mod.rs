@@ -3554,7 +3554,7 @@ mod key_handler_tests {
             s.main_page.content_panel.identity.tab = PersonaTab::Attributes;
         });
         page.handle_key_event(press(KeyCode::Char('s')));
-        assert!(rx.try_recv().is_err(), "no fact, no reveal");
+        assert!(rx.try_recv().is_err(), "no attribute, no reveal");
     }
 
     /// An armed confirmation owns `y`/`n` — every other pane verb is suppressed
