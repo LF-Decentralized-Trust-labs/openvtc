@@ -34,8 +34,9 @@ anyhow.workspace = true
 # consumer of the published crate.
 #
 # Floor is 0.4.6, but 0.4.6 is NOT where this resolves from: the `did-git-sign`
-# entry under `[patch.crates-io]` in the root manifest redirects it to VGI#37's
-# head, the unpublished commit that takes VGI to vta-sdk 0.34. The published
+# entry under `[patch.crates-io]` in the root manifest redirects it to VGI main
+# at the #37 merge — merged, but not published — which takes VGI to vta-sdk
+# 0.34. The published
 # 0.4.6 requires `^0.27`, which against this workspace's 0.34 does not merely
 # split the graph — an older `vta-keys` will not compile against the current
 # `vti-common`, so the build fails outright. Read the patch block for the full

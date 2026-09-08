@@ -349,24 +349,26 @@ strip = "symbols"
 #
 # OpenVTC/verifiable-git-infrastructure#37 is the change that ends it — the VGI
 # workspace onto vta-sdk 0.34 and TDK 0.12, no source change, green on its own
-# pipeline. Its head is a better dependency than the stale published crate, so
-# this workspace takes it directly rather than waiting on the publish: the
-# requirement in `openvtc/Cargo.toml` still names `0.4.6` (the version VGI carries
-# at that rev), and this patch is what decides where that 0.4.6 comes from.
+# pipeline. It is **merged**, and the rev below is VGI's `main` at that merge, so
+# this is a pin to a released-in-git tree rather than to a branch that could be
+# deleted under it. What it is not is a *published* release: the requirement in
+# `openvtc/Cargo.toml` still names `0.4.6` (the version VGI carries at that rev),
+# and this patch is what decides where that 0.4.6 comes from.
 #
 # The rev moves with every vta-sdk minor. That is the whole reason this block is
 # cheap: a published `did-git-sign` would have made 0.32 and 0.34 each wait on a
 # full VGI release cycle, as 0.23, 0.25 and 0.27 each did.
 #
-# Pinned by `rev`, never by `branch` — a further push to that PR must not silently
-# change what this builds against. VGI's own manifest pins `trql-client` the same
-# way, and both git sources are allow-listed in `deny.toml`.
+# Pinned by `rev`, never by `branch` — a later commit on VGI main must not
+# silently change what this builds against. VGI's own manifest pins `trql-client`
+# the same way, and both git sources are allow-listed in `deny.toml`.
 #
 # **Delete this whole block the moment VGI publishes 0.4.7**, and raise the floor
 # in `openvtc/Cargo.toml` to name that release. `publish = false` here, so a git
-# source costs this workspace nothing on its own release path — but it is still a
-# dependency on an unmerged branch, which is a thing to unwind rather than to
-# keep. The unwind is three deep and all three are still open:
+# source costs this workspace nothing on its own release path — but a git source
+# is still a thing to unwind rather than to keep. Merging #37 discharged the
+# first obligation (VGI main now builds on 0.34) and none of the publish chain,
+# which is three deep and all three still open:
 #
 #   1. affinidi/affinidi-trust-registry-rs#128 merges and publishes
 #      `trql-client` 0.15 (on trust-tasks 0.18, so it also clears the duplicate
@@ -376,5 +378,5 @@ strip = "symbols"
 #      then tags, which fires `publish.yml`
 #   3. OpenVTC deletes this block and floors `did-git-sign` at `"0.4.7"`
 [patch.crates-io]
-did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "584f57be6b41407e2da639de3f1db2904dec3633" }
-vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "584f57be6b41407e2da639de3f1db2904dec3633" }
+did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "5111dc177d25d68088a4d6ba991210e262498950" }
+vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "5111dc177d25d68088a4d6ba991210e262498950" }

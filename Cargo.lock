@@ -2763,7 +2763,7 @@ dependencies = [
 [[package]]
 name = "did-git-sign"
 version = "0.4.7"
-source = "git+https://github.com/OpenVTC/verifiable-git-infrastructure?rev=584f57be6b41407e2da639de3f1db2904dec3633#584f57be6b41407e2da639de3f1db2904dec3633"
+source = "git+https://github.com/OpenVTC/verifiable-git-infrastructure?rev=5111dc177d25d68088a4d6ba991210e262498950#5111dc177d25d68088a4d6ba991210e262498950"
 dependencies = [
  "anyhow",
  "apple-native-keyring-store",
@@ -9573,7 +9573,7 @@ dependencies = [
 [[package]]
 name = "vgi-core"
 version = "0.4.7"
-source = "git+https://github.com/OpenVTC/verifiable-git-infrastructure?rev=584f57be6b41407e2da639de3f1db2904dec3633#584f57be6b41407e2da639de3f1db2904dec3633"
+source = "git+https://github.com/OpenVTC/verifiable-git-infrastructure?rev=5111dc177d25d68088a4d6ba991210e262498950#5111dc177d25d68088a4d6ba991210e262498950"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
