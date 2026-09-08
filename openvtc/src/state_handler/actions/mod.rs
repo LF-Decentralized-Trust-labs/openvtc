@@ -225,6 +225,17 @@ pub enum PersonaAction {
     ProfileOpen(usize),
     /// Close that view.
     ProfileClose,
+    /// Move the cursor within the opened face's claims.
+    ///
+    /// Distinct from [`Select`](Self::Select) because the detail view is a mode
+    /// of the profiles tab with a cursor of its own: `Select` moves the face
+    /// list behind it, which still has to be where closing the detail lands.
+    FaceClaimSelect(usize),
+    /// Show the selected claim of the opened face unmasked, or stop showing it.
+    ///
+    /// The face-view counterpart to [`RevealValue`](Self::RevealValue), and one
+    /// claim rather than a mode for the same reason.
+    RevealFaceClaim(usize),
     ProfileNew,
     ProfileEdit(usize),
     ProfileDeleteArm(usize),

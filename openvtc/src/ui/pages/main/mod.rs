@@ -641,9 +641,25 @@ impl MainPage {
                 let selected = personas.profile_selected;
                 // The opened detail view is a mode of this tab, not of the
                 // pane, so its keys live here.
-                if personas.open_profile.is_some() {
+                if let Some(detail) = personas.open_profile.as_ref() {
+                    let claims = detail.resolved.len();
+                    let claim = personas.face_claim_selected;
                     return match key.code {
                         KeyCode::Enter => send(PA::ProfileClose),
+                        KeyCode::Up if claims > 0 => {
+                            send(PA::FaceClaimSelect(claim.saturating_sub(1)))
+                        }
+                        KeyCode::Down if claims > 0 => {
+                            send(PA::FaceClaimSelect((claim + 1).min(claims - 1)))
+                        }
+                        // The same `s` the attributes tab uses, on the same
+                        // terms: one claim, the selected one, and pressing it
+                        // again puts the mask back. There is no `v` here
+                        // because there is nothing for it to ask — a face
+                        // detail is resolved in full when it is opened, so
+                        // every value is already in hand and the mask is the
+                        // only thing between it and the screen.
+                        KeyCode::Char('s') if claim < claims => send(PA::RevealFaceClaim(claim)),
                         KeyCode::Char('e') => send(PA::ProfileEdit(selected)),
                         _ => false,
                     };

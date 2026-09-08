@@ -475,17 +475,47 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
                 .fg(COLOR_TEXT_DEFAULT),
             );
             lines.push(Line::from(""));
-            for claim in &detail.resolved {
-                lines.push(Line::from(vec![
+            for (i, claim) in detail.resolved.iter().enumerate() {
+                let is_selected = i == state.face_claim_selected;
+                // A reveal is granted to one claim, and only while it is the
+                // selected one — the same pairing the attributes tab makes, so
+                // a stale grant cannot open a row nobody chose.
+                let revealed = is_selected && state.revealed_face_claim == Some(i);
+                let value = if revealed {
+                    claim.revealed_value()
+                } else {
+                    claim.display_value()
+                };
+                let mut spans = vec![
                     Span::styled(
-                        format!("   {:<22}", truncate(&claim.claim_type, 21)),
+                        if is_selected { " ▸ " } else { "   " },
+                        if is_selected {
+                            Style::new().fg(COLOR_SUCCESS).bold()
+                        } else {
+                            Style::new().fg(COLOR_TEXT_DEFAULT)
+                        },
+                    ),
+                    Span::styled(
+                        format!("{:<22}", truncate(&claim.claim_type, 21)),
                         Style::new().fg(COLOR_SOFT_PURPLE),
                     ),
-                    Span::styled(
-                        truncate(&claim.display_value(), 44),
-                        Style::new().fg(COLOR_TEXT_DEFAULT),
-                    ),
-                ]));
+                    Span::styled(truncate(&value, 44), Style::new().fg(COLOR_TEXT_DEFAULT)),
+                ];
+                // Without this the row is a wrong answer rather than a reduced
+                // one: `••••••••` and "(no value)" are the same shape, and a
+                // holder reading the first as the second believes the face
+                // shows nothing.
+                if claim.is_masked() && !revealed {
+                    spans.push(Span::styled(
+                        if is_selected {
+                            "   masked — s to show"
+                        } else {
+                            "   masked"
+                        },
+                        Style::new().fg(COLOR_DARK_GRAY),
+                    ));
+                }
+                lines.push(Line::from(spans));
                 // A value that lives only in this face is not among the
                 // holder's attributes, so correcting it there will not correct it
                 // here. Saying so on the row is the only place they find out.
@@ -500,20 +530,28 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
             }
         }
         lines.push(Line::from(""));
-        // No per-claim reveal here: a face has no cursor over its claims, so
-        // the only reveal this view could offer is the blanket one the mask
-        // exists to avoid. The one-at-a-time reveal lives with the attributes.
+        // Said once, above the keys, rather than on every row — and only when
+        // something on screen is actually masked, because explaining a
+        // mechanism the holder is not looking at is noise.
         if detail.resolved.iter().any(ResolvedClaim::is_masked) {
             lines.push(
                 Line::from(
-                    " Some values are masked by what they are. Read one of them among your \
-                     attributes, where they open one at a time.",
+                    " Some values are masked by what they are — `s` shows the selected one. The \
+                     mask is against someone reading over your shoulder; this face already \
+                     shows the value to whoever wears it.",
                 )
                 .fg(COLOR_DARK_GRAY),
             );
             lines.push(Line::from(""));
         }
-        lines.push(Line::from(" ⏎/Esc: back   e: edit").fg(COLOR_DARK_GRAY));
+        lines.push(
+            Line::from(if detail.resolved.is_empty() {
+                " ⏎/Esc: back   e: edit".to_string()
+            } else {
+                " ↑/↓ select   s: show one   ⏎/Esc: back   e: edit".to_string()
+            })
+            .fg(COLOR_DARK_GRAY),
+        );
         return;
     }
 
@@ -1731,6 +1769,127 @@ mod tests {
         );
     }
 
+    /// How many *rows* are marked masked, as distinct from the paragraph above
+    /// them that explains the mask and contains the same word.
+    fn masked_rows(out: &str) -> usize {
+        out.lines()
+            .filter(|l| l.contains("masked") && !l.contains("Some values are masked"))
+            .count()
+    }
+
+    /// A face builds a detail with two masked claims, for the reveal tests below.
+    fn face_with_two_masked_claims() -> IdentityState {
+        use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
+        let mut state = IdentityState {
+            tab: PersonaTab::Profiles,
+            open_profile: Some(ProfileDetail {
+                summary: ProfileSummary {
+                    profile_id: "01P".into(),
+                    name: "OSS Developer".into(),
+                    ..ProfileSummary::default()
+                },
+                resolved: vec![
+                    ResolvedClaim {
+                        claim_type: "name.legal".into(),
+                        value: Some(serde_json::json!("Glenn Gore")),
+                        ..ResolvedClaim::default()
+                    },
+                    ResolvedClaim {
+                        claim_type: "email.work".into(),
+                        value: Some(serde_json::json!("glenn@example.com")),
+                        ..ResolvedClaim::default()
+                    },
+                    ResolvedClaim {
+                        claim_type: "phone.mobile".into(),
+                        value: Some(serde_json::json!("+6591234567")),
+                        ..ResolvedClaim::default()
+                    },
+                ],
+                ..ProfileDetail::default()
+            }),
+            ..IdentityState::default()
+        };
+        loaded(&mut state);
+        state
+    }
+
+    /// A face's masked claims say they are masked, and say which key opens the
+    /// selected one — rather than sending the holder to another tab.
+    ///
+    /// This is the half the view used to be missing. A face was read as a whole
+    /// with no cursor, so it could offer no per-claim reveal and told the reader
+    /// to go and find the value among their attributes instead. That is a real
+    /// answer to a question nobody asked: the holder is looking at *this* face
+    /// because they want to know what *this* face shows.
+    #[test]
+    fn a_face_says_which_key_opens_the_selected_masked_claim() {
+        let state = face_with_two_masked_claims();
+        let out = text(&render(&state));
+
+        assert!(out.contains("s: show one"), "the key is offered: {out}");
+        assert!(
+            !out.contains("among your attributes"),
+            "no longer sends the reader to another tab: {out}"
+        );
+        // Two of the three claim types carry a mask style; `name.legal` does
+        // not. The selected row here is index 0 (`name.legal`), so neither
+        // masked row carries the "s to show" tail — the key hint follows the
+        // cursor rather than sitting on every masked row.
+        assert_eq!(
+            masked_rows(&out),
+            2,
+            "exactly the two masked claims are marked: {out}"
+        );
+        assert!(
+            !out.contains("masked — s to show"),
+            "the key hint follows the cursor, which is on an unmasked row: {out}"
+        );
+        assert!(
+            out.contains("Glenn Gore"),
+            "an unmasked type is still shown whole: {out}"
+        );
+    }
+
+    /// The reveal opens one claim — the selected one — and nothing else on the
+    /// face opens with it.
+    #[test]
+    fn a_face_reveal_opens_only_the_selected_claim() {
+        let mut state = face_with_two_masked_claims();
+        state.face_claim_selected = 1;
+        state.revealed_face_claim = Some(1);
+
+        let out = text(&render(&state));
+        assert!(out.contains("glenn@example.com"), "the selected one: {out}");
+        assert!(
+            !out.contains("+6591234567"),
+            "the other masked claim stays masked: {out}"
+        );
+        assert_eq!(
+            masked_rows(&out),
+            1,
+            "the revealed row drops its marker: {out}"
+        );
+    }
+
+    /// A grant that no longer names the selected row opens nothing.
+    ///
+    /// Belt and braces over the handler, which clears the grant when the
+    /// selection moves: the render checks the pairing itself, so a grant that
+    /// somehow outlived its row cannot unmask whatever moved under it.
+    #[test]
+    fn a_face_reveal_that_is_not_the_selected_row_opens_nothing() {
+        let mut state = face_with_two_masked_claims();
+        state.face_claim_selected = 2;
+        state.revealed_face_claim = Some(1);
+
+        let out = text(&render(&state));
+        assert!(
+            !out.contains("glenn@example.com"),
+            "a stale grant does not open a row nobody chose: {out}"
+        );
+        assert!(!out.contains("+6591234567"), "{out}");
+    }
+
     /// An attribute whose claim type carries a mask style is masked in the holder's
     /// own list, and the row says so rather than reading as empty.
     ///
@@ -1852,8 +2011,12 @@ mod tests {
         assert!(!out.contains("masked"), "{out}");
     }
 
-    /// A face masks what it shows too, and points at where a value can be read
-    /// one at a time — the detail view has no cursor of its own to reveal from.
+    /// A face masks what it shows too, and a claim left unselected stays masked.
+    ///
+    /// This used to assert that the view sent the reader "among your
+    /// attributes" to read a value, because the detail had no cursor of its own
+    /// to reveal from. It has one now, so the pointer to another tab is gone
+    /// and what is left to check is the masking itself.
     #[test]
     fn a_face_masks_its_values_and_says_where_to_read_one() {
         use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
@@ -1880,7 +2043,12 @@ mod tests {
         let out = text(&render(&state));
         assert!(out.contains("••••••••••••4242"), "{out}");
         assert!(!out.contains("4242424242424242"), "{out}");
-        assert!(out.contains("among your"), "{out}");
+        assert!(
+            !out.contains("among your"),
+            "no longer sends the reader to another tab: {out}"
+        );
+        // The one claim is also the selected one, so the row names the key.
+        assert!(out.contains("masked — s to show"), "{out}");
     }
 
     /// The one masked attribute the tests above share.
