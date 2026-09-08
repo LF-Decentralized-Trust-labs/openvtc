@@ -741,8 +741,8 @@ fn push_agent_state(state: &IdentityState, lines: &mut Vec<Line<'static>>, noun:
         // name a host, a port, a contract mismatch, and translating what we do
         // not recognise would be inventing a cause (VTI R6.4).
         if needs_holder_grant(error) {
-            for line in HOLDER_GRANT_HINT {
-                lines.push(Line::from(*line).fg(COLOR_ORANGE));
+            for line in holder_grant_hint(state.agent_credential_did.as_deref()) {
+                lines.push(Line::from(line).fg(COLOR_ORANGE));
             }
         } else {
             super::status::push_status(lines, error, " ");
@@ -770,16 +770,28 @@ fn push_agent_state(state: &IdentityState, lines: &mut Vec<Line<'static>>, noun:
 /// What to do about the one refusal that has a specific answer.
 ///
 /// Kept as lines rather than a paragraph because the middle one is a command an
-/// operator has to read character by character.
-const HOLDER_GRANT_HINT: &[&str] = &[
-    " Your agent credential administers this context. Your facts, and the faces",
-    " over them, sit above every context — reaching them is a separate grant:",
-    "",
-    "   pnm acl update --did <this install's DID> --capabilities persona-holder",
-    "",
-    " It adds authority over your own identity without giving this install any",
-    " authority over other contexts. `openvtc health` prints the DID.",
-];
+/// operator has to read character by character — and, when we know it, retype
+/// or copy into another terminal.
+///
+/// We *do* know it: the DID this install authenticates as is in the config the
+/// pane is already rendering from, so the command is emitted complete rather
+/// than with a `<this install's DID>` placeholder the reader has to go and
+/// resolve on another pane. The placeholder survives only for the case where
+/// there is genuinely nothing to substitute — a BIP32 account, which has no
+/// agent credential at all (and, having no agent, will not have produced this
+/// refusal in the first place).
+fn holder_grant_hint(credential_did: Option<&str>) -> Vec<String> {
+    let subject = credential_did.unwrap_or("<this install's DID>");
+    vec![
+        " Your agent credential administers this context. Your facts, and the faces".to_string(),
+        " over them, sit above every context — reaching them is a separate grant:".to_string(),
+        String::new(),
+        format!("   pnm acl update {subject} --capabilities persona-holder"),
+        String::new(),
+        " It adds authority over your own identity without giving this install any".to_string(),
+        " authority over other contexts.".to_string(),
+    ]
+}
 
 /// Whether a read failed because the caller lacks holder authority, as opposed
 /// to the agent being unreachable or the request being malformed.
@@ -1314,13 +1326,42 @@ mod tests {
                  holder credential"
                     .to_string(),
             ),
+            agent_credential_did: Some("did:key:z6MkThisInstall".to_string()),
             ..IdentityState::default()
         };
         loaded(&mut state);
 
         let out = text(&render(&state));
         assert!(out.contains("persona-holder"), "{out}");
-        assert!(out.contains("pnm acl update"), "{out}");
+        // The whole command, ready to run. A hint that names a placeholder is a
+        // hint that sends the reader somewhere else to finish reading it.
+        assert!(
+            out.contains("pnm acl update did:key:z6MkThisInstall --capabilities persona-holder"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("<this install"),
+            "the placeholder must not survive when we hold the DID: {out}"
+        );
+    }
+
+    /// `did` is positional on `pnm acl update`; there is no `--did` flag, and a
+    /// hint that grew one would be a command that fails on paste.
+    #[test]
+    fn the_grant_command_passes_the_did_positionally() {
+        let hint = holder_grant_hint(Some("did:key:z6MkThisInstall")).join("\n");
+        assert!(!hint.contains("--did"), "{hint}");
+    }
+
+    /// Nothing to substitute is the one case the placeholder is still right for
+    /// — better an obvious blank than a command naming the wrong subject.
+    #[test]
+    fn the_grant_command_keeps_a_placeholder_when_there_is_no_credential() {
+        let hint = holder_grant_hint(None).join("\n");
+        assert!(
+            hint.contains("pnm acl update <this install\'s DID>"),
+            "{hint}"
+        );
     }
 
     /// And an unrelated failure does not: telling someone to run a grant when

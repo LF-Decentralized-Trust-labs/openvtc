@@ -775,6 +775,15 @@ pub struct IdentityState {
     pub disclosure_selected: usize,
 
     // ── Shared ───────────────────────────────────────────────────────────
+    /// The `did:key` this install authenticates to the agent as, when the
+    /// account is agent-managed.
+    ///
+    /// Display-only, and here for one line: the grant hint shown when the agent
+    /// refuses a read names a `pnm acl update` command, and that command needs
+    /// this DID. A placeholder there is a command the reader cannot run — they
+    /// would have to go and find the DID on another pane first, which is the
+    /// step the hint exists to remove.
+    pub agent_credential_did: Option<String>,
     /// A read is in flight.
     pub loading: bool,
     /// Why the last read failed, kept until one succeeds.

@@ -34,6 +34,7 @@ pub async fn run(
     recoverable: bool,
 ) -> Result<()> {
     let local = local_report(profile);
+    let access = config.and_then(vta_access);
 
     let mut subjects: Vec<Subject> = Vec::new();
 
@@ -91,9 +92,19 @@ pub async fn run(
     // report anything because the half that failed is the half we can't check.
     if subjects.is_empty() {
         if as_json {
-            println!("{}", serde_json::to_string_pretty(&local.as_json())?);
+            let mut value = local.as_json();
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert(
+                    "vta_access".to_string(),
+                    VtaAccess::as_json(access.as_ref()),
+                );
+            }
+            println!("{}", serde_json::to_string_pretty(&value)?);
         } else {
             local.render();
+            if let Some(access) = &access {
+                access.render();
+            }
             eprintln!(
                 "{}",
                 style(
@@ -122,10 +133,17 @@ pub async fn run(
         let mut value = serde_json::to_value(&report)?;
         if let Some(obj) = value.as_object_mut() {
             obj.insert("local".to_string(), local.as_json());
+            obj.insert(
+                "vta_access".to_string(),
+                VtaAccess::as_json(access.as_ref()),
+            );
         }
         println!("{}", serde_json::to_string_pretty(&value)?);
     } else {
         local.render();
+        if let Some(access) = &access {
+            access.render();
+        }
         render(&report, config.is_none());
     }
 
@@ -267,6 +285,128 @@ impl LocalReport {
         {
             println!("  check yourself   $ {hint}");
         }
+        println!();
+    }
+}
+
+/// How this install reaches the VTA, and — the part that was missing — the DID
+/// it authenticates *as*.
+///
+/// The VTA keys its ACL on that DID, so it is the one an operator has to name
+/// in `pnm acl get` / `pnm acl update` to see or change what this install may
+/// do. It is a `did:key` minted during setup and it never appears in the config
+/// file (it lives in the credential bundle in the secure store), so short of
+/// reading it out of the TUI's VTA panel there was no way to get at it — while
+/// the identity pane's own refusal hint says "`openvtc health` prints the DID".
+/// Now it does.
+///
+/// Everything here is read from the loaded config: no network, so it is
+/// answerable on exactly the run where the network leg is the thing that is
+/// broken.
+struct VtaAccess {
+    /// The `did:key` this install authenticates to the VTA as.
+    credential_did: String,
+    vta_did: String,
+    /// Empty for a DIDComm-only VTA.
+    vta_url: String,
+    /// `Some` when setup reached the VTA over DIDComm; the transport
+    /// `build_runtime_vta_client` will pick again at runtime.
+    mediator_did: Option<String>,
+    context_id: String,
+}
+
+/// `None` for a BIP32 profile: there is no VTA and so no ACL to edit.
+fn vta_access(config: &Config) -> Option<VtaAccess> {
+    let KeyBackend::Vta {
+        credential_did,
+        vta_did,
+        vta_url,
+        mediator_did,
+        ..
+    } = &config.key_backend
+    else {
+        return None;
+    };
+    Some(VtaAccess {
+        credential_did: credential_did.clone(),
+        vta_did: vta_did.clone(),
+        vta_url: vta_url.clone(),
+        mediator_did: mediator_did.clone(),
+        context_id: config.account.top_context_id.clone(),
+    })
+}
+
+impl VtaAccess {
+    /// The transport this profile would open, named the same way
+    /// `build_runtime_vta_client` chooses it: a mediator means DIDComm, and a
+    /// REST URL alongside it is a fallback rather than the primary.
+    fn transport(&self) -> String {
+        match (&self.mediator_did, self.vta_url.is_empty()) {
+            (Some(_), true) => "DIDComm".to_string(),
+            (Some(_), false) => "DIDComm (REST fallback configured)".to_string(),
+            (None, false) => "REST".to_string(),
+            (None, true) => "none configured".to_string(),
+        }
+    }
+
+    /// Serialised even when absent, so a script can read `.vta_access` without
+    /// having to know whether this profile uses a VTA.
+    fn as_json(access: Option<&Self>) -> serde_json::Value {
+        let Some(access) = access else {
+            return serde_json::Value::Null;
+        };
+        serde_json::json!({
+            // Named for what it is used for rather than for where it is stored:
+            // a consumer of this key wants the ACL subject.
+            "authenticates_as": access.credential_did,
+            "vta_did": access.vta_did,
+            "vta_url": (!access.vta_url.is_empty()).then(|| access.vta_url.clone()),
+            "mediator_did": access.mediator_did,
+            "context_id": access.context_id,
+            "transport": access.transport(),
+        })
+    }
+
+    fn render(&self) {
+        println!("{}", style("VTA access").color256(CLI_BLUE).bold());
+        println!("  VTA              {}", self.vta_did);
+        println!("  context          {}", self.context_id);
+        println!("  transport        {}", self.transport());
+        if let Some(mediator) = &self.mediator_did {
+            println!("  mediator         {mediator}");
+        }
+        if !self.vta_url.is_empty() {
+            println!("  REST endpoint    {}", self.vta_url);
+        }
+        // Printed in full and last, on its own, because it is the one line on
+        // this screen that gets copied into another terminal. Truncating it —
+        // as the TUI panel must, for width — would make it useless here.
+        println!(
+            "  authenticates as {}",
+            style(&self.credential_did).color256(CLI_PURPLE)
+        );
+        println!();
+        println!("  The VTA's ACL is keyed on that last DID: it is what to name when reading");
+        println!("  or changing what this install may do. From your PNM session:");
+        println!();
+        println!(
+            "    {}",
+            style(format!("pnm acl get {}", self.credential_did)).color256(CLI_ORANGE)
+        );
+        println!(
+            "    {}",
+            style(format!(
+                "pnm acl update {} --capabilities persona-holder",
+                self.credential_did
+            ))
+            .color256(CLI_ORANGE)
+        );
+        println!();
+        // `--capabilities` narrows everywhere else it appears, and someone
+        // pasting that second line deserves to know why this one does not.
+        println!("  `persona-holder` is the exception that grants rather than narrows: it adds");
+        println!("  authority over your own identity — the facts and faces that sit above every");
+        println!("  context — without widening this install's reach into any other context.");
         println!();
     }
 }
@@ -761,6 +901,61 @@ mod tests {
     fn short_tail_falls_back_for_pathless_dids() {
         assert_eq!(short_tail("did:key:z6Mkabc"), "z6Mkabc");
         assert_eq!(short_tail("notadid"), "notadid");
+    }
+
+    fn vta_access_fixture() -> VtaAccess {
+        VtaAccess {
+            credential_did: "did:key:z6MkAuthKeyForThisInstall".to_string(),
+            vta_did: "did:webvh:QmScid:vta.example.dev:agent".to_string(),
+            vta_url: String::new(),
+            mediator_did: Some("did:peer:2.Vz6Mkmediator".to_string()),
+            context_id: "openvtc".to_string(),
+        }
+    }
+
+    /// The point of the section: the DID an operator pastes into `pnm acl`
+    /// arrives whole. It is a `did:key`, so a truncation would not merely be
+    /// ugly — the remainder is the key, and a shortened one names nobody.
+    #[test]
+    fn the_authenticating_did_is_serialised_in_full() {
+        let access = vta_access_fixture();
+        let json = VtaAccess::as_json(Some(&access));
+        assert_eq!(
+            json["authenticates_as"], "did:key:z6MkAuthKeyForThisInstall",
+            "the ACL subject is the key a script reads this report for"
+        );
+        assert_eq!(json["context_id"], "openvtc");
+        assert_eq!(json["transport"], "DIDComm");
+        assert!(
+            json["vta_url"].is_null(),
+            "a DIDComm-only VTA has no REST endpoint to report"
+        );
+    }
+
+    /// A BIP32 profile has no VTA and no ACL, but the key is still emitted so a
+    /// script can read `.vta_access` without branching on the backend first.
+    #[test]
+    fn a_profile_without_a_vta_serialises_as_null() {
+        assert!(VtaAccess::as_json(None).is_null());
+    }
+
+    /// Which transport this profile would open is a `build_runtime_vta_client`
+    /// rule, not a guess: a mediator means DIDComm, and a REST URL alongside one
+    /// is the fallback rather than the primary. Reporting it the other way round
+    /// would send an operator to debug the leg that is not being used.
+    #[test]
+    fn the_transport_is_named_the_way_the_client_picks_it() {
+        let mut access = vta_access_fixture();
+        assert_eq!(access.transport(), "DIDComm");
+
+        access.vta_url = "https://vta.example.dev".to_string();
+        assert_eq!(access.transport(), "DIDComm (REST fallback configured)");
+
+        access.mediator_did = None;
+        assert_eq!(access.transport(), "REST");
+
+        access.vta_url = String::new();
+        assert_eq!(access.transport(), "none configured");
     }
 
     /// The fragment is what distinguishes two service entries; the DID prefix is

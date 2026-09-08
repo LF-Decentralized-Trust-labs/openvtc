@@ -8,6 +8,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- **`openvtc health` prints the DID this install authenticates to the VTA as.**
+  A new *VTA access* section names the agent, the context, the transport that
+  would be opened (the same mediator-vs-REST rule `build_runtime_vta_client`
+  branches on), its mediator or REST endpoint, and — in full, untruncated — the
+  `did:key` this install presents.
+
+  That last one is the point. The VTA keys its ACL entry on it, so it is the
+  DID an operator has to name in `pnm acl get` / `pnm acl update`, and it was
+  reachable from nowhere but the TUI's VTA panel, truncated to fit — while the
+  identity pane's own refusal hint said "`openvtc health` prints the DID". The
+  section prints both commands ready to run, and says why `--capabilities
+  persona-holder` grants rather than narrows.
+
+  It is read from the loaded config, so it answers on the run where the network
+  leg is the broken thing. `--json` carries it as `vta_access`, null for a BIP32
+  profile so a script need not branch on the backend first.
+
+### Fixed
+
+- **The identity pane's grant hint is now a command you can run.** It named a
+  `--did` flag that `pnm acl update` does not have (the DID is positional), and
+  it left the DID itself as `<this install's DID>` — a placeholder pointing at
+  `openvtc health`, which did not print it either. The hint now carries the real
+  DID from the config the pane is already rendering from.
+
+### Added
+
 - **Facts that are sensitive by what they are stay masked, and say so.** The
   identity pane resolves each fact's claim type against the persona claim-type
   registry (`specs/persona/_shared/0.1/claim-types.json`) and paints anything
