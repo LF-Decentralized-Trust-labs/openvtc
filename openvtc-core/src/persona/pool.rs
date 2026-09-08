@@ -318,7 +318,21 @@ pub async fn list(
     include_values: bool,
 ) -> Result<Vec<PoolAttribute>, OpenVTCError> {
     let value = client
-        .persona_attribute_list(None, include_values, None, None, None)
+        // `include_sensitive` is vta-sdk 0.34's second escalation, and it is
+        // passed `include_values` rather than a constant on purpose. In this
+        // client the two questions have one answer: the only caller is the
+        // identity pane's `show_values` toggle, which is the holder saying
+        // "show me what I hold" — and when it is on, the pane reveals masked
+        // values whole from what this call returned. Passing `false` here would
+        // not narrow that read, it would make every `sensitivity: high`
+        // attribute come back valueless and render as "(no value)" under the
+        // reveal — which is a *wrong answer* about what the holder holds, and
+        // one glance away from "nothing is stored". Honouring the escalation
+        // properly means the `s` reveal fetching that one value on its own, so
+        // the default read stops carrying every card number into this process
+        // while the reveal stays truthful. That is a pane change, not a
+        // dependency bump.
+        .persona_attribute_list(None, include_values, include_values, None, None, None)
         .await
         .map_err(|e| OpenVTCError::Vta(format!("persona attribute list failed: {e}")))?;
 

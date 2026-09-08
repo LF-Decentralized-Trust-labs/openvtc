@@ -26,17 +26,24 @@ ignore = [
     # unlock and SSH key parsing — so the residual exposure is limited.
     # Re-evaluate when the `rsa` crate ships a constant-time implementation.
     "RUSTSEC-2023-0071",
-    # RUSTSEC-2025-0134: rustls-pemfile is unmaintained. Pulled via both
-    # reqwest 0.11 (1.x) and tonic (2.x) inside the affinidi messaging
-    # stack. No security impact identified — purely a maintenance
-    # advisory. Will fall off when the upstream chains migrate to
-    # rustls-pki-types/rustls-types.
-    "RUSTSEC-2025-0134",
     # RUSTSEC-2024-0436: paste is unmaintained. Build-time proc-macro
     # pulled transitively via vta-service/vti-common (utoipa-axum). No
     # runtime code; falls off when utoipa migrates off paste.
     "RUSTSEC-2024-0436",
+    # RUSTSEC-2026-0173: proc-macro-error2 is unmaintained. Same shape as
+    # the `paste` entry above and narrower in reach: a build-time
+    # proc-macro with no runtime code, and it enters only through the
+    # **dev** graph — vta-service 0.24 -> vti-rooms -> openmls_rust_crypto
+    # -> hpke-rs -> libcrux-sha3 -> hax-lib. Nothing the shipped binary
+    # links reaches it. It arrived with the vta-sdk 0.34 refresh, which is
+    # when vta-service grew the rooms crates; it falls off when hax-lib
+    # migrates off the macro.
+    "RUSTSEC-2026-0173",
 ]
+# Removed with the vta-sdk 0.34 refresh: RUSTSEC-2025-0134 (rustls-pemfile
+# unmaintained) no longer matches anything in the graph, and cargo-deny warns
+# about an ignore that never fires — an ignore list that keeps entries after
+# their crate is gone stops being a record of accepted risk.
 
 [licenses]
 version = 2
