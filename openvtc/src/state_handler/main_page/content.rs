@@ -1488,6 +1488,13 @@ pub struct SettingsState {
     pub persona_agent_name: Option<String>,
     /// How the config is protected (Token/Encrypted/Plaintext)
     pub protection_type: String,
+    /// This account's top trust context at the agent (`top_context_id`).
+    ///
+    /// Display-only, and here for the wipe screen: that screen sends the
+    /// operator to `pnm contexts delete`, which takes the id positionally, and
+    /// once the profile is gone this pane was the last place the id appeared.
+    /// Empty when no account is loaded.
+    pub context_id: String,
 
     /// Warning shown when this profile's secret is in a store that will not
     /// keep it — the Linux kernel keyring, which is RAM-only. `None` when the

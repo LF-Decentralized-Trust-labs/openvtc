@@ -56,7 +56,7 @@ pub fn render(state: &SettingsState) -> Vec<Line<'static>> {
         SettingsMode::TokenManagement { selected_index } => {
             render_token_management(state, *selected_index)
         }
-        SettingsMode::WipeConfirm { confirm_input } => render_wipe_confirm(confirm_input),
+        SettingsMode::WipeConfirm { confirm_input } => render_wipe_confirm(state, confirm_input),
         SettingsMode::View => render_view(state),
     }
 }
@@ -70,7 +70,7 @@ const VALUE_WIDTH: usize = 50;
 /// `settings_actions`, which must not open an edit mode for it.
 pub(crate) const MEDIATOR_ROW: usize = 1;
 
-fn render_wipe_confirm(confirm_input: &str) -> Vec<Line<'static>> {
+fn render_wipe_confirm(state: &SettingsState, confirm_input: &str) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
     lines.push(
         Line::from(" Wipe profile")
@@ -105,8 +105,16 @@ fn render_wipe_confirm(confirm_input: &str) -> Vec<Line<'static>> {
         Style::new().fg(COLOR_DARK_GRAY),
     ));
     lines.push(Line::styled(
-        "  If you want to clean those up too, run `pnm contexts delete` first.",
+        "  If you want to clean those up too, run this first:",
         Style::new().fg(COLOR_DARK_GRAY),
+    ));
+    lines.push(Line::from(""));
+    // Its own row, like every other command this TUI hands over: it is meant to
+    // be retyped in another terminal, and a command sharing a line with the
+    // prose around it is one an eye has to pick apart first.
+    lines.push(Line::styled(
+        format!("    {}", wipe_context_command(&state.context_id)),
+        Style::new().fg(COLOR_ORANGE),
     ));
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
@@ -542,6 +550,25 @@ fn render_change_protection(
     lines
 }
 
+/// The `pnm` command that removes what this wipe deliberately leaves behind.
+///
+/// Named with the account's own context id when we have it. This screen is the
+/// last place that id appears — the wipe takes the config file and the keyring
+/// entry holding it with it — so sending the operator away to look it up is
+/// sending them somewhere that will not exist in a moment. Hence "first".
+///
+/// `id` is positional on `pnm contexts delete` (verified against `pnm-cli`'s
+/// `ContextCommands`); the placeholder is only for an account that has not been
+/// loaded, where naming the wrong context would be worse than naming none.
+fn wipe_context_command(context_id: &str) -> String {
+    let id = if context_id.trim().is_empty() {
+        "<context id>"
+    } else {
+        context_id
+    };
+    format!("pnm contexts delete {id}")
+}
+
 /// Wrap the volatile-storage warning to the settings panel's width, prefixed so
 /// it reads as an aside rather than another selectable row.
 ///
@@ -563,6 +590,79 @@ fn textwrap_warning(warning: &str) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod wipe_confirm_tests {
+    use super::*;
+
+    fn text(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The wipe takes the config file and the keyring entry with it, so this
+    /// screen is the last place the context id appears. A command that made the
+    /// operator go and look it up would be sending them somewhere that is about
+    /// to stop existing.
+    #[test]
+    fn the_cleanup_command_names_this_accounts_context() {
+        let state = SettingsState {
+            context_id: "openvtc".to_string(),
+            ..SettingsState::default()
+        };
+        let out = text(&render_wipe_confirm(&state, ""));
+        assert!(out.contains("pnm contexts delete openvtc"), "{out}");
+        assert!(!out.contains("<context id>"), "{out}");
+    }
+
+    /// `id` is positional on `pnm contexts delete`. A grown `--id` flag would be
+    /// a command that fails on paste — the shape that had to be fixed on the
+    /// identity pane's `pnm acl update` hint.
+    #[test]
+    fn the_cleanup_command_passes_the_id_positionally() {
+        assert_eq!(
+            wipe_context_command("openvtc"),
+            "pnm contexts delete openvtc"
+        );
+        assert!(!wipe_context_command("openvtc").contains("--id"));
+    }
+
+    /// A nested context keeps its full path: `pnm` addresses a sub-context by
+    /// `<parent>/<id>`, and the leaf alone names a different context or none.
+    #[test]
+    fn a_nested_context_keeps_its_whole_path() {
+        assert_eq!(
+            wipe_context_command("acme/eng"),
+            "pnm contexts delete acme/eng"
+        );
+    }
+
+    /// With no account loaded there is no id to name, and inventing one would
+    /// point a destructive command at the wrong context.
+    #[test]
+    fn an_unloaded_account_falls_back_to_a_placeholder() {
+        assert_eq!(
+            wipe_context_command("  "),
+            "pnm contexts delete <context id>"
+        );
+    }
+
+    /// The screen must keep saying what the wipe does *not* touch. The command
+    /// is the remedy; the sentence above it is the fact that makes it needed.
+    #[test]
+    fn the_screen_still_says_what_survives_the_wipe() {
+        let out = text(&render_wipe_confirm(&SettingsState::default(), ""));
+        assert!(out.contains("NOT affected"), "{out}");
+    }
 }
 
 #[cfg(test)]

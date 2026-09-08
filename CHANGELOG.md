@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The wipe-profile screen names the context it tells you to delete.** It sent
+  the operator to `pnm contexts delete` with no id — on the one screen that is
+  about to take the config file and the keyring entry holding that id with it.
+  It now prints `pnm contexts delete <this account's context>` on its own row,
+  with the id positional, as `pnm-cli`'s `ContextCommands` defines it. A nested
+  context keeps its whole `<parent>/<id>` path; an unloaded account still falls
+  back to a placeholder rather than naming the wrong context in a destructive
+  command.
+
 ### Added
 
 - **`openvtc health` prints the DID this install authenticates to the VTA as.**
