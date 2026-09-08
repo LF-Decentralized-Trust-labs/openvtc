@@ -414,6 +414,7 @@ impl MainPageState {
                 self.content_panel.vta.vta_agent_name =
                     config.agent_name_for(vta_did).map(str::to_owned);
                 self.content_panel.vta.credential_did = credential_did.clone();
+                self.content_panel.identity.agent_credential_did = Some(credential_did.clone());
                 self.content_panel.vta.is_vta_managed = true;
                 // Same condition `build_runtime_vta_client` branches on, so the
                 // panel names the transport this process actually connects over
@@ -428,6 +429,7 @@ impl MainPageState {
             }
             _ => {
                 self.content_panel.vta.is_vta_managed = false;
+                self.content_panel.identity.agent_credential_did = None;
             }
         }
         self.content_panel.vta.key_count = config.key_info.len();
