@@ -65,6 +65,27 @@ pub struct BindingSummary {
     /// "presents nothing" — a confident wrong answer about the user's own
     /// identity, which is the one thing this panel must not give.
     pub unknown: bool,
+    /// A face worn by the same persona in the **parent** context, when it
+    /// wears nothing here.
+    ///
+    /// Not part of the agent's answer, and **not something this community
+    /// sees**: the VTA keys a binding on an exact `(context_id, persona_did)`
+    /// pair and walks no hierarchy, and the `materialised_claims` a disclosure
+    /// draws on go through that same exact lookup. It is carried because the
+    /// alternative is a bare
+    /// "wears: nothing" in front of a holder who has just configured a face and
+    /// can see it on another surface, with nothing on screen to explain the
+    /// difference.
+    pub parent: Option<ParentBinding>,
+}
+
+/// What the same persona wears one context up.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ParentBinding {
+    /// The context the binding was found in — the sub-context's parent.
+    pub context_id: String,
+    /// The bound profile's label, or its identifier when it has no label.
+    pub label: String,
 }
 
 impl BindingSummary {
@@ -91,7 +112,18 @@ impl BindingSummary {
             return "wears: unknown".to_string();
         }
         if !self.bound {
-            return "wears: nothing".to_string();
+            // A fourth reading, and the one a holder is most likely to arrive
+            // at confused: nothing is worn *here*, but the same persona wears
+            // something one context up. Saying only "nothing" is true and
+            // useless — they can see the face on another surface and have no
+            // way to tell why this one disagrees.
+            return match &self.parent {
+                Some(p) => format!(
+                    "wears: nothing here — {} is worn in {}, which this community does not see",
+                    p.label, p.context_id
+                ),
+                None => "wears: nothing".to_string(),
+            };
         }
         let label = self
             .profile_name
@@ -142,6 +174,45 @@ pub async fn get(
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
         unknown: false,
+        // Filled by `get_or_unknown` when this answer is "nothing", not here:
+        // `get` reports one context, which is exactly what the agent was asked.
+        parent: None,
+    })
+}
+
+/// Ask what the same persona wears in `sub_context_id`'s **parent**.
+///
+/// Only ever called when the sub-context itself came back unbound, and only to
+/// explain that answer rather than to change it. The VTA keys a binding on an
+/// exact `(context_id, persona_did)` pair and walks no hierarchy — both
+/// `binding_summary` and the `materialised_claims` a disclosure draws on read
+/// through the same exact lookup — so a face worn in the parent is genuinely
+/// **not** what this community sees. The panel says so in those words.
+///
+/// The parent is derived with [`context_path::parse_sub_context_id`], never by
+/// hand: a top context may itself be nested, so the split is on the *last* `/`.
+/// An id with no `/` is not a sub-context and has no parent to ask about.
+///
+/// Best-effort like every other binding read — a failure here must not turn a
+/// perfectly good "wears: nothing" into an error.
+///
+/// [`context_path::parse_sub_context_id`]: crate::config::context_path::parse_sub_context_id
+async fn worn_in_parent(
+    client: &VtaClient,
+    sub_context_id: &str,
+    persona_did: &str,
+) -> Option<ParentBinding> {
+    let (parent, _) = crate::config::context_path::parse_sub_context_id(sub_context_id)?;
+    let summary = get(client, parent, persona_did).await.ok()?;
+    if !summary.bound {
+        return None;
+    }
+    Some(ParentBinding {
+        context_id: parent.to_string(),
+        label: summary
+            .profile_name
+            .or(summary.profile_id)
+            .unwrap_or_else(|| "an unnamed face".to_string()),
     })
 }
 
@@ -149,13 +220,22 @@ pub async fn get(
 ///
 /// The form a panel wants: it has a row to draw either way, and the question is
 /// only whether it can say anything true about what that row presents.
+///
+/// One extra round-trip, and only in one case: an *unbound* sub-context asks
+/// its parent as well, so "wears: nothing" can say whether a face is worn a
+/// level up. A bound context costs nothing extra, which is the common one.
 pub async fn get_or_unknown(
     client: &VtaClient,
     context_id: &str,
     persona_did: &str,
 ) -> BindingSummary {
     match get(client, context_id, persona_did).await {
-        Ok(summary) => summary,
+        Ok(mut summary) => {
+            if !summary.bound {
+                summary.parent = worn_in_parent(client, context_id, persona_did).await;
+            }
+            summary
+        }
         Err(e) => {
             tracing::debug!(
                 context_id,
@@ -206,6 +286,68 @@ mod tests {
     fn unknown_is_not_the_same_as_unbound() {
         assert_eq!(BindingSummary::unknown().describe(), "wears: unknown");
         assert_eq!(BindingSummary::default().describe(), "wears: nothing");
+    }
+
+    /// "Nothing here" and "nothing anywhere" are different answers, and the
+    /// holder most likely to be confused is the one looking at the first.
+    ///
+    /// The VTA keys a binding on an exact `(context_id, persona_did)` pair and
+    /// walks no hierarchy, so a face worn in the parent context is genuinely
+    /// not what this community sees — but a bare "wears: nothing" in front of
+    /// someone who just configured that face, and can see it on another
+    /// surface, is true and useless. The sentence has to carry both halves:
+    /// there is a face, and this community does not see it.
+    #[test]
+    fn a_face_worn_one_level_up_is_named_rather_than_hidden_behind_nothing() {
+        let summary = BindingSummary {
+            parent: Some(ParentBinding {
+                context_id: "openvtc".into(),
+                label: "OSS Developer".into(),
+            }),
+            ..BindingSummary::default()
+        };
+
+        let line = summary.describe();
+        assert!(line.contains("nothing here"), "{line}");
+        assert!(line.contains("OSS Developer"), "{line}");
+        assert!(line.contains("openvtc"), "{line}");
+        assert!(
+            line.contains("does not see"),
+            "the community must not be implied to see it: {line}"
+        );
+    }
+
+    /// A parent binding never turns an *unknown* into an answer.
+    ///
+    /// "We could not ask" outranks everything: reporting what a parent context
+    /// wears while the context actually in question went unanswered would be a
+    /// confident statement built on a failed read.
+    #[test]
+    fn a_parent_binding_does_not_override_unknown() {
+        let summary = BindingSummary {
+            parent: Some(ParentBinding {
+                context_id: "openvtc".into(),
+                label: "OSS Developer".into(),
+            }),
+            ..BindingSummary::unknown()
+        };
+        assert_eq!(summary.describe(), "wears: unknown");
+    }
+
+    /// And it never displaces a real answer either.
+    #[test]
+    fn a_bound_context_reports_what_it_wears_not_the_parent() {
+        let summary = BindingSummary {
+            bound: true,
+            profile_name: Some("Work".into()),
+            claim_count: 3,
+            parent: Some(ParentBinding {
+                context_id: "openvtc".into(),
+                label: "OSS Developer".into(),
+            }),
+            ..BindingSummary::default()
+        };
+        assert_eq!(summary.describe(), "wears: Work (3 attributes)");
     }
 
     /// The distinction the `unknown` flag exists to preserve.
