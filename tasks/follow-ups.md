@@ -53,6 +53,29 @@ parts of the family are deliberately not on it, each for a reason worth keeping:
 
 ## Small / unscheduled
 
+### [ ] Honour `include_sensitive` as a real second escalation
+vta-sdk 0.34 gave `persona_attribute_list` an `include_sensitive` argument —
+the read-path control `openvtc-core/src/persona/claim_types.rs`'s module header
+had been recording as *missing*. `pool::list` now passes `include_values`
+through to both arguments (#286), which preserves the behaviour this client
+already had but does not yet honour the distinction.
+
+Passing `false` is **not** the fix on its own, and the reason is the whole of
+the work: the identity pane has one escalation (`show_values`, the `v` key) and
+the control needs two. `show_values` both asks the agent for values and reveals
+masked ones whole, so a listing that asked for values but not for sensitive
+ones would make a `sensitivity: high` attribute — a mobile, a card number —
+come back with no value at all and render as `(no value)` under a reveal. That
+is indistinguishable from "you hold nothing here", which is the exact confusion
+`PoolAttribute::is_masked` exists to prevent (see the
+`masked_is_not_the_same_state_as_absent` test).
+
+The shape that works is the one `s` already has: list without sensitive values,
+and let the per-attribute reveal fetch that one value on its own. Then the
+default read stops carrying every card number into this process's memory, and
+the reveal stays truthful. Needs a single-attribute read path (`type_prefix` on
+the same task, or `persona/attribute/get`) behind the `s` key.
+
 ### [x] Agent names — claim / park / resume for a persona
 DONE. `openvtc/src/state_handler/agent_name_manage.rs` wraps the six VTA verbs
 (`set`/`remove`/`enable`/`disable`/`list`/`check`, published `vta-sdk` 0.19.17)
