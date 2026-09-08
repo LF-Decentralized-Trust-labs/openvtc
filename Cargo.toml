@@ -21,23 +21,25 @@ openvtc-core = { version = "0.3", path = "openvtc-core", default-features = fals
 
 # Decentralized Trust Graph Credentials.
 #
-# 0.2 tracks DTG Core Credentials spec v1.0 Working Draft 01. Unlike
-# `trust-tasks-rs`, this one is safe to move ahead of the VTA/VTC (still on
-# 0.1.3): nothing in the vta-sdk graph depends on it, so there is no second
-# copy and no type that has to unify across the sdk boundary — openvtc and
-# openvtc-core are its only consumers.
+# Nothing in the vta-sdk graph depends on it, so there is no second copy and no
+# type that has to unify across the sdk boundary — openvtc and openvtc-core are
+# its only consumers. That is why this line was allowed to lead the VTA/VTC for
+# several releases while they sat on 0.1.3; as of this refresh it no longer
+# does, because VTI main is on 0.6 as well and the two agree again.
 #
-# It is also wire-compatible with a 0.1.3 peer for the credentials we
-# actually exchange. The major's breaking changes are `new_vwc()`'s new
-# required `task_context` argument and strict `WitnessCredential`
-# deserialization; we call neither and handle no VWCs. The new `taskContext`
-# field is `skip_serializing_if = "Option::is_none"` with `default`, so
-# credentials we issue serialize to the same JCS bytes as before (a 0.1.3
-# VTC still verifies our proofs) and 0.1.3-issued VRC/VMC/VICs still parse.
+# The one thing that always has to be checked when this moves is the *wire*,
+# not the types: a peer on an older line still has to verify the credentials we
+# issue and we still have to parse theirs. The additions across 0.2–0.6 are all
+# `skip_serializing_if = "Option::is_none"` with `default`, so a credential we
+# issue serialises to the same JCS bytes as before and older-issued VRC/VMC/VICs
+# still parse.
 #
-# The crate's documented VWC `digest` divergence from WD-01 does not reach
-# us either — `digest_multibase()` / `verify_digest()` have no call sites here.
-dtg-credentials = "0.5"
+# The breaking changes on the way here are `new_vwc()`'s required `task_context`
+# argument, strict `WitnessCredential` deserialization, and the VWC `digest`
+# divergence from WD-01 — none of which reach us: we call neither constructor,
+# handle no VWCs, and `digest_multibase()` / `verify_digest()` have no call
+# sites here.
+dtg-credentials = "0.6"
 
 aes-gcm = "0.11"
 # The one direct requirement in this workspace that was behind its latest
@@ -53,9 +55,10 @@ aes-gcm = "0.11"
 # `affinidi-messaging-sdk`, and no line we control moves it. The bump puts us on
 # the same copy as `vta-service` rather than on the older one.
 argon2 = "0.6"
-# 0.8.5 is `vta-sdk` 0.27's and `vta-service` 0.19's own requirement — the floor
-# is set by the graph, and this line only records it.
-affinidi-tdk = "0.10"
+# The floor is set by the graph, not chosen here: `vta-sdk` 0.34 and
+# `vta-service` 0.24 both declare `^0.12`, and `affinidi-messaging-test-mediator`
+# 0.5 does too. This line only records it.
+affinidi-tdk = "0.12"
 affinidi-data-integrity = "0.7"
 # The delivery layer (D1). Replaced `affinidi-messaging-didcomm-service`, the
 # type-routed framework both VTI services had already cut over from (#189).
@@ -78,36 +81,25 @@ affinidi-messaging-delivery = "0.1.14"
 # 0.1.5 the enum is exhaustively matched already and that arm is an
 # unreachable pattern, which `-D warnings` rejects.
 affinidi-messaging-core = "0.1.6"
-# Floor is 0.19.10 (affinidi-tdk-rs #718): the release where a closed websocket
-# says why it closed. The transport matched the close frame as `Message::Close(_)`
-# and discarded it — `debug!("WebSocket connection closed by server")` — so a
-# refused duplicate arrived here as a socket that simply vanished, and the loop
-# reconnected into a duel. The mediator's `Close` now carries a reason, each with
-# its own problem-report code, and the sdk surfaces the close code and reason at
-# WARN. `duplicate-channel` is preserved verbatim for the genuinely-replaced
-# case, so the matches on it below are unaffected. Filed from this side as
-# `OpenVTC/verifiable-trust-infrastructure#1028`; the eviction *policy* is
-# deliberately unchanged, because displacement is what triggers the mediator's
-# stored-mail redelivery for clients that do not pull explicitly.
+# This crate carries `trust-tasks-rs` types in its own API (`MediatorAcl` reaches
+# `atm.trust_tasks().account_update`), so its line is not independent of the one
+# below: a copy left on an older trust-tasks is a *second* semver-incompatible
+# `trust-tasks-rs` whose types do not unify. 0.22 is the line built on
+# trust-tasks 0.18, and it is also what `vta-sdk` 0.34 and
+# `affinidi-messaging-test-mediator` 0.5 declare — so it is the graph's floor
+# whether or not this line states it.
 #
-# 0.19.9 (#717) is the release that moves the messaging crates from
-# `trust-tasks-rs` 0.9 to 0.11. That is not a courtesy bump — this workspace is
-# on 0.11, `affinidi-messaging-sdk` carries `trust-tasks-rs` types in its own
-# API (`MediatorAcl` reaches `atm.trust_tasks().account_update`), and a copy
-# left on 0.9 is a *second* semver-incompatible `trust-tasks-rs` whose types do
-# not unify. Same class of failure as the `vta-sdk` note below.
-#
-# 0.19.8 (#716) is the fix underneath it, and the one this repo chased for weeks:
-# `_refresh_authentication` discarded `force_refresh`, so the websocket
-# transport's proactive refresh at 80% of token life rebuilt the socket *without*
-# refreshing and re-armed at 80% of the time remaining — a geometric cascade of
-# reconnects per token rather than one clean cycle. See `#231`–`#234`, where the
-# symptom was two listeners flapping about every 15 minutes.
-#
-# Earlier floors are below this one by construction: 0.19.4 (#694) was the
+# Older floors are below this one by construction and kept in git history rather
+# than as a wall of satisfied constraints. Each named a defect this repo had no
+# lever over: 0.19.10 (affinidi-tdk-rs #718) surfaced the websocket close code
+# and reason instead of discarding the frame, so a mediator refusing a duplicate
+# channel stopped looking like a socket that merely vanished; 0.19.8 (#716) was
+# the `force_refresh` drop that made the proactive token refresh rebuild the
+# socket *without* refreshing and re-arm at 80% of the time remaining — the
+# geometric reconnect cascade behind `#231`–`#234`; and 0.19.4 (#694) was the
 # `live_stream_next*` read guard that blocked `stop_websocket` for the remainder
-# of a 10s poll window, so quitting the TUI mid-window paid it.
-affinidi-messaging-sdk = "0.21"
+# of a 10s poll window.
+affinidi-messaging-sdk = "0.22"
 # `StreamExt::next` on the `BoxStream` returned by `MessagingService::subscribe`.
 futures-util = "0.3"
 # Agent names (DID shortcuts). `agent-names` carries the parse /
@@ -136,6 +128,14 @@ chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 console = "0.16"
 crossterm = { version = "0.29", features = ["event-stream"] }
+# Held at 6 deliberately, not merely unrefreshed. `vta-sdk` and `did-git-sign`
+# both declare `^6`, and this is the only line that could split them — the graph
+# currently holds exactly one `dirs` and moving to 7 alone would make it two,
+# for a release whose sole breaking change is `preference_dir` resolving to
+# `RoamingAppData` rather than `LocalAppData` on Windows. We call `home_dir` and
+# `config_dir`, neither of which moved, so a second copy would buy nothing and
+# risk this workspace and the sdk disagreeing about where a path is. It follows
+# the stack up when the stack goes.
 dirs = "6.0"
 dialoguer = { version = "0.12", features = ["password"] }
 didwebvh-rs = "0.6"
@@ -189,140 +189,112 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # our copy has to be the same crate version vta-sdk resolves, or the two are
 # distinct types that do not unify.
 #
-# Moved 0.9 → 0.11 when vta-sdk went to 0.27, as it moved 0.6 → 0.9 when vta-sdk
-# went to 0.25 and 0.4 → 0.6 when vta-sdk went to 0.23.3. This is a *follow*, not
-# a lead: holding an older line here
-# stops matching the stack and starts splitting the type — on the 0.4 → 0.6 move
-# a `cargo update` alone put 0.4.1 and 0.6.5 in the same binary, which is the
-# exact failure the paragraph above exists to prevent. `cargo tree -d` is the
-# check: two `trust-tasks-rs` rows means this pin has drifted from vta-sdk's
-# again, whichever direction it drifted.
+# Moved 0.17 → 0.18 when vta-sdk went to 0.34, as it moved 0.11 → 0.17 for 0.31,
+# 0.9 → 0.11 for 0.27, 0.6 → 0.9 for 0.25 and 0.4 → 0.6 for 0.23.3. This is a
+# *follow*, not a lead: holding an older line here stops matching the stack and
+# starts splitting the type — on the 0.4 → 0.6 move a `cargo update` alone put
+# 0.4.1 and 0.6.5 in the same binary, which is the exact failure the paragraph
+# above exists to prevent. `cargo tree -d` is the check: two `trust-tasks-rs`
+# rows means this pin has drifted from vta-sdk's again, whichever direction it
+# drifted.
 #
-# `trust-tasks-capability-client` moves with it (0.8 → 0.9) for the same reason
-# — it re-exports the same `TrustTask`. Its own leading component moves one step
-# per two of this crate's because it tracks its API, not the framework's;
-# upstream releases the six siblings as one event for exactly this reason
-# (trust-tasks-tf #250, where a sibling left behind produced
-# `expected TrustTask<Value>, found a different TrustTask<Value>`).
+# The patch is named because vta-sdk 0.34 declares `^0.18.3`, not a bare `^0.18`
+# — a floor below what the sdk itself requires is a floor that does nothing.
+# 0.18.5 is the release VTI main pins across the whole stack, so that is the
+# line the services actually build against.
+#
+# `trust-tasks-capability-client` moves with it for the same reason — it
+# re-exports the same `TrustTask`. Upstream releases the six siblings as one
+# event for exactly this reason (trust-tasks-tf #250, where a sibling left
+# behind produced `expected TrustTask<Value>, found a different
+# TrustTask<Value>`), and on this line the two crates share a version number.
 #
 # Note the check has to include the **dev** graph. On the 0.6 → 0.9 move the
 # shipped graph was clean while `cargo tree -d -e normal,build,dev` still showed
 # two, because `openvtc-core` dev-depends on `vta-service` for `MockVta` and
-# that pin was a line behind. See its note in `openvtc-core/Cargo.toml`. The
-# 0.9 → 0.11 move needed a third crate to follow as well: the messaging stack
-# carries `trust-tasks-rs` types in its own API, so `affinidi-messaging-sdk` has
-# a floor of 0.19.9 above for the same reason (affinidi-tdk-rs #717).
-trust-tasks-rs = "0.17"
-trust-tasks-capability-client = "0.17"
+# that pin was a line behind. See its note in `openvtc-core/Cargo.toml`. Since
+# the 0.9 → 0.11 move a third and fourth crate have had to follow as well: the
+# messaging stack carries `trust-tasks-rs` types in its own API, so
+# `affinidi-messaging-sdk` (above) and the `affinidi-messaging-test-mediator`
+# dev-dependency both have to sit on the line built against it.
+trust-tasks-rs = "0.18.5"
+trust-tasks-capability-client = "0.18.5"
 tui-input = "0.15"
 url = "2.5"
 uuid = { version = "1.23", features = ["v4", "fast-rng", "serde"] }
-# The 0.27 line — the one `vta-service` 0.19 is built on, and the one that
-# declares `trust-tasks-rs ^0.11`. As always this pin *follows* the VTA rather
-# than leading it; see the `trust-tasks-rs` note above for why the two versions
-# cannot be chosen independently.
+# The 0.34 line — the one `vta-service` 0.24 is built on, the one VTI main
+# deploys, and the one that declares `trust-tasks-rs ^0.18.3`. As always this pin
+# *follows* the VTA rather than leading it; see the `trust-tasks-rs` note above
+# for why the two versions cannot be chosen independently.
 #
-# 0.25 → 0.27 crossed two minors and broke nothing here — the workspace compiled
-# and tested clean with no source change. What it buys is a live defect fix that
-# reaches this repo silently:
+# What 0.33 and 0.34 change for this repo is the *shape* of the wire types
+# rather than any behaviour of its own. VTI #1270/#1271 made the growth-prone
+# request/response bodies `#[non_exhaustive]` — `AclEntry` and `AppStateWrite`
+# among them — so a struct literal outside the sdk no longer compiles and the
+# constructor is the only way in. That is a deliberate constraint rather than an
+# inconvenience: on `AclEntry`, an absent `allowed_keys` and a present-but-empty
+# one are OPPOSITE grants (absent reaches every key the entry's scopes reach,
+# empty reaches none), and a literal is exactly how a member added later gets
+# defaulted to the wrong one of the two.
 #
-# 0.27.0 (VTI #1033) repairs the Trust-Task response decode. VTI #1000 folded
-# Trust-Task payloads to lowerCamelCase per SPEC §4.10 but excluded
-# `client/types.rs` on a stale path assumption, so the agent moved to `basePath`
-# while the client went on demanding `base_path` — eleven required fields with no
-# `default`, across `contexts` create/get/update/list and `keys`
-# sign/rename/revoke/export-secret, failing hard on every transport. Our two
-# `list_contexts()` call sites (`state_handler/mod.rs`, `context_probe.rs`) both
-# sit behind `let Ok(..)`/`match`, so against a post-#1000 agent this degraded
-# quietly rather than erroring: the sub-context probe simply saw nothing. The fix
-# is intake aliases, not a rename, so 0.27 also still decodes an older agent's
-# snake_case — safe against a VTA on either side of the fold.
+# VTI #1280 then replaced `create_acl`'s positional argument list with
+# `CreateAclParams`, so an entry can be created already narrowed instead of
+# being narrowed by a second call. The window that closes is real: between the
+# grant and the narrowing the entry holds everything its role implies, and a
+# subject that authenticates inside it is authorized by what it found there.
 #
-# 0.26.0 (VTI #1012) adds `VtaClient::idempotent`, which holds one
-# `idempotencyKey` across every attempt of an operation so a retried
-# `create_key` is deduplicated at the VTA instead of taking effect twice. Not
-# adopted here yet — our retry owner is `vta_retry()` — but it is the seam that
-# eventually replaces it, and the SDK is now the layer that retries.
-#
-# 0.26 is not itself a viable floor: it declares `trust-tasks-rs ^0.9`, so a
-# checkout resolving back to it while this workspace is on 0.11 would put two
-# `trust-tasks-rs` in the binary — the same trap 0.24 (`^0.6`) posed against 0.9
-# and 0.23.0 (`^0.4`) posed against 0.6.
+# 0.34 also adds `room_present` / `room_open` (VTI #1285), the member half of
+# the rooms oracle. Nothing here calls them yet.
 #
 # Older floor notes are gone with their lines and kept in git history rather than
 # as a wall of satisfied constraints. Each recorded a defect this repo had no
-# lever over: 0.23's `CreateDidWebvhRequest.add_tsp_service` (VTI #959, the field
-# that lets a minted persona advertise `#tsp` at all — see
-# `setup_sequence/vta.rs`), 0.25's `CreateKeyRequest.internal` (VTI #995), and
-# the 0.21.x line's `provision/integration/0.2` casing (VTI #917) and `null`
-# `CreateKeyBody` members (VTI #919).
+# lever over: 0.32's Trust-Task dispatch identity (VTI #1184/#1192 — both DIDComm
+# and TSP transports built every client with `identity: None`, so a dispatched
+# task carried no issuer, no recipient and no proof) and its
+# `provision/integration` 0.3 cut (VTI #1200/#1202, which killed setup's last
+# step on every fresh install); 0.31's mandatory `ClientIdentity`; 0.27's
+# Trust-Task response decode (VTI #1033, `basePath` vs `base_path`); 0.25's
+# `CreateKeyRequest.internal` (VTI #995); 0.23's
+# `CreateDidWebvhRequest.add_tsp_service` (VTI #959, the field that lets a minted
+# persona advertise `#tsp` at all); and the 0.21.x line's
+# `provision/integration/0.2` casing (VTI #917) and `null` `CreateKeyBody`
+# members (VTI #919).
 #
 # The graph holds exactly one `vta-sdk` and one `trust-tasks-rs`, and keeping it
-# that way took a release in another repo: `did-git-sign` 0.4.5 required
-# `vta-sdk ^0.25`, so until VGI published 0.4.6 on 0.27 this workspace carried
-# 0.25.1 beside 0.27.0. That is the third consecutive cycle it has done so — see
-# the floor note on `did-git-sign` in `openvtc/Cargo.toml`, which is where the
-# obligation is written down.
+# that way is the whole cost of this pin. `vta-sdk` is a 0.x crate, so `"0.32"`
+# *excludes* 0.34: every consumer edge that declares its own requirement has to
+# move in the same change, or the workspace carries two sdks. That is not merely
+# untidy — `vti-common` re-exports `vta_sdk::acl::{ActScope, ApproveScope,
+# ContextDirection}` as its own public API, so the two copies carry types that
+# cannot unify, and in practice the build fails outright rather than mis-typing.
 #
-# 0.31 → 0.32 is the fifth. Two upstream edges declare `vta-sdk` and both had to
-# move first, because `"0.31"` on a 0.x crate excludes 0.32: `did-git-sign`
-# (VGI #33, whose head this workspace already patches to) and `vta-service`,
-# which `openvtc-core` dev-depends on for `MockVta` — 0.22 is built on 0.31, so
-# the dev graph would have split even with the shipped one clean. Both are moved
-# in this change. `trql-client`, the third git-pinned edge, does **not** depend
-# on `vta-sdk` at all, so trust-registry stays where it is.
+# There are two such edges, and both move here:
 #
-# What 0.32 buys, all of it reaching this repo through calls it already makes:
+# - `vta-service`, which `openvtc-core` dev-depends on for `MockVta` (0.24 is
+#   the line built on 0.34). Dev-only, which is exactly why it gets forgotten —
+#   the *shipped* graph looks clean while the harness tests this client against
+#   a server it is no longer paired with.
+# - `did-git-sign`, which is the standing obligation. It has now blocked this
+#   line **six** consecutive times (0.23, 0.25, 0.27, 0.31, 0.32, 0.34), so read
+#   it as a recurring cost to budget for rather than as an incident. Read the
+#   `[patch.crates-io]` block at the bottom of this file for how the edge is
+#   carried this cycle, and the floor note in `openvtc/Cargo.toml` for where the
+#   obligation is written down.
 #
-# VTI #1184 + #1192 are one defect in two halves. `didcomm_transport` and
-# `tsp_transport` built every client with `identity: None`, so a dispatched
-# Trust Task carried no `issuer`, no `recipient` and no proof — which the VTA's
-# dispatch spine refuses as `malformedRequest` over DIDComm and, because the TSP
-# paths back-fill those two members, as `proofRequired` over TSP. Same bug, two
-# names, depending on transport. #1192 then stopped `address_trust_task`
-# rewriting `issuer`/`recipient` *after* signing, which had been turning a valid
-# proof into `proofInvalid` at the far end. Every Trust Task this repo dispatches
-# — agent names, devices, keys, join — goes through those transports.
+# `trql-client`, the third git-pinned edge in this ecosystem, does **not**
+# depend on `vta-sdk` at all, so the trust registry needs no release for an sdk
+# bump.
 #
-# VTI #1193 lifts Trust-Task signing off `did:key`. The signer derived the
-# verification method as `<did>#<multibase>`, which only a `did:key` has, so a
-# provisioned `did:webvh` integration could not sign any of the 210
-# proof-requiring tasks. `ClientIdentity` gains `verification_method` for the
-# methods that must name one; the two sites here that built it by hand now use
-# `ClientIdentity::did_key`, which is the constructor for the one method whose
-# key *is* its identifier.
-#
-# VTI #1191 adds `device_heartbeat_named`, which is what lets this install
-# correct its own `displayName` — set once at registration and, until now,
-# unchangeable. Taken here; used in the follow-up.
-#
-# **The floor names the patch.** 0.32.0 cannot link this repo to a VTA at all.
-# VTI #1147 cut `provision/integration` to 0.3 and removed 0.2 outright, moved
-# the server and the REST runner, and left the TSP runner on 0.2 and both
-# DIDComm runners on 0.1 — so setup's last step died with `unsupportedType`
-# against a healthy VTA. The setup wizard prefers TSP, and the failure lands
-# *after* auth as a `PostAuthFailure`, which the runner treats as terminal — so
-# it never falls back to the REST leg that would have worked. Every fresh
-# install hit it. VTI #1200 routes all four dispatch sites through
-# `ProvisionSpecVersion::CURRENT` and guards it server-side; 0.32.1 is that fix.
-#
-# `"0.32"` would admit 0.32.0 and resolve to it on any machine with a stale
-# index — the same shape as the `did-git-sign` `"0.4.3"` floor that quietly
-# admitted 0.4.5 and let a duplicate `vta-sdk` into the graph unnoticed. A floor
-# that exists to exclude a specific broken release has to name it.
-#
-# 0.32.2 is the *reply* half of that same 0.3 cut (VTI #1202). #1200 moved the
-# dispatch sites; `result_uri_for` kept a hand-written table that tested only
-# for 0.2 and fell through to 0.1, so a provisioning reply went out as a 0.3
-# body labelled `provision/integration/0.1#response` — a message that cannot
-# satisfy the schema it names. This client does not *see* it, because it derives
-# the reply type it waits for with the same function and so agrees with the
-# server, wrongly, in both directions; it takes an independent client (the
-# browser wallet, reading the URI from the registry bindings) to notice. Which
-# is the reason to take it here anyway: a wire label this repo agrees with only
-# by sharing the bug is not a contract, and the next conformance witness or
-# non-Rust peer on the other end of a provisioning run is what collects on it.
-vta-sdk = { version = "0.32.4", features = [
+# **The floor names the patch, never a bare minor**, wherever a specific release
+# is what makes the line viable — a caret that admits a broken or duplicate-
+# reintroducing release lets a clean checkout resolve straight back onto it. On
+# the 0.32 line that was 0.32.1/0.32.2 (VTI #1200/#1202: `provision/integration`
+# had been cut to 0.3 while three of the four dispatch runners still sent 0.2 or
+# 0.1, so setup's last step died with `unsupportedType` against a healthy VTA,
+# and the reply came back labelled with a schema it could not satisfy). On this
+# line 0.34.0 is the first release of its minor and there is no such release to
+# exclude, so the patch is named only to record what was verified.
+vta-sdk = { version = "0.34.0", features = [
   "session",
   "client",
   # The SAME per-platform credential-store registration pnm-cli uses
@@ -348,6 +320,13 @@ reqwest = { version = "0.13", features = ["json"] }
 # declare `x25519-dalek ^2`, and we hand our `StaticSecret` straight to pgp's
 # `ecdh::SecretKey::Curve25519Legacy` — a 3.x secret is a different type there
 # and would not compile. 3.0 also moves to curve25519-dalek 5 / rand_core 0.10.
+#
+# The graph does hold a 3.x copy as well, and that is fine because it is bounded
+# and no type crosses: 3.0.0 is reached only through the vta-sdk crypto stack
+# (and, in the dev graph, `vti-rooms`' MLS chain), while 2.0.1 is the one our
+# `StaticSecret` is handed to. `cargo tree -i x25519-dalek@2.0.1` is where that
+# is checked. It collapses when `pgp` releases on 3.x; 0.20.0 is still its
+# latest and still declares `^2`.
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zeroize = "1.8"
 
@@ -361,32 +340,43 @@ lto = true
 codegen-units = 1
 strip = "symbols"
 
-# `did-git-sign` 0.4.6 — the latest published release — requires `vta-sdk ^0.27`,
-# and that one edge re-splits `vta-sdk`, `affinidi-tdk`, `affinidi-messaging-sdk`
-# and `trust-tasks-rs` into two copies each against this workspace's 0.31. It does
-# not merely fail to unify types: `vta-keys` 0.2.9 does not compile against
-# `vti-common` 0.15, so the whole workspace fails to build.
+# `did-git-sign` 0.4.6 — still the latest *published* release — requires
+# `vta-sdk ^0.27`, and that one edge re-splits `vta-sdk`, `affinidi-tdk`,
+# `affinidi-messaging-sdk` and `trust-tasks-rs` into two copies each against this
+# workspace's 0.34. It does not merely fail to unify types: an older `vta-keys`
+# does not compile against the current `vti-common`, so the whole workspace fails
+# to build.
 #
-# OpenVTC/verifiable-git-infrastructure#33 is the release that ends it — the VGI
-# workspace onto vta-sdk 0.32 and TDK 0.10, no source change, green on its own
-# pipeline. Its head is a better dependency than the stale published crate, so
-# this workspace takes it directly rather than waiting on the publish: the
-# requirement in `openvtc/Cargo.toml` still names `0.4.6` (the version VGI carries
-# at that rev), and this patch is what decides where that 0.4.6 comes from.
+# OpenVTC/verifiable-git-infrastructure#37 is the change that ends it — the VGI
+# workspace onto vta-sdk 0.34 and TDK 0.12, no source change, green on its own
+# pipeline. It is **merged**, and the rev below is VGI's `main` at that merge, so
+# this is a pin to a released-in-git tree rather than to a branch that could be
+# deleted under it. What it is not is a *published* release: the requirement in
+# `openvtc/Cargo.toml` still names `0.4.6` (the version VGI carries at that rev),
+# and this patch is what decides where that 0.4.6 comes from.
 #
-# The rev moved with the vta-sdk 0.32 bump. That is the whole reason this block
-# is cheap: a published `did-git-sign` would have made 0.32 wait on a full VGI
-# release cycle, as 0.23, 0.25 and 0.27 each did.
+# The rev moves with every vta-sdk minor. That is the whole reason this block is
+# cheap: a published `did-git-sign` would have made 0.32 and 0.34 each wait on a
+# full VGI release cycle, as 0.23, 0.25 and 0.27 each did.
 #
-# Pinned by `rev`, never by `branch` — a further push to that PR must not silently
-# change what this builds against. VGI's own manifest pins `trql-client` the same
-# way, and both git sources are allow-listed in `deny.toml`.
+# Pinned by `rev`, never by `branch` — a later commit on VGI main must not
+# silently change what this builds against. VGI's own manifest pins `trql-client`
+# the same way, and both git sources are allow-listed in `deny.toml`.
 #
-# **Delete this whole block the moment VGI publishes 0.4.7 on vta-sdk 0.31**, and
-# raise the floor in `openvtc/Cargo.toml` to name that release. `publish = false`
-# here, so a git source costs this workspace nothing on its own release path — but
-# it is still a dependency on an unmerged branch, which is a thing to unwind
-# rather than to keep.
+# **Delete this whole block the moment VGI publishes 0.4.7**, and raise the floor
+# in `openvtc/Cargo.toml` to name that release. `publish = false` here, so a git
+# source costs this workspace nothing on its own release path — but a git source
+# is still a thing to unwind rather than to keep. Merging #37 discharged the
+# first obligation (VGI main now builds on 0.34) and none of the publish chain,
+# which is three deep and all three still open:
+#
+#   1. affinidi/affinidi-trust-registry-rs#128 merges and publishes
+#      `trql-client` 0.15 (on trust-tasks 0.18, so it also clears the duplicate
+#      that pin currently leaves in VGI's own tree)
+#   2. VGI swaps its `trql-client` git pin back to `"0.15"` — `cargo publish`
+#      rejects git dependencies, so 0.4.7 *cannot* be released while it stands —
+#      then tags, which fires `publish.yml`
+#   3. OpenVTC deletes this block and floors `did-git-sign` at `"0.4.7"`
 [patch.crates-io]
-did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "d2c091d795168357d8bf3d1c4fffce645f2415de" }
-vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "d2c091d795168357d8bf3d1c4fffce645f2415de" }
+did-git-sign = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "5111dc177d25d68088a4d6ba991210e262498950" }
+vgi-core = { git = "https://github.com/OpenVTC/verifiable-git-infrastructure", rev = "5111dc177d25d68088a4d6ba991210e262498950" }

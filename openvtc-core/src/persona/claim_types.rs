@@ -34,11 +34,17 @@
 //!   behind you without being worth withholding from every listing.
 //! - **`sensitivity: high`** means the value is *withheld from a listing that
 //!   did not explicitly ask for sensitive values*. That is the half that is not
-//!   cosmetic, it is a read-path control, and **it does not exist**:
-//!   `persona_attribute_list` takes `include_values` and nothing finer, so a
-//!   listing this pane asks for values in is sent every card number the holder
-//!   holds. [`Sensitivity`] is carried here so a caller can read it, and
-//!   nothing in this crate can act on it.
+//!   cosmetic — it is a read-path control. It now **exists on the wire**:
+//!   vta-sdk 0.34 gave `persona_attribute_list` an `include_sensitive`
+//!   argument, where before it took `include_values` and nothing finer. What
+//!   does not exist yet is a client that can *use* it, because this pane has
+//!   one escalation and the control needs two: `show_values` both asks for
+//!   values and reveals masked ones whole, so asking for a listing without
+//!   sensitive values would make a card number come back as "(no value)" under
+//!   a reveal — indistinguishable from holding nothing. Honouring it means the
+//!   reveal fetching that one value on its own. Until then [`Sensitivity`] is
+//!   still carried here only so a caller can read it, and `pool::list` passes
+//!   `include_values` through to both arguments.
 //!
 //! So the mask is what makes a missing control visible, not a substitute for
 //! it. A `high` type is masked *because its style says so*, not because
