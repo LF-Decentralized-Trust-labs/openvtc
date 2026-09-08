@@ -11,7 +11,7 @@
 //! attribute, a `pinVersion` pin of one, an `override` of its value, and an
 //! `inline` value that never enters the pool. [`put`] from here writes the
 //! first, and a picker over the pool is exactly what that form is: tick the
-//! facts this persona shows. It keeps "edit once, everywhere" true, which is the
+//! attributes this persona shows. It keeps "edit once, everywhere" true, which is the
 //! property a holder is relying on when they correct their address in one
 //! place.
 //!
@@ -147,7 +147,7 @@ impl ResolvedClaim {
     /// rather than an omission. A resolved claim has no identity of its own to
     /// reveal *one* of — a face is read as a whole — so the only reveal this
     /// type could offer is the blanket one the mask exists to avoid. A holder
-    /// who wants to check a value reads it among their facts, one at a time.
+    /// who wants to check a value reads it among their attributes, one at a time.
     #[must_use]
     pub fn display_value(&self) -> String {
         if self.stale {

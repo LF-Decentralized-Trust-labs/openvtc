@@ -1,7 +1,7 @@
 //! The identity pane — every surface for a person's own identity, in one place.
 //!
 //! Five tabs, in the order the concepts build on each other. On screen they are
-//! **Personas**, **Your facts**, **Faces**, **Communities** and **What has
+//! **Personas**, **Your attributes**, **Faces**, **Communities** and **What has
 //! left**; in the code and on the wire they are personas, attributes, profiles,
 //! contexts and disclosures. The first comes from `Config`; the rest come from
 //! the agent.
@@ -12,12 +12,17 @@
 //! console, `pnm`, the mobile agent and this pane say the same thing. The
 //! spec's words are exact and stay in the types, on the wire and in the audit
 //! log; they are kept off the screen. `persona/attribute/put` stays
-//! `persona/attribute/put` — the form says *Add a fact*.
+//! `persona/attribute/put` — the form says *Add an attribute*.
 //!
 //! The three that matter most here:
 //!
-//! - an **attribute** is a **fact** — *a fact about you, held once*;
-//! - a **profile** is a **face** — *the set of facts you show together*. Not
+//! - an **attribute** stays an **attribute** — *something you say about
+//!   yourself, held once*. This row is the one the table does not translate:
+//!   the friendlier word it used to carry, *fact*, claimed a truth a
+//!   self-asserted value does not have, and `Facts` already means a verified
+//!   policy input in `vtc-service`. Truth is carried by the provenance line
+//!   beneath the value, never by the noun;
+//! - a **profile** is a **face** — *the set of attributes you show together*. Not
 //!   "profile", which already means three things in this product and "my
 //!   LinkedIn page" to everyone else;
 //! - a **binding** is **wearing**: a persona *wears* a face in a community.
@@ -28,7 +33,7 @@
 //!
 //! # What this pane will not draw
 //!
-//! A value the holder never asked to see. The list of facts is fetched without
+//! A value the holder never asked to see. The list of attributes is fetched without
 //! values by default and `v` re-reads *with* them — an opt-in that costs a
 //! round-trip rather than a display flag over data already in memory, because a
 //! listing that holds values has already read someone's identity whether or not
@@ -202,7 +207,7 @@ fn hints(state: &IdentityState) -> &'static str {
             "↑/↓ select   n: new persona   g: agent names   d: remove unused   ⇥/⇧⇥: tab"
         }
         PersonaTab::Attributes => {
-            "↑/↓ select   n: add a fact   e: edit   d: delete   v: values   s: show one   \
+            "↑/↓ select   n: add an attribute   e: edit   d: delete   v: values   s: show one   \
              r: refresh   ⇥/⇧⇥: tab"
         }
         PersonaTab::Profiles => {
@@ -316,14 +321,14 @@ fn render_personas(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
 // ---------------------------------------------------------------------------
 
 fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
-    if push_agent_state(state, lines, "facts") {
+    if push_agent_state(state, lines, "attributes") {
         return;
     }
 
     lines.push(Line::from(vec![
         Span::styled(
             format!(
-                " {} fact{} about you",
+                " {} attribute{} about you",
                 state.attributes.len(),
                 if state.attributes.len() == 1 { "" } else { "s" }
             ),
@@ -347,7 +352,7 @@ fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
     if state.attributes.is_empty() {
         lines.push(
             Line::from(
-                " No facts yet. `n` adds one — a name, an email, a date of birth. A fact \
+                " No attributes yet. `n` adds one — a name, an email, a date of birth. An attribute \
                  about you, held once; faces select from these.",
             )
             .fg(COLOR_DARK_GRAY),
@@ -362,7 +367,7 @@ fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
     if state.attributes.iter().any(PoolAttribute::is_masked) {
         lines.push(
             Line::from(
-                " Some facts are masked by what they are — `s` shows the selected one. The \
+                " Some attributes are masked by what they are — `s` shows the selected one. The \
                  mask is against someone reading over your shoulder; your agent has already \
                  sent the value here.",
             )
@@ -400,7 +405,7 @@ fn render_attributes(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
                 },
             ),
         ]));
-        // A reveal is granted to one fact, and only while it is the selected
+        // A reveal is granted to one attribute, and only while it is the selected
         // one. Checking the selection as well as the identifier means a list
         // that re-sorted under a stale grant cannot open a row nobody chose.
         let revealed =
@@ -457,12 +462,13 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
         }
         if detail.resolved.is_empty() {
             lines.push(
-                Line::from(" This face shows nothing — no facts are on it.").fg(COLOR_DARK_GRAY),
+                Line::from(" This face shows nothing — no attributes are on it.")
+                    .fg(COLOR_DARK_GRAY),
             );
         } else {
             lines.push(
                 Line::from(format!(
-                    " Shows {} fact{}:",
+                    " Shows {} attribute{}:",
                     detail.resolved.len(),
                     if detail.resolved.len() == 1 { "" } else { "s" }
                 ))
@@ -481,7 +487,7 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
                     ),
                 ]));
                 // A value that lives only in this face is not among the
-                // holder's facts, so correcting it there will not correct it
+                // holder's attributes, so correcting it there will not correct it
                 // here. Saying so on the row is the only place they find out.
                 let origin = match claim.attribute_id {
                     Some(_) => claim.provenance.label().to_string(),
@@ -496,12 +502,12 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
         lines.push(Line::from(""));
         // No per-claim reveal here: a face has no cursor over its claims, so
         // the only reveal this view could offer is the blanket one the mask
-        // exists to avoid. The one-at-a-time reveal lives with the facts.
+        // exists to avoid. The one-at-a-time reveal lives with the attributes.
         if detail.resolved.iter().any(ResolvedClaim::is_masked) {
             lines.push(
                 Line::from(
                     " Some values are masked by what they are. Read one of them among your \
-                     facts, where they open one at a time.",
+                     attributes, where they open one at a time.",
                 )
                 .fg(COLOR_DARK_GRAY),
             );
@@ -528,9 +534,9 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
     if state.profiles.is_empty() {
         lines.push(
             Line::from(
-                " No faces yet. A face is the set of facts you show together — \"Work\", \
+                " No faces yet. A face is the set of attributes you show together — \"Work\", \
                  \"Gaming\" — and it is what a persona wears in a community. What you leave \
-                 unticked stays out, including facts you add later.",
+                 unticked stays out, including attributes you add later.",
             )
             .fg(COLOR_DARK_GRAY),
         );
@@ -552,7 +558,7 @@ fn render_profiles(state: &IdentityState, lines: &mut Vec<Line<'static>>) {
             ),
             Span::styled(
                 format!(
-                    "{} fact{}",
+                    "{} attribute{}",
                     profile.entry_count,
                     if profile.entry_count == 1 { "" } else { "s" }
                 ),
@@ -783,7 +789,8 @@ fn push_agent_state(state: &IdentityState, lines: &mut Vec<Line<'static>>, noun:
 fn holder_grant_hint(credential_did: Option<&str>) -> Vec<String> {
     let subject = credential_did.unwrap_or("<this install's DID>");
     vec![
-        " Your agent credential administers this context. Your facts, and the faces".to_string(),
+        " Your agent credential administers this context. Your attributes, and the faces"
+            .to_string(),
         " over them, sit above every context — reaching them is a separate grant:".to_string(),
         String::new(),
         format!("   pnm acl update {subject} --capabilities persona-holder"),
@@ -815,9 +822,9 @@ fn render_attribute_form(form: &AttributeForm) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from("")];
     lines.push(
         Line::from(if form.attribute_id.is_some() {
-            " Edit a fact"
+            " Edit an attribute"
         } else {
-            " Add a fact"
+            " Add an attribute"
         })
         .fg(COLOR_SUCCESS)
         .bold(),
@@ -825,7 +832,7 @@ fn render_attribute_form(form: &AttributeForm) -> Vec<Line<'static>> {
     lines.push(Line::from(""));
     lines.push(
         Line::from(
-            " A fact about you, held once. Faces select it, so correcting it here corrects \
+            " Something you say about yourself, held once. Faces select it, so correcting it here corrects \
              it everywhere it is worn.",
         )
         .fg(COLOR_DARK_GRAY),
@@ -908,14 +915,14 @@ fn render_profile_form(state: &IdentityState, form: &ProfileForm) -> Vec<Line<'s
         Style::new().fg(COLOR_DARK_GRAY)
     };
     lines.push(Line::from(Span::styled(
-        format!(" Shows these facts ({} ticked)", form.ticked.len()),
+        format!(" Shows these attributes ({} ticked)", form.ticked.len()),
         list_style,
     )));
     lines.push(Line::from(""));
 
     if state.attributes.is_empty() {
         lines.push(
-            Line::from("   No facts yet — add one first; a face selects over them.")
+            Line::from("   No attributes yet — add one first; a face selects over them.")
                 .fg(COLOR_DARK_GRAY),
         );
     } else {
@@ -996,7 +1003,7 @@ fn render_bind_picker(state: &IdentityState, picker: &BindPicker) -> Vec<Line<'s
     lines.push(
         Line::from(
             " A context only ever gets a copy. It receives the values this face resolves \
-             to — never a way back to your other facts, and nothing about your other \
+             to — never a way back to your other attributes, and nothing about your other \
              personas. Copies go down; nothing reads up.",
         )
         .fg(COLOR_DARK_GRAY),
@@ -1113,10 +1120,18 @@ mod tests {
     /// vocabulary (`credential · ‹issuer›`), and **"per verifier"** is the
     /// agreed phrase for a generated value — the table bans *"verifier" in
     /// prose*, not that phrase.
+    ///
+    /// **"attribute"** came *off* this list on 2026-09-08, and **"fact"** went
+    /// on in its place. The screen used to translate an attribute to a *fact*,
+    /// which asserted a truth the model cannot promise — everything in the pool
+    /// is self-asserted until a credential backs it, and a face exists so a
+    /// person may show an old, pinned, overridden or untrue value — while
+    /// `Facts` already named a *verified* policy input in `vtc-service`. The
+    /// spec word came to the screen instead; provenance carries the truth.
     #[test]
     fn the_pane_speaks_the_agreed_vocabulary() {
         const BANNED: &[&str] = &[
-            "attribute",
+            "fact",
             "pool",
             "profile",
             "binding",
@@ -1286,7 +1301,7 @@ mod tests {
     }
 
     /// The distinction the whole pane is built around: an agent that could not
-    /// be asked must never render as "you have no facts". One of those is a
+    /// be asked must never render as "you have no attributes". One of those is a
     /// confident claim about the holder's own data, and it would be wrong.
     #[test]
     fn an_unreachable_agent_never_reads_as_having_no_facts() {
@@ -1296,18 +1311,21 @@ mod tests {
         };
         loaded(&mut state);
         let empty = text(&render(&state));
-        assert!(empty.contains("No facts yet"), "{empty}");
+        assert!(empty.contains("No attributes yet"), "{empty}");
 
         state.load_error = Some("connection refused".to_string());
         let failed = text(&render(&state));
-        assert!(failed.contains("Could not read your facts"), "{failed}");
+        assert!(
+            failed.contains("Could not read your attributes"),
+            "{failed}"
+        );
         assert!(
             failed.contains("connection refused"),
             "the reason has to reach the operator: {failed}"
         );
         assert!(
-            !failed.contains("No facts yet"),
-            "a failed read must not claim there are no facts: {failed}"
+            !failed.contains("No attributes yet"),
+            "a failed read must not claim there are no attributes: {failed}"
         );
     }
 
@@ -1626,7 +1644,7 @@ mod tests {
         assert!(!out.contains("n: new"), "{out}");
     }
 
-    /// Every fact carries the rung it left at, and a release that is still
+    /// Every attribute carries the rung it left at, and a release that is still
     /// live as a credential is marked as such — it is the one kind that can
     /// still be revoked rather than only regretted.
     #[test]
@@ -1673,7 +1691,7 @@ mod tests {
     }
 
     /// A value that lives only in a face is marked as such, because correcting
-    /// the holder's facts will not correct it.
+    /// the holder's attributes will not correct it.
     #[test]
     fn an_inline_claim_says_it_lives_only_in_the_profile() {
         use openvtc_core::persona::profile::{ProfileDetail, ProfileSummary, ResolvedClaim};
@@ -1713,7 +1731,7 @@ mod tests {
         );
     }
 
-    /// A fact whose claim type carries a mask style is masked in the holder's
+    /// An attribute whose claim type carries a mask style is masked in the holder's
     /// own list, and the row says so rather than reading as empty.
     ///
     /// The failure this refuses is the quiet one: `••••••••` and "(no value)"
@@ -1745,7 +1763,7 @@ mod tests {
         assert_eq!(
             out.matches("masked — s to show").count(),
             1,
-            "exactly the masked fact is marked: {out}"
+            "exactly the masked attribute is marked: {out}"
         );
         assert!(
             !out.contains("(no value)"),
@@ -1756,7 +1774,7 @@ mod tests {
         assert!(out.contains("Alice"), "{out}");
     }
 
-    /// The reveal is granted to one fact — the selected one — and nothing else
+    /// The reveal is granted to one attribute — the selected one — and nothing else
     /// on screen opens with it.
     #[test]
     fn a_reveal_opens_only_the_selected_fact() {
@@ -1782,7 +1800,7 @@ mod tests {
         assert!(out.contains("showing — s to mask"), "{out}");
         assert!(
             !out.contains("+61400123456"),
-            "the other masked fact stays masked: {out}"
+            "the other masked attribute stays masked: {out}"
         );
 
         // A grant that no longer names the selected row opens nothing: a list
@@ -1865,7 +1883,7 @@ mod tests {
         assert!(out.contains("among your"), "{out}");
     }
 
-    /// The one masked fact the tests above share.
+    /// The one masked attribute the tests above share.
     fn card() -> PoolAttribute {
         PoolAttribute {
             attribute_id: "01B".into(),

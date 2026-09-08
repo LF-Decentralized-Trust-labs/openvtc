@@ -412,7 +412,7 @@ pub enum PersonaTab {
     /// The persona DIDs themselves — a persona as an *identity*.
     #[default]
     Personas,
-    /// The attribute pool: the facts, held once.
+    /// The attribute pool: the attributes, held once.
     Attributes,
     /// Named projections over the pool.
     Profiles,
@@ -447,7 +447,7 @@ impl PersonaTab {
     pub fn label(self) -> &'static str {
         match self {
             PersonaTab::Personas => "Personas",
-            PersonaTab::Attributes => "Your facts",
+            PersonaTab::Attributes => "Your attributes",
             PersonaTab::Profiles => "Faces",
             PersonaTab::Communities => "Communities",
             PersonaTab::Disclosures => "What has left",
@@ -746,12 +746,12 @@ pub struct IdentityState {
     /// holder asking to see their own identity, so it is a keypress they make
     /// on purpose and a network round-trip, not a display flag.
     pub show_values: bool,
-    /// The one fact whose value is being shown unmasked, by `attribute_id`.
+    /// The one attribute whose value is being shown unmasked, by `attribute_id`.
     ///
     /// One, and only while it is also the selected row — the render checks
     /// both. Sensitivity is a property of the claim type, so a card number and
     /// a date of birth are masked even in a listing the holder asked to see
-    /// (`openvtc_core::persona::claim_types`), and lifting that is a per-fact
+    /// (`openvtc_core::persona::claim_types`), and lifting that is a per-attribute
     /// act rather than a mode the pane can be left in.
     ///
     /// Cleared by moving the selection, changing tab, or a re-read. A reveal

@@ -1,4 +1,4 @@
-//! The holder's own identity — the personas, the facts behind them, and what each
+//! The holder's own identity — the personas, the attributes behind them, and what each
 //! persona presents where.
 //!
 //! # Two meanings of "persona", and they compose
