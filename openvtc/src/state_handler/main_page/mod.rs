@@ -392,6 +392,7 @@ impl MainPageState {
             .agent_name_for(config.persona_did())
             .map(str::to_owned);
         self.content_panel.settings.did_git_sign = detect_did_git_sign_info(config.persona_did());
+        self.content_panel.settings.context_id = config.account.top_context_id.clone();
         // Sync VTA info
         self.content_panel.vta.persona_did = config.persona_did().to_string();
         self.content_panel.vta.persona_agent_name = config
